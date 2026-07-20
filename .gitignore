@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Test / runtime artifacts
+.iris_light_test_tmp/
+*.db
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Android emulator runtime data (large)
+android-emulator/data/
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Emulator runtime
+android-emulator/avd/**/multiinstance.lock
+android-emulator/avd/**/emu-launch-params.txt
+android-emulator/avd/**/snapshots/
+*.lock
+
