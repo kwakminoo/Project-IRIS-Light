@@ -24,6 +24,8 @@ class LightSettingsSelection:
     ollama_model: str
     hermes_enabled: bool
     hermes_command: str
+    hermes_base_url: str
+    hermes_api_key: str
 
 
 class SettingsDialog(QDialog):
@@ -60,8 +62,8 @@ class SettingsDialog(QDialog):
         root.addWidget(title)
 
         hint = QLabel(
-            "Ollama 클라우드/로컬 모델과 Hermes Agent 연결을 설정합니다. "
-            "대화·도구 실행 연동은 이후 단계에서 연결됩니다."
+            "Ollama 모델 목록과 Hermes Agent API(gateway) 연결을 설정합니다. "
+            "Hermes 사용 시 채팅은 Hermes API로 전달되며, 선택한 모델이 Hermes에도 동기화됩니다."
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -72,11 +74,16 @@ class SettingsDialog(QDialog):
         self._ollama_url = QLineEdit(settings.ollama_base_url)
         self._ollama_model = QLineEdit(settings.ollama_model)
         self._hermes_cmd = QLineEdit(settings.hermes_command)
-        self._hermes_on = QCheckBox("Hermes Agent 사용")
+        self._hermes_url = QLineEdit(settings.hermes_base_url)
+        self._hermes_key = QLineEdit(settings.hermes_api_key)
+        self._hermes_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._hermes_on = QCheckBox("Hermes Agent 사용 (채팅을 Hermes API로 전달)")
         self._hermes_on.setChecked(settings.hermes_enabled)
 
         form.addRow("Ollama Base URL", self._ollama_url)
         form.addRow("Ollama Model", self._ollama_model)
+        form.addRow("Hermes API URL", self._hermes_url)
+        form.addRow("Hermes API Key", self._hermes_key)
         form.addRow("Hermes 명령", self._hermes_cmd)
         form.addRow("", self._hermes_on)
         root.addLayout(form)
@@ -94,6 +101,8 @@ class SettingsDialog(QDialog):
             ollama_model=self._ollama_model.text().strip(),
             hermes_enabled=self._hermes_on.isChecked(),
             hermes_command=self._hermes_cmd.text().strip() or "hermes",
+            hermes_base_url=self._hermes_url.text().strip() or "http://127.0.0.1:8642/v1",
+            hermes_api_key=self._hermes_key.text().strip(),
         )
         self.accept()
 

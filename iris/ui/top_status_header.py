@@ -152,15 +152,22 @@ class TopStatusHeader:
             kind = "processing"
         self._tts_chip.set_value(text.upper(), dot_kind=kind)
 
-    def refresh_backend_status(self, settings: Settings | None) -> None:
+    def refresh_backend_status(
+        self,
+        settings: Settings | None,
+        *,
+        hermes_online: bool = False,
+    ) -> None:
         """OpenClaw/Hermes 가용성 갱신."""
-        line = external_backend_status_line(settings)
+        line = external_backend_status_line(settings, hermes_online=hermes_online)
         oc = "UNAVAILABLE"
         hm = "UNAVAILABLE"
         if "OpenClaw (Connected)" in line:
             oc = "CONNECTED"
         if "Hermes (Connected)" in line:
             hm = "CONNECTED"
+        elif "Hermes (Offline)" in line:
+            hm = "OFFLINE"
         self._openclaw_chip.set_value(
             oc,
             dot_kind="connected" if oc == "CONNECTED" else "unavailable",

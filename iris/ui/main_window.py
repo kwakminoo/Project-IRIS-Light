@@ -1,10 +1,10 @@
-"""메인 PyQt6 창 — Ollama 클라우드 채팅 + thinking 로그."""
+"""메인 PyQt6 창 — Ollama 모델 선택 + Hermes/Ollama 채팅."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, Qt, QTimer
+from PyQt6.QtCore import QEvent, Qt, QThread, QTimer
 from PyQt6.QtGui import QAction, QCloseEvent
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -30,6 +30,11 @@ from iris.ui.frameless_chrome import FramelessShell, center_on_screen, suppress_
 from iris.ui.left_sidebar_panel import LeftSidebarPanel
 from iris.ui.live_activity_panel import LiveActivityPanel, UiActivityRelay
 from iris.ui.notification_panel import NotificationPanel
+from iris.ui.hermes_workers import (
+    HermesChatWorker,
+    HermesHealthWorker,
+    HermesModelSyncWorker,
+)
 from iris.ui.ollama_workers import OllamaChatWorker, OllamaModelListWorker
 from iris.ui.settings_dialog import SettingsDialog
 from iris.ui.startup_intro import StartupIntroAnimator
@@ -42,7 +47,7 @@ from iris.ui.workspaces.assistant_workspace_page import AssistantWorkspacePage
 
 
 class MainWindow(QMainWindow):
-    """Iris Light — Ollama 채팅 HUD."""
+    """Iris Light — Hermes API 또는 Ollama 채팅 HUD."""
 
     def __init__(self, *, test_mode: bool = False) -> None:
         super().__init__()
@@ -63,8 +68,11 @@ class MainWindow(QMainWindow):
         self._state = StateMachine()
         self._state.state_changed.connect(self._on_app_state)
         self._history: list[dict[str, str]] = []
-        self._chat_worker: OllamaChatWorker | None = None
+        self._chat_worker: QThread | None = None
         self._model_worker: OllamaModelListWorker | None = None
+        self._hermes_health_worker: HermesHealthWorker | None = None
+        self._hermes_model_worker: HermesModelSyncWorker | None = None
+        self._hermes_online = False
         self._busy = False
         self._intro: StartupIntroAnimator | None = None
         self._saved_model = load_selected_model(self._db) or self._settings.ollama_model.strip()
@@ -105,7 +113,7 @@ class MainWindow(QMainWindow):
         )
         status_header.set_tts_status("OFF")
         status_header.set_app_state(AppState.IDLE)
-        status_header.refresh_backend_status(self._settings)
+        self._refresh_hermes_health()
         self._drag.place_status_rows(
             status_header.status_widget(),
             status_header.backend_row(),
@@ -256,10 +264,76 @@ class MainWindow(QMainWindow):
             target_id=0,
             category="NORMAL",
             title="Iris Light",
-            message="Ollama 채팅이 연결되었습니다. 모델 선택 후 메시지를 보내 보세요.",
+            message="Ollama 모델 목록이 연결되었습니다. Hermes 사용 시 gateway를 켜 주세요.",
             focus_hint="",
             event_id=0,
         )
+
+    def _refresh_hermes_health(self) -> None:
+        if not self._settings.hermes_enabled:
+            self._hermes_online = False
+            self._status_header.refresh_backend_status(
+                self._settings,
+                hermes_online=False,
+            )
+            return
+        if self._hermes_health_worker is not None and self._hermes_health_worker.isRunning():
+            return
+        worker = HermesHealthWorker(
+            self._settings.hermes_base_url,
+            api_key=self._settings.hermes_api_key,
+            command=self._settings.hermes_command,
+            parent=self,
+        )
+        self._hermes_health_worker = worker
+        worker.finished_ok.connect(self._on_hermes_health)
+        worker.failed.connect(self._on_hermes_health_failed)
+        worker.start()
+
+    def _on_hermes_health(self, online: object) -> None:
+        self._hermes_online = bool(online)
+        self._status_header.refresh_backend_status(
+            self._settings,
+            hermes_online=self._hermes_online,
+        )
+        self._hermes_health_worker = None
+
+    def _on_hermes_health_failed(self, _err: str) -> None:
+        self._hermes_online = False
+        self._status_header.refresh_backend_status(
+            self._settings,
+            hermes_online=False,
+        )
+        self._hermes_health_worker = None
+
+    def _sync_hermes_model(self, model: str) -> None:
+        if not self._settings.hermes_enabled:
+            return
+        model = (model or "").strip()
+        if not model:
+            return
+        if self._hermes_model_worker is not None and self._hermes_model_worker.isRunning():
+            return
+        worker = HermesModelSyncWorker(
+            self._settings.hermes_base_url,
+            model,
+            api_key=self._settings.hermes_api_key,
+            command=self._settings.hermes_command,
+            parent=self,
+        )
+        self._hermes_model_worker = worker
+        worker.finished_ok.connect(self._on_hermes_model_synced)
+        worker.failed.connect(self._on_hermes_model_sync_failed)
+        worker.start()
+
+    def _on_hermes_model_synced(self) -> None:
+        model = self._chat.current_model() or self._settings.ollama_model
+        self._live_activity.append_instant_line(f"Hermes model synced: {model}")
+        self._hermes_model_worker = None
+
+    def _on_hermes_model_sync_failed(self, err: str) -> None:
+        self._live_activity.append_instant_line(f"Hermes model sync failed: {err[:160]}")
+        self._hermes_model_worker = None
 
     def _refresh_models(self) -> None:
         if self._model_worker is not None and self._model_worker.isRunning():
@@ -287,6 +361,8 @@ class MainWindow(QMainWindow):
             self._live_activity.append_instant_line(
                 f"Free cloud models: {len(items)} loaded from ollama.com"
             )
+            if self._settings.hermes_enabled and chosen:
+                self._sync_hermes_model(chosen)
         else:
             self._chat.set_model_status("(무료 클라우드 모델 없음)")
         if self._intro is not None:
@@ -319,6 +395,14 @@ class MainWindow(QMainWindow):
         self._status_header.set_model_name(model)
         if persist:
             save_selected_model(self._db, model)
+        if self._settings.hermes_enabled:
+            self._sync_hermes_model(model)
+
+    def _use_hermes_backend(self) -> bool:
+        return bool(self._settings.hermes_enabled)
+
+    def _backend_label(self) -> str:
+        return "Hermes" if self._use_hermes_backend() else "Ollama"
 
     def _on_user_text(self, text: str) -> None:
         text = (text or "").strip()
@@ -335,11 +419,36 @@ class MainWindow(QMainWindow):
             )
             self._refresh_models()
             return
+        if self._use_hermes_backend() and not self._hermes_online:
+            self._refresh_hermes_health()
+            self._chat.append_message_instant(
+                "Iris",
+                "Hermes gateway에 연결할 수 없습니다. `hermes gateway` 실행과 API 서버 설정을 확인해 주세요.",
+            )
+            return
 
         self._chat.append_message_instant("You", text)
         self._history.append({"role": "user", "content": text})
         self._busy = True
         self._state.set_state(AppState.PROCESSING)
+
+        if self._use_hermes_backend():
+            worker = HermesChatWorker(
+                self._settings.hermes_base_url,
+                model,
+                list(self._history),
+                api_key=self._settings.hermes_api_key,
+                command=self._settings.hermes_command,
+                parent=self,
+            )
+            self._chat_worker = worker
+            worker.connecting.connect(self._on_chat_connecting)
+            worker.tool_progress.connect(self._on_hermes_tool_progress)
+            worker.content_chunk.connect(self._on_content_chunk)
+            worker.finished_ok.connect(self._on_chat_finished)
+            worker.failed.connect(self._on_chat_failed)
+            worker.start()
+            return
 
         worker = OllamaChatWorker(
             self._settings.ollama_base_url,
@@ -358,9 +467,15 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._on_chat_failed)
         worker.start()
 
+    def _on_hermes_tool_progress(self, message: str) -> None:
+        text = (message or "").strip()
+        if text:
+            self._live_activity.append_instant_line(f"[tool] {text}")
+
     def _on_chat_connecting(self, model: str, host: str) -> None:
+        backend = self._backend_label()
         self._live_activity.append_instant_line(
-            f"Connecting to '{model}' on '{host}' ⚡"
+            f"Connecting to '{model}' via {backend} on '{host}' ⚡"
         )
         # 방금 보낸 사용자 메시지
         if self._history:
@@ -409,7 +524,10 @@ class MainWindow(QMainWindow):
         if self._history and self._history[-1].get("role") == "user":
             self._history.pop()
         self._live_activity.append_instant_line(f"Error: {err}")
-        self._chat.append_message_instant("Iris", f"Ollama 오류: {err}")
+        self._chat.append_message_instant(
+            "Iris",
+            f"{self._backend_label()} 오류: {err}",
+        )
         self._busy = False
         self._chat_worker = None
         self._state.set_state(AppState.ERROR)
@@ -437,12 +555,16 @@ class MainWindow(QMainWindow):
             self._settings.ollama_model = sel.ollama_model
             self._settings.hermes_enabled = sel.hermes_enabled
             self._settings.hermes_command = sel.hermes_command
+            self._settings.hermes_base_url = sel.hermes_base_url
+            self._settings.hermes_api_key = sel.hermes_api_key
             self._settings.model_name = sel.ollama_model or self._settings.model_name
             self._saved_model = sel.ollama_model.strip()
             if self._saved_model:
                 save_selected_model(self._db, self._saved_model)
             self._status_header.set_model_name(self._settings.model_name or "(unset)")
-            self._status_header.refresh_backend_status(self._settings)
+            self._refresh_hermes_health()
+            if self._settings.hermes_enabled and self._saved_model:
+                self._sync_hermes_model(self._saved_model)
             self._refresh_models()
 
     def _toggle_maximize(self) -> None:
@@ -468,7 +590,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         try:
             if self._chat_worker is not None and self._chat_worker.isRunning():
-                self._chat_worker.request_cancel()
+                cancel = getattr(self._chat_worker, "request_cancel", None)
+                if callable(cancel):
+                    cancel()
                 self._chat_worker.wait(1500)
             self._metrics_worker.request_stop()
             self._metrics_worker.wait(2000)
