@@ -1,0 +1,1 @@
+"""knowledge UI stubs."""
