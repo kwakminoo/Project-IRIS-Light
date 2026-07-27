@@ -300,28 +300,22 @@ class StartupIntroAnimator(QObject):
         phase2.addAnimation(glitch)
         seq.addAnimation(phase2)
 
-        # 3) 로그·채팅 위에서 페이드 인 + 파형 좌우 확장
+        # 3) 로그창·채팅창·입력창 위에서 페이드 인
         phase3 = QParallelAnimationGroup()
         phase3.addAnimation(self._fade_slide_anim(self._live, 640, delay=0))
         phase3.addAnimation(self._fade_slide_anim(self._chat, 720, delay=90))
+        seq.addAnimation(phase3)
+
+        # 4) 마지막으로 음성 파형 좌우 확장
         wave = QPropertyAnimation(self._wave, b"progress")
         wave.setDuration(780)
         wave.setStartValue(0.0)
         wave.setEndValue(1.0)
         wave.setEasingCurve(QEasingCurve.Type.OutCubic)
-        phase3.addAnimation(self._with_delay(wave, 160))
-        seq.addAnimation(phase3)
+        seq.addAnimation(wave)
 
         seq.finished.connect(self._on_motion_finished)
         seq.start()
-
-    def _with_delay(self, anim: QPropertyAnimation, delay_ms: int) -> QSequentialAnimationGroup:
-        """PyQt6에는 setStartDelay가 없어 pause + anim 순차로 지연."""
-        wrapped = QSequentialAnimationGroup()
-        if delay_ms > 0:
-            wrapped.addAnimation(QPauseAnimation(delay_ms))
-        wrapped.addAnimation(anim)
-        return wrapped
 
     def _side_anim(self, proxy: _SideSlideProxy, duration: int) -> QParallelAnimationGroup:
         group = QParallelAnimationGroup()

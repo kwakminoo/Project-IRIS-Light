@@ -5,13 +5,15 @@ from __future__ import annotations
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from iris.infrastructure.ollama_client import OllamaClient, OllamaModelInfo, host_label_for_model
+from iris.system.ollama_server import ensure_ollama_running, is_ollama_running
 
 
 class OllamaModelListWorker(QThread):
-    """모델 목록 조회."""
+    """모델 목록 조회 — 서버 미기동 시 자동 기동."""
 
     finished_ok = pyqtSignal(object)  # list[OllamaModelInfo]
     failed = pyqtSignal(str)
+    notice = pyqtSignal(str)  # 서버 기동 등 상태 메시지
 
     def __init__(self, base_url: str, parent=None) -> None:
         super().__init__(parent)
@@ -19,8 +21,17 @@ class OllamaModelListWorker(QThread):
 
     def run(self) -> None:
         try:
+            if not is_ollama_running(self._base_url):
+                self.notice.emit("Ollama 서버가 꺼져 있습니다. 서버를 시작합니다…")
+                if ensure_ollama_running(self._base_url):
+                    self.notice.emit("Ollama 서버 시작됨.")
+                else:
+                    self.failed.emit(
+                        "Ollama 서버를 시작할 수 없습니다. Ollama가 설치되어 있는지 확인하세요."
+                    )
+                    return
             client = OllamaClient(self._base_url)
-            models = client.list_free_cloud_models(probe=True)
+            models = client.list_chat_models(probe_cloud=True)
             self.finished_ok.emit(models)
         except Exception as e:
             self.failed.emit(str(e))

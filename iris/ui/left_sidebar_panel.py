@@ -5,7 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QSizePolicy, QSplitter, QStackedWidget, QVBoxLayout, QWidget
 
-from iris.ui.knowledge.email_detail_panel import EmailDetailPanel
+from iris.ui.knowledge.email_detail_panel import EmailFolderPanel
 from iris.ui.knowledge.obsidian_detail_panel import ObsidianDetailPanel
 from iris.ui.window_list_panel import WindowListPanel
 
@@ -40,13 +40,13 @@ class LeftSidebarPanel(QWidget):
 
         self.window_list = WindowListPanel(self)
         self.obsidian_detail = ObsidianDetailPanel(self)
-        self.email_detail = EmailDetailPanel(self)
+        self.email_folder = EmailFolderPanel(self)
 
         self._top_stack = QStackedWidget(self)
         self._top_stack.setObjectName("LeftSidebarTopStack")
         self._top_stack.addWidget(self.window_list)
         self._top_stack.addWidget(self.obsidian_detail)
-        self._top_stack.addWidget(self.email_detail)
+        self._top_stack.addWidget(self.email_folder)
 
         from iris.ui.sidebar_utility_panel import SidebarUtilityPanel
 
@@ -78,7 +78,7 @@ class LeftSidebarPanel(QWidget):
         self.utility.actions.setVisible(True)
 
         if mode == "email":
-            self._top_stack.setCurrentWidget(self.email_detail)
+            self._top_stack.setCurrentWidget(self.email_folder)
             self.utility.metrics.hide()
             self.setMinimumWidth(_OBSIDIAN_SIDEBAR_MIN)
             self.setMaximumWidth(_OBSIDIAN_SIDEBAR_MAX)

@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from PyQt6.QtCore import QDateTime, Qt, pyqtSignal
+from PyQt6.QtCore import (
+    QDateTime,
+    QEasingCurve,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QTimer,
+    pyqtProperty,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -62,6 +71,71 @@ class _AlertPayload:
         self.title = title
         self.message = message
         self.time_str = time_str
+
+
+class _AlertRow(QWidget):
+    """알림 한 줄 — 우측에서 좌측으로 슬라이드하며 등장."""
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._label = QLabel(text, self)
+        self._label.setTextFormat(Qt.TextFormat.PlainText)
+        self._label.setStyleSheet(f"color: {TOKENS.text_primary}; padding: 0 4px;")
+        self._frac = 1.0  # 1=완전히 오른쪽 밖, 0=제자리
+        self._voff = 0.0  # 수직 오프셋(px) — 아래로 밀릴 때 슬라이드
+        self._enter_anim: QPropertyAnimation | None = None
+        self._shift_anim: QPropertyAnimation | None = None
+
+    def sizeHint(self) -> QSize:
+        fm = self._label.fontMetrics()
+        return QSize(220, fm.height() * 2 + 14)
+
+    def _get_frac(self) -> float:
+        return self._frac
+
+    def _set_frac(self, value: float) -> None:
+        self._frac = value
+        self._reposition()
+
+    frac = pyqtProperty(float, _get_frac, _set_frac)
+
+    def _get_voff(self) -> float:
+        return self._voff
+
+    def _set_voff(self, value: float) -> None:
+        self._voff = value
+        self._reposition()
+
+    voff = pyqtProperty(float, _get_voff, _set_voff)
+
+    def _reposition(self) -> None:
+        w = self.width()
+        self._label.setGeometry(int(self._frac * w), int(self._voff), w, self.height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        self._reposition()
+        super().resizeEvent(event)
+
+    def play_enter(self) -> None:
+        """우측에서 좌측으로 슬라이드 등장."""
+        anim = QPropertyAnimation(self, b"frac", self)
+        anim.setDuration(340)
+        anim.setStartValue(1.0)
+        anim.setEndValue(0.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.start()
+        self._enter_anim = anim
+
+    def play_shift(self, delta: int) -> None:
+        """새 알림에 밀려 delta만큼 아래로 슬라이드."""
+        anim = QPropertyAnimation(self, b"voff", self)
+        anim.setDuration(300)
+        anim.setStartValue(float(-delta))
+        anim.setEndValue(0.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.start()
+        self._shift_anim = anim
 
 
 class NotificationPanel(QWidget):
@@ -124,6 +198,12 @@ class NotificationPanel(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(wrap_glass_panel(inner))
 
+        # 알림 순차 표시 큐 — 한꺼번에 뜨지 않고 하나씩 슬라이드 등장.
+        self._pending: list[tuple[str, _AlertPayload]] = []
+        self._drain_timer = QTimer(self)
+        self._drain_timer.setSingleShot(True)
+        self._drain_timer.timeout.connect(self._drain_next)
+
         self._sync_action_buttons()
 
     def set_policy(self, policy: "NotificationPolicy") -> None:
@@ -141,22 +221,56 @@ class NotificationPanel(QWidget):
         focus_hint: str,
         event_id: int = 0,
     ) -> bool:
-        """정책 통과 시 True (MonitorManager가 DB 쿨다운 처리 후 UI만 표시)."""
+        """정책 통과 시 True (MonitorManager가 DB 쿨다운 처리 후 UI만 표시).
+
+        여러 알림이 몰려도 한꺼번에 뜨지 않고 큐에 쌓아 하나씩 순차 등장한다.
+        """
         time_str = QDateTime.currentDateTime().toString("HH:mm")
         icon, _color = _SEVERITY_ICON.get(category, ("●", TOKENS.text_secondary))
         summary = message.strip().split("\n")[0][:100] if message else ""
         line = f"{icon}  {time_str}  {title}\n    {summary}"
-        item = QListWidgetItem(line)
         payload = _AlertPayload(
             target_id, category, event_id, focus_hint, title, message, time_str
         )
+        self._pending.append((line, payload))
+        # 같은 틱에 몰린 알림을 모아 순차 배출(첫 표시는 짧게 지연).
+        if not self._drain_timer.isActive():
+            self._drain_timer.start(60)
+        return True
+
+    def _drain_next(self) -> None:
+        if not self._pending:
+            return
+        line, payload = self._pending.pop(0)
+        self._insert_row(line, payload)
+        if self._pending:
+            self._drain_timer.start(360)
+
+    def _insert_row(self, line: str, payload: "_AlertPayload") -> None:
+        item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, payload)
+        row = _AlertRow(line)
+        item.setSizeHint(row.sizeHint())
         self._list.insertItem(0, item)
+        self._list.setItemWidget(item, row)
         while self._list.count() > 80:
             self._list.takeItem(self._list.count() - 1)
         self._list.setCurrentItem(item)
         self._sync_action_buttons()
-        return True
+
+        delta = row.sizeHint().height()
+        existing = [
+            self._list.itemWidget(self._list.item(i))
+            for i in range(1, self._list.count())
+        ]
+
+        def _run() -> None:
+            row.play_enter()  # 새 알림: 우→좌
+            for widget in existing:
+                if isinstance(widget, _AlertRow):
+                    widget.play_shift(delta)  # 기존 알림: 아래로
+
+        QTimer.singleShot(0, _run)  # 지오메트리 확정 후 애니메이션
 
     def _sync_action_buttons(self) -> None:
         enabled = self._current_payload() is not None

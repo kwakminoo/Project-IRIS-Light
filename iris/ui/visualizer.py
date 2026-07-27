@@ -17,6 +17,8 @@ _MAX_STABILIZE_ATTEMPTS = 12
 _SNAPSHOT_TOLERANCE_PX = 1
 # ParticleVisualizer 기본 Y 비율과 동일 — 창 콘텐츠 기준 구체 목표 위치
 _ORB_CENTER_Y_RATIO = 0.36
+# Companion: 앵커(상단 슬롯) 우선, 폴백 비율은 더 위
+_ORB_CENTER_Y_RATIO_COMPANION = 0.09
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,16 @@ class Visualizer(QWidget):
         self._stabilize_timer = QTimer(self)
         self._stabilize_timer.setSingleShot(True)
         self._stabilize_timer.timeout.connect(self._continue_stabilized_sync)
+        self._center_y_ratio = _ORB_CENTER_Y_RATIO
+        self._use_anchor_center = False
+
+    def set_companion_orb_placement(self, companion: bool) -> None:
+        """IDE Companion: 구체를 상단 앵커에 붙이고 로그와 겹치게."""
+        self._use_anchor_center = bool(companion)
+        self._center_y_ratio = (
+            _ORB_CENTER_Y_RATIO_COMPANION if companion else _ORB_CENTER_Y_RATIO
+        )
+        self.request_sync_orb_anchor("companion_orb_placement")
 
     def set_orb_anchor(self, widget: QWidget | None) -> None:
         """구체 표시 여부·동기화 트리거용 앵커 (위치는 창 콘텐츠 중앙 고정)."""
@@ -110,14 +122,19 @@ class Visualizer(QWidget):
         return (eff[0] - target[0], eff[1] - target[1])
 
     def _window_content_center_local(self) -> tuple[float, float]:
-        """Visualizer(창 콘텐츠 영역) 기준 구체 목표 중심 — 화면 이동과 무관."""
+        """Visualizer 기준 구체 목표 중심. Companion에선 상단 앵커 사용."""
+        if self._use_anchor_center and self._orb_anchor is not None:
+            mapped = self._map_anchor_center_local(self._orb_anchor)
+            if mapped is not None:
+                # 살짝 더 위 — 로그와 겹침
+                return (mapped[0], max(24.0, mapped[1] - 12.0))
         vr = self.rect()
         w, h = max(vr.width(), 1), max(vr.height(), 1)
-        return (w * 0.5, h * _ORB_CENTER_Y_RATIO)
+        return (w * 0.5, h * self._center_y_ratio)
 
     def _map_anchor_center_local(self, anchor: QWidget) -> tuple[float, float] | None:
-        """레거시·디버그용 — orb_spacer 중심 (배치에는 사용하지 않음)."""
-        if not self._same_top_level_window(anchor):
+        """orb_spacer 중심을 Visualizer 로컬 좌표로 변환."""
+        if not self._same_top_level_window(anchor, self):
             return None
         local_pt = anchor.mapTo(self, anchor.rect().center())
         return (float(local_pt.x()), float(local_pt.y()))

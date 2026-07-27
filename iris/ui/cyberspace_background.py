@@ -20,6 +20,7 @@ class CyberspaceBackground(QWidget):
         self._phase = 0.0
         self._orb_layer: Optional[QWidget] = None
         self._ui_overlay: Optional[QWidget] = None
+        self._orb_above_ui = False
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAutoFillBackground(False)
         self._timer = QTimer(self)
@@ -44,6 +45,21 @@ class CyberspaceBackground(QWidget):
         widget.show()
         self._sync_layers()
 
+    def set_orb_above_ui(self, above: bool) -> None:
+        """Companion 겹침용 — 구체를 HUD 로그 위에 그림 (클릭은 UI로 통과)."""
+        self._orb_above_ui = bool(above)
+        if self._orb_layer is not None:
+            self._orb_layer.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+                self._orb_above_ui,
+            )
+        if self._orb_layer is None or self._ui_overlay is None:
+            return
+        if self._orb_above_ui:
+            self._orb_layer.raise_()
+        else:
+            self._ui_overlay.raise_()
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._sync_layers()
@@ -59,7 +75,12 @@ class CyberspaceBackground(QWidget):
             request_sync = getattr(self._orb_layer, "request_sync_orb_anchor", None)
             if callable(request_sync):
                 request_sync("cyberspace_sync_layers")
-        if self._ui_overlay is not None:
+        if self._ui_overlay is not None and self._orb_layer is not None:
+            if self._orb_above_ui:
+                self._orb_layer.raise_()
+            else:
+                self._ui_overlay.raise_()
+        elif self._ui_overlay is not None:
             self._ui_overlay.raise_()
 
     def _activate_layout_chain(self, root: QWidget) -> None:

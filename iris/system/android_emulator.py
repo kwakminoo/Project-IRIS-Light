@@ -58,6 +58,23 @@ def is_emulator_running() -> bool:
     return "emulator-" in devices
 
 
+def is_emulator_available() -> tuple[bool, str]:
+    """기동 가능 여부 — 현재 켜짐/꺼짐이 아니라 실행 바이너리·AVD 준비 상태.
+
+    Returns (ok, detail). detail은 UI 한 줄용.
+    """
+    exe = emulator_exe()
+    if not exe.is_file():
+        return False, f"emulator 없음 ({exe})"
+    if avd_config_path().is_file():
+        return True, f"실행 가능 (AVD {AVD_NAME})"
+    # AVD 없으면 launch 시 ensure_avd()로 생성 — avdmanager만 있으면 가능
+    mgr = avdmanager_exe()
+    if mgr.is_file():
+        return True, "실행 가능 (AVD 자동 생성 가능)"
+    return False, f"AVD·avdmanager 없음 ({mgr})"
+
+
 def _emulator_env() -> dict[str, str]:
     env = os.environ.copy()
     env["ANDROID_AVD_HOME"] = str(AVD_HOME)

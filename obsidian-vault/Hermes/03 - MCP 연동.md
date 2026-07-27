@@ -134,11 +134,13 @@ mcp_servers:
 ## Iris Light + MCP 사용 시나리오
 
 1. Hermes `config.yaml`에 Gmail/Drive/Notion MCP 등록
-2. `hermes gateway` 실행
-3. Iris Light 채팅 (`IRIS_HERMES_ENABLED=1`)에서 자연어 요청
-4. Hermes가 MCP 도구 호출 → Iris Live Activity에 `[tool]` 진행 표시
+2. **Iris UI 역제어:** `iris-control` MCP (`py -m iris.mcp.iris_control_stdio`) — 설치는 `integrations/hermes-skills/README.md`
+3. `hermes gateway` 실행
+4. Iris Light 채팅 (`IRIS_HERMES_ENABLED=1`)에서 자연어 요청
+5. Hermes가 MCP 도구 호출 → Iris Live Activity에 `[tool]` / `Iris control:` 진행 표시
 
-Iris는 **MCP 설정·필터링을 Hermes에 위임** — Iris 코드에 MCP 클라이언트 추가 불필요.
+Iris는 **MCP 설정·필터링을 Hermes에 위임** — Iris 코드에 MCP 클라이언트 추가 불필요.  
+Iris Control Surface는 **서버** 역할만 (Hermes → Iris).
 
 ## 권장 첫 MCP 서버
 

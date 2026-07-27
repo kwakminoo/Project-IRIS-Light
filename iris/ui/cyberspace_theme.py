@@ -17,6 +17,14 @@ def build_cyberspace_qss() -> str:
             color: {t.text_primary};
             font-family: {t.font_family};
             font-size: {t.font_size_base};
+            outline: none;
+        }}
+        QAbstractItemView {{
+            outline: none;
+        }}
+        QAbstractItemView::item:focus {{
+            outline: none;
+            border: none;
         }}
         QMainWindow {{
             background-color: {t.void_black};
@@ -73,9 +81,14 @@ def build_cyberspace_qss() -> str:
         QWidget#WorkspaceActionPanel,
         QWidget#ObsidianNoteListPanel,
         QWidget#ObsidianPreviewPanel,
+        QWidget#WikiGraphView,
+        QTreeWidget#ObsidianNoteTree,
         QWidget#EmailWorkspacePage,
-        QWidget#EmailDetailPanel,
-        QListWidget#EmailMailList,
+        QWidget#EmailFolderPanel,
+        QWidget#EmailIrisPanel,
+        QListWidget#EmailFolderList,
+        QListWidget#EmailCenterList,
+        QTextEdit#EmailChatLog,
         QTextBrowser#EmailPreviewBody,
         QComboBox#EmailAccountCombo,
         QListWidget#ObsidianNoteList,
@@ -252,17 +265,9 @@ def build_cyberspace_qss() -> str:
             background: rgba(37, 99, 235, 0.12);
             color: {t.neon_cyan};
         }}
-        QProgressBar#HudMetricBar {{
-            background: {t.metric_track};
+        QWidget#HudNeonLineBar {{
+            background: transparent;
             border: none;
-            border-radius: 2px;
-            height: 6px;
-            text-align: right;
-            color: {t.text_secondary};
-            font-size: {t.font_size_micro};
-        }}
-        QProgressBar#HudMetricBar::chunk {{
-            border-radius: 2px;
         }}
         QWidget#UiOverlay {{
             background: transparent;
@@ -360,9 +365,15 @@ def build_cyberspace_qss() -> str:
         }}
         QLabel#HudMetricName {{
             color: {t.text_hud_label};
-            font-size: {t.font_size_caption};
+            font-size: {t.font_size_micro};
             letter-spacing: 0.8px;
             font-weight: 600;
+        }}
+        QLabel#HudMetricUsage {{
+            color: {t.text_muted};
+            font-size: {t.font_size_micro};
+            font-weight: 500;
+            font-family: {t.font_mono};
         }}
         QLabel#HudMetricValue {{
             color: {t.text_primary};

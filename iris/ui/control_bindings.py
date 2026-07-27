@@ -1,0 +1,949 @@
+"""MainWindow ↔ Control Surface 액션 바인딩.
+
+ponytail: UI 핸들러를 그대로 감싼다. 새 UX 없음.
+"""
+
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable
+
+from PyQt6.QtCore import QObject, Qt, pyqtSignal
+
+from iris.storage.email_accounts import (
+    add_email_account,
+    find_account,
+    load_email_accounts,
+    remove_email_account,
+)
+from iris.storage.user_profile import UserProfile, load_user_profile, save_user_profile
+from iris.system.control_surface import (
+    ControlSurface,
+    MainThreadInvoker,
+    err_result,
+    ok_result,
+    resolve_control_token,
+)
+from iris.system.ide_launcher import ide_catalog, is_ide_installed
+
+if TYPE_CHECKING:
+    from iris.ui.main_window import MainWindow
+
+
+class _QtInvoker(QObject):
+    _call = pyqtSignal(object, object)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._call.connect(self._on_call, Qt.ConnectionType.QueuedConnection)
+
+    def _on_call(self, fn: object, box: object) -> None:
+        assert callable(fn) and isinstance(box, dict)
+        try:
+            box["value"] = fn()
+            box["exc"] = None
+        except Exception as exc:  # noqa: BLE001
+            box["value"] = None
+            box["exc"] = exc
+        box["event"].set()
+
+    def run(self, fn: Callable[[], Any], timeout: float = 15.0) -> Any:
+        box: dict[str, Any] = {"event": threading.Event()}
+        self._call.emit(fn, box)
+        if not box["event"].wait(timeout):
+            raise TimeoutError("Iris UI thread timeout")
+        if box["exc"] is not None:
+            raise box["exc"]
+        return box["value"]
+
+
+def _public_profile(p: UserProfile) -> dict[str, Any]:
+    return {
+        "name": p.name,
+        "occupation": p.occupation,
+        "hobbies": p.hobbies,
+        "interests": p.interests,
+        "work_tasks": p.work_tasks,
+        "age": p.age,
+        "gender": p.gender,
+        "residence": p.residence,
+        "contact": p.contact,
+        "email": p.email,
+        "preferred_ide": p.preferred_ide,
+        "ide_exe_path": p.ide_exe_path,
+        "ide_cli_path": p.ide_cli_path,
+        "project_root": p.project_root,
+        "project_parents": list(p.project_parents or []),
+    }
+
+
+def _profile_parents(window: MainWindow) -> list[Path]:
+    from iris.system.project_ops import resolve_project_parents
+
+    profile = load_user_profile(window._db)
+    return resolve_project_parents(list(profile.project_parents or []))
+
+
+def start_control_surface(window: MainWindow) -> ControlSurface | None:
+    """Control Surface 기동 + 액션 등록. 실패 시 None (앱은 계속)."""
+    import os
+
+    if getattr(window, "_test_mode", False):
+        return None
+    if os.environ.get("IRIS_CONTROL_ENABLED", "1").strip() in ("0", "false", "False"):
+        return None
+
+    host = (os.environ.get("IRIS_CONTROL_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = int((os.environ.get("IRIS_CONTROL_PORT") or "8765").strip() or "8765")
+    except ValueError:
+        port = 8765
+    token = resolve_control_token()
+
+    qt = _QtInvoker(window)
+    invoker = MainThreadInvoker()
+    invoker.bind(qt.run)
+    surface = ControlSurface(invoker=invoker, host=host, port=port, token=token)
+    _register_actions(window, surface)
+    try:
+        bound = surface.start()
+    except OSError as exc:
+        window._live_activity.append_instant_line(f"Iris control: bind failed ({exc})")
+        return None
+
+    # ponytail: sync는 UI 스레드에서 하지 않음 — /v1/state 프로브가 같은 스레드 invoker와
+    # 데드락 나며 Windows "응답 없음"이 됨. HermesHealthWorker가 백그라운드에서 동기화.
+    window._control_surface = surface  # type: ignore[attr-defined]
+    window._control_qt_invoker = qt  # type: ignore[attr-defined]
+    window._live_activity.append_instant_line(
+        f"Iris control: listening on http://{host}:{bound} (MCP iris-control)"
+    )
+    return surface
+
+
+def stop_control_surface(window: MainWindow) -> None:
+    surface = getattr(window, "_control_surface", None)
+    if surface is not None:
+        try:
+            surface.stop()
+        except Exception:
+            pass
+        window._control_surface = None  # type: ignore[attr-defined]
+
+
+def mark_control_ready(window: MainWindow) -> None:
+    surface = getattr(window, "_control_surface", None)
+    if surface is not None:
+        surface.booting = False
+
+
+def _log(window: MainWindow, action: str, ok: bool) -> None:
+    status = "ok" if ok else "fail"
+    try:
+        window._live_activity.append_instant_line(f"Iris control: {action} {status}")
+    except Exception:
+        pass
+
+
+def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
+    reg = surface.registry
+
+    def ping(_args: dict[str, Any]) -> dict[str, Any]:
+        return ok_result("ping", {"alive": True, "booting": surface.booting})
+
+    def get_catalog(_args: dict[str, Any]) -> dict[str, Any]:
+        return ok_result("get_catalog", {"actions": reg.catalog()})
+
+    def get_state(_args: dict[str, Any]) -> dict[str, Any]:
+        profile = load_user_profile(window._db)
+        accounts = [
+            {"id": a.id, "address": a.address, "label": a.label}
+            for a in load_email_accounts(window._db)
+        ]
+        return ok_result(
+            "get_state",
+            {
+                "booting": surface.booting,
+                "ui_mode": window._ui_mode,
+                "workspace_mode": window._workspace_mode,
+                "preferred_ide": profile.preferred_ide,
+                "project_root": profile.project_root,
+                "project_parents": [str(p) for p in _profile_parents(window)],
+                "ide_attached": bool(window._ide_hwnd),
+                "ide_pid": window._ide_pid,
+                "hermes_online": bool(getattr(window, "_hermes_online", False)),
+                "hermes_enabled": bool(window._settings.hermes_enabled),
+                "model": window._settings.model_name or window._settings.ollama_model,
+                "email_accounts": accounts,
+                "selected_email_account_id": window._selected_email_account_id,
+                "emulator_running": _emulator_running(),
+            },
+        )
+
+    reg.register("ping", ping, summary="Iris alive check / ping")
+    reg.register(
+        "get_catalog",
+        get_catalog,
+        summary="List all Iris control actions (catalog)",
+    )
+    reg.register(
+        "get_state",
+        get_state,
+        summary="Iris session state: ui_mode companion workspace IDE project_root model",
+    )
+
+    # --- window / IDE companion ---
+    def window_minimize(_a: dict[str, Any]) -> dict[str, Any]:
+        window.showMinimized()
+        _log(window, "window.minimize", True)
+        return ok_result("window.minimize", {})
+
+    def window_toggle_maximize(_a: dict[str, Any]) -> dict[str, Any]:
+        window._toggle_maximize()
+        _log(window, "window.toggle_maximize", True)
+        return ok_result("window.toggle_maximize", {"maximized": window.isMaximized()})
+
+    def ide_enter(_a: dict[str, Any]) -> dict[str, Any]:
+        path = str(_a.get("project_root") or "").strip()
+        if path:
+            root = Path(path).expanduser()
+            if not root.is_dir():
+                return err_result("ide.enter_companion", f"project_root not a directory: {path}")
+            profile = load_user_profile(window._db)
+            profile.project_root = str(root.resolve())
+            save_user_profile(window._db, profile)
+        before = window._ui_mode
+        window._enter_ide_companion()
+        ok = window._ui_mode == "ide_companion"
+        _log(window, "ide.enter_companion", ok)
+        return (
+            ok_result(
+                "ide.enter_companion",
+                {"ui_mode": window._ui_mode, "was": before, "ide_hwnd": window._ide_hwnd},
+            )
+            if ok
+            else err_result(
+                "ide.enter_companion",
+                "companion not entered (IDE missing or window not found)",
+                {"ui_mode": window._ui_mode},
+            )
+        )
+
+    def ide_exit(_a: dict[str, Any]) -> dict[str, Any]:
+        window._exit_ide_companion()
+        _log(window, "ide.exit_companion", True)
+        return ok_result("ide.exit_companion", {"ui_mode": window._ui_mode})
+
+    def ide_toggle(_a: dict[str, Any]) -> dict[str, Any]:
+        window._on_ide_icon()
+        _log(window, "ide.toggle_companion", True)
+        return ok_result("ide.toggle_companion", {"ui_mode": window._ui_mode})
+
+    def ide_open_folder(args: dict[str, Any]) -> dict[str, Any]:
+        path = str(args.get("path") or args.get("folder") or args.get("project_root") or "").strip()
+        if not path:
+            return err_result("ide.open_folder", "path required")
+        root = Path(path).expanduser()
+        if not root.is_dir():
+            return err_result("ide.open_folder", f"not a directory: {path}")
+        new_window = bool(args.get("new_window", True))
+        err = window._open_ide_folder(str(root), new_window=new_window)
+        ok = not err and window._ui_mode == "ide_companion"
+        _log(window, "ide.open_folder", ok)
+        if not ok:
+            return err_result(
+                "ide.open_folder",
+                err or "companion not entered",
+                {"ui_mode": window._ui_mode, "path": str(root.resolve())},
+            )
+        return ok_result(
+            "ide.open_folder",
+            {
+                "path": str(root.resolve()),
+                "ui_mode": window._ui_mode,
+                "ide_hwnd": window._ide_hwnd,
+                "new_window": new_window,
+            },
+        )
+
+    def project_list_parents(_a: dict[str, Any]) -> dict[str, Any]:
+        parents = _profile_parents(window)
+        profile = load_user_profile(window._db)
+        return ok_result(
+            "project.list_parents",
+            {
+                "parents": [str(p) for p in parents],
+                "custom": list(profile.project_parents or []),
+                "using_defaults": not bool(profile.project_parents),
+            },
+        )
+
+    def project_find_similar(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.project_ops import find_similar_projects
+
+        query = str(args.get("query") or args.get("name") or "").strip()
+        if not query:
+            return err_result("project.find_similar", "query required")
+        limit = int(args.get("limit") or 8)
+        parents = _profile_parents(window)
+        hits = find_similar_projects(
+            query, parents=parents, limit=max(1, min(limit, 20))
+        )
+        return ok_result(
+            "project.find_similar",
+            {
+                "query": query,
+                "matches": hits,
+                "best": hits[0] if hits else None,
+                "parents": [str(p) for p in parents],
+            },
+        )
+
+    def project_open_similar(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.project_ops import pick_similar_project
+
+        query = str(args.get("query") or args.get("name") or "").strip()
+        if not query:
+            return err_result(
+                "project.open_similar",
+                "query required — name a project, or use query like 'iris light'",
+            )
+        parents = _profile_parents(window)
+        force = bool(args.get("force", False))
+        best, hits, reason = pick_similar_project(
+            query, parents=parents, force=force
+        )
+        if reason != "ok" or not best:
+            hint = {
+                "none": "no match — check project_parents in settings or give absolute path",
+                "low_score": "weak match — ask user to pick, or force=true",
+                "ambiguous": "multiple close matches — ask user, then ide.open_folder",
+            }.get(reason, "could not pick")
+            return err_result(
+                "project.open_similar",
+                f"{hint} (reason={reason})",
+                {
+                    "query": query,
+                    "reason": reason,
+                    "matches": hits,
+                    "parents": [str(p) for p in parents],
+                    "hint": "Call project.find_similar, ask user, then ide.open_folder with path",
+                },
+            )
+        new_window = bool(args.get("new_window", True))
+        err = window._open_ide_folder(best["path"], new_window=new_window)
+        ok = not err and window._ui_mode == "ide_companion"
+        _log(window, "project.open_similar", ok)
+        if not ok:
+            return err_result(
+                "project.open_similar",
+                err or "open failed",
+                {"match": best, "matches": hits, "ui_mode": window._ui_mode},
+            )
+        return ok_result(
+            "project.open_similar",
+            {
+                "query": query,
+                "match": best,
+                "matches": hits,
+                "reason": reason,
+                "ui_mode": window._ui_mode,
+                "ide_hwnd": window._ide_hwnd,
+            },
+        )
+
+    def project_create_scaffold(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.project_ops import create_scaffold
+
+        name = str(args.get("name") or "").strip()
+        if not name:
+            return err_result("project.create_scaffold", "name required")
+        parent = str(args.get("parent") or "").strip()
+        if not parent:
+            parents = _profile_parents(window)
+            parent = str(parents[0]) if parents else str(Path.home() / "Desktop")
+        template = str(args.get("template") or "empty").strip() or "empty"
+        try:
+            created = create_scaffold(parent, name, template=template)
+        except Exception as exc:  # noqa: BLE001
+            return err_result("project.create_scaffold", str(exc))
+        open_ide = bool(args.get("open", True))
+        result: dict[str, Any] = {"created": created}
+        if open_ide:
+            err = window._open_ide_folder(created["path"], new_window=bool(args.get("new_window", True)))
+            result["open_error"] = err or None
+            result["ui_mode"] = window._ui_mode
+            if err:
+                _log(window, "project.create_scaffold", False)
+                return err_result(
+                    "project.create_scaffold",
+                    f"created but open failed: {err}",
+                    result,
+                )
+        _log(window, "project.create_scaffold", True)
+        return ok_result("project.create_scaffold", result)
+
+    def project_write_file(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.project_ops import write_project_file
+
+        root = str(args.get("project_root") or args.get("root") or "").strip()
+        if not root:
+            profile = load_user_profile(window._db)
+            root = (profile.project_root or "").strip()
+        rel = str(args.get("rel_path") or args.get("path") or "").strip()
+        content = args.get("content")
+        if content is None:
+            return err_result("project.write_file", "content required")
+        if not root or not rel:
+            return err_result("project.write_file", "project_root and rel_path required")
+        try:
+            written = write_project_file(root, rel, str(content))
+        except Exception as exc:  # noqa: BLE001
+            return err_result("project.write_file", str(exc))
+        _log(window, "project.write_file", True)
+        return ok_result("project.write_file", written)
+
+    reg.register(
+        "window.minimize",
+        window_minimize,
+        summary="Minimize Iris window",
+    )
+    reg.register(
+        "window.toggle_maximize",
+        window_toggle_maximize,
+        summary="Toggle maximize Iris window",
+    )
+    reg.register(
+        "ide.enter_companion",
+        ide_enter,
+        summary="IDE Companion on: welcome/default IDE window + tile 80:20 (does not switch folder)",
+    )
+    reg.register(
+        "ide.exit_companion",
+        ide_exit,
+        summary="IDE Companion off: restore Iris layout, keep IDE window",
+    )
+    reg.register(
+        "ide.toggle_companion",
+        ide_toggle,
+        summary="Toggle IDE Companion (same as IDE icon)",
+    )
+    reg.register(
+        "ide.open_folder",
+        ide_open_folder,
+        summary="Open folder in IDE (new window) + Companion tile — use to switch projects even if IDE already open",
+        risk="medium",
+    )
+    reg.register(
+        "project.list_parents",
+        project_list_parents,
+        summary="List project search parent folders (settings project_parents or built-in defaults)",
+    )
+    reg.register(
+        "project.find_similar",
+        project_find_similar,
+        summary="Fuzzy-find project folders under configured parents by name (e.g. ai guitar tab → AI-Guitar-Tab-main)",
+    )
+    reg.register(
+        "project.open_similar",
+        project_open_similar,
+        summary="Fuzzy-find best matching project and open in Companion; on ambiguous/low_score returns matches (use force=true to override)",
+        risk="medium",
+    )
+    reg.register(
+        "project.create_scaffold",
+        project_create_scaffold,
+        summary="Create project folder + template (gugudan|python-hello|empty), optionally open in IDE",
+        risk="medium",
+    )
+    reg.register(
+        "project.write_file",
+        project_write_file,
+        summary="Write a file under project_root (rel_path + content) for coding tasks",
+        risk="medium",
+    )
+
+    # --- profile / IDE prefs ---
+    def profile_get(_a: dict[str, Any]) -> dict[str, Any]:
+        return ok_result("profile.get", _public_profile(load_user_profile(window._db)))
+
+    def profile_set(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.storage.user_profile import parse_project_parents
+
+        profile = load_user_profile(window._db)
+        fields = UserProfile.__dataclass_fields__
+        changed: list[str] = []
+        for key, val in args.items():
+            if key in ("confirm",):
+                continue
+            if key not in fields:
+                continue
+            if key == "project_parents":
+                profile.project_parents = parse_project_parents(val)
+            else:
+                setattr(profile, key, str(val or ""))
+            changed.append(key)
+        if "project_root" in changed and profile.project_root.strip():
+            root = Path(profile.project_root).expanduser()
+            if not root.is_dir():
+                return err_result("profile.set", f"project_root not a directory: {profile.project_root}")
+            profile.project_root = str(root.resolve())
+        if "project_parents" in changed and profile.project_parents:
+            cleaned: list[str] = []
+            for raw in profile.project_parents:
+                p = Path(raw).expanduser()
+                if not p.is_dir():
+                    return err_result(
+                        "profile.set",
+                        f"project_parents entry not a directory: {raw}",
+                    )
+                cleaned.append(str(p.resolve()))
+            profile.project_parents = cleaned
+        if "preferred_ide" in changed and profile.preferred_ide.strip():
+            ide_id = profile.preferred_ide.strip().lower()
+            profile.preferred_ide = ide_id
+            if ide_id != "custom" and not is_ide_installed(ide_id, profile.ide_exe_path):
+                return err_result("profile.set", f"IDE not installed: {ide_id}")
+        save_user_profile(window._db, profile)
+        _log(window, "profile.set", True)
+        return ok_result("profile.set", {"changed": changed, "profile": _public_profile(profile)})
+
+    def ide_set_preferred(args: dict[str, Any]) -> dict[str, Any]:
+        ide_id = str(args.get("ide_id") or args.get("preferred_ide") or "").strip().lower()
+        if not ide_id:
+            return err_result("ide.set_preferred", "ide_id required")
+        known = {s.id for s in ide_catalog()} | {"custom"}
+        if ide_id not in known:
+            return err_result("ide.set_preferred", f"unknown ide_id: {ide_id}", {"known": sorted(known)})
+        profile = load_user_profile(window._db)
+        if ide_id != "custom" and not is_ide_installed(ide_id, profile.ide_exe_path):
+            return err_result("ide.set_preferred", f"IDE not installed: {ide_id}")
+        profile.preferred_ide = ide_id
+        if ide_id != "custom":
+            profile.ide_exe_path = ""
+        save_user_profile(window._db, profile)
+        _log(window, "ide.set_preferred", True)
+        return ok_result("ide.set_preferred", {"preferred_ide": ide_id})
+
+    def ide_set_project_root(args: dict[str, Any]) -> dict[str, Any]:
+        path = str(args.get("path") or args.get("project_root") or "").strip()
+        if not path:
+            return err_result("ide.set_project_root", "path required")
+        root = Path(path).expanduser()
+        if not root.is_dir():
+            return err_result("ide.set_project_root", f"not a directory: {path}")
+        profile = load_user_profile(window._db)
+        profile.project_root = str(root.resolve())
+        save_user_profile(window._db, profile)
+        _log(window, "ide.set_project_root", True)
+        return ok_result("ide.set_project_root", {"project_root": profile.project_root})
+
+    def ide_list(_a: dict[str, Any]) -> dict[str, Any]:
+        profile = load_user_profile(window._db)
+        items = []
+        for spec in ide_catalog():
+            items.append(
+                {
+                    "id": spec.id,
+                    "name": spec.name,
+                    "installed": is_ide_installed(spec.id, ""),
+                }
+            )
+        items.append(
+            {
+                "id": "custom",
+                "name": "Custom",
+                "installed": bool(profile.ide_exe_path and Path(profile.ide_exe_path).is_file()),
+            }
+        )
+        return ok_result("ide.list", {"ides": items, "preferred_ide": profile.preferred_ide})
+
+    reg.register("profile.get", profile_get, summary="Get user profile (no secrets)")
+    reg.register(
+        "profile.set",
+        profile_set,
+        summary="Set user profile fields: name preferred_ide project_root project_parents ide paths",
+        risk="medium",
+    )
+    reg.register(
+        "ide.set_preferred",
+        ide_set_preferred,
+        summary="Set preferred IDE id (cursor vscode pycharm … or custom)",
+        risk="medium",
+    )
+    reg.register(
+        "ide.set_project_root",
+        ide_set_project_root,
+        summary="Set project_root folder for IDE Companion / vibe coding",
+        risk="medium",
+    )
+    reg.register("ide.list", ide_list, summary="List IDE catalog and install status")
+
+    # --- workspaces ---
+    def ws_assistant(_a: dict[str, Any]) -> dict[str, Any]:
+        window._show_assistant_workspace()
+        _log(window, "workspace.open_assistant", True)
+        return ok_result("workspace.open_assistant", {"workspace_mode": window._workspace_mode})
+
+    def ws_obsidian(_a: dict[str, Any]) -> dict[str, Any]:
+        window._on_obsidian_icon()
+        _log(window, "workspace.open_obsidian", True)
+        return ok_result("workspace.open_obsidian", {"workspace_mode": window._workspace_mode})
+
+    def ws_email(_a: dict[str, Any]) -> dict[str, Any]:
+        window._on_email_icon()
+        _log(window, "workspace.open_email", True)
+        return ok_result("workspace.open_email", {"workspace_mode": window._workspace_mode})
+
+    def ws_mobile(_a: dict[str, Any]) -> dict[str, Any]:
+        window._on_mobile_icon()
+        _log(window, "workspace.open_mobile", True)
+        return ok_result(
+            "workspace.open_mobile",
+            {"emulator_running": _emulator_running()},
+        )
+
+    def ws_stub(name: str) -> HandlerFn:
+        def _h(_a: dict[str, Any]) -> dict[str, Any]:
+            return err_result(name, "not implemented in Iris UI yet (준비 중)")
+
+        return _h
+
+    reg.register(
+        "workspace.open_assistant",
+        ws_assistant,
+        summary="Open assistant / home workspace (orb + chat)",
+    )
+    reg.register(
+        "workspace.open_obsidian",
+        ws_obsidian,
+        summary="Open Iris Wiki / Obsidian workspace",
+    )
+    reg.register(
+        "workspace.open_email",
+        ws_email,
+        summary="Open email workspace inbox",
+    )
+    reg.register(
+        "workspace.open_mobile",
+        ws_mobile,
+        summary="Launch Android emulator (mobile icon)",
+    )
+    for stub_id, label in (
+        ("workspace.open_instagram", "Instagram"),
+        ("workspace.open_discord", "Discord"),
+        ("workspace.open_kakao", "KakaoTalk"),
+        ("workspace.open_telegram", "Telegram"),
+    ):
+        reg.register(stub_id, ws_stub(stub_id), summary=f"{label} workspace (준비 중)", risk="low")
+
+    # --- UI dialogs ---
+    def ui_settings(_a: dict[str, Any]) -> dict[str, Any]:
+        window._open_settings_dialog()
+        _log(window, "ui.open_settings", True)
+        return ok_result("ui.open_settings", {})
+
+    def ui_profile(_a: dict[str, Any]) -> dict[str, Any]:
+        window._open_user_profile_dialog()
+        _log(window, "ui.open_user_profile", True)
+        return ok_result("ui.open_user_profile", {})
+
+    reg.register("ui.open_settings", ui_settings, summary="Open Iris settings dialog")
+    reg.register(
+        "ui.open_user_profile",
+        ui_profile,
+        summary="Open user profile dialog",
+    )
+
+    # --- settings values (direct, no dialog) ---
+    def settings_get(_a: dict[str, Any]) -> dict[str, Any]:
+        s = window._settings
+        return ok_result(
+            "settings.get",
+            {
+                "ollama_base_url": s.ollama_base_url,
+                "ollama_model": s.ollama_model,
+                "hermes_enabled": s.hermes_enabled,
+                "hermes_command": s.hermes_command,
+                "hermes_base_url": s.hermes_base_url,
+                "hermes_api_key_set": bool(s.hermes_api_key),
+            },
+        )
+
+    def settings_set(args: dict[str, Any]) -> dict[str, Any]:
+        s = window._settings
+        if "hermes_api_key" in args and not bool(args.get("confirm")):
+            return err_result("settings.set", "confirm=true required to set hermes_api_key")
+        changed: list[str] = []
+        if "ollama_base_url" in args:
+            s.ollama_base_url = str(args["ollama_base_url"] or "").strip() or s.ollama_base_url
+            changed.append("ollama_base_url")
+        if "ollama_model" in args or "model" in args:
+            model = str(args.get("ollama_model") or args.get("model") or "").strip()
+            if model:
+                window._apply_selected_model(model, persist=True)
+                changed.append("ollama_model")
+        if "hermes_enabled" in args:
+            s.hermes_enabled = bool(args["hermes_enabled"])
+            changed.append("hermes_enabled")
+        if "hermes_command" in args:
+            s.hermes_command = str(args["hermes_command"] or "").strip() or s.hermes_command
+            changed.append("hermes_command")
+        if "hermes_base_url" in args:
+            s.hermes_base_url = str(args["hermes_base_url"] or "").strip() or s.hermes_base_url
+            changed.append("hermes_base_url")
+        if "hermes_api_key" in args:
+            s.hermes_api_key = str(args.get("hermes_api_key") or "")
+            changed.append("hermes_api_key")
+        window._status_header.set_model_name(s.model_name or s.ollama_model or "(unset)")
+        window._refresh_hermes_health()
+        _log(window, "settings.set", True)
+        return ok_result("settings.set", {"changed": changed})
+
+    reg.register("settings.get", settings_get, summary="Get Ollama/Hermes connection settings (no secret values)")
+    reg.register(
+        "settings.set",
+        settings_set,
+        summary="Set Ollama/Hermes settings; hermes_api_key needs confirm=true",
+        risk="high",
+        confirm_required=False,  # key path checks confirm itself
+    )
+
+    # --- email ---
+    def email_list(_a: dict[str, Any]) -> dict[str, Any]:
+        items = [
+            {"id": a.id, "address": a.address, "label": a.label}
+            for a in load_email_accounts(window._db)
+        ]
+        return ok_result("email.list_accounts", {"accounts": items})
+
+    def email_set_account(args: dict[str, Any]) -> dict[str, Any]:
+        account_id = str(args.get("account_id") or "").strip()
+        if not account_id or find_account(window._db, account_id) is None:
+            return err_result("email.set_account", "valid account_id required")
+        if window._workspace_mode != "email":
+            window._on_email_icon()
+        window._on_email_account_changed(account_id)
+        _log(window, "email.set_account", True)
+        return ok_result("email.set_account", {"account_id": account_id})
+
+    def email_select_folder(args: dict[str, Any]) -> dict[str, Any]:
+        name = str(args.get("folder") or args.get("name") or "받은편지함").strip()
+        if window._workspace_mode != "email":
+            window._on_email_icon()
+        window._on_email_folder_selected(name)
+        _log(window, "email.select_folder", True)
+        return ok_result("email.select_folder", {"folder": name})
+
+    def email_set_category(args: dict[str, Any]) -> dict[str, Any]:
+        index = int(args.get("index") or 0)
+        if window._workspace_mode != "email":
+            window._on_email_icon()
+        window._on_email_category(index)
+        _log(window, "email.set_category", True)
+        return ok_result("email.set_category", {"index": index})
+
+    def email_refresh(_a: dict[str, Any]) -> dict[str, Any]:
+        if window._workspace_mode != "email":
+            window._on_email_icon()
+        else:
+            window._refresh_email_inbox()
+        _log(window, "email.refresh_inbox", True)
+        return ok_result("email.refresh_inbox", {})
+
+    def email_open_message(args: dict[str, Any]) -> dict[str, Any]:
+        uid = str(args.get("uid") or "").strip()
+        if not uid:
+            return err_result("email.open_message", "uid required")
+        if window._workspace_mode != "email":
+            window._on_email_icon()
+        window._load_email_message(uid)
+        _log(window, "email.open_message", True)
+        return ok_result("email.open_message", {"uid": uid})
+
+    def email_open_compose(_a: dict[str, Any]) -> dict[str, Any]:
+        if window._workspace_mode != "email":
+            window._on_email_icon()
+        window._open_email_compose()
+        _log(window, "email.open_compose", True)
+        return ok_result("email.open_compose", {})
+
+    def email_send(args: dict[str, Any]) -> dict[str, Any]:
+        to = str(args.get("to") or "").strip()
+        subject = str(args.get("subject") or "")
+        body = str(args.get("body") or "")
+        if not to:
+            return err_result("email.send", "to required")
+        if window._workspace_mode != "email":
+            window._on_email_icon()
+        window._send_email(to, subject, body)
+        _log(window, "email.send", True)
+        return ok_result("email.send", {"queued": True, "to": to})
+
+    def email_add_account(args: dict[str, Any]) -> dict[str, Any]:
+        address = str(args.get("address") or "").strip()
+        password = str(args.get("password") or "")
+        label = str(args.get("label") or "").strip()
+        if not address or not password:
+            return err_result("email.add_account", "address and password required")
+        acc = add_email_account(window._db, address, password, label=label)
+        _log(window, "email.add_account", True)
+        return ok_result(
+            "email.add_account",
+            {"id": acc.id, "address": acc.address, "label": acc.label},
+        )
+
+    def email_remove_account(args: dict[str, Any]) -> dict[str, Any]:
+        account_id = str(args.get("account_id") or "").strip()
+        if not account_id:
+            return err_result("email.remove_account", "account_id required")
+        remove_email_account(window._db, account_id)
+        if window._selected_email_account_id == account_id:
+            window._selected_email_account_id = ""
+        _log(window, "email.remove_account", True)
+        return ok_result("email.remove_account", {"account_id": account_id})
+
+    reg.register("email.list_accounts", email_list, summary="List email accounts (id/address/label, no passwords)")
+    reg.register("email.set_account", email_set_account, summary="Select email account by id")
+    reg.register(
+        "email.select_folder",
+        email_select_folder,
+        summary="Select mailbox folder display name (받은편지함 등)",
+    )
+    reg.register("email.set_category", email_set_category, summary="Gmail category tab index")
+    reg.register("email.refresh_inbox", email_refresh, summary="Refresh email inbox")
+    reg.register("email.open_message", email_open_message, summary="Open email message by uid")
+    reg.register("email.open_compose", email_open_compose, summary="Open email compose UI")
+    reg.register(
+        "email.send",
+        email_send,
+        summary="Send email (to, subject, body) — requires confirm=true",
+        risk="high",
+        confirm_required=True,
+    )
+    reg.register(
+        "email.add_account",
+        email_add_account,
+        summary="Add email account (address, password, label) — requires confirm=true",
+        risk="high",
+        confirm_required=True,
+    )
+    reg.register(
+        "email.remove_account",
+        email_remove_account,
+        summary="Remove email account by id — requires confirm=true",
+        risk="high",
+        confirm_required=True,
+    )
+
+    # --- wiki ---
+    def wiki_list(_a: dict[str, Any]) -> dict[str, Any]:
+        notes = [
+            {"rel_path": n.rel_path, "title": n.title, "folder": n.folder, "source": n.source}
+            for n in window._iris_wiki.list_notes()
+        ]
+        return ok_result("wiki.list_notes", {"notes": notes, "count": len(notes)})
+
+    def wiki_open(args: dict[str, Any]) -> dict[str, Any]:
+        rel = str(args.get("rel_path") or args.get("path") or "").strip()
+        if not rel:
+            return err_result("wiki.open_note", "rel_path required")
+        window._on_obsidian_icon()
+        window._obsidian_page.show_note(rel)
+        window._left_sidebar.obsidian_detail.reload()
+        _log(window, "wiki.open_note", True)
+        return ok_result("wiki.open_note", {"rel_path": rel})
+
+    def wiki_reload(_a: dict[str, Any]) -> dict[str, Any]:
+        if window._workspace_mode != "obsidian":
+            window._on_obsidian_icon()
+        else:
+            window._left_sidebar.obsidian_detail.reload()
+            window._obsidian_page.reload_graph()
+        _log(window, "wiki.reload", True)
+        return ok_result("wiki.reload", {})
+
+    reg.register("wiki.list_notes", wiki_list, summary="List Iris Wiki note paths")
+    reg.register(
+        "wiki.open_note",
+        wiki_open,
+        summary="Open Iris Wiki workspace and show note by rel_path",
+    )
+    reg.register("wiki.reload", wiki_reload, summary="Reload Iris Wiki graph/detail")
+
+    # --- chat / activity / notify ---
+    def chat_set_model(args: dict[str, Any]) -> dict[str, Any]:
+        model = str(args.get("model") or "").strip()
+        if not model:
+            return err_result("chat.set_model", "model required")
+        window._apply_selected_model(model, persist=True)
+        combo = getattr(window._chat, "_model_combo", None)
+        if combo is not None:
+            for i in range(combo.count()):
+                if combo.itemData(i) == model or combo.itemText(i) == model:
+                    combo.blockSignals(True)
+                    combo.setCurrentIndex(i)
+                    combo.blockSignals(False)
+                    break
+        _log(window, "chat.set_model", True)
+        return ok_result("chat.set_model", {"model": model})
+
+    def chat_clear_history(_a: dict[str, Any]) -> dict[str, Any]:
+        window._history.clear()
+        _log(window, "chat.clear_history", True)
+        return ok_result("chat.clear_history", {"history_len": 0})
+
+    def activity_log(args: dict[str, Any]) -> dict[str, Any]:
+        text = str(args.get("text") or args.get("message") or "").strip()
+        if not text:
+            return err_result("activity.log", "text required")
+        window._live_activity.append_instant_line(text)
+        return ok_result("activity.log", {})
+
+    def notify_add(args: dict[str, Any]) -> dict[str, Any]:
+        title = str(args.get("title") or "Iris").strip()
+        message = str(args.get("message") or args.get("text") or "").strip()
+        category = str(args.get("category") or "INFO").strip() or "INFO"
+        window._notes.try_add_alert(
+            target_id=0,
+            category=category,
+            title=title,
+            message=message,
+            focus_hint="",
+            event_id=0,
+        )
+        return ok_result("notify.add_alert", {"title": title})
+
+    reg.register(
+        "chat.set_model",
+        chat_set_model,
+        summary="Select chat/Ollama model and sync Hermes",
+        risk="medium",
+    )
+    reg.register(
+        "chat.clear_history",
+        chat_clear_history,
+        summary="Clear Iris assistant chat history (not UI transcript)",
+        risk="medium",
+        confirm_required=True,
+    )
+    reg.register("activity.log", activity_log, summary="Append Live Activity line")
+    reg.register("notify.add_alert", notify_add, summary="Add notification alert row")
+
+    # catalog collision self-check at bind time
+    names = [a["name"] for a in reg.catalog()]
+    assert len(names) == len(set(names)), "duplicate control actions"
+
+
+def _emulator_running() -> bool:
+    try:
+        from iris.system.android_emulator import is_emulator_running
+
+        return bool(is_emulator_running())
+    except Exception:
+        return False
+
+
+# typing alias for stub factory
+HandlerFn = Callable[[dict[str, Any]], dict[str, Any]]

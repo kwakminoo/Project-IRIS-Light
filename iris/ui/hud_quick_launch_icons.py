@@ -25,15 +25,12 @@ def _fill(active: bool) -> QBrush:
 
 
 def _paint_ide(p: QPainter, active: bool) -> None:
-    pen = _stroke(active)
-    p.setPen(pen)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawLine(7, 8, 4, 11)
-    p.drawLine(4, 11, 7, 14)
-    p.drawLine(15, 8, 18, 11)
-    p.drawLine(18, 11, 15, 14)
-    p.setFont(QFont(TOKENS.font_mono.split(",")[0].strip('"'), 9, QFont.Weight.Bold))
-    p.drawText(6, 17, ";")
+    """우상단 WinCtrl '</>' 과 같은 코드 브래킷 마크."""
+    color = QColor(TOKENS.neon_cyan if active else TOKENS.text_accent)
+    p.setPen(color)
+    font = QFont(TOKENS.font_mono.split(",")[0].strip('"'), 8, QFont.Weight.Bold)
+    p.setFont(font)
+    p.drawText(0, 0, HUD_ICON_PX, HUD_ICON_PX, int(Qt.AlignmentFlag.AlignCenter), "</>")
 
 
 def _paint_email(p: QPainter, active: bool) -> None:

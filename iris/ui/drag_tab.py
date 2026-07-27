@@ -33,6 +33,7 @@ class DragTab(QWidget):
     settings_clicked = pyqtSignal()
     minimize_clicked = pyqtSignal()
     maximize_clicked = pyqtSignal()
+    ide_toggle_clicked = pyqtSignal()
 
     def __init__(self, parent_window: QWidget) -> None:
         super().__init__()
@@ -77,17 +78,28 @@ class DragTab(QWidget):
         ctrl_row.setSpacing(4)
         ctrl_row.setSizeConstraint(QHBoxLayout.SizeConstraint.SetFixedSize)
 
+        # companion(Iris≈20%)에서만 표시 — 일반 모드는 좌측 하단 IDE로 진입
+        self._btn_ide = _win_ctrl_button("</>", "일반 레이아웃으로 복귀")
+        self._btn_ide.hide()
         self._btn_profile = _win_ctrl_button("👤", "사용자 프로필")
         self._btn_settings = _win_ctrl_button("⚙", "설정")
         self._btn_min = _win_ctrl_button("−", "창 내리기")
         self._btn_max = _win_ctrl_button("□", "전체 화면")
         self._btn_close = _win_ctrl_button("×", "닫기")
 
-        for btn in (self._btn_profile, self._btn_settings, self._btn_min, self._btn_max, self._btn_close):
+        for btn in (
+            self._btn_ide,
+            self._btn_profile,
+            self._btn_settings,
+            self._btn_min,
+            self._btn_max,
+            self._btn_close,
+        ):
             ctrl_row.addWidget(btn, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         lay.addLayout(ctrl_row)
 
+        self._btn_ide.clicked.connect(self.ide_toggle_clicked.emit)
         self._btn_min.clicked.connect(self.minimize_clicked.emit)
         self._btn_max.clicked.connect(self.maximize_clicked.emit)
         self._btn_close.clicked.connect(parent_window.close)
@@ -95,18 +107,31 @@ class DragTab(QWidget):
         self._btn_settings.clicked.connect(self.settings_clicked.emit)
         self._drag_pos = None
 
+    def set_ide_companion_active(self, active: bool) -> None:
+        """Companion(Iris≈20%): 상태행 숨김, IDE 버튼 표시, 최소화 숨김."""
+        self._status_column.setVisible(not active)
+        self._btn_ide.setVisible(active)
+        self._btn_min.setVisible(not active)
+        self._btn_ide.setToolTip("일반 레이아웃으로 복귀" if active else "IDE Companion")
+        self._btn_ide.setProperty("companionActive", active)
+        self._btn_ide.style().unpolish(self._btn_ide)
+        self._btn_ide.style().polish(self._btn_ide)
+        # 좁은 폭에서 타이틀이 컨트롤을 밀지 않게
+        self._title.setStyleSheet(
+            "font-size: 18px; letter-spacing: 2px;" if active else ""
+        )
+
     def place_status_rows(self, primary: QWidget, backend: QWidget) -> None:
         """STATE/MODEL/TTS + 백엔드 — 단일 3열 그리드 또는 2행 블록."""
+        # ponytail: setParent(None) 금지 — 숨긴 조상에서 떼면 top-level 창이 됨
         while self._status_column_lay.count():
             item = self._status_column_lay.takeAt(0)
             child = item.widget()
             if child is not None:
-                child.setParent(None)
-        primary.setParent(self._status_column)
+                child.hide()
         self._status_column_lay.addWidget(primary)
         primary.show()
         if backend.maximumHeight() > 0 and backend.isVisible():
-            backend.setParent(self._status_column)
             self._status_column_lay.addWidget(backend)
             backend.show()
         self._status_column.show()

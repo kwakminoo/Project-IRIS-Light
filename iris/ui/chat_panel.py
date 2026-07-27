@@ -3,22 +3,25 @@
 from __future__ import annotations
 
 import html
+import os
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QPalette, QTextCursor
+from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QPalette, QTextBlockFormat, QTextCursor
 from PyQt6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLineEdit,
-    QPushButton,
     QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from iris.core.activity_privacy import prepare_chat_text
 from iris.ui.chat_display import (
     TYPING_CHARS_PER_TICK,
     TYPING_INTERVAL_MS,
@@ -33,19 +36,138 @@ from iris.ui.chat_display import (
     typing_target_index,
     visible_typing_text,
 )
+from iris.ui.composer_plus_menu import ComposerPlusButton, ComposerPlusMenu, ComposerSendButton
+from iris.ui.context_ring import ContextRingWidget
 from iris.ui.mic_waveform_bar import MicWaveformBar
 
 if TYPE_CHECKING:
     from iris.infrastructure.ollama_client import OllamaModelInfo
 
 
+_IMAGE_FILTER = (
+    "Images & Videos (*.png *.jpg *.jpeg *.gif *.webp *.bmp *.mp4 *.webm *.mov);;"
+    "All Files (*.*)"
+)
+_FILE_FILTER = "All Files (*.*)"
+
+
+def _paste_dir() -> Path:
+    d = Path.home() / ".iris-light" / "paste"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _save_clipboard_image(image: QImage) -> str | None:
+    if image.isNull():
+        return None
+    name = f"paste_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.png"
+    path = _paste_dir() / name
+    try:
+        if image.save(str(path), "PNG"):
+            return str(path.resolve())
+    except OSError:
+        return None
+    return None
+
+
+def _paths_from_mime(mime) -> list[str]:
+    if mime is None:
+        return []
+    out: list[str] = []
+    if mime.hasUrls():
+        for url in mime.urls():
+            if url.isLocalFile():
+                p = url.toLocalFile().strip()
+                if p:
+                    out.append(p)
+    return out
+
+
+def _paths_from_clipboard() -> list[str]:
+    """클립보드의 파일 URL 또는 이미지를 로컬 경로 목록으로."""
+    cb = QGuiApplication.clipboard()
+    if cb is None:
+        return []
+    mime = cb.mimeData()
+    paths = _paths_from_mime(mime)
+    if paths:
+        return paths
+    img = cb.image()
+    if not img.isNull():
+        saved = _save_clipboard_image(img)
+        return [saved] if saved else []
+    if mime is not None and mime.hasImage():
+        data = mime.imageData()
+        if isinstance(data, QImage) and not data.isNull():
+            saved = _save_clipboard_image(data)
+            return [saved] if saved else []
+    return []
+
+
+def _mime_has_attachable(mime) -> bool:
+    if mime is None:
+        return False
+    if mime.hasUrls():
+        return any(u.isLocalFile() for u in mime.urls())
+    return bool(mime.hasImage())
+
+
+class ChatComposerInput(QLineEdit):
+    """텍스트 + 클립보드 이미지 붙여넣기 + 파일 드래그앤드롭."""
+
+    files_attached = pyqtSignal(list)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    def paste(self) -> None:
+        paths = _paths_from_clipboard()
+        if paths:
+            self.files_attached.emit(paths)
+            return
+        super().paste()
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if _mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if _mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        mime = event.mimeData()
+        paths = _paths_from_mime(mime)
+        if not paths and mime is not None and mime.hasImage():
+            data = mime.imageData()
+            if isinstance(data, QImage) and not data.isNull():
+                saved = _save_clipboard_image(data)
+                if saved:
+                    paths = [saved]
+        if paths:
+            self.files_attached.emit(paths)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
+
+
 class _ChatInputBar(QWidget):
-    """입력칸 안쪽 우측에 모델 선택 + 전송 버튼."""
+    """입력칸 안쪽: + | 입력 | 모델 | 전송."""
+
+    files_attached = pyqtSignal(list)  # list[str] paths
+    skill_inserted = pyqtSignal(str)
+    mcp_inserted = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("ChatInputBar")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAcceptDrops(True)
         self.setStyleSheet(
             """
             QWidget#ChatInputBar {
@@ -60,6 +182,7 @@ class _ChatInputBar(QWidget):
 
         self._input_shell = QWidget()
         self._input_shell.setObjectName("ChatInputShell")
+        self._input_shell.setAcceptDrops(True)
         self._input_shell.setStyleSheet(
             """
             QWidget#ChatInputShell {
@@ -69,10 +192,18 @@ class _ChatInputBar(QWidget):
             """
         )
         shell_row = QHBoxLayout(self._input_shell)
-        shell_row.setContentsMargins(10, 2, 4, 2)
+        shell_row.setContentsMargins(6, 2, 4, 2)
         shell_row.setSpacing(6)
 
-        self.input = QLineEdit()
+        self.plus_button = ComposerPlusButton()
+        self._plus_menu = ComposerPlusMenu(self)
+        self.plus_button.clicked.connect(self._toggle_plus_menu)
+        self._plus_menu.add_photos.connect(self._pick_photos)
+        self._plus_menu.add_files.connect(self._pick_files)
+        self._plus_menu.skill_chosen.connect(self._on_skill)
+        self._plus_menu.mcp_chosen.connect(self._on_mcp)
+
+        self.input = ChatComposerInput()
         self.input.setObjectName("ChatInput")
         self.input.setPlaceholderText("Iris에게 메시지를 입력하세요…")
         self.input.setStyleSheet(
@@ -85,28 +216,28 @@ class _ChatInputBar(QWidget):
             }
             """
         )
+        self.input.files_attached.connect(self._on_paths_attached)
 
         self.model_combo = QComboBox()
         self.model_combo.setObjectName("ChatModelCombo")
         self.model_combo.setToolTip("Ollama 모델 선택")
         self.model_combo.setMinimumWidth(120)
-        self.model_combo.setMaximumWidth(260)
+        self.model_combo.setMaximumWidth(240)
         self.model_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.model_combo.addItem("(모델 불러오는 중…)", "")
         self.model_combo.setStyleSheet(
             """
             QComboBox#ChatModelCombo {
-                background-color: rgba(15, 23, 42, 0.85);
+                background: transparent;
                 color: #e2e8f0;
-                border: 1px solid rgba(56, 189, 248, 0.28);
-                border-radius: 8px;
-                padding: 2px 8px;
+                border: none;
+                padding: 2px 4px;
                 font-size: 11px;
-                min-height: 26px;
+                min-height: 22px;
             }
             QComboBox#ChatModelCombo::drop-down {
                 border: none;
-                width: 18px;
+                width: 16px;
             }
             QComboBox#ChatModelCombo QAbstractItemView {
                 background-color: #0f172a;
@@ -117,40 +248,122 @@ class _ChatInputBar(QWidget):
             """
         )
 
-        self.send_button = QPushButton("↑")
-        self.send_button.setObjectName("ChatSendButton")
-        self.send_button.setToolTip("전송")
-        self.send_button.setFixedSize(28, 28)
-        self.send_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.send_button.setEnabled(False)
-        self.send_button.setStyleSheet(
+        self.context_ring = ContextRingWidget()
+
+        self._model_shell = QWidget()
+        self._model_shell.setObjectName("ChatModelShell")
+        self._model_shell.setStyleSheet(
             """
-            QPushButton#ChatSendButton {
-                background-color: #4f46e5;
-                color: #ffffff;
-                border: none;
-                border-radius: 14px;
-                font-size: 14px;
-                font-weight: 700;
-                padding: 0;
-            }
-            QPushButton#ChatSendButton:hover:enabled {
-                background-color: #6366f1;
-            }
-            QPushButton#ChatSendButton:pressed:enabled {
-                background-color: #4338ca;
-            }
-            QPushButton#ChatSendButton:disabled {
-                background-color: #1e293b;
-                color: #475569;
+            QWidget#ChatModelShell {
+                background-color: rgba(15, 23, 42, 0.85);
+                border: 1px solid rgba(56, 189, 248, 0.28);
+                border-radius: 8px;
             }
             """
         )
+        model_row = QHBoxLayout(self._model_shell)
+        model_row.setContentsMargins(6, 2, 4, 2)
+        model_row.setSpacing(4)
+        model_row.addWidget(self.context_ring, 0, Qt.AlignmentFlag.AlignVCenter)
+        model_row.addWidget(self.model_combo, 1, Qt.AlignmentFlag.AlignVCenter)
 
+        self.send_button = ComposerSendButton()
+
+        shell_row.addWidget(self.plus_button, 0, Qt.AlignmentFlag.AlignVCenter)
         shell_row.addWidget(self.input, 1)
-        shell_row.addWidget(self.model_combo, 0, Qt.AlignmentFlag.AlignVCenter)
+        shell_row.addWidget(self._model_shell, 0, Qt.AlignmentFlag.AlignVCenter)
         shell_row.addWidget(self.send_button, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self._input_shell, 1)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if _mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if _mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        mime = event.mimeData()
+        paths = _paths_from_mime(mime)
+        if not paths and mime is not None and mime.hasImage():
+            data = mime.imageData()
+            if isinstance(data, QImage) and not data.isNull():
+                saved = _save_clipboard_image(data)
+                if saved:
+                    paths = [saved]
+        if paths:
+            self._on_paths_attached(paths)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
+
+    def _toggle_plus_menu(self) -> None:
+        if self._plus_menu.isVisible():
+            self._plus_menu.hide()
+            return
+        # 열 때마다 스킬/MCP 목록 갱신
+        self._plus_menu.deleteLater()
+        self._plus_menu = ComposerPlusMenu(self)
+        self._plus_menu.add_photos.connect(self._pick_photos)
+        self._plus_menu.add_files.connect(self._pick_files)
+        self._plus_menu.skill_chosen.connect(self._on_skill)
+        self._plus_menu.mcp_chosen.connect(self._on_mcp)
+        self._plus_menu.popup_above(self.plus_button)
+
+    def _pick_photos(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add Photos & Videos",
+            "",
+            _IMAGE_FILTER,
+        )
+        if paths:
+            self._on_paths_attached(paths)
+
+    def _pick_files(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add Files",
+            "",
+            _FILE_FILTER,
+        )
+        if paths:
+            self._on_paths_attached(paths)
+
+    def _on_paths_attached(self, paths: list[str]) -> None:
+        clean = [str(p).strip() for p in paths if str(p).strip()]
+        if not clean:
+            return
+        self._insert_paths(clean)
+        self.files_attached.emit(clean)
+
+    def _insert_paths(self, paths: list[str]) -> None:
+        bits = " ".join(f'"{p}"' for p in paths)
+        cur = self.input.text()
+        sep = "" if not cur or cur.endswith(" ") else " "
+        self.input.setText(cur + sep + bits)
+        self.input.setFocus()
+
+    def _on_skill(self, name: str) -> None:
+        token = f"/{name} "
+        cur = self.input.text()
+        sep = "" if not cur or cur.endswith(" ") else " "
+        self.input.setText(cur + sep + token)
+        self.input.setFocus()
+        self.skill_inserted.emit(name)
+
+    def _on_mcp(self, name: str) -> None:
+        token = f"@mcp:{name} "
+        cur = self.input.text()
+        sep = "" if not cur or cur.endswith(" ") else " "
+        self.input.setText(cur + sep + token)
+        self.input.setFocus()
+        self.mcp_inserted.emit(name)
 
 
 class _ChatInputArea(QWidget):
@@ -160,6 +373,7 @@ class _ChatInputArea(QWidget):
         super().__init__(parent)
         self.setObjectName("ChatInputArea")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAcceptDrops(True)
         self.setStyleSheet(
             """
             QWidget#ChatInputArea {
@@ -190,10 +404,40 @@ class _ChatInputArea(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setMinimumHeight(self.input_bar.sizeHint().height() + self.waveform.minimumHeight())
 
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if _mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if _mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        mime = event.mimeData()
+        paths = _paths_from_mime(mime)
+        if not paths and mime is not None and mime.hasImage():
+            data = mime.imageData()
+            if isinstance(data, QImage) and not data.isNull():
+                saved = _save_clipboard_image(data)
+                if saved:
+                    paths = [saved]
+        if paths:
+            self.input_bar._on_paths_attached(paths)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
+
 
 class ChatPanel(QWidget):
     send_clicked = pyqtSignal(str)
     model_changed = pyqtSignal(str)
+    files_attached = pyqtSignal(list)
+    skill_inserted = pyqtSignal(str)
+    mcp_inserted = pyqtSignal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -246,11 +490,18 @@ class ChatPanel(QWidget):
         self._input_area = _ChatInputArea()
         self._input = self._input_area.input_bar.input
         self._model_combo = self._input_area.input_bar.model_combo
+        self._context_ring = self._input_area.input_bar.context_ring
         self._waveform = self._input_area.waveform
+        self._context_limit = 128_000
+        self._context_used = 0
         self._input.returnPressed.connect(self._emit_send)
         self._input.textChanged.connect(self._on_input_changed)
         self._input_area.input_bar.send_button.clicked.connect(self._emit_send)
         self._model_combo.currentIndexChanged.connect(self._on_model_index_changed)
+        bar = self._input_area.input_bar
+        bar.files_attached.connect(self.files_attached.emit)
+        bar.skill_inserted.connect(self.skill_inserted.emit)
+        bar.mcp_inserted.connect(self.mcp_inserted.emit)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -297,8 +548,13 @@ class ChatPanel(QWidget):
                 if runtime:
                     entries.append((display_name_from_runtime(runtime), runtime))
 
-        for label, runtime in entries:
+        from iris.infrastructure.model_descriptions import describe_model
+
+        for i, (label, runtime) in enumerate(entries):
             self._model_combo.addItem(label, runtime)
+            desc = describe_model(runtime)
+            if desc:
+                self._model_combo.setItemData(i, desc, Qt.ItemDataRole.ToolTipRole)
 
         pick = selected.strip()
         idx = 0
@@ -309,6 +565,7 @@ class ChatPanel(QWidget):
                     break
         self._model_combo.setCurrentIndex(idx)
         self._model_combo.blockSignals(False)
+        self._update_model_tooltip()
         self.model_changed.emit(self.current_model())
 
     def set_model_status(self, text: str) -> None:
@@ -318,7 +575,21 @@ class ChatPanel(QWidget):
         self._model_combo.addItem(text, "")
         self._model_combo.blockSignals(False)
 
+    def set_context_usage(self, used: int, limit: int) -> None:
+        """모델 선택 박스 안 원형 컨텍스트 게이지 갱신."""
+        self._context_used = max(0, int(used))
+        self._context_limit = max(1, int(limit))
+        self._context_ring.set_usage(self._context_used, self._context_limit)
+
+    def _update_model_tooltip(self) -> None:
+        """콤보 툴팁을 현재 선택 모델의 설명으로 갱신(없으면 기본 안내)."""
+        from iris.infrastructure.model_descriptions import describe_model
+
+        desc = describe_model(self.current_model())
+        self._model_combo.setToolTip(desc or "Ollama 모델 선택")
+
     def _on_model_index_changed(self, _index: int) -> None:
+        self._update_model_tooltip()
         self.model_changed.emit(self.current_model())
 
     def _scroll_log_to_bottom(self, *, deferred: bool = False) -> None:
@@ -383,16 +654,35 @@ class ChatPanel(QWidget):
         """Iris 등 — 타이핑 효과로 출력 (TTS 동기화 없음)."""
         self.append_message_typed(who, text, speech_sync=False)
 
+    def _begin_chat_message_cursor(self) -> QTextCursor:
+        """새 메시지 블록을 문서 끝·좌측 정렬로 시작.
+
+        직전 Iris 마크다운(<ul>/<li>)이 남긴 list/indent를 끊지 않으면
+        다음 You/Iris 줄이 들여쓰기된 채 이어진다.
+        """
+        cursor = self._log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        fmt = QTextBlockFormat()
+        fmt.setIndent(0)
+        fmt.setTextIndent(0.0)
+        fmt.setLeftMargin(0.0)
+        if self._log.toPlainText().strip():
+            cursor.insertBlock(fmt)
+        else:
+            cursor.setBlockFormat(fmt)
+        lst = cursor.currentList()
+        if lst is not None:
+            lst.remove(cursor.block())
+            cursor.setBlockFormat(fmt)
+        return cursor
+
     def append_message_instant(self, who: str, text: str) -> None:
         """사용자 입력 등 — 타이핑 없이 본문 전체를 즉시 표시."""
         self.finish_typing()
-        body = normalize_chat_body(who, text)
+        body = normalize_chat_body(who, prepare_chat_text(text))
         if not body:
             return
-        cursor = self._log.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        if self._log.toPlainText().strip():
-            cursor.insertBlock()
+        cursor = self._begin_chat_message_cursor()
         cursor.insertHtml(f"<b>{html.escape(who)}</b>: ")
         if who.strip().lower() == "iris":
             cursor.insertHtml(markdown_to_chat_html(body))
@@ -406,10 +696,7 @@ class ChatPanel(QWidget):
         self.finish_typing()
         self._stream_active = True
         self._stream_who = who
-        cursor = self._log.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        if self._log.toPlainText().strip():
-            cursor.insertBlock()
+        cursor = self._begin_chat_message_cursor()
         cursor.insertHtml(f"<b>{html.escape(who)}</b>: ")
         self._stream_block_start = cursor.position()
         self._typing_body_start = cursor.position()
@@ -425,6 +712,7 @@ class ChatPanel(QWidget):
 
     def append_stream_chunk(self, text: str) -> None:
         """스트리밍 청크 — speech_sync면 버퍼만, 아니면 누적 본문을 즉시 표시."""
+        text = prepare_chat_text(text)
         if not text:
             return
         if not self._stream_active:
@@ -437,6 +725,8 @@ class ChatPanel(QWidget):
 
     def end_stream_message(self, final_text: str | None = None) -> None:
         """스트림 종료 — 정규화 본문으로 버퍼 확정 (화면 재삽입 없음)."""
+        if final_text is not None:
+            final_text = prepare_chat_text(final_text)
         if not self._stream_active:
             if final_text:
                 self.append_message("Iris", final_text)
@@ -460,11 +750,8 @@ class ChatPanel(QWidget):
     ) -> None:
         """한 글자씩 표시. Iris + speech_sync면 TTS 재생 시작 후 sync_typing_to_speech 호출."""
         self.finish_typing()
-        body = normalize_chat_body(who, text)
-        cursor = self._log.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        if self._log.toPlainText().strip():
-            cursor.insertBlock()
+        body = normalize_chat_body(who, prepare_chat_text(text))
+        cursor = self._begin_chat_message_cursor()
         cursor.insertHtml(f"<b>{html.escape(who)}</b>: ")
         self._typing_body_start = cursor.position()
         self._typing_render_markdown = who.strip().lower() == "iris"
@@ -591,7 +878,7 @@ class ChatPanel(QWidget):
 
     def _finalize_typing_buffer(self, who: str, final_text: str) -> None:
         """스트림 종료 시 정규화 본문으로 버퍼 확정."""
-        body = normalize_chat_body(who, final_text)
+        body = normalize_chat_body(who, prepare_chat_text(final_text))
         old = self._typing_text
         self._typing_text = body
         if self._typing_index > len(body):

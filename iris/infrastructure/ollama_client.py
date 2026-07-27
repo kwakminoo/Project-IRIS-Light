@@ -60,6 +60,11 @@ def to_runtime_cloud_name(catalog_name: str) -> str:
     return f"{name}:cloud"
 
 
+def supports_tools_capability(capabilities: list[str] | None) -> bool:
+    """Ollama capabilities 목록에 'tools'가 있으면 도구 호출 가능."""
+    return "tools" in (capabilities or [])
+
+
 def _native_base(openai_or_native: str) -> str:
     """http://host:11434/v1 → http://host:11434"""
     raw = (openai_or_native or "").strip().rstrip("/")
@@ -131,20 +136,28 @@ class OllamaClient:
         out.sort(key=lambda x: x.catalog_name.lower())
         return out if out else self._local_cloud_fallback()
 
-    def list_free_cloud_models(self, *, probe: bool = True, max_workers: int = 6) -> list[OllamaModelInfo]:
+    def list_free_cloud_models(
+        self, *, probe: bool = True, tools_only: bool = True, max_workers: int = 6
+    ) -> list[OllamaModelInfo]:
         """
         무료 플랜에서 사용 가능한 클라우드 모델만 반환.
+        tools_only=True면 도구 호출(tool-calling) 지원 모델만 남긴다.
         probe=False면 카탈로그 전체(Pro 포함) 반환.
         """
         catalog = self.list_cloud_catalog()
         if not probe or not catalog:
             return catalog
 
+        def _ok(name: str) -> bool:
+            if not self.probe_model_available(name):
+                return False
+            if tools_only and not self.model_supports_tools(name):
+                return False
+            return True
+
         available: list[OllamaModelInfo] = []
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(self.probe_model_available, m.name): m for m in catalog
-            }
+            futures = {pool.submit(_ok, m.name): m for m in catalog}
             for fut in as_completed(futures):
                 model = futures[fut]
                 try:
@@ -154,6 +167,45 @@ class OllamaClient:
                     pass
         available.sort(key=lambda x: x.catalog_name.lower())
         return available if available else catalog
+
+    def show_model(self, runtime_name: str, *, timeout_sec: float = 15.0) -> dict[str, Any]:
+        """POST /api/show — capabilities·model_info."""
+        payload = {"model": runtime_name}
+        req = Request(
+            f"{self.base_url}/api/show",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=timeout_sec) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data if isinstance(data, dict) else {}
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+            return {}
+
+    def model_context_length(self, runtime_name: str, *, default: int = 128_000) -> int:
+        """모델 컨텍스트 윈도우 토큰 수 (/api/show model_info)."""
+        data = self.show_model(runtime_name)
+        info = data.get("model_info") if isinstance(data.get("model_info"), dict) else {}
+        for key, val in info.items():
+            if str(key).endswith(".context_length"):
+                try:
+                    n = int(val)
+                    if n > 0:
+                        return n
+                except (TypeError, ValueError):
+                    continue
+        return default
+
+    def model_supports_tools(self, runtime_name: str, *, timeout_sec: float = 15.0) -> bool:
+        """Ollama /api/show capabilities에 'tools'가 있으면 True.
+        조회 실패 시엔 관대하게 True — 일시적 오류로 모델을 임의로 숨기지 않는다."""
+        data = self.show_model(runtime_name, timeout_sec=timeout_sec)
+        if not data:
+            return True  # ponytail: 조회 실패는 배제 근거로 삼지 않음
+        return supports_tools_capability(data.get("capabilities"))
+
 
     def probe_model_available(self, runtime_name: str, *, timeout_sec: float = 25.0) -> bool:
         """구독 없이 호출 가능하면 True (무료 tier 포함)."""
@@ -190,6 +242,19 @@ class OllamaClient:
     def list_cloud_preferring(self) -> list[OllamaModelInfo]:
         """하위 호환 — 무료 클라우드 모델 우선."""
         return self.list_free_cloud_models(probe=True)
+
+    def list_chat_models(self, *, probe_cloud: bool = True) -> list[OllamaModelInfo]:
+        """로컬 설치 모델 + 무료 클라우드 병합 (로컬 우선). Hermes/Ollama 공용."""
+        local = self.list_models()
+        cloud = self.list_free_cloud_models(probe=probe_cloud)
+        seen: set[str] = set()
+        out: list[OllamaModelInfo] = []
+        for m in [*local, *cloud]:
+            if m.name in seen:
+                continue
+            seen.add(m.name)
+            out.append(m)
+        return out
 
     def stream_chat(
         self,
@@ -253,3 +318,12 @@ class OllamaClient:
             raise RuntimeError(f"Ollama HTTP {e.code}: {detail or e.reason}") from e
         except URLError as e:
             raise RuntimeError(f"Ollama 연결 실패: {e.reason}") from e
+
+
+if __name__ == "__main__":
+    # 도구 지원 필터 핵심 로직 자체 점검(네트워크 불필요).
+    assert supports_tools_capability(["completion", "tools", "thinking"]) is True
+    assert supports_tools_capability(["completion", "vision"]) is False
+    assert supports_tools_capability([]) is False
+    assert supports_tools_capability(None) is False
+    print("ollama_client self-check ok")

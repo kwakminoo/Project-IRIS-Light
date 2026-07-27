@@ -20,15 +20,37 @@ def api_root_from_base(base_url: str) -> str:
 
 
 def infer_hermes_provider(model: str) -> str:
-    """Iris Ollama 모델명 → Hermes provider 힌트."""
+    """Iris 모델명 → Hermes provider.
+
+    Iris 권장 스택은 로컬 Ollama(:11434)다. 클라우드 모델(`*:cloud`)도
+    Ollama가 프록시하므로 `ollama-cloud`(직접 ollama.com + OLLAMA_API_KEY)가
+    아니라 `ollama`로 둔다. `ollama-cloud`는 키 없으면 SSE finish_reason=error
+    + 빈 content가 되어 Iris에 '(빈 응답)'만 보인다.
+    """
     name = (model or "").strip().lower()
     if not name:
         return "auto"
     if "/" in name:
         return "openrouter"
-    if name.endswith("-cloud") or name.endswith(":cloud") or "ollama" in name:
-        return "ollama-cloud"
-    return "ollama-cloud"
+    return "ollama"
+
+
+def _sse_error_message(obj: dict[str, Any]) -> str:
+    """SSE chunk의 error / finish_reason=error 메시지 추출."""
+    err = obj.get("error")
+    if isinstance(err, dict):
+        msg = err.get("message") or err.get("code") or ""
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
+    if isinstance(err, str) and err.strip():
+        return err.strip()
+    for choice in obj.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        if str(choice.get("finish_reason") or "").lower() != "error":
+            continue
+        return "Hermes stream finished with error"
+    return ""
 
 
 class HermesClient:
@@ -133,12 +155,25 @@ class HermesClient:
             [self.command, "config", "set", "model.provider", provider],
             [self.command, "config", "set", "model.default", model],
         ]
+        # 로컬 Ollama 프록시 — cloud 모델도 :11434 경유
+        if provider == "ollama":
+            cmds.append(
+                [
+                    self.command,
+                    "config",
+                    "set",
+                    "model.base_url",
+                    "http://127.0.0.1:11434/v1",
+                ]
+            )
         try:
             for cmd in cmds:
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                     check=False,
                 )
@@ -198,6 +233,9 @@ class HermesClient:
                         obj = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    err_msg = _sse_error_message(obj)
+                    if err_msg:
+                        raise RuntimeError(f"Hermes: {err_msg}")
                     if event_name == "hermes.tool.progress":
                         msg = _format_tool_progress(obj)
                         if msg:
@@ -207,11 +245,24 @@ class HermesClient:
                         if not isinstance(choice, dict):
                             continue
                         delta = choice.get("delta") or {}
-                        if not isinstance(delta, dict):
-                            continue
-                        chunk = delta.get("content")
-                        if isinstance(chunk, str) and chunk:
-                            yield {"content": chunk, "tool_progress": None, "done": False}
+                        if isinstance(delta, dict):
+                            chunk = delta.get("content")
+                            if isinstance(chunk, str) and chunk:
+                                yield {
+                                    "content": chunk,
+                                    "tool_progress": None,
+                                    "done": False,
+                                }
+                        # 일부 응답은 delta 대신 message.content만 옴
+                        message = choice.get("message") or {}
+                        if isinstance(message, dict):
+                            full = message.get("content")
+                            if isinstance(full, str) and full:
+                                yield {
+                                    "content": full,
+                                    "tool_progress": None,
+                                    "done": False,
+                                }
                     if obj.get("type") == "hermes.tool.progress":
                         msg = _format_tool_progress(obj)
                         if msg:
@@ -245,3 +296,17 @@ def _format_tool_progress(obj: dict[str, Any]) -> str:
         if isinstance(val, str) and val.strip():
             return val.strip()
     return "tool running"
+
+
+if __name__ == "__main__":
+    assert infer_hermes_provider("gemma4:31b-cloud") == "ollama"
+    assert infer_hermes_provider("gemma4:26b") == "ollama"
+    assert infer_hermes_provider("anthropic/claude") == "openrouter"
+    assert "OLLAMA_API_KEY" in _sse_error_message(
+        {
+            "choices": [{"finish_reason": "error", "delta": {}}],
+            "error": {"message": "No usable credentials. Set OLLAMA_API_KEY."},
+        }
+    )
+    assert _sse_error_message({"choices": [{"delta": {"content": "hi"}}]}) == ""
+    print("hermes_client self-check ok")

@@ -8,7 +8,7 @@ from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPalette, QTextCursor
 from PyQt6.QtWidgets import QFrame, QLabel, QPlainTextEdit, QSizePolicy, QVBoxLayout, QWidget
 
-from iris.core.activity_privacy import prepare_activity_line
+from iris.core.activity_privacy import prepare_activity_line, strip_emoji
 from iris.ui.theme_tokens import TOKENS
 
 
@@ -119,29 +119,32 @@ class LiveActivityPanel(QWidget):
 
     def enqueue_typed_line(self, line: str) -> None:
         """메인 스레드에서만 호출 (Relay 시그널 슬롯)."""
-        if not line:
+        safe = prepare_activity_line(line) if line else ""
+        if not safe:
             return
-        self._queue.append(line)
+        self._queue.append(safe)
         if not self._timer.isActive():
             self._timer.start()
 
     def append_instant_line(self, line: str) -> None:
         """한 줄을 즉시 추가 (줄바꿈 포함)."""
-        if not line:
+        safe = prepare_activity_line(line) if line else ""
+        if not safe:
             return
         cur = self._editor.textCursor()
         cur.movePosition(QTextCursor.MoveOperation.End)
-        cur.insertText(line if line.endswith("\n") else line + "\n")
+        cur.insertText(safe if safe.endswith("\n") else safe + "\n")
         self._editor.setTextCursor(cur)
         self._scroll_to_end()
 
     def append_instant_chunk(self, text: str) -> None:
         """thinking 스트림 청크 — 줄바꿈 없이 이어붙임."""
-        if not text:
+        safe = strip_emoji(text) if text else ""
+        if not safe:
             return
         cur = self._editor.textCursor()
         cur.movePosition(QTextCursor.MoveOperation.End)
-        cur.insertText(text)
+        cur.insertText(safe)
         self._editor.setTextCursor(cur)
         self._scroll_to_end()
 

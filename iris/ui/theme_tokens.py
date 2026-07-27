@@ -55,6 +55,7 @@ class ThemeTokens:
     metric_fill_cpu: str = "#3b82f6"
     metric_fill_gpu: str = "#22d3ee"
     metric_fill_mem: str = "#38bdf8"
+    metric_fill_api: str = "rgba(186, 198, 214, 0.72)"
 
     # 간격 (4px grid)
     spacing_xs: int = 4

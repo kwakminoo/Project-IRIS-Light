@@ -1,8 +1,9 @@
-"""Live Activity 스트림용 민감정보 제거 (thinking 한글 허용)."""
+"""UI 표시용 민감정보·이모지 제거 (thinking 한글 허용)."""
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 # 한국어 음절 — 스트림은 English only; 사용자/모델 문자열이 섞이면 통째로 생략
@@ -15,6 +16,21 @@ _WIN_PATH_RE = re.compile(
 
 # 연속 공백·제어 문자
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+# 이모지·장식 심볼 — 로그/채팅에는 텍스트만 (⚡ U+26A1 포함)
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"  # pictographs … extended-A
+    "\U0001F1E0-\U0001F1FF"  # flags
+    "\U00002700-\U000027BF"  # dingbats
+    "\U00002600-\U000026FF"  # misc symbols (includes ⚡)
+    "\U00002300-\U000023FF"  # misc technical
+    "\U00002B00-\U00002BFF"  # arrows / stars
+    "\U0000200D"  # ZWJ
+    "\U0000FE0E-\U0000FE0F"  # variation selectors
+    "\U000020E3"  # combining enclosing keycap
+    "]+",
+)
 
 # API 키·토큰 형태(짧은 휴리스틱)
 _SECRET_TOKEN_RE = re.compile(
@@ -29,6 +45,32 @@ _MAX_LEN = 2000
 
 def has_hangul(text: str) -> bool:
     return bool(_HANGUL_RE.search(text))
+
+
+def strip_emoji(text: str) -> str:
+    """이모지·이모티콘·장식 심볼을 항상 제거. 일반 한글/영문/문장부호는 유지."""
+    if not text:
+        return text
+    t = _EMOJI_RE.sub("", text)
+    out: list[str] = []
+    for ch in t:
+        o = ord(ch)
+        # 보충 평면 이모지·심볼
+        if 0x1F000 <= o <= 0x1FFFF:
+            continue
+        # BMP 장식 구간 (⚡ ★ 등)
+        if 0x2600 <= o <= 0x27BF or 0x2B00 <= o <= 0x2BFF:
+            continue
+        if 0x2300 <= o <= 0x23FF:
+            continue
+        cat = unicodedata.category(ch)
+        # Symbol, other / modifier — 이모지·장식. 통화기호(Sc)·수학(Sm)은 유지
+        if cat in ("So", "Sk", "Cs"):
+            continue
+        out.append(ch)
+    cleaned = "".join(out)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned
 
 
 def redact_paths(text: str) -> str:
@@ -48,10 +90,11 @@ def clamp_length(text: str, max_len: int = _MAX_LEN) -> str:
 
 
 def prepare_activity_line(raw: str, *, allow_multiline: bool = False) -> str:
-    """싱크 진입 직전: 제어 문자·경로·시크릿·길이 처리 (한글 thinking 허용)."""
+    """싱크 진입 직전: 이모지·제어 문자·경로·시크릿·길이 처리 (한글 thinking 허용)."""
     if not raw or not raw.strip():
         return ""
     t = _CTRL_RE.sub(" ", raw)
+    t = strip_emoji(t)
     t = redact_secrets(t)
     t = redact_paths(t)
     if allow_multiline:
@@ -59,6 +102,14 @@ def prepare_activity_line(raw: str, *, allow_multiline: bool = False) -> str:
     else:
         t = re.sub(r"\s+", " ", t.strip())
     return clamp_length(t)
+
+
+def prepare_chat_text(raw: str) -> str:
+    """채팅창 표시용 — 이모지만 제거 (마크다운·개행 유지)."""
+    if not raw:
+        return ""
+    t = _CTRL_RE.sub(" ", raw)
+    return strip_emoji(t)
 
 
 def summarize_tool_params(tool: str, params: dict[str, Any] | None) -> str:
@@ -119,3 +170,13 @@ def summarize_tool_params(tool: str, params: dict[str, Any] | None) -> str:
         else:
             bits.append(f"{k}={s!r}")
     return ", ".join(bits)
+
+
+if __name__ == "__main__":
+    assert "\u26a1" not in strip_emoji("Connecting via Hermes \u26a1")
+    assert strip_emoji("hi \U0001F680 there") == "hi there"
+    assert "\u26a1" not in prepare_activity_line("Models ready \u26a1")
+    assert prepare_activity_line("plain text") == "plain text"
+    assert "\u26a1" not in prepare_chat_text("답변 \u26a1 입니다")
+    assert "안녕" in prepare_chat_text("안녕 \U0001F44B")
+    print("activity_privacy self-check ok")

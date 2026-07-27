@@ -110,7 +110,8 @@ class TopStatusHeader:
         self._local_chip.set_value("CONNECTED", dot_kind="connected")
 
         # place_status_rows 레거시 — 그리드에 backend가 포함되어 빈 슬롯만 제공
-        self._empty_legacy = QWidget()
+        # ponytail: 반드시 status_block 자식으로 둠. parent=None + show() → 흰 top-level 창
+        self._empty_legacy = QWidget(self._status_block)
         self._empty_legacy.setFixedHeight(0)
         self._empty_legacy.hide()
 
@@ -140,8 +141,14 @@ class TopStatusHeader:
         self._state_chip.set_value(name, dot_kind=kind)
 
     def set_model_name(self, name: str) -> None:
+        from iris.infrastructure.model_descriptions import describe_model
+
         display = name.strip() if name.strip() else "(unset)"
         self._model_chip.set_value(display, dot_kind="connected")
+        desc = describe_model(name)
+        tip = f"{display}\n{desc}" if desc else display
+        self._model_chip.setToolTip(tip)
+        self.model_label.setToolTip(tip)
 
     def set_tts_status(self, text: str) -> None:
         lower = text.lower()
