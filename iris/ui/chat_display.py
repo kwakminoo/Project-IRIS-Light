@@ -23,8 +23,10 @@ def strip_speaker_prefix(who: str, text: str) -> str:
 
 
 def normalize_chat_body(who: str, text: str) -> str:
-    """채팅 패널에 넣기 전 본문 정리 (마크다운 원문 유지)."""
-    return strip_speaker_prefix(who, text)
+    """채팅 패널에 넣기 전 본문 정리 (마크다운 원문 유지, 이모지 제거)."""
+    from iris.core.activity_privacy import prepare_chat_text
+
+    return strip_speaker_prefix(who, prepare_chat_text(text))
 
 
 def chat_body_to_html(text: str) -> str:

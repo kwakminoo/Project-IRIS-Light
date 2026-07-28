@@ -1,0 +1,13 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.6.0
+
+# STT (실제 모드)
+faster-whisper>=1.0.0
+
+# 오디오 메타/분석
+soundfile>=0.12.0
+numpy>=1.24.0
+mutagen>=1.47.0
+
+# TTS 실모델은 setup_voice_runtime.ps1 -Full 로 설치 (torch, qwen-tts)

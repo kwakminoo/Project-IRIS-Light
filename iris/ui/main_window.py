@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QEvent, QRect, Qt, QThread, QTimer
 from PyQt6.QtGui import QAction, QCloseEvent
+from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import (
     QMainWindow,
     QSizePolicy,
@@ -14,7 +15,13 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from PyQt6.QtMultimedia import QSoundEffect
+import tempfile
 
+from iris.audio.recorder import AudioRecorder, RecordingResult
+from iris.audio.text_normalizer import load_pronunciation_map, split_tts_sentences
+from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
+from iris.audio.workers import STTTranscriptionWorker, TTSSynthesisWorker
 from iris.config.settings import load_settings
 from iris.core.activity_sink import register_activity_sink
 from iris.core.state_machine import AppState, StateMachine
@@ -25,7 +32,13 @@ from iris.monitoring.notification_policy import NotificationPolicy
 from iris.storage.database import Database
 from iris.storage.model_prefs import load_selected_model, save_selected_model
 from iris.storage.user_profile import load_user_profile, save_user_profile
-from iris.system.android_emulator import is_emulator_running, launch_emulator
+from iris.storage.voice_prefs import VoicePreferences, load_voice_preferences, save_voice_preferences
+from iris.system.android_emulator import (
+    is_emulator_headless,
+    is_emulator_running,
+    launch_emulator,
+    restart_emulator_windowed,
+)
 from iris.system.api_quota_worker import ApiQuotaWorker
 from iris.system.ide_launcher import (
     find_running_ide,
@@ -99,8 +112,12 @@ class MainWindow(QMainWindow):
 
         self._state = StateMachine()
         self._state.state_changed.connect(self._on_app_state)
+        self._voice_prefs: VoicePreferences = load_voice_preferences(self._db)
         self._history: list[dict[str, str]] = []
+        self._last_assistant_text = ""
         self._chat_worker: QThread | None = None
+        self._stt_worker: STTTranscriptionWorker | None = None
+        self._tts_worker: TTSSynthesisWorker | None = None
         self._model_worker: OllamaModelListWorker | None = None
         self._hermes_health_worker: HermesHealthWorker | None = None
         self._hermes_model_worker: HermesModelSyncWorker | None = None
@@ -113,6 +130,8 @@ class MainWindow(QMainWindow):
         self._boot_checks_worker: BootChecksWorker | None = None
         self._boot_checks_done = False
         self._email_preloaded = False
+        self._tts_queue: list[str] = []
+        self._tts_active_msg_id: str = ""
         self._email_view: tuple[str, str] = ("inbox", "")  # (folder_key, gmail_category)
         self._email_folder = "inbox"  # 메시지 조회용 메일함 키
         self._selected_email_account_id = ""
@@ -139,6 +158,20 @@ class MainWindow(QMainWindow):
         if self._saved_model:
             self._settings.ollama_model = self._saved_model
             self._settings.model_name = self._saved_model
+        self._voice_runtime = VoiceRuntimeProcessManager(
+            base_url=self._voice_prefs.voice_runtime_url,
+            iris_root=Path(__file__).resolve().parents[2],
+        )
+        self._mic_listen_active = False
+        self._recorder = AudioRecorder(self)
+        self._recorder.level_changed.connect(self._on_recorder_level)
+        self._recorder.recording_started.connect(self._on_recording_started)
+        self._recorder.recording_stopped.connect(self._on_recording_stopped)
+        self._recorder.recording_cancelled.connect(self._on_recording_cancelled)
+        self._recorder.utterance_ready.connect(self._on_utterance_ready)
+        self._recorder.failed.connect(self._on_recording_failed)
+        self._tts_player = QSoundEffect(self)
+        self._tts_player.playingChanged.connect(self._on_tts_playing_changed)
 
         central = CyberspaceBackground()
         self._cyberspace_bg = central
@@ -161,6 +194,7 @@ class MainWindow(QMainWindow):
         self._drag.ide_toggle_clicked.connect(self._on_ide_icon)
         self._drag.minimize_clicked.connect(self.showMinimized)
         self._drag.maximize_clicked.connect(self._toggle_maximize)
+        self._drag.mic_clicked.connect(self._on_chat_mic_clicked)
         root.addWidget(self._drag)
 
         status_header = TopStatusHeader()
@@ -243,12 +277,15 @@ class MainWindow(QMainWindow):
         # Hermes health/MCP sync는 control surface 기동 이후에 (아래 start 이후)
 
         self._chat = ChatPanel()
-        self._chat.set_speech_threshold_rms(self._settings.always_listen_speech_rms)
+        self._settings.always_listen_speech_rms = self._voice_prefs.stt_speech_rms
+        self._chat.set_speech_threshold_rms(self._voice_prefs.stt_speech_rms)
         self._chat.send_clicked.connect(self._on_user_text)
         self._chat.model_changed.connect(self._on_model_changed)
         self._chat.files_attached.connect(self._on_composer_files)
         self._chat.skill_inserted.connect(self._on_composer_skill)
         self._chat.mcp_inserted.connect(self._on_composer_mcp)
+        self._chat.mic_clicked.connect(self._on_chat_mic_clicked)
+        self._chat.speaker_clicked.connect(self._on_chat_speaker_clicked)
         left_lay.addWidget(self._chat, 3)
 
         self._monitor = UnifiedMonitorPanel()
@@ -727,6 +764,7 @@ class MainWindow(QMainWindow):
             self._chat.append_message_instant("Iris", "(빈 응답)")
         if text:
             self._history.append({"role": "assistant", "content": text})
+            self._last_assistant_text = text
         self._refresh_context_gauge()
         if self._use_hermes_backend() and not self._hermes_online:
             self._hermes_online = True
@@ -737,6 +775,292 @@ class MainWindow(QMainWindow):
         self._busy = False
         self._chat_worker = None
         self._state.set_state(AppState.IDLE)
+        if text and self._voice_prefs.tts_enabled and self._voice_prefs.tts_mode == "auto":
+            self._enqueue_tts(text, msg_id=self._chat._last_tts_id or "last")
+
+    def _ensure_voice_runtime(self) -> bool:
+        try:
+            self._voice_runtime.set_base_url(self._voice_prefs.voice_runtime_url)
+            status = self._voice_runtime.ensure_started(
+                mock_mode=self._voice_prefs.voice_runtime_mock
+            )
+            self._status_header.set_tts_status("READY")
+            return status.running
+        except Exception as exc:  # noqa: BLE001
+            self._status_header.set_tts_status("ERROR")
+            self._live_activity.append_instant_line(
+                f"Voice runtime 오류: {exc} (메인 앱은 계속 사용 가능)"
+            )
+            return False
+
+    def _set_mic_recording(self, recording: bool) -> None:
+        self._mic_listen_active = recording
+        self._drag.set_mic_recording(recording)
+        self._chat.set_mic_recording(recording)
+
+    def _on_chat_mic_clicked(self) -> None:
+        if self._mic_listen_active or self._recorder.is_continuous():
+            self._stop_mic_listen()
+            return
+        if not self._voice_prefs.stt_enabled:
+            self._live_activity.append_instant_line("STT가 비활성화되어 있어 기본 설정으로 시작합니다.")
+            self._voice_prefs.stt_enabled = True
+            save_voice_preferences(self._db, self._voice_prefs)
+        if not self._ensure_voice_runtime():
+            return
+        self._chat.begin_user_listening()
+        self._set_mic_recording(True)
+        self._state.set_state(AppState.LISTENING)
+        self._recorder.start_continuous(
+            device_id=self._voice_prefs.stt_device_id,
+            speech_rms=self._voice_prefs.stt_speech_rms,
+            sample_rate=16000,
+            channels=1,
+        )
+
+    def _stop_mic_listen(self) -> None:
+        self._set_mic_recording(False)
+        if self._recorder.is_recording():
+            self._recorder.cancel_recording()
+        else:
+            self._chat.cancel_user_listening()
+            self._state.set_state(AppState.IDLE)
+
+    def _on_recording_started(self) -> None:
+        if self._mic_listen_active:
+            self._chat.set_user_listening_status("듣고 있습니다")
+
+    def _on_recorder_level(self, level: float) -> None:
+        self._chat.set_mic_level(level)
+        self._viz.set_mic_level(level)
+
+    def _on_recording_stopped(self, result: RecordingResult) -> None:
+        # oneshot 경로(레거시) — 연속 청취는 utterance_ready 사용
+        self._transcribe_wav(result, keep_listening=False)
+
+    def _on_utterance_ready(self, result: RecordingResult) -> None:
+        if not self._mic_listen_active:
+            return
+        self._transcribe_wav(result, keep_listening=True)
+
+    def _transcribe_wav(self, result: RecordingResult, *, keep_listening: bool) -> None:
+        if not result.wav_bytes:
+            if not keep_listening:
+                self._on_recording_failed("빈 녹음입니다.")
+            return
+        min_rms = max(0.001, self._voice_prefs.stt_speech_rms * 0.5)
+        if result.duration_sec < 0.25 or result.rms_peak < min_rms:
+            if not keep_listening:
+                self._on_recording_failed("무음에 가깝습니다. 마이크와 거리를 확인해 주세요.")
+            elif self._mic_listen_active:
+                self._chat.set_user_listening_status("듣고 있습니다")
+            return
+        if self._stt_worker is not None and self._stt_worker.isRunning():
+            return
+        self._recorder.set_capture_paused(True)
+        self._chat.set_user_listening_status("음성을 인식하고 있습니다")
+        if not keep_listening:
+            self._state.set_state(AppState.PROCESSING)
+        worker = STTTranscriptionWorker(
+            result.wav_bytes,
+            runtime_url=self._voice_prefs.voice_runtime_url,
+            model_name=self._voice_prefs.stt_model,
+            language=self._voice_prefs.stt_language,
+            parent=self,
+        )
+        self._stt_worker = worker
+        worker.finished_ok.connect(
+            lambda payload, kl=keep_listening: self._on_stt_finished(payload, keep_listening=kl)
+        )
+        worker.failed.connect(
+            lambda err, kl=keep_listening: self._on_stt_failed(err, keep_listening=kl)
+        )
+        worker.start()
+
+    def _on_recording_cancelled(self) -> None:
+        self._chat.cancel_user_listening()
+        self._set_mic_recording(False)
+        self._state.set_state(AppState.IDLE)
+
+    def _on_recording_failed(self, err: str) -> None:
+        self._chat.cancel_user_listening()
+        self._set_mic_recording(False)
+        if self._recorder.is_recording():
+            self._recorder.cancel_recording()
+        self._state.set_state(AppState.ERROR)
+        self._live_activity.append_instant_line(f"녹음 오류: {err}")
+        QTimer.singleShot(800, lambda: self._state.set_state(AppState.IDLE))
+
+    def _on_stt_finished(self, payload: object, *, keep_listening: bool = False) -> None:
+        self._stt_worker = None
+        self._recorder.set_capture_paused(False)
+        data = payload if isinstance(payload, dict) else {}
+        text = str(data.get("text") or "").strip()
+        if keep_listening and self._mic_listen_active:
+            if text:
+                self._chat.insert_input_text(text)
+                self._live_activity.append_instant_line("STT 완료 — 입력창에 전사 결과를 넣었습니다.")
+            self._chat.set_user_listening_status("듣고 있습니다")
+            self._state.set_state(AppState.LISTENING)
+            return
+        self._set_mic_recording(False)
+        self._chat.cancel_user_listening()
+        if not text:
+            self._chat.append_message_instant("Iris", "음성이 감지되지 않았습니다. 다시 시도해 주세요.")
+            self._state.set_state(AppState.IDLE)
+            return
+        self._chat.insert_input_text(text)
+        self._live_activity.append_instant_line("STT 완료 — 입력창에 전사 결과를 넣었습니다.")
+        self._state.set_state(AppState.IDLE)
+
+    def _on_stt_failed(self, err: str, *, keep_listening: bool = False) -> None:
+        self._stt_worker = None
+        self._recorder.set_capture_paused(False)
+        if keep_listening and self._mic_listen_active:
+            self._live_activity.append_instant_line(f"STT 오류: {err}")
+            self._chat.set_user_listening_status("듣고 있습니다")
+            self._state.set_state(AppState.LISTENING)
+            return
+        self._set_mic_recording(False)
+        self._chat.cancel_user_listening()
+        self._chat.append_message_instant("Iris", f"STT 오류: {err}")
+        self._state.set_state(AppState.ERROR)
+        QTimer.singleShot(800, lambda: self._state.set_state(AppState.IDLE))
+
+    def _stop_tts_playback(self) -> None:
+        self._tts_queue = []
+        if self._tts_active_msg_id:
+            self._chat.set_speaker_status(self._tts_active_msg_id, "idle")
+        self._tts_active_msg_id = ""
+        try:
+            self._tts_player.stop()
+        except Exception:
+            pass
+        if self._tts_worker is not None and self._tts_worker.isRunning():
+            try:
+                self._tts_worker.wait(500)
+            except Exception:
+                pass
+        self._tts_worker = None
+        self._status_header.set_tts_status("READY" if self._voice_prefs.tts_enabled else "OFF")
+
+    def _on_chat_speaker_clicked(self, token: str) -> None:
+        text = self._chat.get_tts_text(token)
+        if not text and self._last_assistant_text:
+            text = self._last_assistant_text
+        if not text:
+            self._live_activity.append_instant_line("재생할 답변이 없습니다.")
+            return
+        msg_id = token if token and token != "last" else (self._chat._last_tts_id or "last")
+        self._enqueue_tts(text, msg_id=msg_id)
+
+    def _enqueue_tts(self, text: str, *, msg_id: str = "last") -> None:
+        mapping = load_pronunciation_map(self._voice_prefs.pronunciation_dict_json)
+        from iris.audio.text_normalizer import normalize_tts_text
+
+        cleaned = split_tts_sentences(normalize_tts_text(text, mapping))
+        if not cleaned:
+            return
+        ref_audio = self._voice_prefs.tts_reference_audio
+        ref_text = self._voice_prefs.tts_reference_text
+        if not ref_audio or not ref_text:
+            self._live_activity.append_instant_line("TTS 기준 음성이 아직 설정되지 않았습니다.")
+            return
+        if not Path(ref_audio).is_file():
+            self._live_activity.append_instant_line(f"기준 음성 파일이 없습니다: {ref_audio}")
+            self._chat.set_speaker_status(msg_id, "error")
+            return
+        if not self._ensure_voice_runtime():
+            self._chat.set_speaker_status(msg_id, "error")
+            return
+        self._stop_tts_playback()
+        self._tts_active_msg_id = msg_id
+        self._chat.set_speaker_status(msg_id, "busy")
+        self._tts_queue = cleaned
+        self._start_next_tts_segment()
+
+    def _start_next_tts_segment(self) -> None:
+        if self._tts_worker is not None and self._tts_worker.isRunning():
+            return
+        if not self._tts_queue:
+            if self._tts_active_msg_id:
+                self._chat.set_speaker_status(self._tts_active_msg_id, "idle")
+            self._status_header.set_tts_status("READY" if self._voice_prefs.tts_enabled else "OFF")
+            return
+        if not self._voice_prefs.tts_voice_prompt_hash:
+            try:
+                from iris.audio.voice_runtime_client import VoiceRuntimeClient
+
+                client = VoiceRuntimeClient(base_url=self._voice_prefs.voice_runtime_url)
+                voice_hash = client.voice_prepare(
+                    ref_audio_path=self._voice_prefs.tts_reference_audio,
+                    ref_text=self._voice_prefs.tts_reference_text,
+                    tts_model_name=self._voice_prefs.tts_model,
+                    voice_prompt_hash=None,
+                )
+                self._voice_prefs.tts_voice_prompt_hash = voice_hash
+                save_voice_preferences(self._db, self._voice_prefs)
+            except Exception as exc:  # noqa: BLE001
+                self._status_header.set_tts_status("ERROR")
+                if self._tts_active_msg_id:
+                    self._chat.set_speaker_status(self._tts_active_msg_id, "error")
+                self._live_activity.append_instant_line(f"TTS 준비 실패: {exc}")
+                self._tts_queue = []
+                return
+        text = self._tts_queue.pop(0)
+        self._status_header.set_tts_status("BUSY")
+        if self._tts_active_msg_id:
+            self._chat.set_speaker_status(self._tts_active_msg_id, "busy")
+        worker = TTSSynthesisWorker(
+            runtime_url=self._voice_prefs.voice_runtime_url,
+            text=text,
+            voice_prompt_hash=self._voice_prefs.tts_voice_prompt_hash,
+            model_name=self._voice_prefs.tts_model,
+            parent=self,
+        )
+        self._tts_worker = worker
+        worker.finished_ok.connect(self._on_tts_finished)
+        worker.failed.connect(self._on_tts_failed)
+        worker.start()
+
+    def _on_tts_finished(self, payload: object) -> None:
+        self._tts_worker = None
+        data = payload if isinstance(payload, dict) else {}
+        audio_path = str(data.get("audio_path") or "").strip()
+        if not audio_path:
+            self._on_tts_failed("생성 파일 경로가 비어 있습니다.")
+            return
+        if not Path(audio_path).is_file():
+            self._on_tts_failed(f"생성 파일이 없습니다: {audio_path}")
+            return
+        self._tts_player.setSource(QUrl.fromLocalFile(audio_path))
+        self._tts_player.setVolume(max(0.0, min(1.0, self._voice_prefs.tts_volume)))
+        if self._mic_listen_active:
+            self._recorder.set_capture_paused(True)
+        self._tts_player.play()
+        self._status_header.set_tts_status("SPEAK")
+        if self._tts_active_msg_id:
+            self._chat.set_speaker_status(self._tts_active_msg_id, "playing")
+
+    def _on_tts_failed(self, err: str) -> None:
+        self._tts_worker = None
+        self._tts_queue = []
+        self._status_header.set_tts_status("ERROR")
+        if self._tts_active_msg_id:
+            self._chat.set_speaker_status(self._tts_active_msg_id, "error")
+        self._live_activity.append_instant_line(f"TTS 오류: {err}")
+
+    def _on_tts_playing_changed(self) -> None:
+        if self._tts_player.isPlaying():
+            return
+        if self._tts_queue:
+            self._start_next_tts_segment()
+        else:
+            if self._tts_active_msg_id:
+                self._chat.set_speaker_status(self._tts_active_msg_id, "idle")
+            self._status_header.set_tts_status("READY" if self._voice_prefs.tts_enabled else "OFF")
+            if self._mic_listen_active and (self._stt_worker is None or not self._stt_worker.isRunning()):
+                self._recorder.set_capture_paused(False)
 
     def _on_chat_failed(self, err: str) -> None:
         if getattr(self._chat, "_stream_active", False):
@@ -1415,6 +1739,24 @@ class MainWindow(QMainWindow):
 
     def _on_mobile_icon(self) -> None:
         if is_emulator_running():
+            if is_emulator_headless():
+                self._live_activity.append_instant_line(
+                    "Headless Android 에뮬레이터 감지 — 창 있는 인스턴스로 재시작합니다."
+                )
+                try:
+                    proc = restart_emulator_windowed()
+                    self._live_activity.append_instant_line(
+                        f"Android 에뮬레이터 재시작 (PID {proc.pid}) — android-emulator/data"
+                    )
+                except OSError as exc:
+                    self._live_activity.append_instant_line(f"에뮬레이터 재시작 실패: {exc}")
+                    self._notes.try_add_alert(
+                        target_id=0,
+                        category="ERROR",
+                        title="Android 에뮬레이터",
+                        message=str(exc),
+                    )
+                return
             self._live_activity.append_instant_line("Android 에뮬레이터가 이미 실행 중입니다.")
             return
         try:
@@ -1438,6 +1780,8 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _open_settings_dialog(self) -> None:
+        if self._mic_listen_active:
+            self._stop_mic_listen()
         dlg = SettingsDialog(self._settings, self._db, self)
         if dlg.exec():
             sel = dlg.selection()
@@ -1450,6 +1794,14 @@ class MainWindow(QMainWindow):
             self._settings.hermes_base_url = sel.hermes_base_url
             self._settings.hermes_api_key = sel.hermes_api_key
             self._settings.model_name = sel.ollama_model or self._settings.model_name
+            self._voice_prefs = sel.voice_prefs
+            self._settings.always_listen_speech_rms = self._voice_prefs.stt_speech_rms
+            self._chat.set_speech_threshold_rms(self._voice_prefs.stt_speech_rms)
+            self._recorder.set_speech_rms(self._voice_prefs.stt_speech_rms)
+            self._voice_runtime.set_base_url(self._voice_prefs.voice_runtime_url)
+            self._status_header.set_tts_status(
+                "READY" if self._voice_prefs.tts_enabled else "OFF"
+            )
             self._saved_model = sel.ollama_model.strip()
             if self._saved_model:
                 save_selected_model(self._db, self._saved_model)
@@ -1493,11 +1845,19 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         try:
             stop_control_surface(self)
+            if self._recorder.is_recording():
+                self._recorder.cancel_recording()
+            self._stop_tts_playback()
             if self._chat_worker is not None and self._chat_worker.isRunning():
                 cancel = getattr(self._chat_worker, "request_cancel", None)
                 if callable(cancel):
                     cancel()
                 self._chat_worker.wait(1500)
+            if self._stt_worker is not None and self._stt_worker.isRunning():
+                self._stt_worker.wait(1500)
+            if self._tts_worker is not None and self._tts_worker.isRunning():
+                self._tts_worker.wait(1500)
+            self._tts_player.stop()
             if self._email_chat_worker is not None and self._email_chat_worker.isRunning():
                 self._email_chat_worker.request_cancel()
                 self._email_chat_worker.wait(1500)
@@ -1507,6 +1867,7 @@ class MainWindow(QMainWindow):
             self._metrics_worker.wait(2000)
             self._api_quota_worker.request_stop()
             self._api_quota_worker.wait(2000)
+            self._voice_runtime.shutdown(timeout_sec=2.0)
         except Exception:
             pass
         super().closeEvent(event)

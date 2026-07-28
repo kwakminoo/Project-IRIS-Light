@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QPalette, QTextBlockFormat, QTextCursor
+from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QMouseEvent, QPalette, QTextBlockFormat, QTextCursor
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLineEdit,
+    QPushButton,
     QSizePolicy,
     QTextEdit,
     QVBoxLayout,
@@ -156,12 +157,51 @@ class ChatComposerInput(QLineEdit):
         super().dropEvent(event)
 
 
+class ChatLogTextEdit(QTextEdit):
+    speaker_clicked = pyqtSignal(str)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        anchor = self.anchorAt(event.pos())
+        if anchor.startswith("iris-tts://"):
+            self.speaker_clicked.emit(anchor.removeprefix("iris-tts://"))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class ChatMicButton(QPushButton):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("ChatMicButton")
+        self.setText("🎤")
+        self.setToolTip("마이크 녹음 시작/정지")
+        self.setFixedSize(28, 28)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setCheckable(True)
+        self.setStyleSheet(
+            """
+            QPushButton#ChatMicButton {
+                background-color: rgba(15, 23, 42, 0.85);
+                color: #e2e8f0;
+                border: 1px solid rgba(56, 189, 248, 0.28);
+                border-radius: 14px;
+                padding: 0;
+            }
+            QPushButton#ChatMicButton:checked {
+                background-color: rgba(127, 29, 29, 0.95);
+                border-color: rgba(248, 113, 113, 0.55);
+            }
+            """
+        )
+
+
 class _ChatInputBar(QWidget):
     """입력칸 안쪽: + | 입력 | 모델 | 전송."""
 
     files_attached = pyqtSignal(list)  # list[str] paths
     skill_inserted = pyqtSignal(str)
     mcp_inserted = pyqtSignal(str)
+    mic_clicked = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -438,12 +478,14 @@ class ChatPanel(QWidget):
     files_attached = pyqtSignal(list)
     skill_inserted = pyqtSignal(str)
     mcp_inserted = pyqtSignal(str)
+    mic_clicked = pyqtSignal()
+    speaker_clicked = pyqtSignal(str)
 
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("ChatPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._log = QTextEdit()
+        self._log = ChatLogTextEdit()
         self._log.setObjectName("ChatLog")
         self._log.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._log.setReadOnly(True)
@@ -487,6 +529,9 @@ class ChatPanel(QWidget):
         self._typing_body_start: int | None = None
         self._typing_render_markdown = False
         self._user_listening_active = False
+        self._tts_texts: dict[str, str] = {}
+        self._tts_seq = 0
+        self._last_tts_id = ""
         self._input_area = _ChatInputArea()
         self._input = self._input_area.input_bar.input
         self._model_combo = self._input_area.input_bar.model_combo
@@ -502,6 +547,7 @@ class ChatPanel(QWidget):
         bar.files_attached.connect(self.files_attached.emit)
         bar.skill_inserted.connect(self.skill_inserted.emit)
         bar.mcp_inserted.connect(self.mcp_inserted.emit)
+        self._log.speaker_clicked.connect(self.speaker_clicked.emit)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -522,6 +568,79 @@ class ChatPanel(QWidget):
         if isinstance(data, str) and data.strip():
             return data.strip()
         return self._model_combo.currentText().strip()
+
+    def current_input_text(self) -> str:
+        return self._input.text()
+
+    def set_input_text(self, text: str) -> None:
+        self._input.setText(text)
+        self._input.setFocus()
+
+    def insert_input_text(self, text: str, *, separator: str = " ") -> None:
+        extra = (text or "").strip()
+        if not extra:
+            return
+        cur = self._input.text().rstrip()
+        if cur:
+            self._input.setText(f"{cur}{separator}{extra}")
+        else:
+            self._input.setText(extra)
+        self._input.setFocus()
+
+    def register_tts_message(self, text: str) -> str:
+        """답변별 TTS용 메시지 id 등록."""
+        body = (text or "").strip()
+        self._tts_seq += 1
+        msg_id = f"m{self._tts_seq}"
+        self._tts_texts[msg_id] = body
+        self._last_tts_id = msg_id
+        return msg_id
+
+    def get_tts_text(self, token: str) -> str:
+        key = (token or "").strip()
+        if key in ("", "last"):
+            key = self._last_tts_id
+        return self._tts_texts.get(key, "")
+
+    def set_speaker_status(self, msg_id: str, status: str) -> None:
+        """답변 TTS 링크 상태(이모지 없이 텍스트만)."""
+        labels = {
+            "idle": "[재생]",
+            "busy": "[생성중]",
+            "playing": "[재생중]",
+            "error": "[오류]",
+        }
+        label = labels.get(status, "[재생]")
+        target = (msg_id or "").strip() or self._last_tts_id
+        if not target:
+            return
+        html_doc = self._log.toHtml()
+        needle = f'href="iris-tts://{target}"'
+        if needle not in html_doc:
+            return
+        import re
+
+        updated = re.sub(
+            rf'(<a href="iris-tts://{re.escape(target)}"[^>]*>)[^<]*(</a>)',
+            rf"\g<1>{label}\g<2>",
+            html_doc,
+            count=1,
+        )
+        if updated != html_doc:
+            bar = self._log.verticalScrollBar()
+            pos = bar.value()
+            self._log.setHtml(updated)
+            bar.setValue(pos)
+
+    def _speaker_link_html(self, msg_id: str) -> str:
+        return (
+            f' <a href="iris-tts://{html.escape(msg_id)}" '
+            f'style="color:#7dd3fc;text-decoration:none;">[재생]</a>'
+        )
+
+    def set_mic_recording(self, recording: bool) -> None:
+        # 마이크 버튼은 DragTab(우측 상단)로 이동 — ChatPanel은 no-op 유지
+        _ = recording
 
     def set_models(
         self,
@@ -686,6 +805,8 @@ class ChatPanel(QWidget):
         cursor.insertHtml(f"<b>{html.escape(who)}</b>: ")
         if who.strip().lower() == "iris":
             cursor.insertHtml(markdown_to_chat_html(body))
+            msg_id = self.register_tts_message(body)
+            cursor.insertHtml(self._speaker_link_html(msg_id))
         else:
             cursor.insertHtml(chat_body_to_html(body))
         self._log.setTextCursor(cursor)
@@ -923,11 +1044,14 @@ class ChatPanel(QWidget):
         """타이핑 완료 후 마크다운 원문을 렌더링된 HTML로 교체."""
         if self._typing_body_start is None or not self._typing_text:
             return
+        body = self._typing_text
         cursor = self._log.textCursor()
         cursor.setPosition(self._typing_body_start)
         cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
         cursor.removeSelectedText()
-        cursor.insertHtml(markdown_to_chat_html(self._typing_text))
+        cursor.insertHtml(markdown_to_chat_html(body))
+        msg_id = self.register_tts_message(body)
+        cursor.insertHtml(self._speaker_link_html(msg_id))
         self._log.setTextCursor(cursor)
 
     def _type_next_chunk(self) -> None:

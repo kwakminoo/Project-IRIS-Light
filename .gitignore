@@ -12,6 +12,7 @@ build/
 
 # Virtual environment
 .venv/
+.venv-voice/
 venv/
 ENV/
 
@@ -44,4 +45,16 @@ android-emulator/avd/**/multiinstance.lock
 android-emulator/avd/**/emu-launch-params.txt
 android-emulator/avd/**/snapshots/
 *.lock
+
+# Voice data / generated assets
+voice_recordings/
+voice_runtime_data/
+generated_audio/
+voice_models/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.aac
 

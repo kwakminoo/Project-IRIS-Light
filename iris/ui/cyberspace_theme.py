@@ -181,6 +181,24 @@ def build_cyberspace_qss() -> str:
         QPushButton#WinCtrl:pressed {{
             background-color: rgba(30, 58, 138, 0.5);
         }}
+        QPushButton#WinCtrlMic {{
+            background-color: transparent;
+            border: 1px solid {t.border_subtle};
+            padding: 0;
+            min-width: 36px;
+            max-width: 36px;
+            min-height: 26px;
+            max-height: 26px;
+            border-radius: 3px;
+        }}
+        QPushButton#WinCtrlMic:hover {{
+            background-color: {t.accent_primary};
+            border-color: {t.accent_border};
+        }}
+        QPushButton#WinCtrlMic:checked {{
+            background-color: rgba(127, 29, 29, 0.92);
+            border-color: rgba(248, 113, 113, 0.55);
+        }}
         QLabel#DragTitle {{
             font-weight: 400;
             font-size: 25px;

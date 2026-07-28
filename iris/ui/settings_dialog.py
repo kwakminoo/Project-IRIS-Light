@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QTimer, QUrl
+from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -22,11 +24,16 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from iris.audio.recorder import AudioRecorder
+from iris.audio.voice_runtime_client import VoiceRuntimeClient, VoiceRuntimeError
+from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
+from iris.audio.workers import TTSSynthesisWorker, VoiceAnalyzeWorker
 from iris.config.settings import Settings
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.storage.database import Database
@@ -35,10 +42,17 @@ from iris.storage.email_accounts import (
     load_email_accounts,
     remove_email_account,
 )
+from iris.storage.voice_prefs import (
+    VoicePreferences,
+    default_voice_data_dir,
+    load_voice_preferences,
+    save_voice_preferences,
+)
 from iris.storage.user_profile import UserProfile, load_user_profile, save_user_profile
 from iris.system.ide_launcher import get_ide_spec, ide_catalog, is_ide_installed
 from iris.ui.email_workers import EmailVerifyWorker
 from iris.ui.ide_icons import ide_icon_for, show_ide_not_installed_dialog
+from iris.ui.mic_input_meter import MicThresholdBar
 
 
 @dataclass(frozen=True)
@@ -49,6 +63,7 @@ class LightSettingsSelection:
     hermes_command: str
     hermes_base_url: str
     hermes_api_key: str
+    voice_prefs: VoicePreferences
 
 
 class SettingsDialog(QDialog):
@@ -69,6 +84,19 @@ class SettingsDialog(QDialog):
         self._wiki = IrisWiki()
         self._result: LightSettingsSelection | None = None
         self._accounts = load_email_accounts(db) if db is not None else []
+        self._voice_prefs = load_voice_preferences(db) if db is not None else VoicePreferences()
+        self._iris_root = Path(__file__).resolve().parents[2]
+        self._voice_runtime = VoiceRuntimeProcessManager(
+            base_url=self._voice_prefs.voice_runtime_url,
+            iris_root=self._iris_root,
+        )
+        self._voice_recommendations: list[dict] = []
+        self._analyze_worker: VoiceAnalyzeWorker | None = None
+        self._settings_tts_worker: TTSSynthesisWorker | None = None
+        self._preview_player = QSoundEffect(self)
+        self._mic_monitor = AudioRecorder(self)
+        self._mic_monitor.level_changed.connect(self._on_mic_monitor_level)
+        self._mic_monitor.failed.connect(self._on_mic_monitor_failed)
         self._verify_worker: EmailVerifyWorker | None = None
         profile = load_user_profile(db) if db is not None else UserProfile()
         self._preferred_ide = (profile.preferred_ide or "cursor").strip().lower() or "cursor"
@@ -149,6 +177,7 @@ class SettingsDialog(QDialog):
         content_lay.addLayout(form)
 
         if db is not None:
+            content_lay.addWidget(self._build_voice_box())
             content_lay.addWidget(self._build_email_box())
             content_lay.addWidget(self._build_ide_box())
             content_lay.addWidget(self._build_project_parents_box())
@@ -201,6 +230,449 @@ class SettingsDialog(QDialog):
         btn_row.addStretch(1)
         email_lay.addLayout(btn_row)
         return email_box
+
+    def _build_voice_box(self) -> QGroupBox:
+        box = QGroupBox("음성")
+        lay = QVBoxLayout(box)
+        lay.addWidget(
+            QLabel(
+                "STT는 녹음 후 입력창에 전사 결과만 넣고 자동 전송하지 않습니다. "
+                "TTS는 기준 음성/대본을 확정한 뒤에만 동작합니다. "
+                "실제 모델은 .venv-voice + mock 해제 후 사용합니다."
+            )
+        )
+
+        form = QFormLayout()
+        self._voice_stt_on = QCheckBox("STT 사용")
+        self._voice_stt_on.setChecked(self._voice_prefs.stt_enabled)
+
+        self._voice_stt_model = QComboBox()
+        for name in ("tiny", "base", "small", "medium", "large-v3"):
+            self._voice_stt_model.addItem(name, name)
+        idx = self._voice_stt_model.findData(self._voice_prefs.stt_model)
+        self._voice_stt_model.setCurrentIndex(idx if idx >= 0 else self._voice_stt_model.findData("small"))
+
+        self._voice_stt_lang = QComboBox()
+        self._voice_stt_lang.addItem("한국어 (ko)", "ko")
+        self._voice_stt_lang.addItem("자동 (auto)", "auto")
+        lang_idx = self._voice_stt_lang.findData(self._voice_prefs.stt_language)
+        self._voice_stt_lang.setCurrentIndex(lang_idx if lang_idx >= 0 else 0)
+
+        # 연결된(기본) 마이크 + 사용 가능 목록
+        default_label = AudioRecorder.default_input_label()
+        self._voice_connected_mic = QLabel(f"연결된(기본) 마이크: {default_label}")
+        self._voice_connected_mic.setWordWrap(True)
+
+        self._voice_stt_device = QListWidget()
+        self._voice_stt_device.setMinimumHeight(110)
+        self._voice_stt_device.setToolTip("사용할 마이크를 선택하세요")
+        default_item = QListWidgetItem("기본 장치")
+        default_item.setData(Qt.ItemDataRole.UserRole, "")
+        self._voice_stt_device.addItem(default_item)
+        selected_row = 0
+        for i, (device_id, label) in enumerate(AudioRecorder.list_input_devices(), start=1):
+            item = QListWidgetItem(label or device_id)
+            item.setData(Qt.ItemDataRole.UserRole, device_id)
+            self._voice_stt_device.addItem(item)
+            if device_id and device_id == self._voice_prefs.stt_device_id:
+                selected_row = i
+        self._voice_stt_device.setCurrentRow(selected_row)
+        self._voice_stt_device.currentRowChanged.connect(self._on_mic_device_changed)
+
+        self._mic_threshold_bar = MicThresholdBar(speech_rms=self._voice_prefs.stt_speech_rms)
+
+        self._voice_runtime_url = QLineEdit(self._voice_prefs.voice_runtime_url)
+        self._voice_runtime_mock = QCheckBox("voice runtime mock 모드")
+        self._voice_runtime_mock.setChecked(self._voice_prefs.voice_runtime_mock)
+
+        self._voice_tts_on = QCheckBox("TTS 사용")
+        self._voice_tts_on.setChecked(self._voice_prefs.tts_enabled)
+        self._voice_tts_mode = QComboBox()
+        for mode, label in (("off", "off"), ("manual", "manual"), ("auto", "auto")):
+            self._voice_tts_mode.addItem(label, mode)
+        mode_idx = self._voice_tts_mode.findData(self._voice_prefs.tts_mode)
+        self._voice_tts_mode.setCurrentIndex(mode_idx if mode_idx >= 0 else 0)
+
+        self._voice_tts_model = QComboBox()
+        self._voice_tts_model.setEditable(True)
+        default_tts = self._voice_prefs.tts_model or "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+        self._voice_tts_model.addItem(default_tts, default_tts)
+        if self._voice_tts_model.findText(default_tts) < 0:
+            self._voice_tts_model.setEditText(default_tts)
+        else:
+            self._voice_tts_model.setCurrentText(default_tts)
+
+        self._voice_ref_audio = QLineEdit(self._voice_prefs.tts_reference_audio)
+        self._voice_ref_text = QTextEdit()
+        self._voice_ref_text.setPlaceholderText("기준 대본 (사용자가 최종 확정)")
+        self._voice_ref_text.setPlainText(self._voice_prefs.tts_reference_text)
+        self._voice_ref_text.setMaximumHeight(72)
+
+        pick_row = QHBoxLayout()
+        pick_row.addWidget(self._voice_ref_audio, 1)
+        pick_btn = QPushButton("파일 선택")
+        pick_btn.clicked.connect(self._pick_voice_reference_audio)
+        confirm_btn = QPushButton("기준 음성 확정")
+        confirm_btn.clicked.connect(self._confirm_voice_reference)
+        pick_row.addWidget(pick_btn)
+        pick_row.addWidget(confirm_btn)
+
+        folder_row = QHBoxLayout()
+        self._voice_data_dir = QLineEdit(
+            self._voice_prefs.voice_data_dir or default_voice_data_dir()
+        )
+        folder_row.addWidget(self._voice_data_dir, 1)
+        folder_btn = QPushButton("녹음 폴더 선택")
+        folder_btn.clicked.connect(self._pick_voice_data_dir)
+        analyze_btn = QPushButton("녹음 폴더 분석")
+        analyze_btn.clicked.connect(self._analyze_voice_folder)
+        folder_row.addWidget(folder_btn)
+        folder_row.addWidget(analyze_btn)
+
+        form.addRow("", self._voice_stt_on)
+        form.addRow("STT 모델", self._voice_stt_model)
+        form.addRow("STT 언어", self._voice_stt_lang)
+        form.addRow("Runtime URL", self._voice_runtime_url)
+        form.addRow("", self._voice_runtime_mock)
+        form.addRow("", self._voice_tts_on)
+        form.addRow("TTS 모드", self._voice_tts_mode)
+        form.addRow("TTS 모델", self._voice_tts_model)
+        form.addRow("녹음 폴더", folder_row)
+        form.addRow("선택된 참고 음성", pick_row)
+        form.addRow("참고 대본", self._voice_ref_text)
+        lay.addLayout(form)
+
+        lay.addWidget(QLabel("마이크"))
+        lay.addWidget(self._voice_connected_mic)
+        lay.addWidget(QLabel("사용 가능한 마이크"))
+        lay.addWidget(self._voice_stt_device)
+        lay.addWidget(self._mic_threshold_bar)
+
+        lay.addWidget(QLabel("추천 참고 음성 (top 5)"))
+        self._voice_rec_list = QListWidget()
+        self._voice_rec_list.setMinimumHeight(120)
+        lay.addWidget(self._voice_rec_list)
+        rec_btn_row = QHBoxLayout()
+        preview_btn = QPushButton("미리듣기")
+        preview_btn.clicked.connect(self._preview_selected_recommendation)
+        select_btn = QPushButton("선택")
+        select_btn.clicked.connect(self._select_recommendation)
+        rec_btn_row.addWidget(preview_btn)
+        rec_btn_row.addWidget(select_btn)
+        rec_btn_row.addStretch(1)
+        lay.addLayout(rec_btn_row)
+
+        test_row = QHBoxLayout()
+        self._voice_test_text = QLineEdit("안녕하세요. 아이리스 음성 테스트입니다.")
+        test_row.addWidget(self._voice_test_text, 1)
+        test_btn = QPushButton("테스트 음성 생성")
+        test_btn.clicked.connect(self._test_tts_generate)
+        stop_btn = QPushButton("재생 중지")
+        stop_btn.clicked.connect(self._stop_voice_playback)
+        cache_btn = QPushButton("캐시 정리")
+        cache_btn.clicked.connect(self._clear_voice_cache)
+        test_row.addWidget(test_btn)
+        test_row.addWidget(stop_btn)
+        test_row.addWidget(cache_btn)
+        lay.addLayout(test_row)
+
+        self._voice_status = QLabel("")
+        lay.addWidget(self._voice_status)
+        self._refresh_voice_recommendations_from_runtime(silent=True)
+        QTimer.singleShot(0, self._restart_mic_monitor)
+        return box
+
+    def _selected_mic_device_id(self) -> str:
+        item = self._voice_stt_device.currentItem()
+        if item is None:
+            return ""
+        return str(item.data(Qt.ItemDataRole.UserRole) or "")
+
+    def _on_mic_device_changed(self, _row: int) -> None:
+        self._restart_mic_monitor()
+
+    def _restart_mic_monitor(self) -> None:
+        self._mic_monitor.stop_monitor()
+        device_id = self._selected_mic_device_id()
+        label = "기본 장치"
+        item = self._voice_stt_device.currentItem()
+        if item is not None:
+            label = item.text()
+        self._voice_connected_mic.setText(
+            f"선택된 마이크: {label}  |  시스템 기본: {AudioRecorder.default_input_label()}"
+        )
+        self._mic_monitor.start_monitor(device_id=device_id, sample_rate=16000, channels=1)
+
+    def _on_mic_monitor_level(self, level: float) -> None:
+        self._mic_threshold_bar.set_level(level)
+
+    def _on_mic_monitor_failed(self, err: str) -> None:
+        self._mic_threshold_bar.set_status(f"마이크 모니터 오류: {err}")
+
+    def _stop_mic_monitor(self) -> None:
+        self._mic_monitor.stop_monitor()
+
+    def _current_voice_prefs_from_ui(self) -> VoicePreferences:
+        stt_model = self._voice_stt_model.currentData()
+        stt_lang = self._voice_stt_lang.currentData()
+        device_id = self._selected_mic_device_id()
+        tts_mode = self._voice_tts_mode.currentData()
+        return VoicePreferences(
+            stt_enabled=self._voice_stt_on.isChecked(),
+            stt_model=str(stt_model or "small"),
+            stt_language=str(stt_lang or "ko"),
+            stt_device_id=str(device_id or ""),
+            stt_speech_rms=self._mic_threshold_bar.speech_rms(),
+            tts_enabled=self._voice_tts_on.isChecked(),
+            tts_mode=str(tts_mode or "off"),
+            tts_model=self._voice_tts_model.currentText().strip() or "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            tts_reference_audio=self._voice_ref_audio.text().strip(),
+            tts_reference_text=self._voice_ref_text.toPlainText().strip(),
+            tts_voice_prompt_hash=self._voice_prefs.tts_voice_prompt_hash,
+            tts_volume=self._voice_prefs.tts_volume,
+            voice_runtime_url=self._voice_runtime_url.text().strip() or "http://127.0.0.1:18765",
+            voice_runtime_mock=self._voice_runtime_mock.isChecked(),
+            voice_data_dir=self._voice_data_dir.text().strip() or default_voice_data_dir(),
+            pronunciation_dict_json=self._voice_prefs.pronunciation_dict_json,
+        )
+
+    def _ensure_settings_voice_runtime(self) -> bool:
+        prefs = self._current_voice_prefs_from_ui()
+        self._voice_runtime.set_base_url(prefs.voice_runtime_url)
+        try:
+            self._voice_runtime.ensure_started(mock_mode=prefs.voice_runtime_mock)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(
+                self,
+                "Voice runtime",
+                f"런타임을 시작할 수 없습니다.\n{exc}\n\n"
+                "scripts/setup_voice_runtime.ps1 실행 여부를 확인하세요.\n"
+                "메인 앱(채팅/위키 등)은 계속 사용할 수 있습니다.",
+            )
+            return False
+
+    def _pick_voice_reference_audio(self) -> None:
+        start = self._voice_data_dir.text().strip() or default_voice_data_dir()
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "기준 음성 선택",
+            start,
+            "Audio Files (*.wav *.mp3 *.m4a *.flac *.ogg *.aac);;All Files (*.*)",
+        )
+        if path:
+            self._voice_ref_audio.setText(path)
+            # 참고 음성이 바뀌면 기존 prompt hash 무효화
+            self._voice_prefs.tts_voice_prompt_hash = ""
+
+    def _pick_voice_data_dir(self) -> None:
+        start = self._voice_data_dir.text().strip() or default_voice_data_dir()
+        path = QFileDialog.getExistingDirectory(self, "성우 녹음 폴더 선택", start)
+        if path:
+            self._voice_data_dir.setText(path)
+
+    def _analyze_voice_folder(self) -> None:
+        root = self._voice_data_dir.text().strip() or default_voice_data_dir()
+        if not Path(root).is_dir():
+            QMessageBox.warning(self, "녹음 폴더 분석", f"폴더가 없습니다:\n{root}")
+            return
+        if not self._ensure_settings_voice_runtime():
+            return
+        if self._analyze_worker is not None and self._analyze_worker.isRunning():
+            QMessageBox.information(self, "녹음 폴더 분석", "이미 분석 중입니다.")
+            return
+        prefs = self._current_voice_prefs_from_ui()
+        self._voice_status.setText("녹음 폴더 분석 중…")
+        worker = VoiceAnalyzeWorker(
+            runtime_url=prefs.voice_runtime_url,
+            root=root,
+            with_transcript=True,
+            stt_model_name=prefs.stt_model,
+            language=prefs.stt_language,
+            parent=self,
+        )
+        self._analyze_worker = worker
+        worker.finished_ok.connect(self._on_analyze_finished)
+        worker.failed.connect(self._on_analyze_failed)
+        worker.start()
+
+    def _on_analyze_finished(self, payload: object) -> None:
+        self._analyze_worker = None
+        data = payload if isinstance(payload, dict) else {}
+        recs = data.get("recommendations") or []
+        self._voice_recommendations = recs if isinstance(recs, list) else []
+        self._populate_recommendation_list(self._voice_recommendations)
+        count = int(data.get("count") or 0)
+        self._voice_status.setText(
+            f"분석 완료: {count}개 — manifest: {data.get('manifest_jsonl', '')}"
+        )
+
+    def _on_analyze_failed(self, err: str) -> None:
+        self._analyze_worker = None
+        self._voice_status.setText(f"분석 실패: {err}")
+        QMessageBox.warning(self, "녹음 폴더 분석", err)
+
+    def _populate_recommendation_list(self, items: list[dict]) -> None:
+        self._voice_rec_list.clear()
+        for item in items[:5]:
+            name = str(item.get("file_name") or Path(str(item.get("audio_path") or "")).name)
+            dur = float(item.get("duration") or 0.0)
+            score = float(item.get("quality_score") or 0.0)
+            transcript = str(item.get("transcript") or "").strip()
+            preview = transcript[:40] + ("…" if len(transcript) > 40 else "")
+            text = f"{name} | {dur:.1f}s | 점수 {score:.1f}"
+            if preview:
+                text += f" | {preview}"
+            row = QListWidgetItem(text)
+            row.setData(Qt.ItemDataRole.UserRole, item)
+            self._voice_rec_list.addItem(row)
+
+    def _refresh_voice_recommendations_from_runtime(self, *, silent: bool = False) -> None:
+        try:
+            client = VoiceRuntimeClient(base_url=self._voice_runtime_url.text().strip() or self._voice_prefs.voice_runtime_url)
+            items = client.voice_references()
+            self._voice_recommendations = items
+            self._populate_recommendation_list(items)
+        except Exception as exc:  # noqa: BLE001
+            if not silent:
+                self._voice_status.setText(f"추천 목록 로드 실패: {exc}")
+
+    def _selected_recommendation(self) -> dict | None:
+        item = self._voice_rec_list.currentItem()
+        if item is None:
+            return None
+        data = item.data(Qt.ItemDataRole.UserRole)
+        return data if isinstance(data, dict) else None
+
+    def _preview_selected_recommendation(self) -> None:
+        item = self._selected_recommendation()
+        if not item:
+            QMessageBox.information(self, "미리듣기", "추천 항목을 선택하세요.")
+            return
+        path = str(item.get("audio_path") or "")
+        if not Path(path).is_file():
+            QMessageBox.warning(self, "미리듣기", f"파일이 없습니다:\n{path}")
+            return
+        self._preview_player.stop()
+        self._preview_player.setSource(QUrl.fromLocalFile(path))
+        self._preview_player.setVolume(1.0)
+        self._preview_player.play()
+
+    def _select_recommendation(self) -> None:
+        item = self._selected_recommendation()
+        if not item:
+            QMessageBox.information(self, "선택", "추천 항목을 선택하세요.")
+            return
+        path = str(item.get("audio_path") or "")
+        transcript = str(item.get("transcript") or "")
+        self._voice_ref_audio.setText(path)
+        if transcript and not self._voice_ref_text.toPlainText().strip():
+            self._voice_ref_text.setPlainText(transcript)
+        self._voice_prefs.tts_voice_prompt_hash = ""
+        self._voice_status.setText("참고 음성을 선택했습니다. 대본을 확인한 뒤 '기준 음성 확정'을 누르세요.")
+
+    def _confirm_voice_reference(self) -> None:
+        prefs = self._current_voice_prefs_from_ui()
+        if not prefs.tts_reference_audio or not Path(prefs.tts_reference_audio).is_file():
+            QMessageBox.warning(self, "기준 음성 확정", "유효한 참고 음성 파일이 필요합니다.")
+            return
+        if not prefs.tts_reference_text.strip():
+            QMessageBox.warning(self, "기준 음성 확정", "참고 대본을 입력/수정한 뒤 확정하세요.")
+            return
+        if not self._ensure_settings_voice_runtime():
+            return
+        try:
+            client = VoiceRuntimeClient(base_url=prefs.voice_runtime_url)
+            voice_hash = client.voice_prepare(
+                ref_audio_path=prefs.tts_reference_audio,
+                ref_text=prefs.tts_reference_text,
+                tts_model_name=prefs.tts_model,
+            )
+            client.voice_set_reference(
+                ref_audio_path=prefs.tts_reference_audio,
+                ref_text=prefs.tts_reference_text,
+                voice_prompt_hash=voice_hash,
+            )
+            self._voice_prefs.tts_voice_prompt_hash = voice_hash
+            self._voice_prefs.tts_reference_audio = prefs.tts_reference_audio
+            self._voice_prefs.tts_reference_text = prefs.tts_reference_text
+            if self._db is not None:
+                save_voice_preferences(self._db, self._current_voice_prefs_from_ui())
+            self._voice_status.setText(f"기준 음성 확정 완료 (hash={voice_hash[:12]}…)")
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "기준 음성 확정", str(exc))
+
+    def _test_tts_generate(self) -> None:
+        prefs = self._current_voice_prefs_from_ui()
+        text = self._voice_test_text.text().strip()
+        if not text:
+            QMessageBox.information(self, "테스트 음성", "테스트 문장을 입력하세요.")
+            return
+        if not prefs.tts_reference_audio or not prefs.tts_reference_text:
+            QMessageBox.warning(self, "테스트 음성", "기준 음성/대본을 먼저 확정하세요.")
+            return
+        if not Path(prefs.tts_reference_audio).is_file():
+            QMessageBox.warning(self, "테스트 음성", "기준 음성 파일이 없습니다.")
+            return
+        if not self._ensure_settings_voice_runtime():
+            return
+        try:
+            client = VoiceRuntimeClient(base_url=prefs.voice_runtime_url)
+            voice_hash = prefs.tts_voice_prompt_hash or client.voice_prepare(
+                ref_audio_path=prefs.tts_reference_audio,
+                ref_text=prefs.tts_reference_text,
+                tts_model_name=prefs.tts_model,
+            )
+            self._voice_prefs.tts_voice_prompt_hash = voice_hash
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "테스트 음성", str(exc))
+            return
+        self._voice_status.setText("테스트 음성 생성 중…")
+        worker = TTSSynthesisWorker(
+            runtime_url=prefs.voice_runtime_url,
+            text=text,
+            voice_prompt_hash=self._voice_prefs.tts_voice_prompt_hash,
+            model_name=prefs.tts_model,
+            parent=self,
+        )
+        self._settings_tts_worker = worker
+        worker.finished_ok.connect(self._on_settings_tts_ok)
+        worker.failed.connect(self._on_settings_tts_failed)
+        worker.start()
+
+    def _on_settings_tts_ok(self, payload: object) -> None:
+        self._settings_tts_worker = None
+        data = payload if isinstance(payload, dict) else {}
+        path = str(data.get("audio_path") or "")
+        if not path or not Path(path).is_file():
+            self._voice_status.setText("테스트 음성 경로가 비어 있습니다.")
+            return
+        self._preview_player.stop()
+        self._preview_player.setSource(QUrl.fromLocalFile(path))
+        self._preview_player.setVolume(1.0)
+        self._preview_player.play()
+        self._voice_status.setText(f"테스트 재생: {path}")
+
+    def _on_settings_tts_failed(self, err: str) -> None:
+        self._settings_tts_worker = None
+        self._voice_status.setText(f"테스트 실패: {err}")
+        QMessageBox.warning(self, "테스트 음성", err)
+
+    def _stop_voice_playback(self) -> None:
+        self._preview_player.stop()
+        self._voice_status.setText("재생 중지")
+
+    def _clear_voice_cache(self) -> None:
+        if not self._ensure_settings_voice_runtime():
+            return
+        try:
+            client = VoiceRuntimeClient(
+                base_url=self._voice_runtime_url.text().strip() or self._voice_prefs.voice_runtime_url
+            )
+            removed = client.clear_cache()
+            self._voice_status.setText(f"캐시 정리: {removed}개 삭제")
+        except VoiceRuntimeError as exc:
+            QMessageBox.warning(self, "캐시 정리", str(exc))
 
     def _build_ide_box(self) -> QGroupBox:
         ide_box = QGroupBox("IDE Companion 설정")
@@ -561,6 +1033,10 @@ class SettingsDialog(QDialog):
     def _accept(self) -> None:
         if not self._save_profile_ide():
             return
+        self._stop_mic_monitor()
+        voice_prefs = self._current_voice_prefs_from_ui()
+        if self._db is not None:
+            save_voice_preferences(self._db, voice_prefs)
         self._result = LightSettingsSelection(
             ollama_base_url=self._ollama_url.text().strip() or "http://127.0.0.1:11434/v1",
             ollama_model=self._ollama_model.text().strip(),
@@ -568,8 +1044,17 @@ class SettingsDialog(QDialog):
             hermes_command=self._hermes_cmd.text().strip() or "hermes",
             hermes_base_url=self._hermes_url.text().strip() or "http://127.0.0.1:8642/v1",
             hermes_api_key=self._hermes_key.text().strip(),
+            voice_prefs=voice_prefs,
         )
         self.accept()
+
+    def reject(self) -> None:
+        self._stop_mic_monitor()
+        super().reject()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._stop_mic_monitor()
+        super().closeEvent(event)
 
     def selection(self) -> LightSettingsSelection | None:
         return self._result

@@ -212,6 +212,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\apply_env_to_herme
 |------|--------|
 | HUD·채팅·Wiki·이메일·IDE Companion·알림 | Full Iris 자체 오케스트레이터 |
 | Ollama 모델 선택·Hermes 도구/MCP | Iris 내부 웹검색 재구현 (Hermes 위임) |
+| 분리형 `.venv-voice` 기반 STT/TTS (mock 기본, 설정 UI·답변별 TTS) | 대규모 자동 음성 미세조정 / 클라우드 음성 |
 | 기동 시 iris-control MCP 자동 동기화 | Android 에뮬레이터 SDK 자동 설치 |
 
 ---
@@ -248,3 +249,18 @@ hermes gateway stop --all
 `.env.example` 주석에 **동작 확인용 API 키 스냅샷**이 들어 있을 수 있습니다.  
 공개 포크·공유 전에는 본인 키로 교체하고, 노출됐다면 발급처에서 로테이션하세요.  
 실제 로컬 비밀은 항상 gitignore된 `.env` 와 `%LOCALAPPDATA%\hermes\.env` 에만 두세요.
+
+## 음성 데이터 주의
+
+상세: [docs/voice.md](docs/voice.md), [docs/voice_architecture.md](docs/voice_architecture.md)
+
+```powershell
+.\scripts\setup_voice_runtime.ps1          # mock/스모크
+.\scripts\setup_voice_runtime.ps1 -Full    # 실제 모델
+```
+
+- 음성 데이터는 로컬(`127.0.0.1:18765`)에서만 처리됩니다.
+- 성우 본인의 동의와 사용 권한이 필요합니다.
+- 성우 원본 녹음과 생성 모델은 기본적으로 저장소에 포함하지 않습니다.
+- 제3자의 목소리를 무단 복제하면 안 됩니다.
+- 녹음 폴더 분석: 설정창 또는 `scripts/prepare_voice_dataset.py`
