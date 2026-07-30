@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QWidget
 from iris.assistant.external_agent_adapter import external_backend_status_line
 from iris.config.settings import Settings
 from iris.core.state_machine import AppState
-from iris.ui.theme_tokens import TOKENS
+from iris.ui.shared.theme_tokens import TOKENS
 
 # DragTab 상태 2행 블록 높이 — 타이틀 텍스트·칩 행 정렬 기준
 STATUS_BLOCK_HEIGHT = 36

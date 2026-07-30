@@ -51,36 +51,36 @@ from iris.system.ide_launcher import (
 )
 from iris.system.ide_tiler import compute_tile_rects, tile_ide_and_iris, work_area_for
 from iris.system.metrics_worker import MetricsWorker
-from iris.ui.chat_panel import ChatPanel
-from iris.ui.context_ring import estimate_messages_tokens
-from iris.ui.cyberspace_background import CyberspaceBackground
-from iris.ui.cyberspace_theme import apply_cyberspace_theme
-from iris.ui.drag_tab import DragTab
-from iris.ui.frameless_chrome import FramelessShell, center_on_screen, suppress_native_window_border
-from iris.ui.left_sidebar_panel import LeftSidebarPanel
-from iris.ui.live_activity_panel import LiveActivityPanel, UiActivityRelay
-from iris.ui.notification_panel import NotificationPanel
-from iris.ui.boot_checks_worker import BootChecksWorker
+from iris.ui.chat.chat_panel import ChatPanel
+from iris.ui.widgets.context_ring import estimate_messages_tokens
+from iris.ui.window.cyberspace_background import CyberspaceBackground
+from iris.ui.shared.cyberspace_theme import apply_cyberspace_theme
+from iris.ui.widgets.drag_tab import DragTab
+from iris.ui.window.frameless_chrome import FramelessShell, center_on_screen, suppress_native_window_border
+from iris.ui.sidebar.left_sidebar_panel import LeftSidebarPanel
+from iris.ui.monitor.live_activity_panel import LiveActivityPanel, UiActivityRelay
+from iris.ui.notification.notification_panel import NotificationPanel
+from iris.ui.workers.boot_checks_worker import BootChecksWorker
 from iris.ui.control_bindings import (
     mark_control_ready,
     start_control_surface,
     stop_control_surface,
 )
-from iris.ui.email_workers import EmailInboxWorker, EmailMessageWorker, EmailSendWorker
-from iris.ui.hermes_workers import (
+from iris.ui.workers.email_workers import EmailInboxWorker, EmailMessageWorker, EmailSendWorker
+from iris.ui.workers.hermes_workers import (
     HermesChatWorker,
     HermesHealthWorker,
     HermesModelSyncWorker,
 )
-from iris.ui.ollama_workers import OllamaChatWorker, OllamaModelListWorker
-from iris.ui.settings_dialog import SettingsDialog
-from iris.ui.startup_intro import StartupIntroAnimator
-from iris.ui.theme_tokens import TOKENS
-from iris.ui.top_status_header import TopStatusHeader
-from iris.ui.unified_monitor_panel import UnifiedMonitorPanel
-from iris.ui.user_profile_dialog import UserProfileDialog
-from iris.ui.ide_icons import show_ide_not_installed_dialog
-from iris.ui.visualizer import Visualizer
+from iris.ui.workers.ollama_workers import OllamaChatWorker, OllamaModelListWorker
+from iris.ui.settings.settings_dialog import SettingsDialog
+from iris.ui.window.startup_intro import StartupIntroAnimator
+from iris.ui.shared.theme_tokens import TOKENS
+from iris.ui.window.top_status_header import TopStatusHeader
+from iris.ui.monitor.unified_monitor_panel import UnifiedMonitorPanel
+from iris.ui.settings.user_profile_dialog import UserProfileDialog
+from iris.ui.widgets.ide_icons import show_ide_not_installed_dialog
+from iris.ui.widgets.visualizer import Visualizer
 from iris.ui.workspaces.assistant_workspace_page import AssistantWorkspacePage
 from iris.ui.workspaces.email_workspace_page import EmailWorkspacePage
 from iris.ui.workspaces.ide_companion_page import (

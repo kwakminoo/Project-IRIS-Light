@@ -28,7 +28,7 @@ from iris.system.control_surface import (
 from iris.system.ide_launcher import ide_catalog, is_ide_installed
 
 if TYPE_CHECKING:
-    from iris.ui.main_window import MainWindow
+    from iris.ui.window.main_window import MainWindow
 
 
 class _QtInvoker(QObject):

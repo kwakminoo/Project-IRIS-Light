@@ -26,13 +26,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from iris.ui.glass_panel import wrap_glass_panel
-from iris.ui.section_header import (
+from iris.ui.shared.glass_panel import wrap_glass_panel
+from iris.ui.shared.section_header import (
     SECTION_CONTENT_GAP,
     apply_section_panel_layout,
     make_section_header,
 )
-from iris.ui.theme_tokens import TOKENS
+from iris.ui.shared.theme_tokens import TOKENS
 
 if TYPE_CHECKING:
     from iris.monitoring.notification_policy import NotificationPolicy

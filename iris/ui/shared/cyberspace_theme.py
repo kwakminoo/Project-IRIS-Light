@@ -5,7 +5,7 @@ from __future__ import annotations
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import QWidget
 
-from iris.ui.theme_tokens import TOKENS
+from iris.ui.shared.theme_tokens import TOKENS
 
 
 def build_cyberspace_qss() -> str:

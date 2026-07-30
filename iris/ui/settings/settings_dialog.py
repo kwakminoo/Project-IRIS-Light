@@ -50,9 +50,10 @@ from iris.storage.voice_prefs import (
 )
 from iris.storage.user_profile import UserProfile, load_user_profile, save_user_profile
 from iris.system.ide_launcher import get_ide_spec, ide_catalog, is_ide_installed
-from iris.ui.email_workers import EmailVerifyWorker
-from iris.ui.ide_icons import ide_icon_for, show_ide_not_installed_dialog
-from iris.ui.mic_input_meter import MicThresholdBar
+from iris.ui.workers.email_workers import EmailVerifyWorker
+from iris.ui.widgets.ide_icons import ide_icon_for, show_ide_not_installed_dialog
+from iris.ui.widgets.mic_input_meter import MicThresholdBar
+from iris.ui.settings import settings_service
 
 
 @dataclass(frozen=True)
@@ -573,26 +574,10 @@ class SettingsDialog(QDialog):
 
     def _confirm_voice_reference(self) -> None:
         prefs = self._current_voice_prefs_from_ui()
-        if not prefs.tts_reference_audio or not Path(prefs.tts_reference_audio).is_file():
-            QMessageBox.warning(self, "기준 음성 확정", "유효한 참고 음성 파일이 필요합니다.")
-            return
-        if not prefs.tts_reference_text.strip():
-            QMessageBox.warning(self, "기준 음성 확정", "참고 대본을 입력/수정한 뒤 확정하세요.")
-            return
         if not self._ensure_settings_voice_runtime():
             return
         try:
-            client = VoiceRuntimeClient(base_url=prefs.voice_runtime_url)
-            voice_hash = client.voice_prepare(
-                ref_audio_path=prefs.tts_reference_audio,
-                ref_text=prefs.tts_reference_text,
-                tts_model_name=prefs.tts_model,
-            )
-            client.voice_set_reference(
-                ref_audio_path=prefs.tts_reference_audio,
-                ref_text=prefs.tts_reference_text,
-                voice_prompt_hash=voice_hash,
-            )
+            voice_hash = settings_service.confirm_voice_reference(prefs.voice_runtime_url, prefs)
             self._voice_prefs.tts_voice_prompt_hash = voice_hash
             self._voice_prefs.tts_reference_audio = prefs.tts_reference_audio
             self._voice_prefs.tts_reference_text = prefs.tts_reference_text
@@ -608,21 +593,10 @@ class SettingsDialog(QDialog):
         if not text:
             QMessageBox.information(self, "테스트 음성", "테스트 문장을 입력하세요.")
             return
-        if not prefs.tts_reference_audio or not prefs.tts_reference_text:
-            QMessageBox.warning(self, "테스트 음성", "기준 음성/대본을 먼저 확정하세요.")
-            return
-        if not Path(prefs.tts_reference_audio).is_file():
-            QMessageBox.warning(self, "테스트 음성", "기준 음성 파일이 없습니다.")
-            return
         if not self._ensure_settings_voice_runtime():
             return
         try:
-            client = VoiceRuntimeClient(base_url=prefs.voice_runtime_url)
-            voice_hash = prefs.tts_voice_prompt_hash or client.voice_prepare(
-                ref_audio_path=prefs.tts_reference_audio,
-                ref_text=prefs.tts_reference_text,
-                tts_model_name=prefs.tts_model,
-            )
+            voice_hash = settings_service.ensure_voice_hash_for_test(prefs.voice_runtime_url, prefs)
             self._voice_prefs.tts_voice_prompt_hash = voice_hash
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "테스트 음성", str(exc))
@@ -828,26 +802,10 @@ class SettingsDialog(QDialog):
         return box
 
     def _load_sync_status_text(self) -> str:
-        try:
-            from iris.system.hermes_iris_control_sync import sync_state_path
-
-            path = sync_state_path()
-            if not path.is_file():
-                return "상태: 아직 동기화하지 않음"
-            import json
-
-            data = json.loads(path.read_text(encoding="utf-8"))
-            ok = bool(data.get("ok"))
-            summary = data.get("messages") or []
-            line = (summary[0] if summary else "") or (
-                "동기화됨" if ok else "동기화 이슈"
-            )
-            return f"상태: {'OK' if ok else '이슈'} — {line}"
-        except Exception:  # noqa: BLE001
-            return "상태: 아직 동기화하지 않음"
+        return settings_service.load_hermes_sync_status_text()
 
     def _run_hermes_control_sync(self) -> None:
-        from iris.ui.hermes_workers import HermesControlSyncWorker
+        from iris.ui.workers.hermes_workers import HermesControlSyncWorker
 
         if self._sync_worker is not None and self._sync_worker.isRunning():
             return
@@ -980,51 +938,22 @@ class SettingsDialog(QDialog):
     def _save_profile_ide(self) -> bool:
         if self._db is None:
             return True
-        if self._preferred_ide == "custom" and not self._ide_exe_path:
-            QMessageBox.warning(
-                self,
-                "IDE 설정",
-                "사용자 지정 IDE는 실행 파일 선택이 필요합니다.",
+        try:
+            profile = settings_service.build_profile_update(
+                self._profile_base,
+                preferred_ide=self._preferred_ide,
+                ide_exe_path=self._ide_exe_path,
+                ide_cli_path=self._ide_cli_path,
+                project_root=self._project_root,
+                parents_customized=self._parents_customized,
+                project_parents=(
+                    self._parents_from_list_widget() if self._parents_customized else []
+                ),
             )
+        except ValueError as exc:
+            QMessageBox.warning(self, "설정 저장", str(exc))
             return False
-        base = self._profile_base
-        data = {
-            "name": base.name,
-            "occupation": base.occupation,
-            "hobbies": base.hobbies,
-            "interests": base.interests,
-            "work_tasks": base.work_tasks,
-            "age": base.age,
-            "gender": base.gender,
-            "residence": base.residence,
-            "contact": base.contact,
-            "email": base.email,
-            "preferred_ide": self._preferred_ide or "cursor",
-            "ide_exe_path": self._ide_exe_path if self._preferred_ide == "custom" else "",
-            # ponytail: UI에서 제거 — 기존 값 유지 (필요 시 코드/DB에서만)
-            "ide_cli_path": self._ide_cli_path,
-            "project_root": self._project_root,
-            "project_parents": (
-                self._parents_from_list_widget() if self._parents_customized else []
-            ),
-        }
-        # 커스텀인데 목록이 비면 거부
-        if self._parents_customized and not data["project_parents"]:
-            QMessageBox.warning(
-                self,
-                "프로젝트 검색 부모 폴더",
-                "부모 폴더가 비어 있습니다. 폴더를 추가하거나 기본값 복원을 누르세요.",
-            )
-            return False
-        for raw in data["project_parents"]:
-            if not Path(raw).expanduser().is_dir():
-                QMessageBox.warning(
-                    self,
-                    "프로젝트 검색 부모 폴더",
-                    f"존재하지 않는 폴더입니다:\n{raw}",
-                )
-                return False
-        save_user_profile(self._db, UserProfile(**data))
+        save_user_profile(self._db, profile)
         self._wiki.sync_email_accounts_index(
             [{"address": a.address, "label": a.label} for a in self._accounts]
         )

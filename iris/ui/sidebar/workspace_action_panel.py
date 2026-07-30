@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QGridLayout, QPushButton, QVBoxLayout, QWidget
 
-from iris.ui.hud_quick_launch_icons import (
+from iris.ui.widgets.hud_quick_launch_icons import (
     HUD_ICON_BTN_PX,
     hud_icon_size,
     hud_quick_launch_icon,

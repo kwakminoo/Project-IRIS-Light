@@ -10,7 +10,7 @@ from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, Qt, QTimer
 from PyQt6.QtWidgets import QWidget
 
 from iris.core.state_machine import AppState
-from iris.ui.particle_visualizer import ParticleVisualizer
+from iris.ui.widgets.particle_visualizer import ParticleVisualizer
 
 _DEBUG_ORB = os.environ.get("IRIS_DEBUG_ORB_GEOMETRY") == "1"
 _MAX_STABILIZE_ATTEMPTS = 12

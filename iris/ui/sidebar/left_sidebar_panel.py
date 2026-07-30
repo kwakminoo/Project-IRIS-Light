@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QSizePolicy, QSplitter, QStackedWidget, QVBoxLayout,
 
 from iris.ui.knowledge.email_detail_panel import EmailFolderPanel
 from iris.ui.knowledge.obsidian_detail_panel import ObsidianDetailPanel
-from iris.ui.window_list_panel import WindowListPanel
+from iris.ui.monitor.window_list_panel import WindowListPanel
 
 _SIDEBAR_MIN_WIDTH = 200
 _SIDEBAR_MAX_WIDTH = 300
@@ -48,7 +48,7 @@ class LeftSidebarPanel(QWidget):
         self._top_stack.addWidget(self.obsidian_detail)
         self._top_stack.addWidget(self.email_folder)
 
-        from iris.ui.sidebar_utility_panel import SidebarUtilityPanel
+        from iris.ui.sidebar.sidebar_utility_panel import SidebarUtilityPanel
 
         self.utility = SidebarUtilityPanel(self)
 

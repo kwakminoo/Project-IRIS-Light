@@ -18,8 +18,8 @@ from PyQt6.QtCore import (
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 if TYPE_CHECKING:
-    from iris.ui.mic_waveform_bar import MicWaveformBar
-    from iris.ui.particle_visualizer import ParticleVisualizer
+    from iris.ui.widgets.mic_waveform_bar import MicWaveformBar
+    from iris.ui.widgets.particle_visualizer import ParticleVisualizer
 
 
 class _SlideFadeProxy(QObject):

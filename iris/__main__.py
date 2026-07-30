@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QApplication
 
 
 def main() -> None:
-    from iris.ui.main_window import MainWindow
+    from iris.ui.window.main_window import MainWindow
 
     app = QApplication(sys.argv)
     app.setApplicationName("Iris Light")
