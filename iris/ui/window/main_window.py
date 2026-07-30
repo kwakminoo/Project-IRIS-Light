@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QEvent, QRect, Qt, QThread, QTimer
@@ -1423,6 +1424,10 @@ class MainWindow(QMainWindow):
     def _ide_hwnd_alive(self, hwnd: int | None) -> bool:
         if not hwnd:
             return False
+        if sys.platform == "darwin":
+            from iris.automation.window_controller import is_macos_window_number_alive
+
+            return is_macos_window_number_alive(int(hwnd))
         try:
             import win32gui  # type: ignore
 
@@ -1433,13 +1438,14 @@ class MainWindow(QMainWindow):
     def _schedule_companion_retile(self, ide_hwnd: int) -> None:
         """Cursor가 자체 레이아웃으로 되돌리는 경우 대비 지연 재타일."""
         hwnd = int(ide_hwnd)
+        pid = self._ide_pid
 
         def _retile() -> None:
             if self._ui_mode != "ide_companion":
                 return
             if not self._ide_hwnd_alive(hwnd):
                 return
-            tile_ide_and_iris(hwnd, self, ide_ratio=0.8)
+            tile_ide_and_iris(hwnd, self, ide_ratio=0.8, ide_pid=pid)
 
         QTimer.singleShot(400, _retile)
         QTimer.singleShot(1200, _retile)
@@ -1457,7 +1463,9 @@ class MainWindow(QMainWindow):
         self._apply_ide_companion_layout(True)
         QApplication.processEvents()
         # 2) 타일
-        ok, tile_err = tile_ide_and_iris(self._ide_hwnd, self, ide_ratio=0.8)
+        ok, tile_err = tile_ide_and_iris(
+            self._ide_hwnd, self, ide_ratio=0.8, ide_pid=self._ide_pid
+        )
         if not ok:
             self._apply_ide_companion_layout(False)
             return tile_err or "tile failed"
@@ -1653,7 +1661,7 @@ class MainWindow(QMainWindow):
         self._viz.particle_core().set_size_scale(EMAIL_ORB_SCALE)
         self._viz.set_orb_anchor(self._orb_spacer)
         self._viz.set_companion_orb_placement(True)
-        self._cyberspace_bg.set_orb_above_ui(False)
+        self._cyberspace_bg.set_orb_above_ui(True)
 
     def _unmount_companion_body(self) -> None:
         self._cyberspace_bg.set_orb_above_ui(False)

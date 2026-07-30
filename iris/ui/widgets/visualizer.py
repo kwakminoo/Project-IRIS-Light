@@ -127,20 +127,29 @@ class Visualizer(QWidget):
 
     def _window_content_center_local(self) -> tuple[float, float]:
         """Visualizer 기준 구체 목표 중심. Companion에선 상단 앵커 사용."""
+        vr = self.rect()
+        w, h = max(vr.width(), 1), max(vr.height(), 1)
         if self._use_anchor_center and self._orb_anchor is not None:
             mapped = self._map_anchor_center_local(self._orb_anchor)
             if mapped is not None:
-                # 살짝 더 위 — 로그와 겹침
-                return (mapped[0], max(24.0, mapped[1] - 12.0))
-        vr = self.rect()
-        w, h = max(vr.width(), 1), max(vr.height(), 1)
+                # 수평은 컬럼 폭 기준 정중앙 — 앵커 x는 살짝 어긋날 수 있어 신뢰 안 함.
+                # 수직은 앵커 중심 그대로 — 로그와 살짝 겹쳐도 무방.
+                return (w * 0.5, mapped[1])
         return (w * 0.5, h * self._center_y_ratio)
 
     def _map_anchor_center_local(self, anchor: QWidget) -> tuple[float, float] | None:
-        """orb_spacer 중심을 Visualizer 로컬 좌표로 변환."""
+        """orb_spacer 중심을 Visualizer 로컬 좌표로 변환.
+
+        mapTo()는 self(Visualizer)가 anchor의 실제 조상 위젯이어야 하는데,
+        companion 모드에서 orb_spacer가 IdeCompanionPage(형제 분기)로 옮겨가면
+        더 이상 조상 관계가 아니라 "parent must be in parent hierarchy" 경고와
+        함께 엉뚱한(창 전역에 가까운) 좌표를 반환했다 — 전역 좌표를 거쳐가면
+        조상 관계와 무관하게 항상 올바르게 계산된다.
+        """
         if not self._same_top_level_window(anchor, self):
             return None
-        local_pt = anchor.mapTo(self, anchor.rect().center())
+        global_pt = anchor.mapToGlobal(anchor.rect().center())
+        local_pt = self.mapFromGlobal(global_pt)
         return (float(local_pt.x()), float(local_pt.y()))
 
     @staticmethod

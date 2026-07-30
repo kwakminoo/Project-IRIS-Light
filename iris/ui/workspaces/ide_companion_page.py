@@ -5,9 +5,9 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
-# 이메일 우측 Iris 패널과 동일 — 상단 구체 슬롯
-EMAIL_ORB_HEIGHT = 300
-EMAIL_ORB_SCALE = 3.0
+# 상단 구체 슬롯 — 좁은 20% 컬럼에서 3.0 스케일은 슬롯 밖으로 번져 로그와 겹쳤음
+EMAIL_ORB_HEIGHT = 260
+EMAIL_ORB_SCALE = 2.4
 
 
 class IdeCompanionPage(QWidget):

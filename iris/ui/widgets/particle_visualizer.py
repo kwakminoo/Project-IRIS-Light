@@ -68,7 +68,7 @@ _STATE_PROFILES: dict[str, dict[str, float | tuple[int, int, int]]] = {
 
 _PARTICLE_COUNT = 52
 _CONNECT_DIST = 0.38
-# 레이아웃 여유 — 파티클 네트워크가 core_r 밖으로 번지는 만큼 확보
+# 레이아웃 여유 — 이전 glow 기준과 동일한 크기 산정 (시각 glow는 미사용)
 _VISUAL_HALO_FACTOR = 2.05
 _EDGE_PAD = 10.0
 _DEFAULT_CY_RATIO = 0.36
@@ -268,7 +268,6 @@ class ParticleVisualizer(QWidget):
             tear = int((_BOOT_RNG.random() - 0.5) * 14.0 * self._boot_glitch)
             painter.translate(tear, int((_BOOT_RNG.random() - 0.5) * 4.0 * self._boot_glitch))
 
-        self._draw_particle_network(painter, cx, cy, accent, energy)
         self._draw_core_image(painter, cx, cy, energy)
         self._draw_front_sheen(painter, cx, cy, accent, energy)
         painter.restore()
