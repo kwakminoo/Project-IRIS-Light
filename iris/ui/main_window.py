@@ -163,6 +163,8 @@ class MainWindow(QMainWindow):
             iris_root=Path(__file__).resolve().parents[2],
         )
         self._mic_listen_active = False
+        # ponytail: STT QThread는 중단이 약함 — 끄기 시 세션만 올리면 늦은 콜백 무시
+        self._stt_session = 0
         self._recorder = AudioRecorder(self)
         self._recorder.level_changed.connect(self._on_recorder_level)
         self._recorder.recording_started.connect(self._on_recording_started)
@@ -819,12 +821,13 @@ class MainWindow(QMainWindow):
         )
 
     def _stop_mic_listen(self) -> None:
+        self._stt_session += 1
         self._set_mic_recording(False)
+        self._chat.cancel_user_listening()
+        self._recorder.set_capture_paused(False)
         if self._recorder.is_recording():
             self._recorder.cancel_recording()
-        else:
-            self._chat.cancel_user_listening()
-            self._state.set_state(AppState.IDLE)
+        self._state.set_state(AppState.IDLE)
 
     def _on_recording_started(self) -> None:
         if self._mic_listen_active:
@@ -844,6 +847,8 @@ class MainWindow(QMainWindow):
         self._transcribe_wav(result, keep_listening=True)
 
     def _transcribe_wav(self, result: RecordingResult, *, keep_listening: bool) -> None:
+        if keep_listening and not self._mic_listen_active:
+            return
         if not result.wav_bytes:
             if not keep_listening:
                 self._on_recording_failed("빈 녹음입니다.")
@@ -857,10 +862,13 @@ class MainWindow(QMainWindow):
             return
         if self._stt_worker is not None and self._stt_worker.isRunning():
             return
+        if keep_listening and not self._mic_listen_active:
+            return
         self._recorder.set_capture_paused(True)
         self._chat.set_user_listening_status("음성을 인식하고 있습니다")
         if not keep_listening:
             self._state.set_state(AppState.PROCESSING)
+        session = self._stt_session
         worker = STTTranscriptionWorker(
             result.wav_bytes,
             runtime_url=self._voice_prefs.voice_runtime_url,
@@ -870,10 +878,14 @@ class MainWindow(QMainWindow):
         )
         self._stt_worker = worker
         worker.finished_ok.connect(
-            lambda payload, kl=keep_listening: self._on_stt_finished(payload, keep_listening=kl)
+            lambda payload, kl=keep_listening, s=session: self._on_stt_finished(
+                payload, keep_listening=kl, session=s
+            )
         )
         worker.failed.connect(
-            lambda err, kl=keep_listening: self._on_stt_failed(err, keep_listening=kl)
+            lambda err, kl=keep_listening, s=session: self._on_stt_failed(
+                err, keep_listening=kl, session=s
+            )
         )
         worker.start()
 
@@ -891,9 +903,18 @@ class MainWindow(QMainWindow):
         self._live_activity.append_instant_line(f"녹음 오류: {err}")
         QTimer.singleShot(800, lambda: self._state.set_state(AppState.IDLE))
 
-    def _on_stt_finished(self, payload: object, *, keep_listening: bool = False) -> None:
+    def _on_stt_finished(
+        self, payload: object, *, keep_listening: bool = False, session: int | None = None
+    ) -> None:
+        if session is not None and session != self._stt_session:
+            self._stt_worker = None
+            return
         self._stt_worker = None
         self._recorder.set_capture_paused(False)
+        if keep_listening and not self._mic_listen_active:
+            self._chat.cancel_user_listening()
+            self._state.set_state(AppState.IDLE)
+            return
         data = payload if isinstance(payload, dict) else {}
         text = str(data.get("text") or "").strip()
         if keep_listening and self._mic_listen_active:
@@ -913,9 +934,18 @@ class MainWindow(QMainWindow):
         self._live_activity.append_instant_line("STT 완료 — 입력창에 전사 결과를 넣었습니다.")
         self._state.set_state(AppState.IDLE)
 
-    def _on_stt_failed(self, err: str, *, keep_listening: bool = False) -> None:
+    def _on_stt_failed(
+        self, err: str, *, keep_listening: bool = False, session: int | None = None
+    ) -> None:
+        if session is not None and session != self._stt_session:
+            self._stt_worker = None
+            return
         self._stt_worker = None
         self._recorder.set_capture_paused(False)
+        if keep_listening and not self._mic_listen_active:
+            self._chat.cancel_user_listening()
+            self._state.set_state(AppState.IDLE)
+            return
         if keep_listening and self._mic_listen_active:
             self._live_activity.append_instant_line(f"STT 오류: {err}")
             self._chat.set_user_listening_status("듣고 있습니다")
