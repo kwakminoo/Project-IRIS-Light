@@ -86,7 +86,7 @@ class SettingsDialog(QDialog):
         self._result: LightSettingsSelection | None = None
         self._accounts = load_email_accounts(db) if db is not None else []
         self._voice_prefs = load_voice_preferences(db) if db is not None else VoicePreferences()
-        self._iris_root = Path(__file__).resolve().parents[2]
+        self._iris_root = Path(__file__).resolve().parents[3]
         self._voice_runtime = VoiceRuntimeProcessManager(
             base_url=self._voice_prefs.voice_runtime_url,
             iris_root=self._iris_root,

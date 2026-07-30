@@ -32,14 +32,7 @@ def get_active_window_title() -> str:
 
 def list_window_titles() -> List[str]:
     """제목 목록 (가능할 때만)."""
-    try:
-        import pygetwindow as gw  # type: ignore
-    except Exception:
-        return []
-    try:
-        return [w.title for w in gw.getAllWindows() if w.title]
-    except Exception:
-        return []
+    return [w.title for w in list_visible_windows()]
 
 
 def list_visible_windows() -> List[WindowInfo]:
@@ -48,7 +41,50 @@ def list_visible_windows() -> List[WindowInfo]:
         wins = _list_via_win32()
         if wins:
             return wins
+    if sys.platform == "darwin":
+        wins = _list_via_macos_quartz()
+        if wins:
+            return wins
     return _list_via_pygetwindow()
+
+
+def _list_via_macos_quartz() -> List[WindowInfo]:
+    """pygetwindow의 macOS 백엔드는 getAllWindows()가 없어 항상 빈 리스트를 반환한다
+    (창 목록·크기는 미구현 stub) — Quartz CGWindowList API로 직접 조회."""
+    try:
+        import Quartz  # type: ignore
+    except Exception:
+        return []
+    try:
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListExcludeDesktopElements | Quartz.kCGWindowListOptionOnScreenOnly,
+            Quartz.kCGNullWindowID,
+        )
+    except Exception:
+        return []
+
+    results: List[WindowInfo] = []
+    for win in windows:
+        try:
+            if win.get("kCGWindowLayer", 0) != 0:
+                continue
+            title = (win.get(Quartz.kCGWindowName, "") or "").strip()
+            owner = (win.get(Quartz.kCGWindowOwnerName, "") or "").strip()
+            label = title or owner
+            if not label:
+                continue
+            bounds = win.get("kCGWindowBounds")
+            if not bounds:
+                continue
+            w, h = int(bounds["Width"]), int(bounds["Height"])
+            if w <= 0 or h <= 0:
+                continue
+            results.append(
+                WindowInfo(label, int(bounds["X"]), int(bounds["Y"]), w, h, 0)
+            )
+        except Exception:
+            continue
+    return results
 
 
 def _list_via_win32() -> List[WindowInfo]:

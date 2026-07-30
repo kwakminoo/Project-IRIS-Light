@@ -99,6 +99,10 @@ class Visualizer(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._particle.setGeometry(self.rect())
+        # 디바운스된 안정화 동기화를 기다리는 동안 구체가 리사이즈 이전 절대 좌표에
+        # 멈춰 있지 않도록, 매 리사이즈 프레임마다 즉시 목표 중심으로 맞춘다.
+        center = self._window_content_center_local()
+        self._particle.set_custom_center(center[0], center[1])
         self.request_sync_orb_anchor("visualizer_resize")
 
     def showEvent(self, event) -> None:  # noqa: N802
@@ -335,7 +339,7 @@ class Visualizer(QWidget):
 
         print(
             f"[IRIS_DEBUG_ORB] reason={reason!r} "
-            f"window_state={int(snap.window_state)} "
+            f"window_state={snap.window_state!s} "
             f"main={main_geom.width()}x{main_geom.height()} "
             f"bg={bg_geom.width()}x{bg_geom.height()} "
             f"overlay={overlay_geom.width()}x{overlay_geom.height()} "

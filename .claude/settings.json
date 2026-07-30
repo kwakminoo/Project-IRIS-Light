@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./.venv/bin/python3 -m iris)",
+      "Bash(echo \"PID: $!\")",
+      "Bash(ps -p 38525 -o pid,command)",
+      "Bash(/Users/tpfls/Desktop/GitHub/Project-IRIS-Light/.venv/bin/python3 -c ' *)",
+      "Bash(./.venv/bin/pip install *)",
+      "Bash(./.venv/bin/python3 -c ' *)",
+      "Bash(screencapture -x /private/tmp/claude-501/-Users-tpfls-Desktop-GitHub-Project-IRIS-Light/9f46d173-9c26-491f-a05c-8f826e920877/scratchpad/iris_screenshot2.png)",
+      "Bash(osascript -e ' *)",
+      "Bash(osascript -e 'tell application \"System Events\" to set frontmost of process \"Python\" to true')",
+      "Bash(screencapture -x /private/tmp/claude-501/-Users-tpfls-Desktop-GitHub-Project-IRIS-Light/9f46d173-9c26-491f-a05c-8f826e920877/scratchpad/iris_screenshot3.png)",
+      "Bash(QT_QPA_PLATFORM=offscreen ./.venv/bin/python3 -m unittest discover -s tests -p \"test_*.py\")",
+      "Bash(screencapture -x /private/tmp/claude-501/-Users-tpfls-Desktop-GitHub-Project-IRIS-Light/9f46d173-9c26-491f-a05c-8f826e920877/scratchpad/iris_screenshot4.png)",
+      "Bash(screencapture -x -l 1607 /private/tmp/claude-501/-Users-tpfls-Desktop-GitHub-Project-IRIS-Light/9f46d173-9c26-491f-a05c-8f826e920877/scratchpad/iris_window_direct.png)",
+      "Bash(kill 11897)",
+      "Bash(IRIS_DEBUG_ORB_GEOMETRY=1 ./.venv/bin/python3 -m iris)",
+      "Bash(ps -p 18713 -o pid,command)",
+      "Bash(./.venv/bin/python3 /tmp/orb_resize_test2.py)",
+      "Bash(./.venv/bin/python3 /tmp/orb_resize_test.py)",
+      "Bash(rm -f /tmp/orb_resize_test.py /tmp/orb_resize_test2.py /tmp/iris_debug.log /tmp/iris_debug2.log /tmp/iris_pid.txt *)",
+      "Bash(git diff *)",
+      "Bash(./.venv/bin/python3 -m py_compile iris/ui/notification/notification_panel.py)",
+      "Bash(QT_QPA_PLATFORM=offscreen ./.venv/bin/python3 -c ' *)",
+      "Bash(cat)",
+      "Bash(./.venv/bin/python3 /tmp/dialog_test.py)",
+      "Bash(screencapture -x -l 1961 /private/tmp/claude-501/-Users-tpfls-Desktop-GitHub-Project-IRIS-Light/9f46d173-9c26-491f-a05c-8f826e920877/scratchpad/profile_dialog.png)",
+      "Bash(./.venv/bin/python3 /tmp/dialog_test2.py)",
+      "Bash(env)",
+      "Bash(ps -p 67488 -o pid,command)",
+      "Bash(screencapture -x -l 2376 /private/tmp/claude-501/-Users-tpfls-Desktop-GitHub-Project-IRIS-Light/9f46d173-9c26-491f-a05c-8f826e920877/scratchpad/profile_dialog_fixed.png)",
+      "Bash(screencapture -x -l 2380 /private/tmp/claude-501/-Users-tpfls-Desktop-GitHub-Project-IRIS-Light/9f46d173-9c26-491f-a05c-8f826e920877/scratchpad/settings_dialog_fixed.png)",
+      "Bash(ps -p 70924 -o pid,command)"
+    ],
+    "additionalDirectories": [
+      "/private/tmp"
+    ]
+  }
+}

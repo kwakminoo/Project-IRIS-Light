@@ -101,7 +101,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(960, 640)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
 
-        self._env_path = Path(__file__).resolve().parents[2] / ".env"
+        self._env_path = Path(__file__).resolve().parents[3] / ".env"
         self._settings = load_settings(self._env_path)
         if self._test_mode:
             test_db_dir = Path.cwd() / ".iris_light_test_tmp"
@@ -160,7 +160,7 @@ class MainWindow(QMainWindow):
             self._settings.model_name = self._saved_model
         self._voice_runtime = VoiceRuntimeProcessManager(
             base_url=self._voice_prefs.voice_runtime_url,
-            iris_root=Path(__file__).resolve().parents[2],
+            iris_root=Path(__file__).resolve().parents[3],
         )
         self._mic_listen_active = False
         self._recorder = AudioRecorder(self)
@@ -232,7 +232,7 @@ class MainWindow(QMainWindow):
         self._body_stack.addWidget(splitter)
         self._body_stack.addWidget(self._companion_page)
 
-        self._iris_wiki = IrisWiki(Path(__file__).resolve().parents[2] / "obsidian-vault")
+        self._iris_wiki = IrisWiki(Path(__file__).resolve().parents[3] / "obsidian-vault")
         self._obsidian_page.set_wiki(self._iris_wiki)
         self._left_sidebar.obsidian_detail.set_wiki(self._iris_wiki)
         self._left_sidebar.obsidian_detail.note_selected.connect(self._obsidian_page.show_note)
