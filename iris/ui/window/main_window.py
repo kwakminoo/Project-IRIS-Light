@@ -1607,14 +1607,19 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1200, _retile)
         QTimer.singleShot(2500, _retile)
 
-    def _activate_companion_tile(self, hwnd: int, *, label: str = "") -> str:
+    def _activate_companion_tile(
+        self, hwnd: int, *, label: str = "", pid: int | None = None
+    ) -> str:
         """IDE 창이 준비된 뒤: Companion 레이아웃 → 80:20 타일.
 
         순서: (1) IDE 이미 뜸 (2) Iris 세로 레이아웃 (3) 타일.
+        pid: macOS 타일링(Accessibility API)에 필요 — self._ide_pid를 여기서 갱신한다.
         """
         from PyQt6.QtWidgets import QApplication
 
         self._ide_hwnd = int(hwnd)
+        if pid:
+            self._ide_pid = int(pid)
         # 1) Iris companion UI (min size 축소 포함)
         self._apply_ide_companion_layout(True)
         QApplication.processEvents()
@@ -1647,7 +1652,9 @@ class MainWindow(QMainWindow):
 
         session = self._get_bound_ide_session(refresh=True)
         if session is not None and session.ide_id == ide_id and session.hwnd is not None:
-            err2 = self._activate_companion_tile(int(session.hwnd), label=f"{ide_id} (bound)")
+            err2 = self._activate_companion_tile(
+                int(session.hwnd), label=f"{ide_id} (bound)", pid=session.pid
+            )
             if err2:
                 self._live_activity.append_instant_line(f"타일 배치 실패: {err2}")
                 return
@@ -1666,7 +1673,9 @@ class MainWindow(QMainWindow):
         if project_root:
             hwnd2, pid2, title2 = self._find_workspace_window(ide_id, project_root)
             if hwnd2 is not None:
-                err2 = self._activate_companion_tile(int(hwnd2), label=title2 or Path(project_root).name)
+                err2 = self._activate_companion_tile(
+                    int(hwnd2), label=title2 or Path(project_root).name, pid=pid2
+                )
                 if err2:
                     self._live_activity.append_instant_line(f"타일 배치 실패: {err2}")
                     return
@@ -1732,7 +1741,7 @@ class MainWindow(QMainWindow):
         # 순서 2~3: Companion 레이아웃 + 70:30
         spec = get_ide_spec(ide_id)
         name = spec.name if spec else ide_id
-        err2 = self._activate_companion_tile(int(hwnd), label=f"{name} (70:30)")
+        err2 = self._activate_companion_tile(int(hwnd), label=f"{name} (70:30)", pid=pid)
         if err2:
             self._live_activity.append_instant_line(f"타일 배치 실패: {err2}")
             return
@@ -1777,6 +1786,7 @@ class MainWindow(QMainWindow):
                 err2 = self._activate_companion_tile(
                     int(existing_hwnd),
                     label=existing_title or root.name,
+                    pid=existing_pid,
                 )
                 if err2:
                     return err2
@@ -1814,7 +1824,11 @@ class MainWindow(QMainWindow):
 
                     title = (get_window_title(int(session.hwnd)) or "").lower()
                     if root.name.lower() in title:
-                        err2 = self._activate_companion_tile(int(session.hwnd), label=root.name)
+                        err2 = self._activate_companion_tile(
+                            int(session.hwnd),
+                            label=root.name,
+                            pid=launched_pid or session.pid,
+                        )
                         if err2:
                             return err2
                         self._bind_ide_session(
@@ -1883,7 +1897,7 @@ class MainWindow(QMainWindow):
 
         # 순서 2~3: Companion + 타일
         label = title or root.name
-        err2 = self._activate_companion_tile(int(hwnd), label=label)
+        err2 = self._activate_companion_tile(int(hwnd), label=label, pid=pid)
         if err2:
             return err2
         self._bind_ide_session(

@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 # 상단 구체 슬롯 — 좁은 20% 컬럼에서 3.0 스케일은 슬롯 밖으로 번져 로그와 겹쳤음
 EMAIL_ORB_HEIGHT = 260
-EMAIL_ORB_SCALE = 2.4
+EMAIL_ORB_SCALE = 2.1
 
 
 class IdeCompanionPage(QWidget):
