@@ -23,13 +23,16 @@ description: >
    `iris_invoke` → `ide.open_folder` with `args.path`
 5. Else if user only asked to open IDE / Companion (no folder):
    `iris_invoke` → `ide.enter_companion`
-   (Iris opens IDE first, then tiles IDE 80% + Iris 20% companion — do not use terminal `cursor`)
+   (Iris opens IDE first, then tiles IDE 70% + Iris 30% companion — do not use terminal `cursor`)
 6. Else if creating new work (구구단 테스트 등):
    `iris_invoke` → `project.create_scaffold` with `name`, `template` (`gugudan`|`python-hello`), `open=true`
+   (scaffold opens the folder in Companion and reveals the first source file in the editor)
 7. If `project.open_similar` fails with `reason=ambiguous` or `low_score`:
    show `matches` to the user → then `ide.open_folder` with the chosen `path`
    (or retry `project.open_similar` with `force=true` only if user confirms the top match)
 8. Confirm with `iris_get_state` (`ui_mode=ide_companion`, `project_root`)
+9. After the project is open, coding / run requests → follow skill **iris-vibe-code**
+   (`project.write_file` with `open=true`, `project.run` for execution).
 
 ## Do not
 

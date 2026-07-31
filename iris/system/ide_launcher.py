@@ -415,6 +415,7 @@ def wait_for_new_ide_window(
     exclude_hwnds: set[int] | None = None,
     title_substr: str = "",
     timeout_sec: float = 14.0,
+    fallback_to_existing: bool = False,
 ) -> tuple[int | None, int | None, str]:
     """새로 뜬 IDE 창을 고른다. (hwnd, pid, title).
 
@@ -447,9 +448,9 @@ def wait_for_new_ide_window(
             continue
         return int(best["hwnd"]), int(best["pid"]), title
 
-    # 타임아웃: 새 창이 끝내 없으면 기존 최대 창 폴백
+    # ponytail: 세션 라우팅에서는 새 창을 못 찾았을 때 임의 기존 창으로 붙지 않는다.
     wins = list_ide_windows(preferred_ide, ide_exe_path)
-    if wins:
+    if fallback_to_existing and wins:
         best = max(wins, key=lambda w: int(w.get("score") or 0))
         return int(best["hwnd"]), int(best["pid"]), str(best.get("title") or "")
     return None, last_pid, ""
@@ -520,6 +521,7 @@ def open_folder_in_ide(
     ide_exe_path: str = "",
     ide_cli_path: str = "",
     new_window: bool = True,
+    reuse_window: bool = False,
 ) -> tuple[int | None, str]:
     """이미 IDE가 떠 있어도 폴더를 (새 창으로) 연다. (pid, error).
 
@@ -536,16 +538,22 @@ def open_folder_in_ide(
     cli = resolve_ide_cli(preferred_ide, ide_cli_path, ide_exe_path)
 
     use_shell = False
+    ide_id = (preferred_ide or "").strip().lower()
+    supports_reuse = ide_id in ("cursor", "vscode")
     if cli and cli.lower().endswith((".cmd", ".bat")):
         cmd = [cli]
         if new_window:
             cmd.append("--new-window")
+        elif reuse_window and supports_reuse:
+            cmd.append("--reuse-window")
         cmd.append(root_s)
         use_shell = True
     else:
         cmd = [exe]
         if new_window:
             cmd.append("--new-window")
+        elif reuse_window and supports_reuse:
+            cmd.append("--reuse-window")
         cmd.append(root_s)
 
     try:
@@ -566,6 +574,72 @@ def open_folder_in_ide(
         return int(proc.pid), ""
     except OSError as exc:
         return None, str(exc)
+
+
+def open_file_in_ide(
+    preferred_ide: str,
+    file_path: str,
+    *,
+    ide_exe_path: str = "",
+    ide_cli_path: str = "",
+    line: int = 1,
+    column: int = 1,
+    reuse_window: bool = True,
+) -> tuple[bool, str]:
+    """파일을 IDE 에디터 탭으로 연다. (ok, error).
+
+    Cursor/VS Code: `cli [-r] -g path:line[:column]`
+    """
+    path = Path(_expand((file_path or "").strip())).expanduser()
+    if not path.is_file():
+        return False, f"not a file: {file_path}"
+    path_s = str(path.resolve())
+    ln = max(1, int(line or 1))
+    col = max(1, int(column or 1))
+    goto = f"{path_s}:{ln}:{col}"
+
+    exe, err = resolve_ide_exe(preferred_ide, ide_exe_path)
+    if err or not exe:
+        return False, err or "IDE 실행 파일을 찾을 수 없습니다."
+    cli = resolve_ide_cli(preferred_ide, ide_cli_path, ide_exe_path)
+    ide_id = (preferred_ide or "").strip().lower()
+    supports_goto = ide_id in ("cursor", "vscode")
+
+    use_shell = False
+    if supports_goto and cli:
+        cmd = [cli]
+        if reuse_window:
+            cmd.append("--reuse-window")
+        cmd.extend(["--goto", goto])
+        use_shell = cli.lower().endswith((".cmd", ".bat"))
+    elif supports_goto:
+        cmd = [exe]
+        if reuse_window:
+            cmd.append("--reuse-window")
+        cmd.extend(["--goto", goto])
+    else:
+        # ponytail: JetBrains 등은 파일 경로만 전달 — 줄 이동은 CLI마다 다름
+        cmd = [cli or exe, path_s]
+        use_shell = bool(cli) and cli.lower().endswith((".cmd", ".bat"))
+
+    try:
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+        subprocess.Popen(  # noqa: S603
+            cmd,
+            cwd=str(path.parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+            shell=use_shell,
+        )
+        return True, ""
+    except OSError as exc:
+        return False, str(exc)
 
 
 def wait_for_ide_window(

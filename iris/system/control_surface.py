@@ -292,7 +292,19 @@ class ControlSurface:
                             return surface.registry.invoke(action, args)
                         return surface.registry.invoke(action, args)
 
-                    body = surface.invoker.run(_run)
+                    # ponytail: stream write / project.run 은 메인스레드에서 길어질 수 있음
+                    timeout = 15.0
+                    if action == "project.run":
+                        timeout = float(args.get("timeout_sec") or 60) + 30.0
+                    elif action == "project.write_file":
+                        # open+typewriter 기본 — 타이핑 대기
+                        if bool(args.get("open", True)) and bool(
+                            args.get("typewriter", args.get("stream", True))
+                        ):
+                            timeout = 180.0
+                        elif bool(args.get("stream")):
+                            timeout = 120.0
+                    body = surface.invoker.run(_run, timeout=timeout)
                     self._json(200 if body.get("ok") else 400, body)
                     return
                 self._json(404, err_result("http", f"not found: {path}"))

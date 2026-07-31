@@ -7,7 +7,7 @@ Iris가 떠 있을 때만 동작한다. Hermes가 Iris UI를 **tool-calling**으
 Iris 시작 시 `iris.system.hermes_iris_control_sync`가:
 
 1. `%LOCALAPPDATA%\hermes\config.yaml`에 `mcp_servers.iris-control` upsert  
-2. `skills/iris-control/{iris-work-start,iris-work-end,iris-session-status}` 복사  
+2. `skills/iris-control/{iris-work-start,iris-work-end,iris-session-status,iris-vibe-code}` 복사   
 3. `memories/MEMORY.md`에 Iris control 힌트 append (1회)  
 4. 설정이 바뀌었고 gateway가 이미 떠 있으면 `--replace` 재기동  
 

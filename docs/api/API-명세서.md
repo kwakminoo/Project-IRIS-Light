@@ -376,8 +376,10 @@ MCP 도구: `iris_get_state`, `iris_get_catalog`, `iris_invoke`
 설치·스킬: `integrations/hermes-skills/README.md`  
 **자동 동기화:** Iris 기동 시 `hermes_iris_control_sync`가 Hermes `config.yaml`·skills·MEMORY에 기록(재시작 유지). 변경 시 gateway `--replace`.
 
-대표 액션: `ide.enter_companion`, `ide.exit_companion`, `workspace.open_*`, `profile.set`, `email.*`, `wiki.*`, `settings.*`  
+대표 액션: `ide.enter_companion`, `ide.exit_companion`, `ide.open_folder`, `ide.open_file`, `project.write_file` (`open`/`stream`), `project.run`, `workspace.open_*`, `profile.set`, `email.*`, `wiki.*`, `settings.*`  
 고위험(`email.send` 등)은 `args.confirm=true` 필수.
+
+바이브코딩: `project.write_file`(기본 open+typewriter)로 IDE 탭에 타이핑하고, 실행은 `project.run`이 **IDE 통합 터미널**에 출력(로그 파일 탭 아님). 채팅은 `summary`만.
 
 ---
 

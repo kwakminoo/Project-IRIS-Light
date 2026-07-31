@@ -8,13 +8,26 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QGuiApplication, QImage, QMouseEvent, QPalette, QTextBlockFormat, QTextCursor
+from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import (
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QGuiApplication,
+    QImage,
+    QKeyEvent,
+    QMouseEvent,
+    QPalette,
+    QTextBlockFormat,
+    QTextCursor,
+    QTextOption,
+)
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
-    QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QTextEdit,
@@ -113,14 +126,91 @@ def _mime_has_attachable(mime) -> bool:
     return bool(mime.hasImage())
 
 
-class ChatComposerInput(QLineEdit):
-    """텍스트 + 클립보드 이미지 붙여넣기 + 파일 드래그앤드롭."""
+class ChatComposerInput(QPlainTextEdit):
+    """멀티라인 입력 — 줄바꿈 시 세로 확장, Enter=전송, Shift+Enter=개행 (Cursor 스타일)."""
 
     files_attached = pyqtSignal(list)
+    submit_requested = pyqtSignal()
+
+    _MIN_LINES = 1
+    _MAX_LINES = 8
+    _ICON_PX = 28  # ComposerPlusButton / SendButton 와 동일
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAcceptDrops(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setTabChangesFocus(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.document().setDocumentMargin(2)
+        self.document().contentsChanged.connect(self._adjust_height)
+        self._adjust_height()
+
+    # QLineEdit 호환 — 기존 호출부 유지
+    def text(self) -> str:
+        return self.toPlainText()
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self.setPlainText(text or "")
+        self._adjust_height()
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+
+    def clear(self) -> None:
+        super().clear()
+        self._adjust_height()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                super().keyPressEvent(event)
+                self._adjust_height()
+                return
+            # Enter alone → send (Cursor composer)
+            self.submit_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _line_height(self) -> int:
+        fm = self.fontMetrics()
+        return max(fm.height(), fm.lineSpacing())
+
+    def _adjust_height(self) -> None:
+        doc = self.document()
+        doc.setTextWidth(max(1, self.viewport().width()))
+        line_h = self._line_height()
+        doc_h = int(doc.size().height())
+        # 한 줄: 아이콘(28px)과 동일 높이 — 같은 가로선
+        if doc_h <= line_h + 2:
+            new_h = self._ICON_PX
+        else:
+            new_h = max(self._ICON_PX, min(doc_h + 4, line_h * self._MAX_LINES + 4))
+        if self.height() != new_h:
+            self.setFixedHeight(new_h)
+        self.updateGeometry()
+        shell = self.parentWidget()
+        if shell is not None:
+            shell.updateGeometry()
+            bar = shell.parentWidget()
+            if bar is not None:
+                bar.updateGeometry()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self.viewport() is not None:
+            self.viewport().setAutoFillBackground(False)
+            self.viewport().setStyleSheet("background: transparent; border: none;")
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._adjust_height()
 
     def paste(self) -> None:
         paths = _paths_from_clipboard()
@@ -196,12 +286,14 @@ class ChatMicButton(QPushButton):
 
 
 class _ChatInputBar(QWidget):
-    """입력칸 안쪽: + | 입력 | 모델 | 전송."""
+    """입력칸 — + · 텍스트 · 모델 · 전송을 한 줄(투명 셸) 안에 배치."""
 
     files_attached = pyqtSignal(list)  # list[str] paths
     skill_inserted = pyqtSignal(str)
     mcp_inserted = pyqtSignal(str)
     mic_clicked = pyqtSignal()
+
+    _ICON_PX = 28
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -223,6 +315,7 @@ class _ChatInputBar(QWidget):
         self._input_shell = QWidget()
         self._input_shell.setObjectName("ChatInputShell")
         self._input_shell.setAcceptDrops(True)
+        self._input_shell.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._input_shell.setStyleSheet(
             """
             QWidget#ChatInputShell {
@@ -232,8 +325,9 @@ class _ChatInputBar(QWidget):
             """
         )
         shell_row = QHBoxLayout(self._input_shell)
-        shell_row.setContentsMargins(6, 2, 4, 2)
-        shell_row.setSpacing(6)
+        shell_row.setContentsMargins(8, 0, 8, 0)
+        shell_row.setSpacing(8)
+        _align = Qt.AlignmentFlag.AlignVCenter
 
         self.plus_button = ComposerPlusButton()
         self._plus_menu = ComposerPlusMenu(self)
@@ -248,11 +342,11 @@ class _ChatInputBar(QWidget):
         self.input.setPlaceholderText("Iris에게 메시지를 입력하세요…")
         self.input.setStyleSheet(
             """
-            QLineEdit {
+            QPlainTextEdit#ChatInput {
                 background: transparent;
                 color: #ffffff;
                 border: none;
-                padding: 4px 0;
+                padding: 0px;
             }
             """
         )
@@ -261,59 +355,146 @@ class _ChatInputBar(QWidget):
         self.model_combo = QComboBox()
         self.model_combo.setObjectName("ChatModelCombo")
         self.model_combo.setToolTip("Ollama 모델 선택")
-        self.model_combo.setMinimumWidth(120)
-        self.model_combo.setMaximumWidth(240)
+        self.model_combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.model_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.model_combo.setEditable(False)
+        self.model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.model_combo.addItem("(모델 불러오는 중…)", "")
         self.model_combo.setStyleSheet(
             """
             QComboBox#ChatModelCombo {
                 background: transparent;
-                color: #e2e8f0;
+                color: #ffffff;
                 border: none;
-                padding: 2px 4px;
+                padding: 2px 14px 2px 0px;
                 font-size: 11px;
                 min-height: 22px;
+                text-align: left;
             }
             QComboBox#ChatModelCombo::drop-down {
                 border: none;
-                width: 16px;
+                background: transparent;
+                width: 12px;
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+            }
+            QComboBox#ChatModelCombo::down-arrow {
+                width: 8px;
+                height: 8px;
             }
             QComboBox#ChatModelCombo QAbstractItemView {
-                background-color: #0f172a;
-                color: #e2e8f0;
-                selection-background-color: #1e3a5f;
-                border: 1px solid rgba(56, 189, 248, 0.28);
+                background-color: rgba(56, 120, 168, 0.55);
+                border: none;
+                border-top: 1px solid rgba(56, 189, 248, 0.95);
+                border-bottom: 1px solid rgba(56, 189, 248, 0.95);
+                outline: none;
+                padding: 4px 0;
+                color: #94a3b8;
+            }
+            QComboBox#ChatModelCombo QAbstractItemView::item {
+                color: #94a3b8;
+                padding: 6px 10px;
+                min-height: 22px;
+                background: transparent;
+            }
+            QComboBox#ChatModelCombo QAbstractItemView::item:selected {
+                color: #ffffff;
+                background-color: rgba(56, 189, 248, 0.22);
+            }
+            QComboBox#ChatModelCombo QAbstractItemView::item:hover {
+                color: #cbd5e1;
+                background-color: rgba(56, 189, 248, 0.14);
             }
             """
         )
+        _view = self.model_combo.view()
+        if _view is not None:
+            pal = _view.palette()
+            pal.setColor(QPalette.ColorRole.Text, QColor("#94a3b8"))
+            pal.setColor(QPalette.ColorRole.Base, QColor(56, 120, 168, 140))
+            pal.setColor(QPalette.ColorRole.Highlight, QColor(56, 189, 248, 56))
+            pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+            _view.setPalette(pal)
+            _view.setFrameShape(QFrame.Shape.NoFrame)
 
         self.context_ring = ContextRingWidget()
+        self.context_ring.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.context_ring.setToolTip("컨텍스트 사용량 — 클릭 시 모델 목록")
 
+        # 게이지 + 모델명이 한 덩어리: [●][모델명 ▼] — 폭은 내용에 맞춤
         self._model_shell = QWidget()
         self._model_shell.setObjectName("ChatModelShell")
+        self._model_shell.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._model_shell.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._model_shell.setStyleSheet(
             """
             QWidget#ChatModelShell {
-                background-color: rgba(15, 23, 42, 0.85);
-                border: 1px solid rgba(56, 189, 248, 0.28);
-                border-radius: 8px;
+                background: transparent;
+                border: none;
+                border-radius: 0px;
             }
             """
         )
         model_row = QHBoxLayout(self._model_shell)
-        model_row.setContentsMargins(6, 2, 4, 2)
+        model_row.setContentsMargins(0, 0, 0, 0)
         model_row.setSpacing(4)
         model_row.addWidget(self.context_ring, 0, Qt.AlignmentFlag.AlignVCenter)
-        model_row.addWidget(self.model_combo, 1, Qt.AlignmentFlag.AlignVCenter)
+        model_row.addWidget(self.model_combo, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._model_shell.installEventFilter(self)
+        self.context_ring.installEventFilter(self)
 
         self.send_button = ComposerSendButton()
 
-        shell_row.addWidget(self.plus_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        shell_row.addWidget(self.input, 1)
-        shell_row.addWidget(self._model_shell, 0, Qt.AlignmentFlag.AlignVCenter)
-        shell_row.addWidget(self.send_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._right_cluster = QWidget()
+        self._right_cluster.setObjectName("ChatInputRightCluster")
+        self._right_cluster.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._right_cluster.setStyleSheet(
+            "QWidget#ChatInputRightCluster { background: transparent; border: none; }"
+        )
+        right_row = QHBoxLayout(self._right_cluster)
+        right_row.setContentsMargins(0, 0, 0, 0)
+        right_row.setSpacing(2)
+        right_row.addWidget(self._model_shell, 0, Qt.AlignmentFlag.AlignVCenter)
+        right_row.addWidget(self.send_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # + · 텍스트 · (게이지+모델+전송) — 한 줄, 아이콘과 동일 높이 기준선
+        shell_row.addWidget(self.plus_button, 0, _align)
+        shell_row.addWidget(self.input, 1, _align)
+        shell_row.addWidget(self._right_cluster, 0, _align)
         row.addWidget(self._input_shell, 1)
+        self.fit_model_picker()
+        QTimer.singleShot(0, self.fit_model_picker)
+
+    def fit_model_picker(self) -> None:
+        """선택 텍스트 + 게이지 + 화살표에 맞게 모델 박스 폭을 줄이거나 늘린다."""
+        text = self.model_combo.currentText() or ""
+        fm = self.model_combo.fontMetrics()
+        # boundingRect가 horizontalAdvance보다 실제 글리프 폭에 가깝다
+        text_w = int(fm.boundingRect(text).width())
+        # drop-down(~14) + 좌우 여유 — 끝 글자 잘림 방지
+        combo_w = max(32, min(300, text_w + 28))
+        self.model_combo.setFixedWidth(combo_w)
+        ring_w = max(self.context_ring.width(), 18)
+        shell_w = ring_w + 4 + combo_w
+        self._model_shell.setFixedSize(QSize(shell_w, self._ICON_PX))
+        self._model_shell.updateGeometry()
+        self._right_cluster.adjustSize()
+        self._right_cluster.updateGeometry()
+        self._input_shell.updateGeometry()
+        self.updateGeometry()
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
+        # 게이지/셸 클릭도 모델 목록 열기 (콤보 텍스트 영역은 기본 showPopup)
+        if event.type() == QEvent.Type.MouseButtonPress and watched in (
+            self._model_shell,
+            self.context_ring,
+        ):
+            if self.model_combo.view() is not None and self.model_combo.view().isVisible():
+                self.model_combo.hidePopup()
+            else:
+                self.model_combo.showPopup()
+            return True
+        return super().eventFilter(watched, event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if _mime_has_attachable(event.mimeData()):
@@ -539,7 +720,7 @@ class ChatPanel(QWidget):
         self._waveform = self._input_area.waveform
         self._context_limit = 128_000
         self._context_used = 0
-        self._input.returnPressed.connect(self._emit_send)
+        self._input.submit_requested.connect(self._emit_send)
         self._input.textChanged.connect(self._on_input_changed)
         self._input_area.input_bar.send_button.clicked.connect(self._emit_send)
         self._model_combo.currentIndexChanged.connect(self._on_model_index_changed)
@@ -685,6 +866,7 @@ class ChatPanel(QWidget):
         self._model_combo.setCurrentIndex(idx)
         self._model_combo.blockSignals(False)
         self._update_model_tooltip()
+        self._input_area.input_bar.fit_model_picker()
         self.model_changed.emit(self.current_model())
 
     def set_model_status(self, text: str) -> None:
@@ -693,6 +875,7 @@ class ChatPanel(QWidget):
         self._model_combo.clear()
         self._model_combo.addItem(text, "")
         self._model_combo.blockSignals(False)
+        self._input_area.input_bar.fit_model_picker()
 
     def set_context_usage(self, used: int, limit: int) -> None:
         """모델 선택 박스 안 원형 컨텍스트 게이지 갱신."""
@@ -709,6 +892,7 @@ class ChatPanel(QWidget):
 
     def _on_model_index_changed(self, _index: int) -> None:
         self._update_model_tooltip()
+        self._input_area.input_bar.fit_model_picker()
         self.model_changed.emit(self.current_model())
 
     def _scroll_log_to_bottom(self, *, deferred: bool = False) -> None:
@@ -1093,8 +1277,8 @@ class ChatPanel(QWidget):
         self._replace_typing_body()
         self._scroll_log_to_bottom()
 
-    def _on_input_changed(self, text: str) -> None:
-        self._input_area.input_bar.send_button.setEnabled(bool(text.strip()))
+    def _on_input_changed(self) -> None:
+        self._input_area.input_bar.send_button.setEnabled(bool(self._input.text().strip()))
 
     def _emit_send(self) -> None:
         t = self._input.text().strip()

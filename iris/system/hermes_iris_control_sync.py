@@ -20,6 +20,7 @@ SKILL_NAMES = (
     "iris-work-start",
     "iris-work-end",
     "iris-session-status",
+    "iris-vibe-code",
 )
 
 

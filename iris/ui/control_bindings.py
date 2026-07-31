@@ -85,6 +85,70 @@ def _profile_parents(window: MainWindow) -> list[Path]:
     return resolve_project_parents(list(profile.project_parents or []))
 
 
+def _ide_open_file_path(
+    window: MainWindow,
+    path: str,
+    *,
+    line: int = 1,
+    column: int = 1,
+    reuse_window: bool = True,
+) -> dict[str, Any]:
+    from iris.automation.ide_input import open_file_in_workspace, wait_ide_shows_file
+
+    session = window._get_bound_ide_session(refresh=True)
+    if session is None or not session.hwnd:
+        return {
+            "ok": False,
+            "path": path,
+            "error": "bound IDE session required",
+            "line": line,
+            "column": column,
+        }
+    ok = open_file_in_workspace(
+        int(session.hwnd),
+        path,
+        workspace_root=session.workspace_root,
+        pump=_qt_pump,
+    )
+    visible = False
+    if ok:
+        visible = wait_ide_shows_file(
+            int(session.hwnd),
+            path,
+            timeout_sec=6.0,
+            pump=_qt_pump,
+        )
+    return {
+        "ok": bool(ok),
+        "path": path,
+        "error": None if ok else "bound IDE session quick open failed",
+        "line": line,
+        "column": column,
+        "visible": visible,
+        "hwnd": session.hwnd,
+    }
+
+
+def _bound_session(window: MainWindow, *, require_workspace: bool = False) -> tuple[Any, str]:
+    session = window._get_bound_ide_session(refresh=True)
+    if session is None:
+        return None, "bound IDE session required"
+    if require_workspace and (session.mode != "workspace" or not session.workspace_root):
+        return None, "bound IDE workspace session required"
+    return session, ""
+
+
+def _qt_pump() -> None:
+    try:
+        from PyQt6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+    except Exception:
+        pass
+
+
 def start_control_surface(window: MainWindow) -> ControlSurface | None:
     """Control Surface 기동 + 액션 등록. 실패 시 None (앱은 계속)."""
     import os
@@ -157,6 +221,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
 
     def get_state(_args: dict[str, Any]) -> dict[str, Any]:
         profile = load_user_profile(window._db)
+        session = window._get_bound_ide_session(refresh=True)
         accounts = [
             {"id": a.id, "address": a.address, "label": a.label}
             for a in load_email_accounts(window._db)
@@ -170,8 +235,31 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 "preferred_ide": profile.preferred_ide,
                 "project_root": profile.project_root,
                 "project_parents": [str(p) for p in _profile_parents(window)],
-                "ide_attached": bool(window._ide_hwnd),
-                "ide_pid": window._ide_pid,
+                "ide_attached": bool(session),
+                "ide_pid": session.pid if session else None,
+                "ide_session": (
+                    {
+                        "active": session.active,
+                        "ide_id": session.ide_id,
+                        "hwnd": session.hwnd,
+                        "pid": session.pid,
+                        "workspace_root": session.workspace_root,
+                        "mode": session.mode,
+                        "source": session.source,
+                        "last_seen_at": session.last_seen_at,
+                    }
+                    if session
+                    else {
+                        "active": False,
+                        "ide_id": "",
+                        "hwnd": None,
+                        "pid": None,
+                        "workspace_root": "",
+                        "mode": "welcome",
+                        "source": "",
+                        "last_seen_at": 0.0,
+                    }
+                ),
                 "hermes_online": bool(getattr(window, "_hermes_online", False)),
                 "hermes_enabled": bool(window._settings.hermes_enabled),
                 "model": window._settings.model_name or window._settings.ollama_model,
@@ -214,13 +302,17 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
             profile.project_root = str(root.resolve())
             save_user_profile(window._db, profile)
         before = window._ui_mode
-        window._enter_ide_companion()
+        window._enter_ide_companion(source="chat")
         ok = window._ui_mode == "ide_companion"
         _log(window, "ide.enter_companion", ok)
         return (
             ok_result(
                 "ide.enter_companion",
-                {"ui_mode": window._ui_mode, "was": before, "ide_hwnd": window._ide_hwnd},
+                {
+                    "ui_mode": window._ui_mode,
+                    "was": before,
+                    "ide_hwnd": getattr(window._ide_session, "hwnd", None),
+                },
             )
             if ok
             else err_result(
@@ -247,8 +339,8 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         root = Path(path).expanduser()
         if not root.is_dir():
             return err_result("ide.open_folder", f"not a directory: {path}")
-        new_window = bool(args.get("new_window", True))
-        err = window._open_ide_folder(str(root), new_window=new_window)
+        new_window = bool(args.get("new_window", False))
+        err = window._open_ide_folder(str(root), new_window=new_window, source="chat")
         ok = not err and window._ui_mode == "ide_companion"
         _log(window, "ide.open_folder", ok)
         if not ok:
@@ -262,7 +354,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
             {
                 "path": str(root.resolve()),
                 "ui_mode": window._ui_mode,
-                "ide_hwnd": window._ide_hwnd,
+                "ide_hwnd": getattr(window._ide_session, "hwnd", None),
                 "new_window": new_window,
             },
         )
@@ -331,8 +423,8 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                     "hint": "Call project.find_similar, ask user, then ide.open_folder with path",
                 },
             )
-        new_window = bool(args.get("new_window", True))
-        err = window._open_ide_folder(best["path"], new_window=new_window)
+        new_window = bool(args.get("new_window", False))
+        err = window._open_ide_folder(best["path"], new_window=new_window, source="chat")
         ok = not err and window._ui_mode == "ide_companion"
         _log(window, "project.open_similar", ok)
         if not ok:
@@ -349,7 +441,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 "matches": hits,
                 "reason": reason,
                 "ui_mode": window._ui_mode,
-                "ide_hwnd": window._ide_hwnd,
+                "ide_hwnd": getattr(window._ide_session, "hwnd", None),
             },
         )
 
@@ -371,7 +463,11 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         open_ide = bool(args.get("open", True))
         result: dict[str, Any] = {"created": created}
         if open_ide:
-            err = window._open_ide_folder(created["path"], new_window=bool(args.get("new_window", True)))
+            err = window._open_ide_folder(
+                created["path"],
+                new_window=bool(args.get("new_window", False)),
+                source="chat",
+            )
             result["open_error"] = err or None
             result["ui_mode"] = window._ui_mode
             if err:
@@ -381,11 +477,26 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                     f"created but open failed: {err}",
                     result,
                 )
+            # 첫 소스 파일을 IDE 에디터에 보이게
+            for rel in created.get("files") or []:
+                if str(rel).endswith((".py", ".js", ".ts", ".tsx", ".jsx", ".md")):
+                    if str(rel).lower() == "readme.md":
+                        continue
+                    opened = _ide_open_file_path(
+                        window, str(Path(created["path"]) / rel)
+                    )
+                    result["opened_file"] = opened
+                    break
         _log(window, "project.create_scaffold", True)
         return ok_result("project.create_scaffold", result)
 
     def project_write_file(args: dict[str, Any]) -> dict[str, Any]:
-        from iris.system.project_ops import write_project_file
+        from iris.automation.ide_input import (
+            open_file_in_workspace,
+            typewriter_into_ide,
+            wait_ide_shows_file,
+        )
+        from iris.system.project_ops import resolve_under_root, write_project_file
 
         root = str(args.get("project_root") or args.get("root") or "").strip()
         if not root:
@@ -397,12 +508,260 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
             return err_result("project.write_file", "content required")
         if not root or not rel:
             return err_result("project.write_file", "project_root and rel_path required")
+        do_open = bool(args.get("open", True))
+        session, session_err = _bound_session(window, require_workspace=do_open)
+        if do_open and session_err:
+            return err_result("project.write_file", session_err)
+        # open=true 이면 기본 타이핑 연출. 명시 stream/typewriter=false 만 즉시 쓰기.
+        if "typewriter" in args:
+            do_type = bool(args.get("typewriter"))
+        elif "stream" in args:
+            do_type = bool(args.get("stream"))
+        else:
+            do_type = do_open
+        text = str(content)
         try:
-            written = write_project_file(root, rel, str(content))
+            _root, abs_path, norm_rel = resolve_under_root(root, rel)
+            if do_open and session is not None:
+                if str(_root) != str(Path(session.workspace_root).resolve()):
+                    return err_result(
+                        "project.write_file",
+                        "requested project_root does not match bound IDE workspace",
+                        {
+                            "project_root": str(_root),
+                            "bound_workspace_root": session.workspace_root,
+                        },
+                    )
+            path_s = str(abs_path)
+            if not do_open:
+                written = write_project_file(root, rel, text)
+                written["opened"] = False
+                written["typed"] = False
+                written["visible"] = False
+                _log(window, "project.write_file", True)
+                return ok_result("project.write_file", written)
+
+            # 1) 빈 파일로 만들고 탭 열기
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text("", encoding="utf-8")
+            hwnd = int(session.hwnd) if session is not None and session.hwnd else None
+            opened = bool(
+                hwnd
+                and open_file_in_workspace(
+                    hwnd,
+                    path_s,
+                    workspace_root=session.workspace_root if session is not None else "",
+                    pump=_qt_pump,
+                )
+            )
+            visible = False
+            if hwnd and opened:
+                visible = wait_ide_shows_file(
+                    hwnd,
+                    path_s,
+                    timeout_sec=float(args.get("visible_timeout_sec") or 6),
+                    pump=_qt_pump,
+                )
+            typed = False
+            if do_type and hwnd and opened:
+                typed = typewriter_into_ide(
+                    hwnd,
+                    text,
+                    delay_ms=int(args["delay_ms"]) if args.get("delay_ms") is not None else None,
+                    pump=_qt_pump,
+                )
+                abs_path.write_text(text, encoding="utf-8")
+            elif do_type:
+                return err_result(
+                    "project.write_file",
+                    "bound IDE session could not open file for typewriter write",
+                    {"path": path_s, "opened": bool(opened), "visible": bool(visible)},
+                )
+            else:
+                abs_path.write_text(text, encoding="utf-8")
+                if not (hwnd and opened):
+                    return err_result(
+                        "project.write_file",
+                        "bound IDE session could not open file",
+                        {"path": path_s, "opened": bool(opened), "visible": bool(visible)},
+                    )
+
+            written = {
+                "path": path_s,
+                "rel_path": norm_rel,
+                "bytes": len(text.encode("utf-8")),
+                "opened": bool(opened),
+                "open_error": None if opened else "quick open failed",
+                "visible": bool(visible),
+                "typed": bool(typed),
+                "streamed": bool(do_type),
+            }
         except Exception as exc:  # noqa: BLE001
             return err_result("project.write_file", str(exc))
         _log(window, "project.write_file", True)
         return ok_result("project.write_file", written)
+
+    def ide_open_file(args: dict[str, Any]) -> dict[str, Any]:
+        path = str(args.get("path") or "").strip()
+        if not path:
+            root = str(args.get("project_root") or args.get("root") or "").strip()
+            if not root:
+                profile = load_user_profile(window._db)
+                root = (profile.project_root or "").strip()
+            rel = str(args.get("rel_path") or "").strip()
+            if not root or not rel:
+                return err_result("ide.open_file", "path or project_root+rel_path required")
+            try:
+                from iris.system.project_ops import resolve_under_root
+
+                _root, abs_path, _rel = resolve_under_root(root, rel)
+                path = str(abs_path)
+            except Exception as exc:  # noqa: BLE001
+                return err_result("ide.open_file", str(exc))
+        line = int(args.get("line") or 1)
+        column = int(args.get("column") or 1)
+        _session, session_err = _bound_session(window, require_workspace=False)
+        if session_err:
+            return err_result("ide.open_file", session_err)
+        opened = _ide_open_file_path(window, path, line=line, column=column, reuse_window=False)
+        _log(window, "ide.open_file", bool(opened.get("ok")))
+        if not opened.get("ok"):
+            return err_result("ide.open_file", str(opened.get("error") or "open failed"), opened)
+        return ok_result("ide.open_file", opened)
+
+    def project_run(args: dict[str, Any]) -> dict[str, Any]:
+        import time
+
+        from iris.automation.ide_input import run_command_in_ide_terminal, trigger_default_build_task
+        from iris.system.project_ops import (
+            build_iris_terminal_command,
+            build_run_command,
+            iris_run_log_path,
+            result_from_terminal_log,
+            summarize_run,
+            upsert_iris_run_task,
+            wait_for_run_log,
+        )
+
+        root = str(args.get("project_root") or args.get("root") or args.get("cwd") or "").strip()
+        if not root:
+            profile = load_user_profile(window._db)
+            root = (profile.project_root or "").strip()
+        if not root:
+            return err_result("project.run", "project_root required")
+        root_p = Path(root).expanduser()
+        if not root_p.is_dir():
+            return err_result("project.run", f"not a directory: {root}")
+        root_s = str(root_p.resolve())
+        reveal = bool(args.get("reveal_terminal", True))
+        session, session_err = _bound_session(window, require_workspace=True)
+        if session_err:
+            return err_result("project.run", session_err)
+        if str(Path(session.workspace_root).resolve()) != root_s:
+            return err_result(
+                "project.run",
+                "requested project_root does not match bound IDE workspace",
+                {"project_root": root_s, "bound_workspace_root": session.workspace_root},
+            )
+        timeout_sec = float(args.get("timeout_sec") or 60)
+        try:
+            argv = build_run_command(
+                command=args.get("command"),
+                file=str(args.get("file") or args.get("rel_path") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return err_result("project.run", str(exc))
+
+        log_p = iris_run_log_path(root_s)
+        try:
+            if log_p.is_file():
+                log_p.unlink()
+        except OSError:
+            pass
+
+        shell_cmd = build_iris_terminal_command(argv)
+        tasks_path = ""
+        try:
+            tasks_path = upsert_iris_run_task(root_s, shell_cmd)
+        except Exception as exc:  # noqa: BLE001
+            tasks_path = ""
+
+        ide_terminal = "failed"
+        result: dict[str, Any]
+        hwnd = int(session.hwnd) if session and session.hwnd else None
+        t0 = time.monotonic()
+
+        if not reveal:
+            return err_result("project.run", "project.run requires IDE integrated terminal")
+        if not hwnd or not tasks_path:
+            return err_result(
+                "project.run",
+                "bound IDE session missing or Iris run task could not be prepared",
+                {"tasks_path": tasks_path or None, "hwnd": hwnd},
+            )
+        time.sleep(0.35)
+        triggered = trigger_default_build_task(hwnd)
+        if not triggered:
+            return err_result("project.run", "failed to trigger IDE integrated terminal run task")
+        waited = wait_for_run_log(
+            log_p,
+            timeout_sec=timeout_sec,
+            stable_sec=0.8,
+            pump=_qt_pump,
+        )
+        elapsed = time.monotonic() - t0
+        if not waited.get("found"):
+            rerun_ok = run_command_in_ide_terminal(hwnd, shell_cmd, pump=_qt_pump)
+            if not rerun_ok:
+                return err_result(
+                    "project.run",
+                    "IDE integrated terminal run started but no Iris log was captured",
+                    {"tasks_path": tasks_path or None, "log_path": str(log_p)},
+                )
+            waited = wait_for_run_log(
+                log_p,
+                timeout_sec=timeout_sec,
+                stable_sec=0.8,
+                pump=_qt_pump,
+            )
+            elapsed = time.monotonic() - t0
+            if not waited.get("found"):
+                return err_result(
+                    "project.run",
+                    "IDE integrated terminal run started but no Iris log was captured",
+                    {"tasks_path": tasks_path or None, "log_path": str(log_p)},
+                )
+        result = result_from_terminal_log(
+            str(waited.get("text") or ""),
+            argv=argv,
+            cwd=root_s,
+            elapsed_sec=elapsed,
+        )
+        ide_terminal = "ok"
+
+        summary_bits = summarize_run(result)
+        if ide_terminal == "ok":
+            summary_bits["summary"] += " · output in IDE terminal"
+
+        payload = {
+            **result,
+            **summary_bits,
+            "ide_terminal": ide_terminal,
+            "log_path": str(log_p) if log_p.is_file() else None,
+            "tasks_path": tasks_path or None,
+            "opened_log": False,
+            "stdout_len": len(result.get("stdout") or ""),
+            "stderr_len": len(result.get("stderr") or ""),
+        }
+        payload.pop("stdout", None)
+        payload.pop("stderr", None)
+        ok = int(result.get("exit_code") or 0) == 0 and not result.get("timed_out")
+        _log(window, "project.run", ok)
+        return ok_result("project.run", payload) if ok else err_result(
+            "project.run",
+            summary_bits.get("summary") or f"exit {result.get('exit_code')}",
+            payload,
+        )
 
     reg.register(
         "window.minimize",
@@ -417,12 +776,12 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     reg.register(
         "ide.enter_companion",
         ide_enter,
-        summary="IDE Companion on: welcome/default IDE window + tile 80:20 (does not switch folder)",
+        summary="Enter IDE Companion using the current bound session or create one with preferred IDE",
     )
     reg.register(
         "ide.exit_companion",
         ide_exit,
-        summary="IDE Companion off: restore Iris layout, keep IDE window",
+        summary="Exit IDE Companion and clear the bound IDE session",
     )
     reg.register(
         "ide.toggle_companion",
@@ -432,7 +791,13 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     reg.register(
         "ide.open_folder",
         ide_open_folder,
-        summary="Open folder in IDE (new window) + Companion tile — use to switch projects even if IDE already open",
+        summary="Open folder in the bound IDE session by default; new window only when requested",
+        risk="medium",
+    )
+    reg.register(
+        "ide.open_file",
+        ide_open_file,
+        summary="Open a file in the currently bound IDE session editor",
         risk="medium",
     )
     reg.register(
@@ -460,7 +825,13 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     reg.register(
         "project.write_file",
         project_write_file,
-        summary="Write a file under project_root (rel_path + content) for coding tasks",
+        summary="Write file under the bound IDE workspace; open=true reveals tab then typewriter",
+        risk="medium",
+    )
+    reg.register(
+        "project.run",
+        project_run,
+        summary="Run only in the bound IDE integrated terminal via Iris: Run task",
         risk="medium",
     )
 

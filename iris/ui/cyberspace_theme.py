@@ -328,7 +328,7 @@ def build_cyberspace_qss() -> str:
             background: transparent;
             border: none;
         }}
-        QLineEdit#ChatInput {{
+        QPlainTextEdit#ChatInput {{
             background: transparent;
             border: none;
         }}

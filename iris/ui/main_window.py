@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+import time
 
 from PyQt6.QtCore import QEvent, QRect, Qt, QThread, QTimer
 from PyQt6.QtGui import QAction, QCloseEvent
@@ -41,7 +43,6 @@ from iris.system.android_emulator import (
 )
 from iris.system.api_quota_worker import ApiQuotaWorker
 from iris.system.ide_launcher import (
-    find_running_ide,
     get_ide_spec,
     launch_ide,
     list_ide_windows,
@@ -89,6 +90,18 @@ from iris.ui.workspaces.ide_companion_page import (
     IdeCompanionPage,
 )
 from iris.ui.workspaces.obsidian_workspace_page import ObsidianWorkspacePage
+
+
+@dataclass
+class IdeSession:
+    active: bool = False
+    ide_id: str = ""
+    hwnd: int | None = None
+    pid: int | None = None
+    workspace_root: str = ""
+    mode: str = "welcome"  # "welcome" | "workspace"
+    source: str = "icon"  # "icon" | "chat"
+    last_seen_at: float = 0.0
 
 
 class MainWindow(QMainWindow):
@@ -141,6 +154,11 @@ class MainWindow(QMainWindow):
         self._ui_mode = "normal"  # "normal" | "ide_companion"
         self._ide_hwnd: int | None = None
         self._ide_pid: int | None = None
+        self._ide_session = IdeSession()
+        self._ide_session_watch = QTimer(self)
+        self._ide_session_watch.setInterval(2000)
+        self._ide_session_watch.timeout.connect(self._refresh_ide_session_state)
+        self._ide_session_watch.start()
         self._companion_saved_sizes: list[int] | None = None
         self._companion_saved_assistant_sizes: list[int] | None = None
         self._companion_saved_geometry = None
@@ -1435,7 +1453,9 @@ class MainWindow(QMainWindow):
             "use MCP tools iris_get_state / iris_get_catalog / iris_invoke "
             "(e.g. iris_invoke action=ide.enter_companion). "
             "Do NOT use terminal cursor/code alone — that skips Companion tiling. "
-            "Do NOT invent that Iris has no IDE — Iris controls the preferred IDE via MCP.",
+            "Do NOT invent that Iris has no IDE — Iris controls the preferred IDE via MCP. "
+            "Writing code: project.write_file with open=true (typewriter into visible IDE tab). "
+            "Running code: project.run — output in IDE integrated terminal; summarize only in chat.",
         ]
         if root:
             bits.append(f"Project root: {root}")
@@ -1448,7 +1468,7 @@ class MainWindow(QMainWindow):
         if self._ui_mode == "ide_companion":
             self._exit_ide_companion()
             return
-        self._enter_ide_companion()
+        self._enter_ide_companion(source="icon")
 
     def _ide_hwnd_alive(self, hwnd: int | None) -> bool:
         if not hwnd:
@@ -1460,6 +1480,112 @@ class MainWindow(QMainWindow):
         except Exception:
             return False
 
+    def _current_preferred_ide(self) -> str:
+        profile = load_user_profile(self._db)
+        return (profile.preferred_ide or "cursor").strip().lower() or "cursor"
+
+    def _current_project_root(self) -> str:
+        try:
+            profile = load_user_profile(self._db)
+            root = (profile.project_root or "").strip()
+            if root and Path(root).expanduser().is_dir():
+                return str(Path(root).expanduser().resolve())
+        except Exception:
+            pass
+        return ""
+
+    def _bind_ide_session(
+        self,
+        *,
+        ide_id: str,
+        hwnd: int,
+        pid: int | None,
+        workspace_root: str,
+        mode: str,
+        source: str,
+    ) -> None:
+        root = ""
+        if workspace_root:
+            try:
+                root = str(Path(workspace_root).expanduser().resolve())
+            except OSError:
+                root = ""
+        self._ide_session = IdeSession(
+            active=True,
+            ide_id=(ide_id or "").strip().lower(),
+            hwnd=int(hwnd),
+            pid=int(pid) if pid else None,
+            workspace_root=root,
+            mode=mode if mode == "workspace" else "welcome",
+            source=source if source in ("icon", "chat") else "chat",
+            last_seen_at=time.time(),
+        )
+        self._ide_hwnd = self._ide_session.hwnd
+        self._ide_pid = self._ide_session.pid
+
+    def _clear_ide_session(self, reason: str = "") -> None:
+        was_companion = self._ui_mode == "ide_companion"
+        self._ide_session = IdeSession()
+        self._ide_hwnd = None
+        self._ide_pid = None
+        if was_companion:
+            self._apply_ide_companion_layout(False)
+        if reason:
+            self._live_activity.append_instant_line(f"IDE session 해제: {reason}")
+
+    def _get_bound_ide_session(self, *, refresh: bool = True) -> IdeSession | None:
+        if refresh:
+            self._refresh_ide_session_state()
+        return self._ide_session if self._ide_session.active else None
+
+    def _refresh_ide_session_state(self) -> None:
+        session = self._ide_session
+        if not session.active:
+            self._ide_hwnd = None
+            self._ide_pid = None
+            return
+        preferred = self._current_preferred_ide()
+        if session.ide_id != preferred:
+            self._clear_ide_session("preferred IDE 변경")
+            return
+        hwnd = session.hwnd
+        if not self._ide_hwnd_alive(hwnd):
+            self._clear_ide_session("IDE 창 종료")
+            return
+        if session.mode == "workspace" and session.workspace_root:
+            try:
+                from iris.automation.ide_input import get_window_title
+
+                title = (get_window_title(int(hwnd)) or "").lower()
+                workspace_name = Path(session.workspace_root).name.lower()
+                generic_titles = {"cursor", "cursor agents", "visual studio code", "code"}
+                # ponytail: Browser Tab 같은 제목은 workspace 이름이 안 보여도 세션 유지.
+                # 완전한 웰컴/기본 제목으로 돌아간 경우만 문맥 상실로 본다.
+                if workspace_name and title and title.strip() in generic_titles:
+                    self._clear_ide_session("workspace 문맥 상실")
+                    return
+            except Exception:
+                pass
+        session.last_seen_at = time.time()
+        self._ide_session = session
+        self._ide_hwnd = session.hwnd
+        self._ide_pid = session.pid
+
+    def _find_workspace_window(
+        self,
+        ide_id: str,
+        workspace_root: str,
+    ) -> tuple[int | None, int | None, str]:
+        root_name = Path(workspace_root).name.strip().lower()
+        if not root_name:
+            return None, None, ""
+        wins = list_ide_windows(ide_id, load_user_profile(self._db).ide_exe_path)
+        for win in wins:
+            title = str(win.get("title") or "").strip()
+            if root_name in title.lower():
+                return int(win["hwnd"]), int(win["pid"]), title
+        return None, None, ""
+
     def _schedule_companion_retile(self, ide_hwnd: int) -> None:
         """Cursor가 자체 레이아웃으로 되돌리는 경우 대비 지연 재타일."""
         hwnd = int(ide_hwnd)
@@ -1469,14 +1595,14 @@ class MainWindow(QMainWindow):
                 return
             if not self._ide_hwnd_alive(hwnd):
                 return
-            tile_ide_and_iris(hwnd, self, ide_ratio=0.8)
+            tile_ide_and_iris(hwnd, self, ide_ratio=0.7)
 
         QTimer.singleShot(400, _retile)
         QTimer.singleShot(1200, _retile)
         QTimer.singleShot(2500, _retile)
 
     def _activate_companion_tile(self, hwnd: int, *, label: str = "") -> str:
-        """IDE 창이 준비된 뒤: Companion 레이아웃 → 80:20 타일.
+        """IDE 창이 준비된 뒤: Companion 레이아웃 → 70:30 타일.
 
         순서: (1) IDE 이미 뜸 (2) Iris 세로 레이아웃 (3) 타일.
         """
@@ -1487,7 +1613,7 @@ class MainWindow(QMainWindow):
         self._apply_ide_companion_layout(True)
         QApplication.processEvents()
         # 2) 타일
-        ok, tile_err = tile_ide_and_iris(self._ide_hwnd, self, ide_ratio=0.8)
+        ok, tile_err = tile_ide_and_iris(self._ide_hwnd, self, ide_ratio=0.7)
         if not ok:
             self._apply_ide_companion_layout(False)
             return tile_err or "tile failed"
@@ -1495,10 +1621,10 @@ class MainWindow(QMainWindow):
         self._viz.request_sync_orb_anchor("ide_companion_tiled")
         self._schedule_companion_retile(self._ide_hwnd)
         if label:
-            self._live_activity.append_instant_line(f"IDE Companion: {label} tiled 80:20")
+            self._live_activity.append_instant_line(f"IDE Companion: {label} tiled 70:30")
         return ""
 
-    def _enter_ide_companion(self) -> None:
+    def _enter_ide_companion(self, *, source: str = "icon") -> None:
         profile = load_user_profile(self._db)
         ide_id = (profile.preferred_ide or "cursor").strip().lower() or "cursor"
         exe, err = resolve_ide_exe(ide_id, profile.ide_exe_path)
@@ -1511,9 +1637,48 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QApplication
         import time as _time
 
-        # 기존 companion 창이 살아 있으면 재사용, 없으면 새 창을 먼저 띄운다
-        hwnd = self._ide_hwnd if self._ide_hwnd_alive(self._ide_hwnd) else None
-        pid = self._ide_pid
+        session = self._get_bound_ide_session(refresh=True)
+        if session is not None and session.ide_id == ide_id and session.hwnd is not None:
+            err2 = self._activate_companion_tile(int(session.hwnd), label=f"{ide_id} (bound)")
+            if err2:
+                self._live_activity.append_instant_line(f"타일 배치 실패: {err2}")
+                return
+            self._bind_ide_session(
+                ide_id=ide_id,
+                hwnd=int(session.hwnd),
+                pid=session.pid,
+                workspace_root=session.workspace_root,
+                mode=session.mode,
+                source=source,
+            )
+            self._live_activity.append_instant_line("기존 bound IDE session 재사용")
+            return
+
+        project_root = self._current_project_root()
+        if project_root:
+            hwnd2, pid2, title2 = self._find_workspace_window(ide_id, project_root)
+            if hwnd2 is not None:
+                err2 = self._activate_companion_tile(int(hwnd2), label=title2 or Path(project_root).name)
+                if err2:
+                    self._live_activity.append_instant_line(f"타일 배치 실패: {err2}")
+                    return
+                self._bind_ide_session(
+                    ide_id=ide_id,
+                    hwnd=int(hwnd2),
+                    pid=pid2,
+                    workspace_root=project_root,
+                    mode="workspace",
+                    source=source,
+                )
+                self._live_activity.append_instant_line("기존 프로젝트 Cursor 창을 bound session으로 재사용")
+                return
+            err3 = self._open_ide_folder(project_root, new_window=True, source=source)
+            if err3:
+                self._live_activity.append_instant_line(f"IDE 프로젝트 열기 실패: {err3}")
+            return
+
+        hwnd = None
+        pid = None
         if hwnd is None:
             before = {
                 int(w["hwnd"])
@@ -1551,30 +1716,31 @@ class MainWindow(QMainWindow):
                 hwnd = None
                 _time.sleep(0.2)
             if hwnd is None:
-                # 폴백: 아무 IDE 창이라도
-                hwnd, wait_pid = find_running_ide(ide_id, profile.ide_exe_path)
-                if wait_pid:
-                    pid = wait_pid
-            if hwnd is None:
                 self._live_activity.append_instant_line(
                     "IDE는 시작됐지만 창을 찾지 못했습니다. 수동으로 창을 연 뒤 다시 시도하세요."
                 )
-                self._ide_pid = pid
                 return
 
-        self._ide_pid = int(pid) if pid else self._ide_pid
-        # 순서 2~3: Companion 레이아웃 + 80:20
+        # 순서 2~3: Companion 레이아웃 + 70:30
         spec = get_ide_spec(ide_id)
         name = spec.name if spec else ide_id
-        err2 = self._activate_companion_tile(int(hwnd), label=f"{name} (80:20)")
+        err2 = self._activate_companion_tile(int(hwnd), label=f"{name} (70:30)")
         if err2:
             self._live_activity.append_instant_line(f"타일 배치 실패: {err2}")
             return
+        self._bind_ide_session(
+            ide_id=ide_id,
+            hwnd=int(hwnd),
+            pid=pid,
+            workspace_root="",
+            mode="welcome",
+            source=source,
+        )
         self._live_activity.append_instant_line(
             f"IDE Companion: {name}. 바이브코딩은 Iris 채팅으로."
         )
 
-    def _open_ide_folder(self, folder: str, *, new_window: bool = True) -> str:
+    def _open_ide_folder(self, folder: str, *, new_window: bool = True, source: str = "chat") -> str:
         """폴더를 IDE에서 열고 Companion 타일(IDE 80%). 실패 시 에러 문자열."""
         from pathlib import Path
         from PyQt6.QtWidgets import QApplication
@@ -1596,6 +1762,67 @@ class MainWindow(QMainWindow):
         profile.project_root = root_s
         save_user_profile(self._db, profile)
 
+        session = self._get_bound_ide_session(refresh=True)
+        if session is None:
+            existing_hwnd, existing_pid, existing_title = self._find_workspace_window(ide_id, root_s)
+            if existing_hwnd is not None:
+                err2 = self._activate_companion_tile(
+                    int(existing_hwnd),
+                    label=existing_title or root.name,
+                )
+                if err2:
+                    return err2
+                self._bind_ide_session(
+                    ide_id=ide_id,
+                    hwnd=int(existing_hwnd),
+                    pid=existing_pid,
+                    workspace_root=root_s,
+                    mode="workspace",
+                    source=source,
+                )
+                return ""
+        if session is not None and session.ide_id == ide_id and session.hwnd is not None and not new_window:
+            try:
+                from iris.automation.ide_input import force_focus_hwnd, get_window_title
+
+                force_focus_hwnd(int(session.hwnd))
+            except Exception:
+                pass
+            launched_pid, launch_err = open_folder_in_ide(
+                ide_id,
+                root_s,
+                ide_exe_path=profile.ide_exe_path,
+                ide_cli_path=profile.ide_cli_path,
+                new_window=False,
+                reuse_window=True,
+            )
+            if launch_err:
+                return launch_err
+            deadline = _time.monotonic() + 10.0
+            while _time.monotonic() < deadline:
+                QApplication.processEvents()
+                try:
+                    from iris.automation.ide_input import get_window_title
+
+                    title = (get_window_title(int(session.hwnd)) or "").lower()
+                    if root.name.lower() in title:
+                        err2 = self._activate_companion_tile(int(session.hwnd), label=root.name)
+                        if err2:
+                            return err2
+                        self._bind_ide_session(
+                            ide_id=ide_id,
+                            hwnd=int(session.hwnd),
+                            pid=launched_pid or session.pid,
+                            workspace_root=root_s,
+                            mode="workspace",
+                            source=source,
+                        )
+                        return ""
+                except Exception:
+                    pass
+                _time.sleep(0.2)
+            return "bound IDE session did not confirm requested workspace"
+
         # 순서 1: IDE 폴더 창을 먼저 연다 (Iris 레이아웃은 아직 유지)
         before = {
             int(w["hwnd"])
@@ -1610,6 +1837,7 @@ class MainWindow(QMainWindow):
             ide_exe_path=profile.ide_exe_path,
             ide_cli_path=profile.ide_cli_path,
             new_window=new_window,
+            reuse_window=False,
         )
         if launch_err:
             self._live_activity.append_instant_line(f"IDE 폴더 열기 실패: {launch_err}")
@@ -1637,28 +1865,33 @@ class MainWindow(QMainWindow):
             hwnd = None
             _time.sleep(0.2)
         if hwnd is None:
-            hwnd, wait_pid, title = wait_for_new_ide_window(
-                ide_id,
-                ide_exe_path=profile.ide_exe_path,
-                exclude_hwnds=set(),
-                title_substr=root.name,
-                timeout_sec=0.5,
-            )
-            if wait_pid:
-                pid = wait_pid
+            hwnd2, pid2, title2 = self._find_workspace_window(ide_id, root_s)
+            if hwnd2 is not None:
+                hwnd = hwnd2
+                pid = pid2 or pid
+                title = title2 or title
         if hwnd is None:
-            self._ide_pid = pid
             return "IDE folder launch started but window not found"
 
-        self._ide_pid = int(pid) if pid else self._ide_pid
         # 순서 2~3: Companion + 타일
         label = title or root.name
-        return self._activate_companion_tile(int(hwnd), label=label)
+        err2 = self._activate_companion_tile(int(hwnd), label=label)
+        if err2:
+            return err2
+        self._bind_ide_session(
+            ide_id=ide_id,
+            hwnd=int(hwnd),
+            pid=pid,
+            workspace_root=root_s,
+            mode="workspace",
+            source=source,
+        )
+        return ""
 
     def _exit_ide_companion(self) -> None:
-        # IDE 창은 닫지 않음 — Iris만 일반 레이아웃 복귀
-        self._apply_ide_companion_layout(False)
-        self._live_activity.append_instant_line("IDE Companion 종료 — IDE 창은 유지됩니다.")
+        """Companion 해제 + bound session 해제."""
+        self._clear_ide_session("companion 종료")
+        self._live_activity.append_instant_line("IDE Companion 종료")
 
     def _companion_iris_rect(self):
         return compute_tile_rects(work_area_for(self)).iris
@@ -1840,6 +2073,7 @@ class MainWindow(QMainWindow):
             if self._settings.hermes_enabled and self._saved_model:
                 self._sync_hermes_model(self._saved_model)
             self._refresh_models()
+            self._refresh_ide_session_state()
             if self._workspace_mode == "email":
                 accounts = load_email_accounts(self._db)
                 self._left_sidebar.email_folder.set_accounts(
