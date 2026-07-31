@@ -36,9 +36,9 @@ from iris.monitoring.screen_capture import (
     capture_window_by_hwnd,
 )
 
-from iris.ui.glass_panel import wrap_glass_panel
-from iris.ui.section_header import apply_section_panel_layout, make_section_header
-from iris.ui.theme_tokens import TOKENS
+from iris.ui.shared.glass_panel import wrap_glass_panel
+from iris.ui.shared.section_header import apply_section_panel_layout, make_section_header
+from iris.ui.shared.theme_tokens import TOKENS
 
 if TYPE_CHECKING:
     from iris.storage.database import Database

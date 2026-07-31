@@ -9,7 +9,7 @@ from PyQt6.QtGui import QColor, QFont, QPalette, QTextCursor
 from PyQt6.QtWidgets import QFrame, QLabel, QPlainTextEdit, QSizePolicy, QVBoxLayout, QWidget
 
 from iris.core.activity_privacy import prepare_activity_line, strip_emoji
-from iris.ui.theme_tokens import TOKENS
+from iris.ui.shared.theme_tokens import TOKENS
 
 
 class UiActivityRelay(QObject):

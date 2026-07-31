@@ -84,7 +84,7 @@ def orb_size_scale_for_square_fill(side: int) -> float:
 
 
 def _asset_path(relative_path: str) -> Path:
-    return Path(__file__).resolve().parents[2] / "assets" / relative_path
+    return Path(__file__).resolve().parents[3] / "assets" / relative_path
 
 
 def _fibonacci_sphere(n: int, seed: int = 42) -> list[tuple[float, float, float]]:
@@ -268,7 +268,6 @@ class ParticleVisualizer(QWidget):
             tear = int((_BOOT_RNG.random() - 0.5) * 14.0 * self._boot_glitch)
             painter.translate(tear, int((_BOOT_RNG.random() - 0.5) * 4.0 * self._boot_glitch))
 
-        # 구체 본체만 — 바깥 glow/링/파동 효과 없음
         self._draw_core_image(painter, cx, cy, energy)
         self._draw_front_sheen(painter, cx, cy, accent, energy)
         painter.restore()

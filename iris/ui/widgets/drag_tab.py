@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from iris.ui.top_status_header import STATUS_BLOCK_HEIGHT
+from iris.ui.window.top_status_header import STATUS_BLOCK_HEIGHT
 
 _MIC_BTN_W = 36
 _MIC_BTN_H = 26

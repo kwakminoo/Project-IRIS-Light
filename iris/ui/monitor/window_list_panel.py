@@ -21,8 +21,8 @@ from iris.automation.window_controller import (
     focus_window_by_hwnd,
     list_visible_windows,
 )
-from iris.ui.section_header import apply_section_panel_layout, make_section_header
-from iris.ui.theme_tokens import TOKENS
+from iris.ui.shared.section_header import apply_section_panel_layout, make_section_header
+from iris.ui.shared.theme_tokens import TOKENS
 
 _REFRESH_MS = 2_500
 _MAX_ITEMS = 30

@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
 from iris.core.activity_privacy import strip_emoji
 from iris.infrastructure.email_client import MailMessage, MailSummary
 from iris.storage.email_accounts import EmailAccount
-from iris.ui.particle_visualizer import ParticleVisualizer
+from iris.ui.widgets.particle_visualizer import ParticleVisualizer
 
 _CATEGORY_TABS = ("기본", "프로모션", "소셜", "업데이트")
 

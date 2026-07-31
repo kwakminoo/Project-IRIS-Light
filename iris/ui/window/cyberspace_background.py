@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QRadialGradient
 from PyQt6.QtWidgets import QLayout, QWidget
 
-from iris.ui.theme_tokens import TOKENS
+from iris.ui.shared.theme_tokens import TOKENS
 
 
 class CyberspaceBackground(QWidget):

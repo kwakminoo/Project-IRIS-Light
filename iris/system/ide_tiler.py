@@ -37,8 +37,49 @@ def compute_tile_rects(work: QRect, *, ide_ratio: float = 0.7) -> TileRects:
     return TileRects(work=work, ide=ide, iris=iris)
 
 
-def place_hwnd(hwnd: int, rect: QRect) -> tuple[bool, str]:
-    """HWND를 지정 사각형으로 이동·리사이즈."""
+def _place_macos_pid(pid: int, rect: QRect) -> tuple[bool, str]:
+    """PID의 (가장 큰) 창을 Accessibility API로 이동·리사이즈.
+
+    macOS엔 HWND가 없어 CGWindowNumber로는 창을 옮길 수 없다 — AXUIElement로
+    프로세스의 창 목록을 얻어 그중 가장 큰 창(= companion 진입 시 새로 연 IDE 창)을
+    움직인다. 실패 시 대개 손쉬운 사용(Accessibility) 권한 미허용이 원인.
+    """
+    try:
+        import ApplicationServices as AS  # type: ignore
+    except Exception as exc:
+        return False, f"pyobjc ApplicationServices 없음: {exc}"
+
+    if not AS.AXIsProcessTrusted():
+        return False, "손쉬운 사용(Accessibility) 권한이 필요합니다 — 시스템 설정에서 허용하세요."
+
+    app_ref = AS.AXUIElementCreateApplication(int(pid))
+    err, windows = AS.AXUIElementCopyAttributeValue(app_ref, AS.kAXWindowsAttribute, None)
+    if err != 0 or not windows:
+        return False, "AX 창을 찾을 수 없습니다"
+
+    # companion 진입 흐름은 항상 "새로 연 창 1개"를 대상으로 하므로 프론트모스트
+    # (AX가 돌려주는 첫 창)를 그대로 사용한다 — 다중 창 매칭은 다루지 않음.
+    window_ref = windows[0]
+
+    pos_value = AS.AXValueCreate(
+        AS.kAXValueCGPointType, AS.CGPoint(rect.left(), rect.top())
+    )
+    size_value = AS.AXValueCreate(
+        AS.kAXValueCGSizeType, AS.CGSize(rect.width(), rect.height())
+    )
+    e1 = AS.AXUIElementSetAttributeValue(window_ref, AS.kAXPositionAttribute, pos_value)
+    e2 = AS.AXUIElementSetAttributeValue(window_ref, AS.kAXSizeAttribute, size_value)
+    if e1 != 0 or e2 != 0:
+        return False, f"AX 창 배치 실패 (pos={e1}, size={e2})"
+    return True, "ok"
+
+
+def place_hwnd(hwnd: int, rect: QRect, *, pid: int | None = None) -> tuple[bool, str]:
+    """HWND(win32) 또는 PID(macOS)의 창을 지정 사각형으로 이동·리사이즈."""
+    if sys.platform == "darwin":
+        if not pid:
+            return False, "macOS는 pid가 필요합니다"
+        return _place_macos_pid(pid, rect)
     if sys.platform != "win32" or hwnd <= 0:
         return False, "Windows HWND만 지원"
     try:
@@ -80,16 +121,19 @@ def tile_ide_and_iris(
     ide_hwnd: int,
     iris_window: QWidget,
     *,
-    ide_ratio: float = 0.7,
+ide_ratio: float = 0.8,
+    ide_pid: int | None = None,
 ) -> tuple[bool, str]:
-    """IDE 왼쪽 ~80%, Iris 오른쪽 나머지."""
+    """IDE 왼쪽 ~80%, Iris 오른쪽 나머지.
+
+    ide_pid: macOS에서 창 이동에 필요 (HWND가 없어 PID의 AX 창을 옮긴다)."""
     tiles = compute_tile_rects(work_area_for(iris_window), ide_ratio=ide_ratio)
-    ok, err = place_hwnd(ide_hwnd, tiles.ide)
+    ok, err = place_hwnd(ide_hwnd, tiles.ide, pid=ide_pid)
     if not ok:
         return False, err
     place_qt_window(iris_window, tiles.iris)
     # Cursor 등이 자체 복원으로 되돌리는 경우 대비 — 즉시 한 번 더
-    place_hwnd(ide_hwnd, tiles.ide)
+    place_hwnd(ide_hwnd, tiles.ide, pid=ide_pid)
     return True, "ok"
 
 

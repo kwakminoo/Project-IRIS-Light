@@ -10,7 +10,7 @@ from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, Qt, QTimer
 from PyQt6.QtWidgets import QWidget
 
 from iris.core.state_machine import AppState
-from iris.ui.particle_visualizer import ParticleVisualizer
+from iris.ui.widgets.particle_visualizer import ParticleVisualizer
 
 _DEBUG_ORB = os.environ.get("IRIS_DEBUG_ORB_GEOMETRY") == "1"
 _MAX_STABILIZE_ATTEMPTS = 12
@@ -99,6 +99,10 @@ class Visualizer(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._particle.setGeometry(self.rect())
+        # 디바운스된 안정화 동기화를 기다리는 동안 구체가 리사이즈 이전 절대 좌표에
+        # 멈춰 있지 않도록, 매 리사이즈 프레임마다 즉시 목표 중심으로 맞춘다.
+        center = self._window_content_center_local()
+        self._particle.set_custom_center(center[0], center[1])
         self.request_sync_orb_anchor("visualizer_resize")
 
     def showEvent(self, event) -> None:  # noqa: N802
@@ -123,20 +127,29 @@ class Visualizer(QWidget):
 
     def _window_content_center_local(self) -> tuple[float, float]:
         """Visualizer 기준 구체 목표 중심. Companion에선 상단 앵커 사용."""
+        vr = self.rect()
+        w, h = max(vr.width(), 1), max(vr.height(), 1)
         if self._use_anchor_center and self._orb_anchor is not None:
             mapped = self._map_anchor_center_local(self._orb_anchor)
             if mapped is not None:
-                # 살짝 더 위 — 로그와 겹침
-                return (mapped[0], max(24.0, mapped[1] - 12.0))
-        vr = self.rect()
-        w, h = max(vr.width(), 1), max(vr.height(), 1)
+                # 수평은 컬럼 폭 기준 정중앙 — 앵커 x는 살짝 어긋날 수 있어 신뢰 안 함.
+                # 수직은 앵커 중심 그대로 — 로그와 살짝 겹쳐도 무방.
+                return (w * 0.5, mapped[1])
         return (w * 0.5, h * self._center_y_ratio)
 
     def _map_anchor_center_local(self, anchor: QWidget) -> tuple[float, float] | None:
-        """orb_spacer 중심을 Visualizer 로컬 좌표로 변환."""
+        """orb_spacer 중심을 Visualizer 로컬 좌표로 변환.
+
+        mapTo()는 self(Visualizer)가 anchor의 실제 조상 위젯이어야 하는데,
+        companion 모드에서 orb_spacer가 IdeCompanionPage(형제 분기)로 옮겨가면
+        더 이상 조상 관계가 아니라 "parent must be in parent hierarchy" 경고와
+        함께 엉뚱한(창 전역에 가까운) 좌표를 반환했다 — 전역 좌표를 거쳐가면
+        조상 관계와 무관하게 항상 올바르게 계산된다.
+        """
         if not self._same_top_level_window(anchor, self):
             return None
-        local_pt = anchor.mapTo(self, anchor.rect().center())
+        global_pt = anchor.mapToGlobal(anchor.rect().center())
+        local_pt = self.mapFromGlobal(global_pt)
         return (float(local_pt.x()), float(local_pt.y()))
 
     @staticmethod
@@ -335,7 +348,7 @@ class Visualizer(QWidget):
 
         print(
             f"[IRIS_DEBUG_ORB] reason={reason!r} "
-            f"window_state={int(snap.window_state)} "
+            f"window_state={snap.window_state!s} "
             f"main={main_geom.width()}x{main_geom.height()} "
             f"bg={bg_geom.width()}x{bg_geom.height()} "
             f"overlay={overlay_geom.width()}x{overlay_geom.height()} "

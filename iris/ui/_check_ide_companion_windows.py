@@ -9,8 +9,8 @@ import sys
 
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 
-from iris.ui.drag_tab import DragTab
-from iris.ui.top_status_header import TopStatusHeader
+from iris.ui.widgets.drag_tab import DragTab
+from iris.ui.window.top_status_header import TopStatusHeader
 
 
 def _visible_orphans(main: QWidget) -> list[str]:

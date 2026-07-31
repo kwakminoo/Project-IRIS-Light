@@ -8,9 +8,9 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidg
 
 from iris.infrastructure.api_quota import ApiQuota, format_quota_pair
 from iris.system.metrics_snapshot import MetricsSnapshot
-from iris.ui.glass_panel import wrap_glass_panel
-from iris.ui.section_header import apply_section_panel_layout, make_section_header
-from iris.ui.theme_tokens import TOKENS
+from iris.ui.shared.glass_panel import wrap_glass_panel
+from iris.ui.shared.section_header import apply_section_panel_layout, make_section_header
+from iris.ui.shared.theme_tokens import TOKENS
 
 _ROW_GAP_PX = 2
 _LABEL_MIN_W = 58

@@ -32,14 +32,7 @@ def get_active_window_title() -> str:
 
 def list_window_titles() -> List[str]:
     """제목 목록 (가능할 때만)."""
-    try:
-        import pygetwindow as gw  # type: ignore
-    except Exception:
-        return []
-    try:
-        return [w.title for w in gw.getAllWindows() if w.title]
-    except Exception:
-        return []
+    return [w.title for w in list_visible_windows()]
 
 
 def list_visible_windows() -> List[WindowInfo]:
@@ -48,7 +41,113 @@ def list_visible_windows() -> List[WindowInfo]:
         wins = _list_via_win32()
         if wins:
             return wins
+    if sys.platform == "darwin":
+        wins = _list_via_macos_quartz()
+        if wins:
+            return wins
     return _list_via_pygetwindow()
+
+
+def _list_via_macos_quartz() -> List[WindowInfo]:
+    """pygetwindow의 macOS 백엔드는 getAllWindows()가 없어 항상 빈 리스트를 반환한다
+    (창 목록·크기는 미구현 stub) — Quartz CGWindowList API로 직접 조회."""
+    try:
+        import Quartz  # type: ignore
+    except Exception:
+        return []
+    try:
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListExcludeDesktopElements | Quartz.kCGWindowListOptionOnScreenOnly,
+            Quartz.kCGNullWindowID,
+        )
+    except Exception:
+        return []
+
+    results: List[WindowInfo] = []
+    for win in windows:
+        try:
+            if win.get("kCGWindowLayer", 0) != 0:
+                continue
+            title = (win.get(Quartz.kCGWindowName, "") or "").strip()
+            owner = (win.get(Quartz.kCGWindowOwnerName, "") or "").strip()
+            label = title or owner
+            if not label:
+                continue
+            bounds = win.get("kCGWindowBounds")
+            if not bounds:
+                continue
+            w, h = int(bounds["Width"]), int(bounds["Height"])
+            if w <= 0 or h <= 0:
+                continue
+            results.append(
+                WindowInfo(label, int(bounds["X"]), int(bounds["Y"]), w, h, 0)
+            )
+        except Exception:
+            continue
+    return results
+
+
+def list_macos_windows_for_pids(pids: set) -> List[dict]:
+    """PID 집합 소유 창 목록 (macOS) — hwnd 자리엔 CGWindowNumber를 담는다.
+
+    IDE Companion 타일링처럼 특정 프로세스가 띄운 창만 골라야 할 때 사용
+    (ide_launcher.list_ide_windows의 macOS 경로에서 사용)."""
+    if sys.platform != "darwin" or not pids:
+        return []
+    try:
+        import Quartz  # type: ignore
+    except Exception:
+        return []
+    try:
+        # OnScreenOnly는 다른 space(가상 데스크톱)에 있는 창을 놓친다 — IDE 타일링은
+        # 다른 space에 떠 있는 창도 찾아서 타일해야 하므로 전체 창을 조회한다.
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID,
+        )
+    except Exception:
+        return []
+
+    found: List[dict] = []
+    for win in windows:
+        try:
+            pid = int(win.get(Quartz.kCGWindowOwnerPID, 0) or 0)
+            if pid not in pids:
+                continue
+            if win.get("kCGWindowLayer", 0) != 0:
+                continue
+            title = (win.get(Quartz.kCGWindowName, "") or "").strip()
+            if not title:
+                continue
+            bounds = win.get("kCGWindowBounds")
+            if not bounds:
+                continue
+            w, h = int(bounds["Width"]), int(bounds["Height"])
+            if w < 200 or h < 120:
+                continue
+            number = int(win.get("kCGWindowNumber", 0) or 0)
+            found.append(
+                {"hwnd": number, "pid": pid, "title": title, "score": w * h, "w": w, "h": h}
+            )
+        except Exception:
+            continue
+    return found
+
+
+def is_macos_window_number_alive(window_number: int) -> bool:
+    """CGWindowNumber가 아직 존재하는 창인지 (companion 타일 재사용 판단용)."""
+    if sys.platform != "darwin" or not window_number:
+        return False
+    try:
+        import Quartz  # type: ignore
+
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID,
+        )
+        return any(int(w.get("kCGWindowNumber", 0) or 0) == int(window_number) for w in windows)
+    except Exception:
+        return False
 
 
 def _list_via_win32() -> List[WindowInfo]:

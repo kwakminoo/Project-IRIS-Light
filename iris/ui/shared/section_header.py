@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
-from iris.ui.theme_tokens import TOKENS
+from iris.ui.shared.theme_tokens import TOKENS
 
 # Running Windows 기준 — 제목↔선, 선↔본문 여백 통일
 SECTION_TITLE_LINE_GAP = TOKENS.spacing_sm

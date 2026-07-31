@@ -36,7 +36,7 @@ from PyQt6.QtWidgets import (
 )
 
 from iris.core.activity_privacy import prepare_chat_text
-from iris.ui.chat_display import (
+from iris.ui.chat.chat_display import (
     TYPING_CHARS_PER_TICK,
     TYPING_INTERVAL_MS,
     TYPING_SPEECH_MAX_CHARS_PER_TICK,
@@ -50,9 +50,9 @@ from iris.ui.chat_display import (
     typing_target_index,
     visible_typing_text,
 )
-from iris.ui.composer_plus_menu import ComposerPlusButton, ComposerPlusMenu, ComposerSendButton
-from iris.ui.context_ring import ContextRingWidget
-from iris.ui.mic_waveform_bar import MicWaveformBar
+from iris.ui.chat.composer_plus_menu import ComposerPlusButton, ComposerPlusMenu, ComposerSendButton
+from iris.ui.widgets.context_ring import ContextRingWidget
+from iris.ui.widgets.mic_waveform_bar import MicWaveformBar
 
 if TYPE_CHECKING:
     from iris.infrastructure.ollama_client import OllamaModelInfo

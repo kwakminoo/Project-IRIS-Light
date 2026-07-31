@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
-from iris.ui.system_metrics_panel import SystemMetricsPanel
-from iris.ui.workspace_action_panel import WorkspaceActionPanel
+from iris.ui.monitor.system_metrics_panel import SystemMetricsPanel
+from iris.ui.sidebar.workspace_action_panel import WorkspaceActionPanel
 
 
 class SidebarUtilityPanel(QWidget):

@@ -95,7 +95,7 @@ class ChatInsertInputTests(TestCase):
         from PyQt6.QtWidgets import QApplication
 
         app = QApplication.instance() or QApplication([])
-        from iris.ui.chat_panel import ChatPanel
+        from iris.ui.chat.chat_panel import ChatPanel
 
         panel = ChatPanel()
         panel.set_input_text("hello")

@@ -8,7 +8,7 @@ from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
-from iris.ui.theme_tokens import TOKENS
+from iris.ui.shared.theme_tokens import TOKENS
 
 _RING_PX = 18
 _RING_WIDTH = 2.2

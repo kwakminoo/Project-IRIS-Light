@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from html import escape
 from typing import TYPE_CHECKING, Optional
 
 from PyQt6.QtCore import (
@@ -26,13 +27,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from iris.ui.glass_panel import wrap_glass_panel
-from iris.ui.section_header import (
+from iris.ui.shared.glass_panel import wrap_glass_panel
+from iris.ui.shared.section_header import (
     SECTION_CONTENT_GAP,
     apply_section_panel_layout,
     make_section_header,
 )
-from iris.ui.theme_tokens import TOKENS
+from iris.ui.shared.theme_tokens import TOKENS
 
 if TYPE_CHECKING:
     from iris.monitoring.notification_policy import NotificationPolicy
@@ -76,11 +77,19 @@ class _AlertPayload:
 class _AlertRow(QWidget):
     """알림 한 줄 — 우측에서 좌측으로 슬라이드하며 등장."""
 
-    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, icon: str, color: str, time_str: str, title: str, summary: str,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._label = QLabel(text, self)
-        self._label.setTextFormat(Qt.TextFormat.PlainText)
+        html = (
+            f'<span style="color:{escape(color)};">{escape(icon)}</span>'
+            f"  {escape(time_str)}  {escape(title)}<br>"
+            f"&nbsp;&nbsp;&nbsp;&nbsp;{escape(summary)}"
+        )
+        self._label = QLabel(html, self)
+        self._label.setTextFormat(Qt.TextFormat.RichText)
         self._label.setStyleSheet(f"color: {TOKENS.text_primary}; padding: 0 4px;")
         self._frac = 1.0  # 1=완전히 오른쪽 밖, 0=제자리
         self._voff = 0.0  # 수직 오프셋(px) — 아래로 밀릴 때 슬라이드
@@ -199,7 +208,7 @@ class NotificationPanel(QWidget):
         outer.addWidget(wrap_glass_panel(inner))
 
         # 알림 순차 표시 큐 — 한꺼번에 뜨지 않고 하나씩 슬라이드 등장.
-        self._pending: list[tuple[str, _AlertPayload]] = []
+        self._pending: list[_AlertPayload] = []
         self._drain_timer = QTimer(self)
         self._drain_timer.setSingleShot(True)
         self._drain_timer.timeout.connect(self._drain_next)
@@ -226,13 +235,10 @@ class NotificationPanel(QWidget):
         여러 알림이 몰려도 한꺼번에 뜨지 않고 큐에 쌓아 하나씩 순차 등장한다.
         """
         time_str = QDateTime.currentDateTime().toString("HH:mm")
-        icon, _color = _SEVERITY_ICON.get(category, ("●", TOKENS.text_secondary))
-        summary = message.strip().split("\n")[0][:100] if message else ""
-        line = f"{icon}  {time_str}  {title}\n    {summary}"
         payload = _AlertPayload(
             target_id, category, event_id, focus_hint, title, message, time_str
         )
-        self._pending.append((line, payload))
+        self._pending.append(payload)
         # 같은 틱에 몰린 알림을 모아 순차 배출(첫 표시는 짧게 지연).
         if not self._drain_timer.isActive():
             self._drain_timer.start(60)
@@ -241,15 +247,17 @@ class NotificationPanel(QWidget):
     def _drain_next(self) -> None:
         if not self._pending:
             return
-        line, payload = self._pending.pop(0)
-        self._insert_row(line, payload)
+        payload = self._pending.pop(0)
+        self._insert_row(payload)
         if self._pending:
             self._drain_timer.start(360)
 
-    def _insert_row(self, line: str, payload: "_AlertPayload") -> None:
+    def _insert_row(self, payload: "_AlertPayload") -> None:
+        icon, color = _SEVERITY_ICON.get(payload.category, ("●", TOKENS.text_secondary))
+        summary = payload.message.strip().split("\n")[0][:100] if payload.message else ""
         item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, payload)
-        row = _AlertRow(line)
+        row = _AlertRow(icon, color, payload.time_str, payload.title, summary)
         item.setSizeHint(row.sizeHint())
         self._list.insertItem(0, item)
         self._list.setItemWidget(item, row)

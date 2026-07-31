@@ -51,13 +51,15 @@ def ide_catalog() -> tuple[IdeSpec, ...]:
         IdeSpec(
             id="cursor",
             name="Cursor",
-            process_names=("Cursor.exe",),
+            process_names=("Cursor.exe", "Cursor"),
             exe_candidates=(
                 rf"{la}\Programs\cursor\Cursor.exe",
                 rf"{la}\Programs\Cursor\Cursor.exe",
+                "/Applications/Cursor.app/Contents/MacOS/Cursor",
             ),
             cli_candidates=(
                 rf"{la}\Programs\cursor\resources\app\bin\cursor.cmd",
+                "/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
             ),
             which_names=("cursor",),
             title_hints=("Cursor",),
@@ -70,10 +72,12 @@ def ide_catalog() -> tuple[IdeSpec, ...]:
             exe_candidates=(
                 rf"{la}\Programs\Microsoft VS Code\Code.exe",
                 rf"{pf}\Microsoft VS Code\Code.exe",
+                "/Applications/Visual Studio Code.app/Contents/MacOS/Electron",
             ),
             cli_candidates=(
                 rf"{la}\Programs\Microsoft VS Code\bin\code.cmd",
                 rf"{pf}\Microsoft VS Code\bin\code.cmd",
+                "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
             ),
             which_names=("code",),
             # PATH의 code.cmd가 Cursor codeBin일 수 있음
@@ -325,19 +329,12 @@ def find_running_ide(
     return int(best["hwnd"]), int(best["pid"])
 
 
-def list_ide_windows(
-    preferred_ide: str,
-    ide_exe_path: str = "",
-) -> list[dict]:
-    """보이는 IDE top-level 창 목록: hwnd, pid, title, score."""
-    if sys.platform != "win32":
-        return []
+def _target_pids_for_ide(preferred_ide: str, ide_exe_path: str = "") -> "set[int]":
+    """psutil 프로세스 이름으로 IDE에 속한 PID 집합을 찾는다 (win32/macOS 공용)."""
     try:
         import psutil  # type: ignore
-        import win32gui  # type: ignore
-        import win32process  # type: ignore
     except Exception:
-        return []
+        return set()
 
     ide_id = (preferred_ide or "cursor").strip().lower() or "cursor"
     spec = get_ide_spec(ide_id)
@@ -347,7 +344,7 @@ def list_ide_windows(
     if exe_name:
         process_names.add(exe_name)
     if not process_names:
-        return []
+        return set()
 
     target_pids: set[int] = set()
     for proc in psutil.process_iter(["pid", "name", "exe"]):
@@ -362,6 +359,42 @@ def list_ide_windows(
             target_pids.add(int(proc.info["pid"]))
         except (psutil.Error, TypeError, ValueError):
             continue
+    return target_pids
+
+
+def _list_ide_windows_macos(preferred_ide: str, ide_exe_path: str = "") -> list[dict]:
+    target_pids = _target_pids_for_ide(preferred_ide, ide_exe_path)
+    if not target_pids:
+        return []
+    from iris.automation.window_controller import list_macos_windows_for_pids
+
+    found = list_macos_windows_for_pids(target_pids)
+    spec = get_ide_spec((preferred_ide or "cursor").strip().lower() or "cursor")
+    title_hints = tuple(h.lower() for h in (spec.title_hints if spec else ()))
+    for w in found:
+        if title_hints and any(h in w["title"].lower() for h in title_hints):
+            w["score"] += 10_000_000
+    return found
+
+
+def list_ide_windows(
+    preferred_ide: str,
+    ide_exe_path: str = "",
+) -> list[dict]:
+    """보이는 IDE top-level 창 목록: hwnd, pid, title, score."""
+    if sys.platform == "darwin":
+        return _list_ide_windows_macos(preferred_ide, ide_exe_path)
+    if sys.platform != "win32":
+        return []
+    try:
+        import win32gui  # type: ignore
+        import win32process  # type: ignore
+    except Exception:
+        return []
+
+    ide_id = (preferred_ide or "cursor").strip().lower() or "cursor"
+    spec = get_ide_spec(ide_id)
+    target_pids = _target_pids_for_ide(preferred_ide, ide_exe_path)
     if not target_pids:
         return []
 
