@@ -21,6 +21,8 @@ SKILL_NAMES = (
     "iris-work-end",
     "iris-session-status",
     "iris-vibe-code",
+    "iris-emulator",
+    "iris-mobile-mcp",
 )
 
 
@@ -63,6 +65,8 @@ class SyncReport:
     config_path: str = ""
     mcp_installed: bool = False
     mcp_changed: bool = False
+    mobile_mcp_installed: bool = False
+    mobile_mcp_changed: bool = False
     skills_copied: list[str] = field(default_factory=list)
     skills_ok: list[str] = field(default_factory=list)
     skills_missing: list[str] = field(default_factory=list)
@@ -82,6 +86,10 @@ class SyncReport:
             bits.append("MCP iris-control ok" + (" (updated)" if self.mcp_changed else ""))
         else:
             bits.append("MCP iris-control missing")
+        if self.mobile_mcp_installed:
+            bits.append("MCP mobile-mcp ok" + (" (updated)" if self.mobile_mcp_changed else ""))
+        else:
+            bits.append("MCP mobile-mcp missing")
         bits.append(f"skills {len(self.skills_ok)}/{len(SKILL_NAMES)}")
         if self.mcp_servers:
             bits.append(f"mcp {self.mcp_ok_count}/{len(self.mcp_servers)} healthy")
@@ -116,6 +124,29 @@ def desired_mcp_block(repo: Path) -> dict[str, Any]:
     }
 
 
+def desired_mobile_mcp_block() -> dict[str, Any]:
+    """Hermes MCP: @mobilenext/mobile-mcp — same SDK root as Iris android_emulator."""
+    from iris.system.android_emulator import _sdk_root
+
+    sdk = str(_sdk_root().resolve())
+    platform_tools = str((_sdk_root() / "platform-tools").resolve())
+    sep = ";" if sys.platform == "win32" else ":"
+    old_path = os.environ.get("PATH", "")
+    path = f"{platform_tools}{sep}{old_path}" if old_path else platform_tools
+    return {
+        "command": "npx",
+        "args": ["-y", "@mobilenext/mobile-mcp@latest"],
+        "env": {
+            "ANDROID_HOME": sdk,
+            "ANDROID_SDK_ROOT": sdk,
+            "PATH": path,
+        },
+        "timeout": 120,
+        "connect_timeout": 60,
+        "enabled": True,
+    }
+
+
 def _mcp_equivalent(a: Any, b: Any) -> bool:
     if not isinstance(a, dict) or not isinstance(b, dict):
         return False
@@ -134,7 +165,7 @@ def _mcp_equivalent(a: Any, b: Any) -> bool:
 
 
 def ensure_mcp_in_config(repo: Path | None = None) -> tuple[bool, bool, str]:
-    """Returns (installed, changed, message)."""
+    """Upsert iris-control + mobile-mcp. Returns (iris_installed, any_changed, message)."""
     try:
         import yaml
     except ImportError:
@@ -147,7 +178,8 @@ def ensure_mcp_in_config(repo: Path | None = None) -> tuple[bool, bool, str]:
     repo = repo or project_root()
     path = hermes_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    desired = desired_mcp_block(repo)
+    desired_iris = desired_mcp_block(repo)
+    desired_mobile = desired_mobile_mcp_block()
 
     if path.is_file():
         raw = path.read_text(encoding="utf-8", errors="replace")
@@ -159,16 +191,19 @@ def ensure_mcp_in_config(repo: Path | None = None) -> tuple[bool, bool, str]:
             data = {}
     else:
         data = {}
-        raw = ""
 
     servers = data.get("mcp_servers")
     if not isinstance(servers, dict):
         servers = {}
         data["mcp_servers"] = servers
 
-    current = servers.get("iris-control")
-    if _mcp_equivalent(current, desired):
-        return True, False, "mcp iris-control already installed"
+    iris_same = _mcp_equivalent(servers.get("iris-control"), desired_iris)
+    mobile_same = _mcp_equivalent(servers.get("mobile-mcp"), desired_mobile)
+    if iris_same and mobile_same:
+        msg = "mcp iris-control + mobile-mcp already installed"
+        if not shutil.which("npx"):
+            msg += "; warning: npx not found (Node 20+ required for mobile-mcp)"
+        return True, False, msg
 
     bak = path.with_name("config.yaml.bak-iris")
     if path.is_file() and not bak.is_file():
@@ -177,7 +212,13 @@ def ensure_mcp_in_config(repo: Path | None = None) -> tuple[bool, bool, str]:
         except OSError:
             pass
 
-    servers["iris-control"] = desired
+    updated: list[str] = []
+    if not iris_same:
+        servers["iris-control"] = desired_iris
+        updated.append("iris-control")
+    if not mobile_same:
+        servers["mobile-mcp"] = desired_mobile
+        updated.append("mobile-mcp")
     data["mcp_servers"] = servers
     try:
         path.write_text(
@@ -186,7 +227,10 @@ def ensure_mcp_in_config(repo: Path | None = None) -> tuple[bool, bool, str]:
         )
     except OSError as exc:
         return False, False, f"config.yaml write failed: {exc}"
-    return True, True, "mcp iris-control installed/updated"
+    msg = "mcp installed/updated: " + ", ".join(updated)
+    if not shutil.which("npx"):
+        msg += "; warning: npx not found (Node 20+ required for mobile-mcp)"
+    return True, True, msg
 
 
 def ensure_skills_installed(repo: Path | None = None) -> tuple[list[str], list[str], list[str]]:
@@ -400,6 +444,15 @@ def verify_install(repo: Path | None = None) -> SyncReport:
     if not report.mcp_installed:
         report.ok = False
         report.errors.append("mcp iris-control not present or stale")
+    mobile_block = servers.get("mobile-mcp") if isinstance(servers, dict) else None
+    report.mobile_mcp_installed = _mcp_equivalent(mobile_block, desired_mobile_mcp_block())
+    if not report.mobile_mcp_installed:
+        report.ok = False
+        report.errors.append("mcp mobile-mcp not present or stale")
+    if not shutil.which("npx"):
+        report.messages.append(
+            "npx not found - install Node 20+ so Hermes can spawn mobile-mcp"
+        )
 
     dst = hermes_skills_iris_control_dir()
     for name in SKILL_NAMES:
@@ -432,11 +485,14 @@ def sync_iris_control(
         report.mcp_installed = installed
         report.mcp_changed = changed
         report.messages.append(msg)
+        if "mobile-mcp" in msg and ("updated" in msg or "installed/updated" in msg):
+            report.mobile_mcp_changed = True
         if not installed:
             report.ok = False
             report.errors.append(msg)
         if changed:
             report.needs_gateway_reload = True
+        # npx 없으면 probe/audit가 잡음 — config upsert는 유지 (Node 설치 후 바로 동작)
     except Exception as exc:  # noqa: BLE001
         report.ok = False
         report.errors.append(f"mcp sync: {exc}")
@@ -473,8 +529,12 @@ def sync_iris_control(
             if e not in report.errors:
                 report.errors.append(e)
     report.mcp_installed = verified.mcp_installed
+    report.mobile_mcp_installed = verified.mobile_mcp_installed
     report.skills_ok = verified.skills_ok
     report.skills_missing = verified.skills_missing
+    for m in verified.messages:
+        if m not in report.messages:
+            report.messages.append(m)
 
     # 등록된 모든 MCP 점검 (다른 서버 설정은 건드리지 않고 상태만 확인·기록)
     try:
@@ -532,6 +592,15 @@ def _self_check() -> None:
     assert Path(block["args"][-1]).is_file(), block["args"]
     assert "-u" in block["args"]
     assert _mcp_equivalent(block, block)
+    mobile = desired_mobile_mcp_block()
+    assert mobile["command"] == "npx"
+    assert mobile["args"] == ["-y", "@mobilenext/mobile-mcp@latest"]
+    assert mobile["env"]["ANDROID_HOME"] == mobile["env"]["ANDROID_SDK_ROOT"]
+    assert "platform-tools" in str(mobile["env"].get("PATH") or "")
+    assert _mcp_equivalent(mobile, mobile)
+    # live npx spawn skipped when Node missing
+    if not shutil.which("npx"):
+        print("hermes_iris_control_sync self-check: npx missing (mobile-mcp spawn skipped)")
     audited = audit_all_mcp_servers()
     assert isinstance(audited, list)
     print("hermes_iris_control_sync self-check ok", root, "mcp", len(audited))
@@ -540,6 +609,10 @@ def _self_check() -> None:
 if __name__ == "__main__":
     if "--apply" in sys.argv:
         r = sync_iris_control(reconnect_gateway=True)
-        print(json.dumps(asdict(r), ensure_ascii=False, indent=2))
+        payload = json.dumps(asdict(r), ensure_ascii=False, indent=2)
+        try:
+            print(payload)
+        except UnicodeEncodeError:
+            sys.stdout.buffer.write((payload + "\n").encode("utf-8", errors="replace"))
         raise SystemExit(0 if r.ok else 1)
     _self_check()

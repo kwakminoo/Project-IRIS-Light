@@ -8,9 +8,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
+    QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
     QGuiApplication,
@@ -36,6 +37,7 @@ from PyQt6.QtWidgets import (
 )
 
 from iris.core.activity_privacy import prepare_chat_text
+from iris.core.chat_citations import iris_message_to_chat_html
 from iris.ui.chat.chat_display import (
     TYPING_CHARS_PER_TICK,
     TYPING_INTERVAL_MS,
@@ -43,7 +45,6 @@ from iris.ui.chat.chat_display import (
     chat_body_to_html,
     effective_typing_duration_ms,
     extend_typing_timeline_ms,
-    markdown_to_chat_html,
     normalize_chat_body,
     scale_typing_duration_ms,
     typing_body_to_html,
@@ -51,6 +52,7 @@ from iris.ui.chat.chat_display import (
     visible_typing_text,
 )
 from iris.ui.chat.composer_plus_menu import ComposerPlusButton, ComposerPlusMenu, ComposerSendButton
+from iris.ui.chat.skill_mcp_dialogs import McpDialog, SkillsDialog
 from iris.ui.widgets.context_ring import ContextRingWidget
 from iris.ui.widgets.mic_waveform_bar import MicWaveformBar
 
@@ -256,6 +258,10 @@ class ChatLogTextEdit(QTextEdit):
             self.speaker_clicked.emit(anchor.removeprefix("iris-tts://"))
             event.accept()
             return
+        if anchor.startswith("http://") or anchor.startswith("https://"):
+            QDesktopServices.openUrl(QUrl(anchor))
+            event.accept()
+            return
         super().mouseReleaseEvent(event)
 
 
@@ -332,10 +338,7 @@ class _ChatInputBar(QWidget):
         self.plus_button = ComposerPlusButton()
         self._plus_menu = ComposerPlusMenu(self)
         self.plus_button.clicked.connect(self._toggle_plus_menu)
-        self._plus_menu.add_photos.connect(self._pick_photos)
-        self._plus_menu.add_files.connect(self._pick_files)
-        self._plus_menu.skill_chosen.connect(self._on_skill)
-        self._plus_menu.mcp_chosen.connect(self._on_mcp)
+        self._wire_plus_menu(self._plus_menu)
 
         self.input = ChatComposerInput()
         self.input.setObjectName("ChatInput")
@@ -523,18 +526,40 @@ class _ChatInputBar(QWidget):
             return
         super().dropEvent(event)
 
+    def _wire_plus_menu(self, menu: ComposerPlusMenu) -> None:
+        menu.add_photos.connect(self._pick_photos)
+        menu.add_files.connect(self._pick_files)
+        menu.skill_chosen.connect(self._on_skill)
+        menu.mcp_chosen.connect(self._on_mcp)
+        menu.open_skills_panel.connect(self._open_skills_dialog)
+        menu.open_mcp_panel.connect(self._open_mcp_dialog)
+
     def _toggle_plus_menu(self) -> None:
         if self._plus_menu.isVisible():
             self._plus_menu.hide()
             return
-        # 열 때마다 스킬/MCP 목록 갱신
+        # 열 때마다 스킬/MCP 개수 갱신
         self._plus_menu.deleteLater()
         self._plus_menu = ComposerPlusMenu(self)
-        self._plus_menu.add_photos.connect(self._pick_photos)
-        self._plus_menu.add_files.connect(self._pick_files)
-        self._plus_menu.skill_chosen.connect(self._on_skill)
-        self._plus_menu.mcp_chosen.connect(self._on_mcp)
+        self._wire_plus_menu(self._plus_menu)
         self._plus_menu.popup_above(self.plus_button)
+
+    def _open_skills_dialog(self) -> None:
+        # Popup 포커스 해제 후 다이얼로그 (한 틱 지연)
+        QTimer.singleShot(0, self._show_skills_dialog)
+
+    def _show_skills_dialog(self) -> None:
+        dlg = SkillsDialog(self.window())
+        dlg.skill_chosen.connect(self._on_skill)
+        dlg.exec()
+
+    def _open_mcp_dialog(self) -> None:
+        QTimer.singleShot(0, self._show_mcp_dialog)
+
+    def _show_mcp_dialog(self) -> None:
+        dlg = McpDialog(self.window())
+        dlg.mcp_chosen.connect(self._on_mcp)
+        dlg.exec()
 
     def _pick_photos(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -957,27 +982,51 @@ class ChatPanel(QWidget):
         """Iris 등 — 타이핑 효과로 출력 (TTS 동기화 없음)."""
         self.append_message_typed(who, text, speech_sync=False)
 
+    def _message_block_format(self) -> QTextBlockFormat:
+        fmt = QTextBlockFormat()
+        fmt.setIndent(0)
+        fmt.setTextIndent(0.0)
+        fmt.setLeftMargin(0.0)
+        return fmt
+
+    def _clear_block_list(self, cursor: QTextCursor, fmt: QTextBlockFormat) -> None:
+        lst = cursor.currentList()
+        if lst is not None:
+            lst.remove(cursor.block())
+            cursor.setBlockFormat(fmt)
+
     def _begin_chat_message_cursor(self) -> QTextCursor:
         """새 메시지 블록을 문서 끝·좌측 정렬로 시작.
 
         직전 Iris 마크다운(<ul>/<li>)이 남긴 list/indent를 끊지 않으면
         다음 You/Iris 줄이 들여쓰기된 채 이어진다.
+        직전 메시지 뒤 빈 줄은 간격으로 남기고, 그 다음 블록에 메시지를 쓴다.
         """
         cursor = self._log.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        fmt = QTextBlockFormat()
-        fmt.setIndent(0)
-        fmt.setTextIndent(0.0)
-        fmt.setLeftMargin(0.0)
+        fmt = self._message_block_format()
         if self._log.toPlainText().strip():
-            cursor.insertBlock(fmt)
+            if not cursor.block().text().strip():
+                # 직전 메시지 trailing blank — 간격 유지, 메시지용 새 블록
+                cursor.insertBlock(fmt)
+            else:
+                cursor.insertBlock(fmt)  # 빈 줄
+                cursor.insertBlock(fmt)  # 메시지
         else:
             cursor.setBlockFormat(fmt)
-        lst = cursor.currentList()
-        if lst is not None:
-            lst.remove(cursor.block())
-            cursor.setBlockFormat(fmt)
+        self._clear_block_list(cursor, fmt)
         return cursor
+
+    def _append_trailing_blank_line(self) -> None:
+        """메시지 직후 빈 줄 — You/Iris 사이 가독성."""
+        cursor = self._log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        if not cursor.block().text().strip():
+            return
+        fmt = self._message_block_format()
+        cursor.insertBlock(fmt)
+        self._clear_block_list(cursor, fmt)
+        self._log.setTextCursor(cursor)
 
     def append_message_instant(self, who: str, text: str) -> None:
         """사용자 입력 등 — 타이핑 없이 본문 전체를 즉시 표시."""
@@ -988,12 +1037,13 @@ class ChatPanel(QWidget):
         cursor = self._begin_chat_message_cursor()
         cursor.insertHtml(f"<b>{html.escape(who)}</b>: ")
         if who.strip().lower() == "iris":
-            cursor.insertHtml(markdown_to_chat_html(body))
+            cursor.insertHtml(iris_message_to_chat_html(body))
             msg_id = self.register_tts_message(body)
             cursor.insertHtml(self._speaker_link_html(msg_id))
         else:
             cursor.insertHtml(chat_body_to_html(body))
         self._log.setTextCursor(cursor)
+        self._append_trailing_blank_line()
         self._scroll_log_to_bottom()
 
     def begin_stream_message(self, who: str, *, speech_sync: bool = True) -> None:
@@ -1139,6 +1189,7 @@ class ChatPanel(QWidget):
         elif self._typing_index < len(self._typing_text):
             self._typing_index = len(self._typing_text)
             self._replace_typing_body()
+        had_body = bool(self._typing_text) or self._typing_body_start is not None
         self._typing_text = ""
         self._typing_index = 0
         self._typing_speech_sync = False
@@ -1146,6 +1197,8 @@ class ChatPanel(QWidget):
         self._typing_speech_start = None
         self._typing_body_start = None
         self._typing_render_markdown = False
+        if had_body:
+            self._append_trailing_blank_line()
         self._scroll_log_to_bottom()
 
     def _remove_user_listening_line(self) -> None:
@@ -1233,7 +1286,7 @@ class ChatPanel(QWidget):
         cursor.setPosition(self._typing_body_start)
         cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
         cursor.removeSelectedText()
-        cursor.insertHtml(markdown_to_chat_html(body))
+        cursor.insertHtml(iris_message_to_chat_html(body))
         msg_id = self.register_tts_message(body)
         cursor.insertHtml(self._speaker_link_html(msg_id))
         self._log.setTextCursor(cursor)
@@ -1250,6 +1303,7 @@ class ChatPanel(QWidget):
             self._typing_speech_start = None
             self._typing_body_start = None
             self._typing_render_markdown = False
+            self._append_trailing_blank_line()
             return
 
         if self._typing_speech_sync and self._typing_speech_duration_ms:

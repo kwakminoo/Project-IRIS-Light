@@ -1,15 +1,12 @@
-"""사용자 프로필 입력 창 (인적 정보만)."""
+"""사용자 프로필 입력 창 (인적 정보만) — Iris HUD 스타일."""
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
-    QLabel,
     QLineEdit,
-    QScrollArea,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -18,6 +15,15 @@ from PyQt6.QtWidgets import (
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.storage.database import Database
 from iris.storage.user_profile import UserProfile, load_user_profile, save_user_profile
+from iris.ui.settings.hud_dialog import (
+    configure_form,
+    configure_hud_dialog,
+    make_form_label,
+    make_hint,
+    make_scroll_body,
+    make_title,
+)
+from iris.ui.shared.theme_tokens import TOKENS
 
 _FIELD_ROWS: tuple[tuple[str, str, str, bool], ...] = (
     ("name", "이름", "예: 홍길동", False),
@@ -45,55 +51,31 @@ class UserProfileDialog(QDialog):
         super().__init__(parent)
         self._db = db
         self._wiki = IrisWiki()
-        self.setWindowTitle("사용자 프로필")
-        self.setWindowFlags(
-            self.windowFlags()
-            | Qt.WindowType.WindowMaximizeButtonHint
-            | Qt.WindowType.WindowMinimizeButtonHint
+        configure_hud_dialog(
+            self,
+            title="사용자 프로필",
+            min_w=640,
+            min_h=560,
+            default_w=720,
+            default_h=680,
         )
-        self.setMinimumWidth(520)
-        self.setMinimumHeight(520)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
-        self.setStyleSheet(
-            """
-            QDialog, QWidget {
-                font-family: "Noto Sans KR", "Segoe UI Variable", "Segoe UI", "Malgun Gothic";
-                font-size: 13px;
-            }
-            QLineEdit, QTextEdit {
-                background-color: #1a1c24;
-                color: #ffffff;
-                border: 1px solid #3f3f5f;
-                border-radius: 4px;
-                padding: 6px;
-            }
-            """
+        root.setContentsMargins(TOKENS.spacing_xl, TOKENS.spacing_lg, TOKENS.spacing_xl, TOKENS.spacing_lg)
+        root.setSpacing(TOKENS.spacing_md)
+        root.addWidget(make_title("USER PROFILE"))
+        root.addWidget(
+            make_hint(
+                "입력한 내용은 이 PC의 Iris Light DB와 Iris Wiki(~/.iris-light/iris-wiki)에만 저장됩니다. "
+                "이메일 계정·IDE 설정은 설정 메뉴에서 관리합니다."
+            )
         )
 
-        title = QLabel("사용자 프로필")
-        title.setObjectName("PanelTitle")
-        root.addWidget(title)
-
-        hint = QLabel(
-            "입력한 내용은 이 PC의 Iris Light DB와 Iris Wiki(~/.iris-light/iris-wiki)에만 저장됩니다. "
-            "이메일 계정·IDE 설정은 설정 메뉴에서 관리합니다."
-        )
-        hint.setWordWrap(True)
-        root.addWidget(hint)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        content = QWidget()
-        content_lay = QVBoxLayout(content)
-        content_lay.setSpacing(16)
+        scroll, content_lay = make_scroll_body()
 
         form_wrap = QWidget()
         form = QFormLayout(form_wrap)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        configure_form(form)
         self._fields: dict[str, QLineEdit | QTextEdit] = {}
         profile = load_user_profile(db)
         for key, label, placeholder, multiline in _FIELD_ROWS:
@@ -101,17 +83,18 @@ class UserProfileDialog(QDialog):
                 w: QLineEdit | QTextEdit = QTextEdit()
                 w.setPlaceholderText(placeholder)
                 w.setPlainText(getattr(profile, key, "") or "")
-                w.setFixedHeight(72)
+                w.setMinimumHeight(88)
+                w.setMaximumHeight(160)
             else:
                 w = QLineEdit()
                 w.setPlaceholderText(placeholder)
                 w.setText(getattr(profile, key, "") or "")
+                w.setMinimumHeight(32)
             self._fields[key] = w
-            form.addRow(label, w)
+            form.addRow(make_form_label(label), w)
         content_lay.addWidget(form_wrap)
         content_lay.addStretch(1)
 
-        scroll.setWidget(content)
         root.addWidget(scroll, 1)
 
         buttons = QDialogButtonBox(

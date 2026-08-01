@@ -54,6 +54,15 @@ from iris.ui.workers.email_workers import EmailVerifyWorker
 from iris.ui.widgets.ide_icons import ide_icon_for, show_ide_not_installed_dialog
 from iris.ui.widgets.mic_input_meter import MicThresholdBar
 from iris.ui.settings import settings_service
+from iris.ui.settings.hud_dialog import (
+    configure_form,
+    configure_hud_dialog,
+    make_form_label,
+    make_hint,
+    make_scroll_body,
+    make_title,
+)
+from iris.ui.shared.theme_tokens import TOKENS
 
 
 @dataclass(frozen=True)
@@ -72,13 +81,13 @@ class SettingsDialog(QDialog):
 
     def __init__(self, settings: Settings, db: Database | None = None, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Iris Light 설정")
-        self.setMinimumWidth(560)
-        self.setMinimumHeight(640)
-        self.setWindowFlags(
-            self.windowFlags()
-            | Qt.WindowType.WindowMaximizeButtonHint
-            | Qt.WindowType.WindowMinimizeButtonHint
+        configure_hud_dialog(
+            self,
+            title="Iris Light 설정",
+            min_w=760,
+            min_h=680,
+            default_w=880,
+            default_h=820,
         )
         self._settings = settings
         self._db = db
@@ -109,58 +118,28 @@ class SettingsDialog(QDialog):
         self._profile_base = profile
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
-        self.setStyleSheet(
-            """
-            QDialog, QWidget {
-                font-family: "Noto Sans KR", "Segoe UI Variable", "Segoe UI", "Malgun Gothic";
-                font-size: 13px;
-            }
-            QLineEdit, QListWidget {
-                background-color: #1a1c24;
-                color: #ffffff;
-                border: 1px solid #3f3f5f;
-                border-radius: 4px;
-                padding: 6px;
-            }
-            QToolButton {
-                background-color: #1a1c24;
-                color: #e8ecff;
-                border: 1px solid #3f3f5f;
-                border-radius: 8px;
-                padding: 6px 4px;
-            }
-            QToolButton:checked {
-                border: 2px solid #5a8fff;
-                background-color: #243044;
-            }
-            QToolButton:hover {
-                border-color: #5a8fff;
-            }
-            """
+        root.setContentsMargins(TOKENS.spacing_xl, TOKENS.spacing_lg, TOKENS.spacing_xl, TOKENS.spacing_lg)
+        root.setSpacing(TOKENS.spacing_md)
+        root.addWidget(make_title("SETTINGS"))
+        root.addWidget(
+            make_hint(
+                "Ollama · Hermes · 음성 · 이메일 · IDE Companion을 설정합니다. "
+                "창을 늘리거나 스크롤하면 모든 항목을 가리지 않고 볼 수 있습니다."
+            )
         )
 
-        title = QLabel("설정")
-        title.setObjectName("PanelTitle")
-        root.addWidget(title)
+        scroll, content_lay = make_scroll_body()
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        content = QWidget()
-        content_lay = QVBoxLayout(content)
-        content_lay.setSpacing(16)
-
-        conn_hint = QLabel(
-            "Ollama 모델 목록과 Hermes Agent API(gateway) 연결을 설정합니다. "
-            "Hermes 사용 시 채팅은 Hermes API로 전달되며, 선택한 모델이 Hermes에도 동기화됩니다."
+        conn_box = QGroupBox("연결 (Ollama / Hermes)")
+        conn_lay = QVBoxLayout(conn_box)
+        conn_lay.setSpacing(TOKENS.spacing_sm)
+        conn_lay.addWidget(
+            make_hint(
+                "Hermes 사용 시 채팅은 Hermes API로 전달되며, 선택한 모델이 Hermes에도 동기화됩니다."
+            )
         )
-        conn_hint.setWordWrap(True)
-        content_lay.addWidget(conn_hint)
-
         form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        configure_form(form)
         self._ollama_url = QLineEdit(settings.ollama_base_url)
         self._ollama_model = QLineEdit(settings.ollama_model)
         self._hermes_cmd = QLineEdit(settings.hermes_command)
@@ -169,13 +148,22 @@ class SettingsDialog(QDialog):
         self._hermes_key.setEchoMode(QLineEdit.EchoMode.Password)
         self._hermes_on = QCheckBox("Hermes Agent 사용 (채팅을 Hermes API로 전달)")
         self._hermes_on.setChecked(settings.hermes_enabled)
-        form.addRow("Ollama Base URL", self._ollama_url)
-        form.addRow("Ollama Model", self._ollama_model)
-        form.addRow("Hermes API URL", self._hermes_url)
-        form.addRow("Hermes API Key", self._hermes_key)
-        form.addRow("Hermes 명령", self._hermes_cmd)
-        form.addRow("", self._hermes_on)
-        content_lay.addLayout(form)
+        for edit in (
+            self._ollama_url,
+            self._ollama_model,
+            self._hermes_url,
+            self._hermes_key,
+            self._hermes_cmd,
+        ):
+            edit.setMinimumHeight(32)
+        form.addRow(make_form_label("Ollama Base URL"), self._ollama_url)
+        form.addRow(make_form_label("Ollama Model"), self._ollama_model)
+        form.addRow(make_form_label("Hermes API URL"), self._hermes_url)
+        form.addRow(make_form_label("Hermes API Key"), self._hermes_key)
+        form.addRow(make_form_label("Hermes 명령"), self._hermes_cmd)
+        form.addRow(make_form_label(""), self._hermes_on)
+        conn_lay.addLayout(form)
+        content_lay.addWidget(conn_box)
 
         if db is not None:
             content_lay.addWidget(self._build_voice_box())
@@ -184,7 +172,7 @@ class SettingsDialog(QDialog):
             content_lay.addWidget(self._build_project_parents_box())
             content_lay.addWidget(self._build_hermes_control_box())
 
-        scroll.setWidget(content)
+        content_lay.addStretch(1)
         root.addWidget(scroll, 1)
 
         buttons = QDialogButtonBox(
@@ -201,14 +189,19 @@ class SettingsDialog(QDialog):
     def _build_email_box(self) -> QGroupBox:
         email_box = QGroupBox("이메일 계정 (Gmail · Naver 등)")
         email_lay = QVBoxLayout(email_box)
+        email_lay.setSpacing(TOKENS.spacing_sm)
         email_lay.addWidget(
-            QLabel("IMAP/SMTP로 직접 연결합니다. 일반 로그인 비밀번호 대신 앱 비밀번호를 입력하세요.")
+            make_hint(
+                "IMAP/SMTP로 직접 연결합니다. 일반 로그인 비밀번호 대신 앱 비밀번호를 입력하세요."
+            )
         )
         self._account_list = QListWidget()
-        self._account_list.setMaximumHeight(120)
+        self._account_list.setMinimumHeight(100)
+        self._account_list.setMaximumHeight(140)
         email_lay.addWidget(self._account_list)
 
         add_form = QFormLayout()
+        configure_form(add_form)
         self._new_label = QLineEdit()
         self._new_label.setPlaceholderText("예: 개인 Gmail")
         self._new_address = QLineEdit()
@@ -216,9 +209,11 @@ class SettingsDialog(QDialog):
         self._new_password = QLineEdit()
         self._new_password.setEchoMode(QLineEdit.EchoMode.Password)
         self._new_password.setPlaceholderText("앱/애플리케이션 비밀번호")
-        add_form.addRow("표시 이름", self._new_label)
-        add_form.addRow("이메일 주소", self._new_address)
-        add_form.addRow("비밀번호", self._new_password)
+        for edit in (self._new_label, self._new_address, self._new_password):
+            edit.setMinimumHeight(32)
+        add_form.addRow(make_form_label("표시 이름"), self._new_label)
+        add_form.addRow(make_form_label("이메일 주소"), self._new_address)
+        add_form.addRow(make_form_label("비밀번호"), self._new_password)
         email_lay.addLayout(add_form)
 
         btn_row = QHBoxLayout()
@@ -235,8 +230,9 @@ class SettingsDialog(QDialog):
     def _build_voice_box(self) -> QGroupBox:
         box = QGroupBox("음성")
         lay = QVBoxLayout(box)
+        lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
-            QLabel(
+            make_hint(
                 "STT는 녹음 후 입력창에 전사 결과만 넣고 자동 전송하지 않습니다. "
                 "TTS는 기준 음성/대본을 확정한 뒤에만 동작합니다. "
                 "실제 모델은 .venv-voice + mock 해제 후 사용합니다."
@@ -244,6 +240,7 @@ class SettingsDialog(QDialog):
         )
 
         form = QFormLayout()
+        configure_form(form)
         self._voice_stt_on = QCheckBox("STT 사용")
         self._voice_stt_on.setChecked(self._voice_prefs.stt_enabled)
 
@@ -307,7 +304,8 @@ class SettingsDialog(QDialog):
         self._voice_ref_text = QTextEdit()
         self._voice_ref_text.setPlaceholderText("기준 대본 (사용자가 최종 확정)")
         self._voice_ref_text.setPlainText(self._voice_prefs.tts_reference_text)
-        self._voice_ref_text.setMaximumHeight(72)
+        self._voice_ref_text.setMinimumHeight(72)
+        self._voice_ref_text.setMaximumHeight(120)
 
         pick_row = QHBoxLayout()
         pick_row.addWidget(self._voice_ref_audio, 1)
@@ -330,26 +328,26 @@ class SettingsDialog(QDialog):
         folder_row.addWidget(folder_btn)
         folder_row.addWidget(analyze_btn)
 
-        form.addRow("", self._voice_stt_on)
-        form.addRow("STT 모델", self._voice_stt_model)
-        form.addRow("STT 언어", self._voice_stt_lang)
-        form.addRow("Runtime URL", self._voice_runtime_url)
-        form.addRow("", self._voice_runtime_mock)
-        form.addRow("", self._voice_tts_on)
-        form.addRow("TTS 모드", self._voice_tts_mode)
-        form.addRow("TTS 모델", self._voice_tts_model)
-        form.addRow("녹음 폴더", folder_row)
-        form.addRow("선택된 참고 음성", pick_row)
-        form.addRow("참고 대본", self._voice_ref_text)
+        form.addRow(make_form_label(""), self._voice_stt_on)
+        form.addRow(make_form_label("STT 모델"), self._voice_stt_model)
+        form.addRow(make_form_label("STT 언어"), self._voice_stt_lang)
+        form.addRow(make_form_label("Runtime URL"), self._voice_runtime_url)
+        form.addRow(make_form_label(""), self._voice_runtime_mock)
+        form.addRow(make_form_label(""), self._voice_tts_on)
+        form.addRow(make_form_label("TTS 모드"), self._voice_tts_mode)
+        form.addRow(make_form_label("TTS 모델"), self._voice_tts_model)
+        form.addRow(make_form_label("녹음 폴더"), folder_row)
+        form.addRow(make_form_label("선택된 참고 음성"), pick_row)
+        form.addRow(make_form_label("참고 대본"), self._voice_ref_text)
         lay.addLayout(form)
 
-        lay.addWidget(QLabel("마이크"))
+        lay.addWidget(make_hint("마이크"))
         lay.addWidget(self._voice_connected_mic)
-        lay.addWidget(QLabel("사용 가능한 마이크"))
+        lay.addWidget(make_hint("사용 가능한 마이크"))
         lay.addWidget(self._voice_stt_device)
         lay.addWidget(self._mic_threshold_bar)
 
-        lay.addWidget(QLabel("추천 참고 음성 (top 5)"))
+        lay.addWidget(make_hint("추천 참고 음성 (top 5)"))
         self._voice_rec_list = QListWidget()
         self._voice_rec_list.setMinimumHeight(120)
         lay.addWidget(self._voice_rec_list)
@@ -378,6 +376,7 @@ class SettingsDialog(QDialog):
         lay.addLayout(test_row)
 
         self._voice_status = QLabel("")
+        self._voice_status.setWordWrap(True)
         lay.addWidget(self._voice_status)
         self._refresh_voice_recommendations_from_runtime(silent=True)
         QTimer.singleShot(0, self._restart_mic_monitor)
@@ -651,8 +650,9 @@ class SettingsDialog(QDialog):
     def _build_ide_box(self) -> QGroupBox:
         ide_box = QGroupBox("IDE Companion 설정")
         ide_lay = QVBoxLayout(ide_box)
+        ide_lay.setSpacing(TOKENS.spacing_sm)
         ide_lay.addWidget(
-            QLabel(
+            make_hint(
                 "사용할 IDE를 고르세요. 아이콘·이름을 누르면 선택됩니다. "
                 "설치되지 않은 IDE는 안내 창이 뜹니다. "
                 "바이브코딩은 Iris 채팅(Hermes→Ollama)으로 진행합니다."
@@ -660,6 +660,7 @@ class SettingsDialog(QDialog):
         )
         self._ide_selected = QLabel()
         self._ide_selected.setObjectName("IdeSelectedLabel")
+        self._ide_selected.setWordWrap(True)
         ide_lay.addWidget(self._ide_selected)
 
         self._ide_buttons: dict[str, QToolButton] = {}
@@ -713,8 +714,9 @@ class SettingsDialog(QDialog):
     def _build_project_parents_box(self) -> QGroupBox:
         box = QGroupBox("프로젝트 검색 부모 폴더")
         lay = QVBoxLayout(box)
+        lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
-            QLabel(
+            make_hint(
                 "Hermes가 '비슷한 프로젝트 열어'라고 할 때 이 폴더들 아래의 "
                 "1depth 하위 폴더만 검색합니다. 비우면(기본값 복원) 내장 후보를 씁니다."
             )
@@ -786,8 +788,9 @@ class SettingsDialog(QDialog):
     def _build_hermes_control_box(self) -> QGroupBox:
         box = QGroupBox("Iris ↔ Hermes Control")
         lay = QVBoxLayout(box)
+        lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
-            QLabel(
+            make_hint(
                 "MCP(iris_get_state / iris_invoke)와 iris-work-start 스킬을 Hermes에 동기화합니다. "
                 "도구가 안 보이면 동기화 후 새 채팅을 시작하세요."
             )

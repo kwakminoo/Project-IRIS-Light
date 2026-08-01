@@ -1456,7 +1456,11 @@ class MainWindow(QMainWindow):
             "Do NOT use terminal cursor/code alone — that skips Companion tiling. "
             "Do NOT invent that Iris has no IDE — Iris controls the preferred IDE via MCP. "
             "Writing code: project.write_file with open=true (typewriter into visible IDE tab). "
-            "Running code: project.run — output in IDE integrated terminal; summarize only in chat.",
+            "Running code: project.run — output in IDE integrated terminal; summarize only in chat. "
+            "When you use ANY web search/browse/fetch tool, the final answer MUST include a "
+            "Sources section with markdown links [title](https://url) for each page you relied on. "
+            "Never state researched facts without at least one citation link. "
+            "Iris UI turns those links into clickable citation chips.",
         ]
         if root:
             bits.append(f"Project root: {root}")
@@ -2047,7 +2051,10 @@ class MainWindow(QMainWindow):
         try:
             proc = launch_emulator()
             self._live_activity.append_instant_line(
-                f"Android 에뮬레이터 시작 (PID {proc.pid}) — android-emulator/data"
+                f"Android 에뮬레이터 시작 (PID {proc.pid}) — 부팅 후 adb 연결"
+            )
+            self._live_activity.append_instant_line(
+                "한글은 에뮬 화면 키보드(IME) 사용. PC 키보드는 영문·키이벤트용."
             )
         except OSError as exc:
             self._live_activity.append_instant_line(f"에뮬레이터 시작 실패: {exc}")

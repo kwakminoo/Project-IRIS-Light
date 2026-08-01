@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -43,9 +42,18 @@ def list_hermes_skill_names(*, limit: int = 80) -> list[str]:
 
 
 def list_custom_skill_names(*, limit: int = 40) -> list[str]:
-    """Iris 커스텀 스킬 — 이후 연동. 지금은 플레이스홀더."""
-    _ = limit
-    return []
+    """하위 호환 — custom 폴더만."""
+    root = _hermes_root() / "skills" / "custom"
+    if not root.is_dir():
+        return []
+    names: list[str] = []
+    for path in sorted(root.rglob("SKILL.md")):
+        name = path.parent.name.strip()
+        if name and name not in names:
+            names.append(name)
+        if len(names) >= limit:
+            break
+    return names
 
 
 def list_hermes_mcp_names(*, limit: int = 24) -> list[str]:
@@ -80,7 +88,15 @@ def list_hermes_mcp_names(*, limit: int = 24) -> list[str]:
 
 
 class _MenuRow(QPushButton):
-    def __init__(self, icon_text: str, title: str, subtitle: str = "", parent=None) -> None:
+    def __init__(
+        self,
+        icon_text: str,
+        title: str,
+        subtitle: str = "",
+        *,
+        show_arrow: bool = False,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("ComposerPlusMenuRow")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -111,6 +127,13 @@ class _MenuRow(QPushButton):
             sub_lbl.setObjectName("ComposerPlusMenuSub")
             text_col.addWidget(sub_lbl)
         lay.addLayout(text_col, 1)
+
+        if show_arrow:
+            arrow = QLabel("›")
+            arrow.setObjectName("ComposerPlusMenuArrow")
+            arrow.setFixedWidth(18)
+            arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lay.addWidget(arrow, 0)
 
         self.setStyleSheet(
             """
@@ -143,17 +166,25 @@ class _MenuRow(QPushButton):
                 font-size: 10px;
                 background: transparent;
             }
+            QLabel#ComposerPlusMenuArrow {
+                color: #7dd3fc;
+                font-size: 16px;
+                font-weight: 600;
+                background: transparent;
+            }
             """
         )
 
 
 class ComposerPlusMenu(QFrame):
-    """입력창 + 버튼용 팝업 — Skills는 Hermes/Custom 옆 패널."""
+    """입력창 + 버튼용 팝업 — Skills/MCP는 관리 창으로."""
 
     add_photos = pyqtSignal()
     add_files = pyqtSignal()
     skill_chosen = pyqtSignal(str)
     mcp_chosen = pyqtSignal(str)
+    open_skills_panel = pyqtSignal()
+    open_mcp_panel = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(
@@ -183,12 +214,6 @@ class ComposerPlusMenu(QFrame):
                 max-height: 1px;
                 margin: 3px 8px;
             }
-            QFrame#ComposerSkillSide {
-                background-color: #0b1220;
-                border-left: 1px solid rgba(56, 189, 248, 0.20);
-                border-top-right-radius: 10px;
-                border-bottom-right-radius: 10px;
-            }
             """
         )
 
@@ -197,7 +222,7 @@ class ComposerPlusMenu(QFrame):
         outer.setSpacing(0)
 
         main = QWidget()
-        main.setFixedWidth(210)
+        main.setFixedWidth(220)
         root = QVBoxLayout(main)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(1)
@@ -215,102 +240,32 @@ class ComposerPlusMenu(QFrame):
         sep1.setFixedHeight(1)
         root.addWidget(sep1)
 
-        root.addWidget(self._section("SKILLS"))
-        self._hermes_btn = _MenuRow("HM", "Hermes", "built-in ›")
-        self._hermes_btn.clicked.connect(lambda: self._open_skill_side("hermes"))
-        root.addWidget(self._hermes_btn)
-
-        self._custom_btn = _MenuRow("CU", "Custom", "Iris ›")
-        self._custom_btn.clicked.connect(lambda: self._open_skill_side("custom"))
-        root.addWidget(self._custom_btn)
+        n_skills = len(list_hermes_skill_names())
+        skills_row = _MenuRow(
+            "SK",
+            "Skills",
+            f"{n_skills} linked" if n_skills else "manage ›",
+            show_arrow=True,
+        )
+        skills_row.clicked.connect(self._on_open_skills)
+        root.addWidget(skills_row)
 
         sep2 = QFrame()
         sep2.setObjectName("ComposerPlusSep")
         sep2.setFixedHeight(1)
         root.addWidget(sep2)
 
-        root.addWidget(self._section("MCP"))
-        mcps = list_hermes_mcp_names()
-        if mcps:
-            for name in mcps[:8]:
-                row = _MenuRow("MCP", name)
-                row.clicked.connect(lambda _=False, n=name: self._on_mcp(n))
-                root.addWidget(row)
-        else:
-            empty_m = _MenuRow("MCP", "No MCP servers", "config.yaml")
-            empty_m.setEnabled(False)
-            root.addWidget(empty_m)
+        n_mcp = len(list_hermes_mcp_names())
+        mcp_row = _MenuRow(
+            "MCP",
+            "MCP",
+            f"{n_mcp} servers" if n_mcp else "manage ›",
+            show_arrow=True,
+        )
+        mcp_row.clicked.connect(self._on_open_mcp)
+        root.addWidget(mcp_row)
 
         outer.addWidget(main, 0)
-
-        self._side = QFrame()
-        self._side.setObjectName("ComposerSkillSide")
-        self._side.setFixedWidth(180)
-        self._side.hide()
-        side_lay = QVBoxLayout(self._side)
-        side_lay.setContentsMargins(4, 4, 4, 4)
-        side_lay.setSpacing(0)
-        self._side_title = QLabel()
-        self._side_title.setObjectName("ComposerPlusSection")
-        side_lay.addWidget(self._side_title)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        scroll.setMaximumHeight(260)
-        self._side_body = QWidget()
-        self._side_body_lay = QVBoxLayout(self._side_body)
-        self._side_body_lay.setContentsMargins(0, 0, 0, 0)
-        self._side_body_lay.setSpacing(1)
-        scroll.setWidget(self._side_body)
-        side_lay.addWidget(scroll, 1)
-        outer.addWidget(self._side, 0)
-
-        self._side_kind: str | None = None
-
-    @staticmethod
-    def _section(title: str) -> QLabel:
-        lbl = QLabel(title)
-        lbl.setObjectName("ComposerPlusSection")
-        return lbl
-
-    def _clear_side_rows(self) -> None:
-        while self._side_body_lay.count():
-            item = self._side_body_lay.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-
-    def _open_skill_side(self, kind: str) -> None:
-        if self._side.isVisible() and self._side_kind == kind:
-            self._side.hide()
-            self._side_kind = None
-            self.adjustSize()
-            return
-        if kind == "hermes":
-            names = list_hermes_skill_names()
-            self._side_title.setText("HERMES")
-            empty = "No Hermes skills"
-        else:
-            names = list_custom_skill_names()
-            self._side_title.setText("CUSTOM")
-            empty = "Coming soon"
-        self._clear_side_rows()
-        if not names:
-            row = _MenuRow("·", empty)
-            row.setEnabled(False)
-            self._side_body_lay.addWidget(row)
-        else:
-            for name in names:
-                row = _MenuRow("›", name)
-                row.clicked.connect(lambda _=False, n=name: self._on_skill(n))
-                self._side_body_lay.addWidget(row)
-        self._side_body_lay.addStretch(1)
-        self._side_kind = kind
-        self._side.show()
-        self.adjustSize()
 
     def _on_photos(self) -> None:
         self.add_photos.emit()
@@ -320,17 +275,15 @@ class ComposerPlusMenu(QFrame):
         self.add_files.emit()
         self.hide()
 
-    def _on_skill(self, name: str) -> None:
-        self.skill_chosen.emit(name)
+    def _on_open_skills(self) -> None:
         self.hide()
+        self.open_skills_panel.emit()
 
-    def _on_mcp(self, name: str) -> None:
-        self.mcp_chosen.emit(name)
+    def _on_open_mcp(self) -> None:
         self.hide()
+        self.open_mcp_panel.emit()
 
     def popup_above(self, anchor: QWidget) -> None:
-        self._side.hide()
-        self._side_kind = None
         self.adjustSize()
         pos = anchor.mapToGlobal(QPoint(0, 0))
         x = pos.x()
@@ -468,7 +421,6 @@ class ComposerSendButton(QPushButton):
 if __name__ == "__main__":
     assert isinstance(list_hermes_skill_names(), list)
     assert isinstance(list_hermes_mcp_names(), list)
-    assert list_custom_skill_names() == []
     assert ComposerSendButton._BTN == ComposerPlusButton._BTN
     assert ComposerSendButton._ARM == ComposerPlusButton._ARM
     assert ComposerSendButton._ARROW_RGB == ComposerPlusButton._PLUS_RGB
