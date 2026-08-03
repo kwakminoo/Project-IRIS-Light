@@ -14,8 +14,9 @@ description: >
 1. `iris_get_state`
 2. If `ui_mode` is `ide_companion`, `iris_invoke` → `ide.exit_companion`
    (closes the IDE window Iris opened for Companion)
-3. If the user also asked for another screen (email / wiki / assistant), invoke:
+3. If the user also asked for another screen (email / wiki / calendar / assistant), invoke:
    - `workspace.open_email`
    - `workspace.open_obsidian`
+   - `workspace.open_calendar`
    - `workspace.open_assistant`
 4. Short status report from `iris_get_state`

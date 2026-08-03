@@ -107,7 +107,7 @@ TOOLS = [
         "name": "iris_get_state",
         "description": (
             "Get Iris Light UI session state: ui_mode (normal|ide_companion), workspace_mode "
-            "(assistant|obsidian|email), preferred_ide, project_root, hermes_online, model, "
+            "(assistant|obsidian|email|calendar), preferred_ide, project_root, hermes_online, model, "
             "email accounts summary. Use before IDE Companion / coding start / workspace switches."
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -117,7 +117,8 @@ TOOLS = [
         "description": (
             "List every Iris control action name with summary and risk. "
             "Call this to discover actions for iris_invoke "
-            "(ide.enter_companion, workspace.open_email, profile.set, email.send, …)."
+            "(ide.enter_companion, workspace.open_email, workspace.open_calendar, "
+            "calendar.add_event, calendar.list_events, profile.set, email.send, …)."
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -133,7 +134,10 @@ TOOLS = [
             "action=project.write_file args={rel_path,content,open,stream}; "
             "action=project.run args={file|command}; "
             "action=ide.enter_companion; action=ide.exit_companion; "
-            "action=workspace.open_email; action=ide.set_project_root args={path}; "
+            "action=workspace.open_email; action=workspace.open_calendar; "
+            "action=calendar.add_event args={title,start_at,note,place}; "
+            "action=calendar.list_events; action=calendar.select_day args={date}; "
+            "action=ide.set_project_root args={path}; "
             "action=profile.set args={project_root, preferred_ide, project_parents}."
         ),
         "inputSchema": {

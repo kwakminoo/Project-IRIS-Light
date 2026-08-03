@@ -469,14 +469,20 @@ def wait_for_new_ide_window(
             continue
 
         def _rank(w: dict) -> tuple:
-            title = str(w.get("title") or "").lower()
+            title = str(w.get("title") or "").lower().strip()
             hit = 1 if hint and hint in title else 0
-            return (hit, int(w.get("score") or 0))
+            # Cursor Agents 는 기존 셸 — 새 창 후보에서 낮게
+            agents = 1 if title == "cursor agents" else 0
+            return (hit, -agents, int(w.get("score") or 0))
 
         best = max(newcomers, key=_rank)
         title = str(best.get("title") or "")
         # 제목에 폴더명이 아직 안 붙었으면 잠깐 더 대기(단, 새 창은 이미 있음)
         if hint and hint not in title.lower() and (deadline - time.monotonic()) > 2.0:
+            time.sleep(0.35)
+            continue
+        # ponytail: Agents 단독 제목은 새 워크스페이스 창이 아님 — 타임아웃 직전만 허용
+        if title.lower().strip() == "cursor agents" and (deadline - time.monotonic()) > 1.0:
             time.sleep(0.35)
             continue
         return int(best["hwnd"]), int(best["pid"]), title
@@ -489,6 +495,33 @@ def wait_for_new_ide_window(
     return None, last_pid, ""
 
 
+def _popen_detached(
+    cmd: list[str],
+    *,
+    cwd: str | None = None,
+    use_shell: bool = False,
+) -> tuple[int | None, str]:
+    try:
+        creationflags = 0
+        if sys.platform == "win32" and not use_shell:
+            # ponytail: .cmd + DETACHED_PROCESS 는 Electron CLI 핸드오프가 깨질 수 있음
+            creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+        proc = subprocess.Popen(  # noqa: S603
+            cmd,
+            cwd=cwd or None,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+            shell=use_shell,
+        )
+        return int(proc.pid), ""
+    except OSError as exc:
+        return None, str(exc)
+
+
 def launch_ide(
     preferred_ide: str,
     *,
@@ -499,52 +532,33 @@ def launch_ide(
 ) -> tuple[int | None, str]:
     """IDE 실행. (pid, error).
 
-    new_window=True 이면 --new-window 로 기본(웰컴) 화면을 띄우고
-    project_root는 열지 않는다 (이전 워크스페이스 복원 회피).
+    new_window=True 이면 GUI exe + --new-window 로 새 top-level 창을 띄운다.
+    (cursor.cmd CLI 의 --new-window 는 Cursor Agents 에 흡수되어 새 창이 안 생기는 경우가 많음)
+    project_root는 new_window 경로에서는 열지 않는다 (이전 워크스페이스 복원 회피).
     """
     exe, err = resolve_ide_exe(preferred_ide, ide_exe_path)
     if err or not exe:
         return None, err or "IDE 실행 파일을 찾을 수 없습니다."
 
-    root = "" if new_window else (project_root or "").strip()
+    cli = resolve_ide_cli(preferred_ide, ide_cli_path, ide_exe_path)
+
+    if new_window:
+        # GUI exe — 설정에서 고른 IDE의 새 창
+        return _popen_detached([exe, "--new-window"])
+
+    root = (project_root or "").strip()
     if root and not Path(_expand(root)).is_dir():
         root = ""
 
-    cli = resolve_ide_cli(preferred_ide, ide_cli_path, ide_exe_path)
-    new_flag = ["--new-window"] if new_window else []
     use_shell = False
-    cmd: list[str]
-    if new_window and cli and cli.lower().endswith((".cmd", ".bat")):
-        # CLI로 --new-window만 (폴더 없음 → 기본 화면)
-        cmd = [cli, "--new-window"]
-        use_shell = True
-    elif cli and cli.lower().endswith((".cmd", ".bat")) and root:
-        # ponytail: cmd 래퍼는 shell로 — GUI exe에 폴더 인자 직접 전달이 더 단순할 때도 있음
-        cmd = [cli, *new_flag, root]
+    if cli and cli.lower().endswith((".cmd", ".bat")) and root:
+        cmd = [cli, root]
         use_shell = True
     elif root:
-        cmd = [exe, *new_flag, root]
+        cmd = [exe, root]
     else:
-        cmd = [exe, *new_flag] if new_flag else [exe]
-
-    try:
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
-                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-            )
-        proc = subprocess.Popen(  # noqa: S603
-            cmd,
-            cwd=root or None,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            creationflags=creationflags,
-            shell=use_shell,
-        )
-        return int(proc.pid), ""
-    except OSError as exc:
-        return None, str(exc)
+        cmd = [exe]
+    return _popen_detached(cmd, cwd=root or None, use_shell=use_shell)
 
 
 def open_folder_in_ide(
@@ -556,9 +570,11 @@ def open_folder_in_ide(
     new_window: bool = True,
     reuse_window: bool = False,
 ) -> tuple[int | None, str]:
-    """이미 IDE가 떠 있어도 폴더를 (새 창으로) 연다. (pid, error).
+    """폴더를 IDE에서 연다. (pid, error).
 
-    Cursor/VS Code: `cli [--new-window] <folder>`
+    new_window=True (Cursor/VS Code):
+      GUI exe --new-window 로 새 창만 spawn (폴더+CLI --new-window 는 Agents에 흡수됨).
+    reuse_window=True: CLI/exe 로 기존 창에 폴더 전달.
     """
     root = Path(_expand((folder or "").strip())).expanduser()
     if not root.is_dir():
@@ -569,44 +585,25 @@ def open_folder_in_ide(
     if err or not exe:
         return None, err or "IDE 실행 파일을 찾을 수 없습니다."
     cli = resolve_ide_cli(preferred_ide, ide_cli_path, ide_exe_path)
+    ide_id = (preferred_ide or "").strip().lower()
+    supports_nw = ide_id in ("cursor", "vscode")
+
+    if new_window and supports_nw:
+        return _popen_detached([exe, "--new-window"])
 
     use_shell = False
-    ide_id = (preferred_ide or "").strip().lower()
-    supports_reuse = ide_id in ("cursor", "vscode")
     if cli and cli.lower().endswith((".cmd", ".bat")):
         cmd = [cli]
-        if new_window:
-            cmd.append("--new-window")
-        elif reuse_window and supports_reuse:
+        if reuse_window and supports_nw:
             cmd.append("--reuse-window")
         cmd.append(root_s)
         use_shell = True
     else:
         cmd = [exe]
-        if new_window:
-            cmd.append("--new-window")
-        elif reuse_window and supports_reuse:
+        if reuse_window and supports_nw:
             cmd.append("--reuse-window")
         cmd.append(root_s)
-
-    try:
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
-                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-            )
-        proc = subprocess.Popen(  # noqa: S603
-            cmd,
-            cwd=root_s,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            creationflags=creationflags,
-            shell=use_shell,
-        )
-        return int(proc.pid), ""
-    except OSError as exc:
-        return None, str(exc)
+    return _popen_detached(cmd, cwd=root_s, use_shell=use_shell)
 
 
 def open_file_in_ide(

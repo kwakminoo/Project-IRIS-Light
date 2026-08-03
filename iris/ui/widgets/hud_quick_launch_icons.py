@@ -127,9 +127,25 @@ def _paint_obsidian(p: QPainter, active: bool) -> None:
     p.drawLine(3, 9, 16, 9)
 
 
+def _paint_calendar(p: QPainter, active: bool) -> None:
+    pen = _stroke(active)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(4, 5, 14, 14, 2, 2)
+    p.drawLine(4, 9, 18, 9)
+    p.drawLine(8, 3, 8, 7)
+    p.drawLine(14, 3, 14, 7)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_fill(active))
+    p.drawRect(7, 11, 2, 2)
+    p.drawRect(11, 11, 2, 2)
+    p.drawRect(15, 11, 2, 2)
+
+
 _PAINTERS = {
     "ide": _paint_ide,
     "email": _paint_email,
+    "calendar": _paint_calendar,
     "instagram": _paint_instagram,
     "discord": _paint_discord,
     "kakao": _paint_kakao,

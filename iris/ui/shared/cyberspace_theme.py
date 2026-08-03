@@ -19,6 +19,14 @@ def build_cyberspace_qss() -> str:
             font-size: {t.font_size_base};
             outline: none;
         }}
+        QToolTip {{
+            background-color: #0b1220;
+            color: {t.text_primary};
+            border: 1px solid {t.border_color};
+            border-radius: 4px;
+            padding: 5px 8px;
+            opacity: 240;
+        }}
         QAbstractItemView {{
             outline: none;
         }}
@@ -89,9 +97,13 @@ def build_cyberspace_qss() -> str:
         QWidget#EmailWorkspacePage,
         QWidget#EmailFolderPanel,
         QWidget#EmailIrisPanel,
+        QWidget#CalendarWorkspacePage,
+        QWidget#CalendarIrisPanel,
         QListWidget#EmailFolderList,
         QListWidget#EmailCenterList,
+        QListWidget#CalendarDayList,
         QTextEdit#EmailChatLog,
+        QTextEdit#CalendarChatLog,
         QTextBrowser#EmailPreviewBody,
         QComboBox#EmailAccountCombo,
         QListWidget#ObsidianNoteList,

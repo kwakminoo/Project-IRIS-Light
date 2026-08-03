@@ -150,6 +150,7 @@ class ChatComposerInput(QPlainTextEdit):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.document().setDocumentMargin(2)
+        self._adjusting_height = False
         self.document().contentsChanged.connect(self._adjust_height)
         self._adjust_height()
 
@@ -184,31 +185,72 @@ class ChatComposerInput(QPlainTextEdit):
         fm = self.fontMetrics()
         return max(fm.height(), fm.lineSpacing())
 
-    def _adjust_height(self) -> None:
+    def _content_height_px(self) -> int:
+        # ponytail: QPlainTextDocumentLayout.size().height()는 픽셀이 아니라 줄 수.
+        # 픽셀 높이는 blockBoundingRect 합산이 정답. (천장: 줄 wrap/개행 레이아웃)
         doc = self.document()
+        layout = doc.documentLayout()
+        if layout is None:
+            return self._line_height()
         doc.setTextWidth(max(1, self.viewport().width()))
-        line_h = self._line_height()
-        doc_h = int(doc.size().height())
-        # 한 줄: 아이콘(28px)과 동일 높이 — 같은 가로선
-        if doc_h <= line_h + 2:
-            new_h = self._ICON_PX
-        else:
-            new_h = max(self._ICON_PX, min(doc_h + 4, line_h * self._MAX_LINES + 4))
-        if self.height() != new_h:
-            self.setFixedHeight(new_h)
-        self.updateGeometry()
-        shell = self.parentWidget()
-        if shell is not None:
-            shell.updateGeometry()
-            bar = shell.parentWidget()
-            if bar is not None:
-                bar.updateGeometry()
+        total = 0.0
+        block = doc.firstBlock()
+        while block.isValid():
+            total += layout.blockBoundingRect(block).height()
+            block = block.next()
+        total += 2.0 * float(doc.documentMargin())
+        return max(self._line_height(), int(total + 0.5))
+
+    def _adjust_height(self) -> None:
+        if self._adjusting_height:
+            return
+        self._adjusting_height = True
+        try:
+            line_h = self._line_height()
+            doc_h = self._content_height_px()
+            # 스타일시트 padding 등 viewport 바깥 여백
+            chrome = (
+                max(0, self.height() - self.viewport().height())
+                if self.viewport().height() > 0
+                else 0
+            )
+            max_h = (
+                line_h * self._MAX_LINES
+                + int(2 * self.document().documentMargin())
+                + 4
+                + chrome
+            )
+            # 한 줄: 아이콘(28px)과 동일 높이 — 같은 가로선
+            if doc_h <= line_h + 2:
+                new_h = max(self._ICON_PX, line_h + chrome)
+            else:
+                new_h = max(self._ICON_PX, min(doc_h + 4 + chrome, max_h))
+            if self.height() != new_h:
+                self.setFixedHeight(new_h)
+            self.updateGeometry()
+            # 입력 셸 → 바 → 입력 영역까지 레이아웃 무효화 (위로 확장)
+            w = self.parentWidget()
+            while w is not None:
+                w.updateGeometry()
+                if w.objectName() == "ChatInputArea" and hasattr(w, "sync_height_to_contents"):
+                    w.sync_height_to_contents()
+                    break
+                w = w.parentWidget()
+        finally:
+            self._adjusting_height = False
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(super().sizeHint().width(), max(self._ICON_PX, self.height()))
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(60, self._ICON_PX)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         if self.viewport() is not None:
             self.viewport().setAutoFillBackground(False)
             self.viewport().setStyleSheet("background: transparent; border: none;")
+        self._adjust_height()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -306,6 +348,7 @@ class _ChatInputBar(QWidget):
         self.setObjectName("ChatInputBar")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAcceptDrops(True)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setStyleSheet(
             """
             QWidget#ChatInputBar {
@@ -322,6 +365,7 @@ class _ChatInputBar(QWidget):
         self._input_shell.setObjectName("ChatInputShell")
         self._input_shell.setAcceptDrops(True)
         self._input_shell.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._input_shell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._input_shell.setStyleSheet(
             """
             QWidget#ChatInputShell {
@@ -333,7 +377,6 @@ class _ChatInputBar(QWidget):
         shell_row = QHBoxLayout(self._input_shell)
         shell_row.setContentsMargins(8, 0, 8, 0)
         shell_row.setSpacing(8)
-        _align = Qt.AlignmentFlag.AlignVCenter
 
         self.plus_button = ComposerPlusButton()
         self._plus_menu = ComposerPlusMenu(self)
@@ -460,10 +503,11 @@ class _ChatInputBar(QWidget):
         right_row.addWidget(self._model_shell, 0, Qt.AlignmentFlag.AlignVCenter)
         right_row.addWidget(self.send_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        # + · 텍스트 · (게이지+모델+전송) — 한 줄, 아이콘과 동일 높이 기준선
-        shell_row.addWidget(self.plus_button, 0, _align)
-        shell_row.addWidget(self.input, 1, _align)
-        shell_row.addWidget(self._right_cluster, 0, _align)
+        # + · 텍스트 · (게이지+모델+전송) — 입력 확장 시 버튼은 하단 고정(Cursor/GPT)
+        _bottom = Qt.AlignmentFlag.AlignBottom
+        shell_row.addWidget(self.plus_button, 0, _bottom)
+        shell_row.addWidget(self.input, 1, _bottom)
+        shell_row.addWidget(self._right_cluster, 0, _bottom)
         row.addWidget(self._input_shell, 1)
         self.fit_model_picker()
         QTimer.singleShot(0, self.fit_model_picker)
@@ -646,9 +690,23 @@ class _ChatInputArea(QWidget):
         col.addWidget(self.input_bar)
         col.addWidget(self.waveform)
 
-        # 리사이즈 시 출력창이 입력 영역 높이를 침범하지 않도록 고정
+        # Fixed: 입력 줄 수에 따라 높이만 바뀌고, 로그가 남는 세로 공간을 먹음
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setMinimumHeight(self.input_bar.sizeHint().height() + self.waveform.minimumHeight())
+        self.sync_height_to_contents()
+
+    def sync_height_to_contents(self) -> None:
+        # ponytail: input_bar.height()는 레이아웃이 늘린 값일 수 있어 쓰면 안 됨.
+        # 입력 위젯 실측 + 바 마진(상하 4) + 파형 min.
+        inp_h = max(self.input_bar.input.height(), self.input_bar.input.sizeHint().height())
+        bar_h = inp_h + 8
+        need = bar_h + self.waveform.minimumHeight()
+        if self.height() != need or self.minimumHeight() != need:
+            self.setFixedHeight(need)
+        self.updateGeometry()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        inp_h = max(self.input_bar.input.height(), self.input_bar.input.sizeHint().height())
+        return QSize(200, inp_h + 8 + self.waveform.minimumHeight())
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if _mime_has_attachable(event.mimeData()):
@@ -1340,3 +1398,29 @@ class ChatPanel(QWidget):
             return
         self._input.clear()
         self.send_clicked.emit(t)
+
+
+if __name__ == "__main__":
+    import sys
+
+    from PyQt6.QtWidgets import QApplication, QVBoxLayout
+
+    app = QApplication(sys.argv)
+    host = QWidget()
+    host.resize(480, 520)
+    lay = QVBoxLayout(host)
+    panel = ChatPanel()
+    lay.addWidget(panel, 1)
+    host.show()
+    app.processEvents()
+    inp = panel._input
+    area = panel._input_area
+    h0, a0 = inp.height(), area.height()
+    inp.setPlainText("a\nb\nc\nd")
+    app.processEvents()
+    assert inp.height() > h0, (h0, inp.height())
+    assert area.height() > a0, (a0, area.height())
+    inp.setPlainText("가" * 200)
+    app.processEvents()
+    assert inp.height() > h0
+    print("chat_panel composer grow ok", h0, "->", inp.height(), "area", a0, "->", area.height())

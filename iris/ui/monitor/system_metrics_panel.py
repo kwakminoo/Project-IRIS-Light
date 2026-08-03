@@ -134,7 +134,8 @@ class _MetricRow(QWidget):
                 "(from ollama.com/settings DevTools)"
             )
         else:
-            self.setToolTip("")
+            # 빈 문자열도 Windows에서 검은 빈 툴팁 박스가 남을 수 있음
+            self.setToolTip("API 사용량")
             self._bar.set_ratio(quota.percent / 100.0)
 
 

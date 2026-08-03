@@ -84,6 +84,7 @@ from iris.ui.settings.user_profile_dialog import UserProfileDialog
 from iris.ui.widgets.ide_icons import show_ide_not_installed_dialog
 from iris.ui.widgets.visualizer import Visualizer
 from iris.ui.workspaces.assistant_workspace_page import AssistantWorkspacePage
+from iris.ui.workspaces.calendar_workspace_page import CalendarWorkspacePage
 from iris.ui.workspaces.email_workspace_page import EmailWorkspacePage
 from iris.ui.workspaces.ide_companion_page import (
     EMAIL_ORB_HEIGHT,
@@ -141,6 +142,9 @@ class MainWindow(QMainWindow):
         self._email_chat_worker: HermesChatWorker | None = None
         self._email_history: list[dict[str, str]] = []
         self._email_busy = False
+        self._calendar_chat_worker: HermesChatWorker | None = None
+        self._calendar_history: list[dict[str, str]] = []
+        self._calendar_busy = False
         self._boot_checks_worker: BootChecksWorker | None = None
         self._boot_checks_done = False
         self._email_preloaded = False
@@ -242,9 +246,11 @@ class MainWindow(QMainWindow):
         self._assistant_page = AssistantWorkspacePage()
         self._obsidian_page = ObsidianWorkspacePage()
         self._email_page = EmailWorkspacePage()
+        self._calendar_page = CalendarWorkspacePage()
         self._workspace_stack.addWidget(self._assistant_page)
         self._workspace_stack.addWidget(self._obsidian_page)
         self._workspace_stack.addWidget(self._email_page)
+        self._workspace_stack.addWidget(self._calendar_page)
         splitter.addWidget(self._workspace_stack)
 
         self._companion_page = IdeCompanionPage()
@@ -265,6 +271,16 @@ class MainWindow(QMainWindow):
         self._left_sidebar.email_folder.account_changed.connect(self._on_email_account_changed)
         self._left_sidebar.email_folder.compose_requested.connect(self._open_email_compose)
         self._left_sidebar.email_folder.folder_selected.connect(self._on_email_folder_selected)
+        self._calendar_page.calendar_chat_send.connect(self._on_calendar_chat_send)
+        self._calendar_page.add_event_requested.connect(self._on_calendar_add_event)
+        self._calendar_page.delete_event_requested.connect(self._on_calendar_delete_event)
+        self._calendar_page.month_changed.connect(self._on_calendar_month_changed)
+        self._calendar_page.refresh_holidays_requested.connect(self._refresh_calendar_holidays)
+        self._calendar_remind_timer = QTimer(self)
+        self._calendar_remind_timer.setInterval(60_000)
+        self._calendar_remind_timer.timeout.connect(self._check_calendar_reminders)
+        if not self._test_mode:
+            self._calendar_remind_timer.start()
 
         left_lay = self._assistant_page.center_layout
         right_lay = self._assistant_page.right_layout
@@ -329,6 +345,7 @@ class MainWindow(QMainWindow):
         for action_id, icon_kind, tooltip in (
             ("ide", "ide", "IDE Companion"),
             ("email", "email", "이메일"),
+            ("calendar", "calendar", "캘린더"),
             ("mobile", "mobile", "Android 에뮬레이터"),
             ("instagram", "instagram", "Instagram (준비 중)"),
             ("discord", "discord", "Discord (준비 중)"),
@@ -341,6 +358,8 @@ class MainWindow(QMainWindow):
                 callback = self._on_mobile_icon
             elif action_id == "email":
                 callback = self._on_email_icon
+            elif action_id == "calendar":
+                callback = self._on_calendar_icon
             elif action_id == "obsidian":
                 callback = self._on_obsidian_icon
             elif action_id == "ide":
@@ -1187,6 +1206,268 @@ class MainWindow(QMainWindow):
             self._email_page.set_mails([])
             self._left_sidebar.email_folder.set_status("설정에서 이메일 계정을 추가하세요.")
 
+    def _on_calendar_icon(self) -> None:
+        self._workspace_mode = "calendar"
+        self._workspace_stack.setCurrentWidget(self._calendar_page)
+        self._left_sidebar.set_workspace_mode("assistant")
+        self._set_workspace_icon_active("calendar")
+        self._viz.hide()
+        self._orb_spacer.hide()
+        self._reload_calendar_month()
+        self._refresh_calendar_holidays()
+        self._check_calendar_reminders()
+
+    def _sync_calendar_wiki(self) -> None:
+        from iris.storage.calendar_events import events_as_dicts, list_events
+
+        self._iris_wiki.sync_schedule_markdown(events_as_dicts(list_events(self._db)))
+
+    def _reload_calendar_month(self) -> None:
+        from iris.storage.calendar_events import list_events
+
+        page = self._calendar_page
+        events = list_events(self._db, year=page.year, month=page.month)
+        page.set_events(events)
+        self._sync_calendar_wiki()
+
+    def _refresh_calendar_holidays(self) -> None:
+        from iris.infrastructure.kr_holiday_client import holidays_for_year
+
+        year = self._calendar_page.year
+        key = self._settings.data_go_kr_service_key
+        if not key:
+            self._calendar_page.set_holidays(
+                [],
+                "공휴일 API 키 없음 — .env 에 IRIS_DATA_GO_KR_SERVICE_KEY 추가 후 재시작 "
+                "(data.go.kr 한국천문연구원 특일정보)",
+            )
+            return
+        try:
+            holidays = holidays_for_year(year, key, force=True)
+            self._calendar_page.set_holidays(
+                holidays,
+                f"대한민국 공휴일 {year}년 · {len(holidays)}건 (공공데이터포털)",
+            )
+        except Exception as exc:
+            from iris.infrastructure.kr_holiday_client import load_cached_holidays
+
+            cached = load_cached_holidays(year) or []
+            self._calendar_page.set_holidays(
+                cached,
+                f"공휴일 갱신 실패 — 캐시 {len(cached)}건 표시: {exc}",
+            )
+
+    def _on_calendar_month_changed(self, year: int, month: int) -> None:
+        self._reload_calendar_month()
+        # 연도가 바뀌면 공휴일도 해당 연도로
+        self._refresh_calendar_holidays()
+
+    def _on_calendar_add_event(self, title: str, start: str, note: str, place: str) -> None:
+        from iris.infrastructure.calendar_agent import normalize_start_at
+        from iris.storage.calendar_events import add_event
+
+        try:
+            start_at = normalize_start_at(start)
+            add_event(
+                self._db,
+                title=title,
+                start_at=start_at,
+                note=note,
+                place=place,
+            )
+            self._reload_calendar_month()
+            self._notes.add_note(f"일정 추가: {title}")
+        except Exception as exc:
+            self._notes.add_note(f"일정 추가 실패: {exc}")
+
+    def _on_calendar_delete_event(self, event_id: int) -> None:
+        from iris.storage.calendar_events import delete_event
+
+        if delete_event(self._db, event_id):
+            self._reload_calendar_month()
+            self._notes.add_note(f"일정 삭제: #{event_id}")
+
+    def _apply_calendar_ops(self, ops: list[dict]) -> list[str]:
+        from iris.infrastructure.calendar_agent import normalize_start_at
+        from iris.storage.calendar_events import add_event, delete_event, list_events
+
+        notes: list[str] = []
+        for op in ops:
+            kind = str(op.get("op") or "").strip().lower()
+            if kind == "add":
+                title = str(op.get("title") or "").strip()
+                start = str(op.get("start_at") or "").strip()
+                if not title or not start:
+                    notes.append("일정 추가 실패: title/start_at 필요")
+                    continue
+                try:
+                    end_raw = str(op.get("end_at") or "").strip()
+                    ev = add_event(
+                        self._db,
+                        title=title,
+                        start_at=normalize_start_at(start),
+                        end_at=normalize_start_at(end_raw) if end_raw else "",
+                        note=str(op.get("note") or "").strip(),
+                        place=str(op.get("place") or "").strip(),
+                    )
+                    notes.append(f"추가됨: {ev.title} ({ev.start_at})")
+                except Exception as exc:
+                    notes.append(f"추가 실패: {exc}")
+            elif kind == "delete":
+                try:
+                    eid = int(op.get("id"))
+                except (TypeError, ValueError):
+                    notes.append("삭제 실패: id 필요")
+                    continue
+                if delete_event(self._db, eid):
+                    notes.append(f"삭제됨: #{eid}")
+                else:
+                    notes.append(f"삭제 대상 없음: #{eid}")
+            elif kind == "list":
+                events = list_events(self._db)
+                if not events:
+                    notes.append("등록된 일정 없음")
+                else:
+                    notes.append(
+                        "일정 목록: "
+                        + "; ".join(f"#{e.id} {e.start_at} {e.title}" for e in events[:20])
+                    )
+        if notes:
+            self._reload_calendar_month()
+        return notes
+
+    def _check_calendar_reminders(self) -> None:
+        from datetime import datetime, timedelta
+
+        from iris.storage.calendar_events import list_events, mark_reminded
+
+        now = datetime.now()
+        soon_until = now + timedelta(hours=24)
+        for ev in list_events(self._db):
+            try:
+                start = datetime.fromisoformat(ev.start_at)
+            except ValueError:
+                continue
+            if not ev.reminded_overdue and start < now:
+                self._notes.try_add_alert(
+                    0,
+                    "schedule_overdue",
+                    "지난 일정",
+                    f"{ev.title} ({ev.start_at})",
+                    "calendar",
+                    event_id=ev.id,
+                )
+                mark_reminded(self._db, ev.id, overdue=True)
+            elif not ev.reminded_soon and now <= start <= soon_until:
+                self._notes.try_add_alert(
+                    0,
+                    "schedule_soon",
+                    "다가오는 일정",
+                    f"{ev.title} ({ev.start_at})",
+                    "calendar",
+                    event_id=ev.id,
+                )
+                mark_reminded(self._db, ev.id, soon=True)
+
+    def _on_calendar_chat_send(self, text: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        panel = self._calendar_page.iris_panel
+        if self._calendar_busy:
+            panel.append_iris_error("이전 요청을 처리 중입니다. 잠시만요.")
+            return
+        if not self._settings.hermes_enabled:
+            panel.append_iris_error(
+                "일정 대화는 Hermes 에이전트가 필요합니다. 설정에서 Hermes를 켜 주세요."
+            )
+            return
+        if not self._hermes_online:
+            self._refresh_hermes_health()
+            panel.append_iris_tool("Hermes gateway Offline — 기동 후 연결을 시도합니다…")
+        model = self._chat.current_model()
+        if not model:
+            panel.append_iris_error("사용할 모델을 먼저 선택해 주세요.")
+            self._refresh_models()
+            return
+
+        from iris.infrastructure.calendar_agent import build_calendar_agent_context
+        from iris.infrastructure.kr_holiday_client import load_cached_holidays
+        from iris.storage.calendar_events import list_events
+
+        events = list_events(self._db)
+        day = self._calendar_page.selected_day.isoformat()
+        holiday_names: list[str] = []
+        for h in load_cached_holidays(self._calendar_page.year) or []:
+            if h.date == day:
+                holiday_names.append(h.name)
+        context = build_calendar_agent_context(
+            events=events,
+            selected_day=day,
+            holidays=holiday_names,
+        )
+
+        panel.append_user(text)
+        self._calendar_history.append({"role": "user", "content": text})
+        messages = [{"role": "system", "content": context}, *self._calendar_history]
+
+        self._calendar_busy = True
+        panel.set_orb_state("PROCESSING")
+        worker = HermesChatWorker(
+            self._settings.hermes_base_url,
+            model,
+            messages,
+            api_key=self._settings.hermes_api_key,
+            command=self._settings.hermes_command,
+            parent=self,
+        )
+        self._calendar_chat_worker = worker
+        worker.tool_progress.connect(self._on_calendar_chat_tool)
+        worker.content_chunk.connect(self._on_calendar_chat_chunk)
+        worker.finished_ok.connect(self._on_calendar_chat_finished)
+        worker.failed.connect(self._on_calendar_chat_failed)
+        worker.start()
+
+    def _on_calendar_chat_tool(self, message: str) -> None:
+        text = (message or "").strip()
+        if text:
+            self._calendar_page.iris_panel.append_iris_tool(text)
+            self._calendar_page.iris_panel.set_orb_state("EXECUTING")
+
+    def _on_calendar_chat_chunk(self, chunk: str) -> None:
+        self._calendar_page.iris_panel.set_orb_state("RESPONDING")
+        self._calendar_page.iris_panel.append_iris_chunk(chunk)
+
+    def _on_calendar_chat_finished(self, content: str) -> None:
+        from iris.infrastructure.calendar_agent import parse_calendar_ops, strip_calendar_ops
+
+        text = (content or "").strip()
+        ops = parse_calendar_ops(text)
+        visible = strip_calendar_ops(text)
+        self._calendar_page.iris_panel.end_iris(visible or None)
+        if text:
+            self._calendar_history.append({"role": "assistant", "content": text})
+        for note in self._apply_calendar_ops(ops):
+            self._calendar_page.iris_panel.append_iris_tool(note)
+        if not self._hermes_online:
+            self._hermes_online = True
+            self._status_header.refresh_backend_status(
+                self._settings,
+                hermes_online=True,
+            )
+        self._calendar_busy = False
+        self._calendar_chat_worker = None
+        self._calendar_page.iris_panel.set_orb_state("IDLE")
+
+    def _on_calendar_chat_failed(self, err: str) -> None:
+        self._calendar_page.iris_panel.end_iris()
+        if self._calendar_history and self._calendar_history[-1].get("role") == "user":
+            self._calendar_history.pop()
+        self._calendar_page.iris_panel.append_iris_error(f"Hermes 오류: {err[:200]}")
+        self._calendar_busy = False
+        self._calendar_chat_worker = None
+        self._calendar_page.iris_panel.set_orb_state("ERROR")
+
     def _current_email_account(self) -> EmailAccount | None:
         acc_id = self._selected_email_account_id or self._left_sidebar.email_folder.current_account_id()
         if acc_id:
@@ -1375,7 +1656,7 @@ class MainWindow(QMainWindow):
 
     def _on_email_chat_finished(self, content: str) -> None:
         text = (content or "").strip()
-        self._email_page.iris_panel.end_iris()
+        self._email_page.iris_panel.end_iris(text or None)
         if text:
             self._email_history.append({"role": "assistant", "content": text})
         if not self._hermes_online:
@@ -1565,12 +1846,12 @@ class MainWindow(QMainWindow):
             try:
                 from iris.automation.ide_input import get_window_title
 
-                title = (get_window_title(int(hwnd)) or "").lower()
+                title = (get_window_title(int(hwnd)) or "").lower().strip()
                 workspace_name = Path(session.workspace_root).name.lower()
-                generic_titles = {"cursor", "cursor agents", "visual studio code", "code"}
-                # ponytail: Browser Tab 같은 제목은 workspace 이름이 안 보여도 세션 유지.
-                # 완전한 웰컴/기본 제목으로 돌아간 경우만 문맥 상실로 본다.
-                if workspace_name and title and title.strip() in generic_titles:
+                # ponytail: Cursor Agents는 현대 Cursor 기본 셸 — 제목에 폴더명이
+                # 안 보여도 문맥 상실로 보지 않는다. 구형 웰컴 제목만 끊는다.
+                generic_titles = {"cursor", "visual studio code", "code"}
+                if workspace_name and title and title in generic_titles:
                     self._clear_ide_session("workspace 문맥 상실")
                     return
             except Exception:
@@ -1716,7 +1997,7 @@ class MainWindow(QMainWindow):
                 self._live_activity.append_instant_line(f"IDE 실행 실패: {launch_err}")
                 return
             pid = launched_pid or pid
-            self._live_activity.append_instant_line("IDE 창을 기다리는 중…")
+            self._live_activity.append_instant_line("IDE 새 창을 기다리는 중…")
             # 순서 1: IDE가 먼저 뜰 때까지 Iris 레이아웃은 유지
             hwnd = None
             title = ""
@@ -1733,12 +2014,16 @@ class MainWindow(QMainWindow):
                 if wait_pid:
                     pid = wait_pid
                 if hwnd is not None and int(hwnd) not in before:
+                    if str(title or "").strip().lower() == "cursor agents":
+                        hwnd = None
+                        _time.sleep(0.2)
+                        continue
                     break
                 hwnd = None
                 _time.sleep(0.2)
             if hwnd is None:
                 self._live_activity.append_instant_line(
-                    "IDE는 시작됐지만 창을 찾지 못했습니다. 수동으로 창을 연 뒤 다시 시도하세요."
+                    "IDE 새 창을 찾지 못했습니다. 설정에서 IDE 경로를 확인한 뒤 다시 시도하세요."
                 )
                 return
 
@@ -1849,7 +2134,7 @@ class MainWindow(QMainWindow):
                 _time.sleep(0.2)
             return "bound IDE session did not confirm requested workspace"
 
-        # 순서 1: IDE 폴더 창을 먼저 연다 (Iris 레이아웃은 아직 유지)
+        # 순서 1: 설정 IDE GUI exe 로 새 창을 먼저 연다 (CLI --new-window 는 Agents에 흡수됨)
         before = {
             int(w["hwnd"])
             for w in list_ide_windows(ide_id, profile.ide_exe_path)
@@ -1857,19 +2142,28 @@ class MainWindow(QMainWindow):
         if self._ide_hwnd_alive(self._ide_hwnd):
             before.add(int(self._ide_hwnd))
 
-        launched_pid, launch_err = open_folder_in_ide(
-            ide_id,
-            root_s,
-            ide_exe_path=profile.ide_exe_path,
-            ide_cli_path=profile.ide_cli_path,
-            new_window=new_window,
-            reuse_window=False,
-        )
+        if new_window:
+            launched_pid, launch_err = launch_ide(
+                ide_id,
+                ide_exe_path=profile.ide_exe_path,
+                ide_cli_path=profile.ide_cli_path,
+                project_root="",
+                new_window=True,
+            )
+        else:
+            launched_pid, launch_err = open_folder_in_ide(
+                ide_id,
+                root_s,
+                ide_exe_path=profile.ide_exe_path,
+                ide_cli_path=profile.ide_cli_path,
+                new_window=False,
+                reuse_window=True,
+            )
         if launch_err:
             self._live_activity.append_instant_line(f"IDE 폴더 열기 실패: {launch_err}")
             return launch_err
 
-        self._live_activity.append_instant_line(f"IDE 폴더 여는 중: {root_s}")
+        self._live_activity.append_instant_line(f"IDE 새 창 여는 중: {root_s}")
 
         hwnd = None
         pid = launched_pid or self._ide_pid
@@ -1881,23 +2175,54 @@ class MainWindow(QMainWindow):
                 ide_id,
                 ide_exe_path=profile.ide_exe_path,
                 exclude_hwnds=before,
-                title_substr=root.name,
+                title_substr="" if new_window else root.name,
                 timeout_sec=0.5,
             )
             if wait_pid:
                 pid = wait_pid
             if hwnd is not None and int(hwnd) not in before:
+                if str(title or "").strip().lower() == "cursor agents":
+                    hwnd = None
+                    _time.sleep(0.2)
+                    continue
                 break
             hwnd = None
             _time.sleep(0.2)
         if hwnd is None:
-            hwnd2, pid2, title2 = self._find_workspace_window(ide_id, root_s)
-            if hwnd2 is not None:
-                hwnd = hwnd2
-                pid = pid2 or pid
-                title = title2 or title
-        if hwnd is None:
-            return "IDE folder launch started but window not found"
+            return "IDE new window started but window not found"
+
+        # 새 창 포커스 후 프로젝트 폴더 로드 (reuse)
+        try:
+            from iris.automation.ide_input import force_focus_hwnd
+
+            force_focus_hwnd(int(hwnd))
+            QApplication.processEvents()
+            _time.sleep(0.35)
+        except Exception:
+            pass
+        open_folder_in_ide(
+            ide_id,
+            root_s,
+            ide_exe_path=profile.ide_exe_path,
+            ide_cli_path=profile.ide_cli_path,
+            new_window=False,
+            reuse_window=True,
+        )
+        # 제목에 폴더명이 붙을 때까지 짧게 대기 (없어도 새 창으로 Companion)
+        label_deadline = _time.monotonic() + 4.0
+        while _time.monotonic() < label_deadline:
+            QApplication.processEvents()
+            try:
+                from iris.automation.ide_input import get_window_title
+
+                cur = (get_window_title(int(hwnd)) or "").strip()
+                if cur:
+                    title = cur
+                if root.name.lower() in title.lower():
+                    break
+            except Exception:
+                pass
+            _time.sleep(0.25)
 
         # 순서 2~3: Companion + 타일
         label = title or root.name

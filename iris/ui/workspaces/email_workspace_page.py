@@ -5,7 +5,6 @@ from __future__ import annotations
 import html
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -22,15 +21,15 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QStackedWidget,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from iris.core.activity_privacy import strip_emoji
 from iris.infrastructure.email_client import MailMessage, MailSummary
 from iris.storage.email_accounts import EmailAccount
+from iris.ui.chat.chat_panel import ChatComposerInput
 from iris.ui.widgets.particle_visualizer import ParticleVisualizer
+from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisChatLog
 
 _CATEGORY_TABS = ("기본", "프로모션", "소셜", "업데이트")
 
@@ -117,7 +116,6 @@ class _EmailIrisPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("EmailIrisPanel")
-        self._iris_active = False
 
         col = QVBoxLayout(self)
         col.setContentsMargins(8, 8, 8, 8)
@@ -131,34 +129,27 @@ class _EmailIrisPanel(QWidget):
         self.orb.set_size_scale(3.0)
         col.addWidget(self.orb, 0)
 
-        self._log = QTextEdit()
-        self._log.setObjectName("EmailChatLog")
-        self._log.setReadOnly(True)
-        self._log.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._log.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._log.setStyleSheet(
-            "QTextEdit#EmailChatLog { background: transparent; border: none; color: #e2e8f0; }"
-        )
+        self._log = WorkspaceIrisChatLog("EmailChatLog")
         col.addWidget(self._log, 1)
 
         input_row = QHBoxLayout()
         input_row.setSpacing(6)
-        self._input = QLineEdit()
+        self._input = ChatComposerInput()
         self._input.setObjectName("EmailChatInput")
         self._input.setPlaceholderText("이메일 업무를 요청하세요 (예: 이 메일 답장 초안)")
         self._input.setStyleSheet(
             """
-            QLineEdit#EmailChatInput {
+            QPlainTextEdit#EmailChatInput {
                 background-color: rgba(15, 23, 42, 0.85);
                 color: #ffffff;
                 border: 1px solid rgba(56, 189, 248, 0.28);
                 border-radius: 16px;
-                padding: 8px 12px;
+                padding: 6px 12px;
             }
-            QLineEdit#EmailChatInput:focus { border-color: rgba(56, 189, 248, 0.6); }
+            QPlainTextEdit#EmailChatInput:focus { border-color: rgba(56, 189, 248, 0.6); }
             """
         )
-        self._input.returnPressed.connect(self._emit_send)
+        self._input.submit_requested.connect(self._emit_send)
         self._send = QPushButton("↑")
         self._send.setFixedSize(30, 30)
         self._send.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -172,8 +163,8 @@ class _EmailIrisPanel(QWidget):
             """
         )
         self._send.clicked.connect(self._emit_send)
-        input_row.addWidget(self._input, 1)
-        input_row.addWidget(self._send, 0)
+        input_row.addWidget(self._input, 1, Qt.AlignmentFlag.AlignBottom)
+        input_row.addWidget(self._send, 0, Qt.AlignmentFlag.AlignBottom)
         col.addLayout(input_row)
 
     def _emit_send(self) -> None:
@@ -183,53 +174,20 @@ class _EmailIrisPanel(QWidget):
         self._input.clear()
         self.chat_send.emit(text)
 
-    def _append_html(self, fragment: str) -> None:
-        cursor = self._log.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertHtml(fragment)
-        self._log.setTextCursor(cursor)
-        bar = self._log.verticalScrollBar()
-        bar.setValue(bar.maximum())
-
     def append_user(self, text: str) -> None:
-        self._iris_active = False
-        safe = strip_emoji(text or "")
-        self._append_html(f"<p><b style='color:#93c5fd'>나</b>: {html.escape(safe)}</p>")
+        self._log.append_user(text)
 
     def append_iris_chunk(self, text: str) -> None:
-        safe = strip_emoji(text or "")
-        if not safe:
-            return
-        if not self._iris_active:
-            self._append_html("<p><b style='color:#5eead4'>아이리스</b>: </p>")
-            self._iris_active = True
-        cursor = self._log.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(safe)
-        self._log.setTextCursor(cursor)
-        bar = self._log.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        self._log.append_iris_chunk(text)
 
-    def end_iris(self) -> None:
-        self._iris_active = False
+    def end_iris(self, final_text: str | None = None) -> None:
+        self._log.end_iris(final_text)
 
     def append_iris_tool(self, text: str) -> None:
-        self._iris_active = False
-        safe = strip_emoji(text or "")
-        if not safe:
-            return
-        self._append_html(
-            f"<p style='color:#64748b; font-size:11px;'>· {html.escape(safe)}</p>"
-        )
+        self._log.append_iris_tool(text)
 
     def append_iris_error(self, text: str) -> None:
-        self._iris_active = False
-        safe = strip_emoji(text or "")
-        if not safe:
-            return
-        self._append_html(
-            f"<p style='color:#f87171; font-size:12px;'>{html.escape(safe)}</p>"
-        )
+        self._log.append_iris_error(text)
 
     def set_orb_state(self, state_name: str) -> None:
         self.orb.set_state(state_name)

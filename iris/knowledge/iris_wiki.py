@@ -42,6 +42,7 @@ class IrisWiki:
         self.user_root = (user_root or default_user_wiki_root()).resolve()
         self.user_root.mkdir(parents=True, exist_ok=True)
         (self.user_root / "profile").mkdir(parents=True, exist_ok=True)
+        (self.user_root / "schedule").mkdir(parents=True, exist_ok=True)
 
     def list_notes(self) -> list[IrisWikiNote]:
         notes: list[IrisWikiNote] = []
@@ -145,3 +146,31 @@ class IrisWiki:
                 else:
                     lines.append(f"- `{addr}`")
         self.write_user_note("profile/email-accounts.md", "\n".join(lines))
+
+    def sync_schedule_markdown(self, events: list[dict[str, str]]) -> None:
+        """사용자 wiki `schedule/index.md` — 일정 목록 동기화."""
+        lines = [
+            "# 일정",
+            "",
+            "> Iris 캘린더와 동기화됩니다. 대화로 추가·변경한 일정도 여기 반영됩니다.",
+            "",
+        ]
+        if not events:
+            lines.append("_등록된 일정 없음_")
+        else:
+            for ev in events:
+                start = ev.get("start_at", "")
+                title = ev.get("title", "")
+                note = ev.get("note", "")
+                place = ev.get("place", "")
+                eid = ev.get("id", "")
+                line = f"- `{start}` **{title}**"
+                if place:
+                    line += f" @ {place}"
+                if note:
+                    line += f" — {note}"
+                if eid:
+                    line += f" _(id:{eid})_"
+                lines.append(line)
+        lines.append("")
+        self.write_user_note("schedule/index.md", "\n".join(lines))

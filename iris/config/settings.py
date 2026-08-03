@@ -20,6 +20,9 @@ class Settings:
     hermes_base_url: str = "http://127.0.0.1:8642/v1"
     hermes_api_key: str = ""
 
+    # 공공데이터포털 — 한국천문연구원 특일(공휴일) API
+    data_go_kr_service_key: str = ""
+
     # UI
     always_listen_speech_rms: float = 0.02
 
@@ -59,6 +62,7 @@ def load_settings(env_path: Path | None = None) -> Settings:
         hermes_base_url=os.environ.get("IRIS_HERMES_BASE_URL", "http://127.0.0.1:8642/v1").strip()
         or "http://127.0.0.1:8642/v1",
         hermes_api_key=os.environ.get("IRIS_HERMES_API_KEY", "").strip(),
+        data_go_kr_service_key=os.environ.get("IRIS_DATA_GO_KR_SERVICE_KEY", "").strip(),
         model_name=model or "(unset)",
         model_names=(model,) if model else (),
     )
