@@ -51,7 +51,14 @@ from iris.system.ide_launcher import (
     resolve_ide_exe,
     wait_for_new_ide_window,
 )
-from iris.system.ide_tiler import compute_tile_rects, tile_ide_and_iris, work_area_for
+from iris.system.ide_tiler import (
+    compute_tile_rects,
+    place_hwnd,
+    place_qt_window,
+    read_ide_rect,
+    tile_ide_and_iris,
+    work_area_for,
+)
 from iris.system.metrics_worker import MetricsWorker
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.widgets.context_ring import estimate_messages_tokens
@@ -164,6 +171,13 @@ class MainWindow(QMainWindow):
         self._ide_session_watch.setInterval(2000)
         self._ide_session_watch.timeout.connect(self._refresh_ide_session_state)
         self._ide_session_watch.start()
+        # companion 모드에서 사용자가 IDE나 Iris 창 경계를 직접 드래그하면 반대쪽도
+        # 따라 움직이게 — 두 창 다 폴링해서 마지막으로 우리가 배치한 값과 다르면 재배치.
+        self._last_synced_ide_rect: QRect | None = None
+        self._last_synced_iris_rect: QRect | None = None
+        self._companion_sync_timer = QTimer(self)
+        self._companion_sync_timer.setInterval(600)
+        self._companion_sync_timer.timeout.connect(self._sync_companion_split)
         self._companion_saved_sizes: list[int] | None = None
         self._companion_saved_assistant_sizes: list[int] | None = None
         self._companion_saved_geometry = None
@@ -1876,6 +1890,14 @@ class MainWindow(QMainWindow):
                 return int(win["hwnd"]), int(win["pid"]), title
         return None, None, ""
 
+    def _record_synced_rects(self) -> None:
+        """방금 우리가 배치한 IDE/Iris 창 크기를 기억 — 다음 폴링에서 사용자가
+        직접 드래그해 달라졌는지 비교하는 기준선."""
+        self._last_synced_ide_rect = read_ide_rect(
+            self._ide_hwnd or 0, pid=self._ide_pid
+        )
+        self._last_synced_iris_rect = QRect(self.geometry())
+
     def _schedule_companion_retile(self, ide_hwnd: int) -> None:
         """Cursor가 자체 레이아웃으로 되돌리는 경우 대비 지연 재타일."""
         hwnd = int(ide_hwnd)
@@ -1887,10 +1909,52 @@ class MainWindow(QMainWindow):
             if not self._ide_hwnd_alive(hwnd):
                 return
             tile_ide_and_iris(hwnd, self, ide_ratio=0.8, ide_pid=pid)
+            self._record_synced_rects()
 
         QTimer.singleShot(400, _retile)
         QTimer.singleShot(1200, _retile)
         QTimer.singleShot(2500, _retile)
+
+    def _sync_companion_split(self) -> None:
+        """IDE/Iris 중 하나가 사용자에 의해 드래그되면 반대쪽을 맞춰 따라가게 한다.
+
+        AXObserver 같은 실시간 알림 대신 짧은 폴링으로 근사— 두 창 다 우리가
+        기억한 마지막 값과 비교해 어느 쪽이 바뀌었는지 보고, 바뀐 쪽을 새 경계로
+        삼아 나머지를 work area의 남은 영역으로 재계산한다.
+        """
+        if self._ui_mode != "ide_companion" or not self._ide_hwnd:
+            return
+        if not self._ide_hwnd_alive(self._ide_hwnd):
+            return
+        current_ide = read_ide_rect(self._ide_hwnd, pid=self._ide_pid)
+        current_iris = QRect(self.geometry())
+        if current_ide is None:
+            return
+
+        ide_changed = (
+            self._last_synced_ide_rect is None or current_ide != self._last_synced_ide_rect
+        )
+        iris_changed = (
+            self._last_synced_iris_rect is None or current_iris != self._last_synced_iris_rect
+        )
+        if not ide_changed and not iris_changed:
+            return
+
+        work = work_area_for(self)
+        if ide_changed:
+            # IDE 오른쪽 끝을 새 경계로 — Iris는 남은 폭을 채운다.
+            iris_left = max(work.left(), min(current_ide.left() + current_ide.width(), work.right()))
+            iris_rect = QRect(iris_left, work.top(), work.left() + work.width() - iris_left, work.height())
+            place_qt_window(self, iris_rect)
+            self._last_synced_ide_rect = current_ide
+            self._last_synced_iris_rect = QRect(self.geometry())
+        else:
+            # Iris 왼쪽 끝을 새 경계로 — IDE는 그 앞까지 채운다.
+            ide_width = max(200, current_iris.left() - work.left())
+            ide_rect = QRect(work.left(), work.top(), ide_width, work.height())
+            place_hwnd(self._ide_hwnd, ide_rect, pid=self._ide_pid)
+            self._last_synced_iris_rect = current_iris
+            self._last_synced_ide_rect = read_ide_rect(self._ide_hwnd, pid=self._ide_pid)
 
     def _activate_companion_tile(
         self, hwnd: int, *, label: str = "", pid: int | None = None
@@ -1918,6 +1982,9 @@ class MainWindow(QMainWindow):
         self._fit_companion_orb_to_width()
         self._viz.request_sync_orb_anchor("ide_companion_tiled")
         self._schedule_companion_retile(self._ide_hwnd)
+        self._record_synced_rects()
+        if not self._companion_sync_timer.isActive():
+            self._companion_sync_timer.start()
         if label:
             self._live_activity.append_instant_line(f"IDE Companion: {label} tiled 80:20")
         return ""
@@ -2329,6 +2396,9 @@ class MainWindow(QMainWindow):
 
         if self._ui_mode != "ide_companion":
             return
+        self._companion_sync_timer.stop()
+        self._last_synced_ide_rect = None
+        self._last_synced_iris_rect = None
         self._unmount_companion_body()
         self._root_lay.setContentsMargins(*self._normal_root_margins)
         if self._companion_saved_min_size is not None:

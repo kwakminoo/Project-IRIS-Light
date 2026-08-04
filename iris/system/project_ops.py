@@ -6,6 +6,7 @@ ponytail: difflib 유사도 + 알려진 부모 디렉터리만 스캔.
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -286,23 +287,33 @@ _IRIS_TASK_LABEL = "Iris: Run"
 
 
 def build_iris_terminal_command(argv: list[str]) -> str:
-    """PowerShell: 명령을 통합 터미널에 보여 주면서 .iris/last_run.log에도 tee.
+    """명령을 통합 터미널에 보여 주면서 .iris/last_run.log에도 tee.
 
     이중 실행 없음 — 터미널 1회만. Iris는 로그를 읽어 채팅 요약.
+    Windows: PowerShell. macOS/Linux: bash(PIPESTATUS로 종료코드 보존).
     """
     if not argv:
         raise ValueError("empty argv")
-    parts: list[str] = []
-    for a in argv:
-        s = str(a).replace("'", "''")
-        parts.append(f"'{s}'")
-    invoke = "& " + " ".join(parts)
-    # $LASTEXITCODE: native 명령 종료코드
+    if sys.platform == "win32":
+        parts: list[str] = []
+        for a in argv:
+            s = str(a).replace("'", "''")
+            parts.append(f"'{s}'")
+        invoke = "& " + " ".join(parts)
+        # $LASTEXITCODE: native 명령 종료코드
+        return (
+            "New-Item -ItemType Directory -Force -Path .iris | Out-Null; "
+            "Remove-Item -Force -ErrorAction SilentlyContinue .iris\\last_run.log; "
+            f"$out = {invoke} 2>&1 | Tee-Object -FilePath .iris\\last_run.log; "
+            "if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE } else { exit 0 }"
+        )
+    import shlex
+
+    cmd = " ".join(shlex.quote(str(a)) for a in argv)
     return (
-        "New-Item -ItemType Directory -Force -Path .iris | Out-Null; "
-        "Remove-Item -Force -ErrorAction SilentlyContinue .iris\\last_run.log; "
-        f"$out = {invoke} 2>&1 | Tee-Object -FilePath .iris\\last_run.log; "
-        "if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE } else { exit 0 }"
+        "mkdir -p .iris; rm -f .iris/last_run.log; "
+        f"{{ {cmd}; }} 2>&1 | tee .iris/last_run.log; "
+        "exit ${PIPESTATUS[0]}"
     )
 
 
@@ -330,16 +341,23 @@ def upsert_iris_run_task(project_root: str | Path, command: str) -> str:
     if not isinstance(tasks, list):
         tasks = []
         data["tasks"] = tasks
+    shell_cfg = (
+        {
+            "executable": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"],
+        }
+        if sys.platform == "win32"
+        # 고정 bash — command가 PIPESTATUS(bash 전용) 문법을 쓰므로 사용자 기본
+        # 셸(zsh 등)에 맡기지 않는다.
+        else {"executable": "/bin/bash", "args": ["-c"]}
+    )
     iris_task = {
         "label": _IRIS_TASK_LABEL,
         "type": "shell",
         "command": command,
         "options": {
             "cwd": "${workspaceFolder}",
-            "shell": {
-                "executable": "powershell.exe",
-                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"],
-            },
+            "shell": shell_cfg,
         },
         "problemMatcher": [],
         "group": {"kind": "build", "isDefault": True},

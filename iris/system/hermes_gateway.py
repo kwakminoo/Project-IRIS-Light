@@ -125,8 +125,7 @@ def stop_hermes_gateway(command: str = "hermes", *, wait_sec: float = 20.0) -> b
         except (OSError, subprocess.TimeoutExpired):
             pass
 
-    if sys.platform == "win32":
-        _force_kill_windows_gateway_procs()
+    _force_kill_windows_gateway_procs()
 
     deadline = time.monotonic() + wait_sec
     while time.monotonic() < deadline:
@@ -143,35 +142,51 @@ def _gateway_process_pids() -> list[int]:
     주의: CommandLine에 hermes/gateway/run 문자열이 있는 Iris/PowerShell 자기 자신을
     죽이면 안 됨 → hermes_cli.main 기동 형태만 매칭.
     """
-    if sys.platform != "win32":
-        return []
-    # ponytail: 전체 JSON 덤프 금지. hermes_cli.main + gateway argv 만.
-    ps = (
-        "$procs = Get-CimInstance Win32_Process | "
-        "Where-Object { "
-        "$_.CommandLine -and "
-        "($_.CommandLine -like '*hermes_cli.main*') -and "
-        "($_.CommandLine -like '*gateway*') "
-        "}; "
-        "($procs | ForEach-Object { $_.ProcessId }) -join ','"
-    )
-    try:
-        out = subprocess.check_output(
-            ["powershell", "-NoProfile", "-Command", ps],
-            text=True,
-            timeout=20,
-            creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+    if sys.platform == "win32":
+        # ponytail: 전체 JSON 덤프 금지. hermes_cli.main + gateway argv 만.
+        ps = (
+            "$procs = Get-CimInstance Win32_Process | "
+            "Where-Object { "
+            "$_.CommandLine -and "
+            "($_.CommandLine -like '*hermes_cli.main*') -and "
+            "($_.CommandLine -like '*gateway*') "
+            "}; "
+            "($procs | ForEach-Object { $_.ProcessId }) -join ','"
         )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    pids: list[int] = []
-    for part in (out or "").strip().split(","):
-        part = part.strip()
-        if not part:
-            continue
         try:
-            pids.append(int(part))
-        except ValueError:
+            out = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", ps],
+                text=True,
+                timeout=20,
+                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        pids: list[int] = []
+        for part in (out or "").strip().split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                pids.append(int(part))
+            except ValueError:
+                continue
+        return pids
+
+    # macOS/Linux: `hermes` 스크립트는 `venv/bin/python .../hermes gateway run
+    # --quiet --accept-hooks`로 뜬다 — cmdline에 hermes+gateway+run이 모두 있는
+    # 것만 매칭(Iris 자신이나 무관한 프로세스 오검출 방지).
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return []
+    pids = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+            if "hermes" in cmdline and "gateway" in cmdline and "run" in cmdline:
+                pids.append(int(proc.info["pid"]))
+        except (psutil.Error, TypeError, ValueError):
             continue
     return pids
 
@@ -181,9 +196,28 @@ def _windows_gateway_procs_alive() -> bool:
 
 
 def _force_kill_windows_gateway_procs() -> None:
-    if sys.platform != "win32":
-        return
     me = os.getpid()
+    if sys.platform != "win32":
+        import signal
+
+        for pid in _gateway_process_pids():
+            if pid == me:
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and _gateway_process_pids():
+            time.sleep(0.2)
+        for pid in _gateway_process_pids():
+            if pid == me:
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        return
     for pid in _gateway_process_pids():
         if pid == me:
             continue

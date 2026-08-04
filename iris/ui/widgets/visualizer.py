@@ -69,6 +69,7 @@ class Visualizer(QWidget):
         self._center_y_ratio = (
             _ORB_CENTER_Y_RATIO_COMPANION if companion else _ORB_CENTER_Y_RATIO
         )
+        self._particle.set_companion_mode(companion)
         self.request_sync_orb_anchor("companion_orb_placement")
 
     def set_orb_anchor(self, widget: QWidget | None) -> None:

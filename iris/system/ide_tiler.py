@@ -74,6 +74,49 @@ def _place_macos_pid(pid: int, rect: QRect) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _read_macos_pid_rect(pid: int) -> QRect | None:
+    try:
+        import ApplicationServices as AS  # type: ignore
+    except Exception:
+        return None
+    try:
+        app_ref = AS.AXUIElementCreateApplication(int(pid))
+        err, windows = AS.AXUIElementCopyAttributeValue(app_ref, AS.kAXWindowsAttribute, None)
+        if err != 0 or not windows:
+            return None
+        window_ref = windows[0]
+        e1, pos_val = AS.AXUIElementCopyAttributeValue(window_ref, AS.kAXPositionAttribute, None)
+        e2, size_val = AS.AXUIElementCopyAttributeValue(window_ref, AS.kAXSizeAttribute, None)
+        if e1 != 0 or e2 != 0:
+            return None
+        ok1, pt = AS.AXValueGetValue(pos_val, AS.kAXValueCGPointType, None)
+        ok2, sz = AS.AXValueGetValue(size_val, AS.kAXValueCGSizeType, None)
+        if not ok1 or not ok2:
+            return None
+        return QRect(int(pt.x), int(pt.y), int(sz.width), int(sz.height))
+    except Exception:
+        return None
+
+
+def read_ide_rect(hwnd: int, *, pid: int | None = None) -> QRect | None:
+    """IDE 창의 현재 위치·크기 — 사용자가 직접 드래그했는지 감지하는 용도."""
+    if sys.platform == "darwin":
+        if not pid:
+            return None
+        return _read_macos_pid_rect(pid)
+    if sys.platform != "win32" or hwnd <= 0:
+        return None
+    try:
+        import win32gui  # type: ignore
+
+        if not win32gui.IsWindow(hwnd):
+            return None
+        left, top, right, bot = win32gui.GetWindowRect(hwnd)
+        return QRect(left, top, right - left, bot - top)
+    except Exception:
+        return None
+
+
 def place_hwnd(hwnd: int, rect: QRect, *, pid: int | None = None) -> tuple[bool, str]:
     """HWND(win32) 또는 PID(macOS)의 창을 지정 사각형으로 이동·리사이즈."""
     if sys.platform == "darwin":

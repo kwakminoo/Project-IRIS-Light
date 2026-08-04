@@ -1,6 +1,9 @@
-"""IDE 창 포커스·단축키·유니코드 타이핑 (Windows).
+"""IDE 창 포커스·단축키·유니코드 타이핑 (Windows + macOS).
 
-ponytail: Cursor/VS Code 통합 터미널·에디터 연출용. AttachThreadInput으로 포커스 성공률을 올린다.
+ponytail: Cursor/VS Code 통합 터미널·에디터 연출용.
+Windows: AttachThreadInput으로 포커스 성공률을 올린다 (hwnd 기반).
+macOS: hwnd 자리엔 CGWindowNumber를 쓰되, 포커스·키 입력은 pid 기반
+(NSRunningApplication 활성화 + CGEvent 유니코드/키 입력, HWND 개념이 없다).
 천장: OS/IME에 따라 일부 문자·포커스 실패 가능 → 호출측에서 폴백.
 """
 
@@ -16,8 +19,109 @@ def _win32() -> bool:
     return sys.platform == "win32"
 
 
+def _macos() -> bool:
+    return sys.platform == "darwin"
+
+
+# ---- macOS 저수준 프리미티브 (Accessibility 권한 필요) ----
+
+_VK_RETURN = 0x24
+_VK_DELETE = 0x33
+_VK_ESCAPE = 0x35
+_VK_A = 0x00
+_VK_S = 0x01
+_VK_P = 0x23
+_VK_B = 0x0B
+_VK_GRAVE = 0x32
+
+
+def _macos_window_info(window_number: int) -> dict:
+    if not window_number:
+        return {}
+    try:
+        import Quartz  # type: ignore
+
+        wins = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListExcludeDesktopElements, Quartz.kCGNullWindowID
+        )
+        for w in wins:
+            if int(w.get("kCGWindowNumber", 0) or 0) == int(window_number):
+                return dict(w)
+    except Exception:
+        pass
+    return {}
+
+
+def _macos_activate_pid(pid: int) -> bool:
+    try:
+        from AppKit import (  # type: ignore
+            NSApplicationActivateIgnoringOtherApps,
+            NSRunningApplication,
+        )
+
+        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(int(pid))
+        if app is None:
+            return False
+        return bool(app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps))
+    except Exception:
+        return False
+
+
+def _macos_post_unicode_text(
+    text: str, *, delay_ms: int = 12, pump: Callable[[], None] | None = None
+) -> None:
+    import Quartz  # type: ignore
+
+    delay = max(0, int(delay_ms)) / 1000.0
+    for ch in text:
+        down = Quartz.CGEventCreateKeyboardEvent(None, 0, True)
+        Quartz.CGEventKeyboardSetUnicodeString(down, len(ch), ch)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+        up = Quartz.CGEventCreateKeyboardEvent(None, 0, False)
+        Quartz.CGEventKeyboardSetUnicodeString(up, len(ch), ch)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+        if delay > 0:
+            if pump is not None:
+                pump()
+            time.sleep(delay)
+
+
+def _macos_key_combo(flags: int, keycode: int) -> None:
+    import Quartz  # type: ignore
+
+    down = Quartz.CGEventCreateKeyboardEvent(None, keycode, True)
+    Quartz.CGEventSetFlags(down, flags)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+    up = Quartz.CGEventCreateKeyboardEvent(None, keycode, False)
+    Quartz.CGEventSetFlags(up, flags)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+
+
+def _macos_click_point(x: float, y: float) -> None:
+    import Quartz  # type: ignore
+
+    point = Quartz.CGPointMake(x, y)
+    down = Quartz.CGEventCreateMouseEvent(
+        None, Quartz.kCGEventLeftMouseDown, point, Quartz.kCGMouseButtonLeft
+    )
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+    up = Quartz.CGEventCreateMouseEvent(
+        None, Quartz.kCGEventLeftMouseUp, point, Quartz.kCGMouseButtonLeft
+    )
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+
+
 def get_window_title(hwnd: int) -> str:
-    if not _win32() or not hwnd:
+    if not hwnd:
+        return ""
+    if _macos():
+        info = _macos_window_info(hwnd)
+        if not info:
+            return ""
+        import Quartz  # type: ignore
+
+        return (info.get(Quartz.kCGWindowName, "") or "").strip()
+    if not _win32():
         return ""
     try:
         import win32gui  # type: ignore
@@ -27,8 +131,13 @@ def get_window_title(hwnd: int) -> str:
         return ""
 
 
-def force_focus_hwnd(hwnd: int) -> bool:
-    """IDE 창을 전면으로. SetForegroundWindow 제한 우회 시도."""
+def force_focus_hwnd(hwnd: int, *, pid: int | None = None) -> bool:
+    """IDE 창을 전면으로. SetForegroundWindow 제한 우회 시도 (Windows) /
+    NSRunningApplication 활성화 (macOS, pid 필요)."""
+    if _macos():
+        if not pid:
+            return False
+        return _macos_activate_pid(int(pid))
     if not _win32() or not hwnd:
         return False
     try:
@@ -94,7 +203,8 @@ def wait_ide_shows_file(
 
 
 def send_key_combo(hwnd: int, *vk_codes: int) -> bool:
-    """포커스 후 수정키+키 조합. vk_codes 예: CONTROL, SHIFT, ord('B')."""
+    """Windows 전용 — vk_codes 조합(마지막이 메인 키). macOS는 각 trigger_* 함수가
+    CGEvent 플래그 방식으로 자체 처리한다(단일 keycode + modifier flags)."""
     if not _win32() or not vk_codes:
         return False
     try:
@@ -114,8 +224,18 @@ def send_key_combo(hwnd: int, *vk_codes: int) -> bool:
         return False
 
 
-def trigger_default_build_task(hwnd: int) -> bool:
-    """Ctrl+Shift+B — VS Code/Cursor 기본 Build Task (Iris: Run)."""
+def trigger_default_build_task(hwnd: int, *, pid: int | None = None) -> bool:
+    """Ctrl+Shift+B (win) / Cmd+Shift+B (mac) — VS Code/Cursor 기본 Build Task (Iris: Run)."""
+    if _macos():
+        if not force_focus_hwnd(hwnd, pid=pid):
+            return False
+        time.sleep(0.1)
+        import Quartz  # type: ignore
+
+        _macos_key_combo(
+            Quartz.kCGEventFlagMaskCommand | Quartz.kCGEventFlagMaskShift, _VK_B
+        )
+        return True
     import win32con  # type: ignore
 
     return send_key_combo(
@@ -126,19 +246,44 @@ def trigger_default_build_task(hwnd: int) -> bool:
     )
 
 
-def trigger_save(hwnd: int) -> bool:
+def trigger_save(hwnd: int, *, pid: int | None = None) -> bool:
+    if _macos():
+        if not force_focus_hwnd(hwnd, pid=pid):
+            return False
+        time.sleep(0.1)
+        import Quartz  # type: ignore
+
+        _macos_key_combo(Quartz.kCGEventFlagMaskCommand, _VK_S)
+        return True
     import win32con  # type: ignore
 
     return send_key_combo(hwnd, win32con.VK_CONTROL, ord("S"))
 
 
-def trigger_quick_open(hwnd: int) -> bool:
+def trigger_quick_open(hwnd: int, *, pid: int | None = None) -> bool:
+    if _macos():
+        if not force_focus_hwnd(hwnd, pid=pid):
+            return False
+        time.sleep(0.1)
+        import Quartz  # type: ignore
+
+        _macos_key_combo(Quartz.kCGEventFlagMaskCommand, _VK_P)
+        return True
     import win32con  # type: ignore
 
     return send_key_combo(hwnd, win32con.VK_CONTROL, ord("P"))
 
 
-def trigger_integrated_terminal(hwnd: int) -> bool:
+def trigger_integrated_terminal(hwnd: int, *, pid: int | None = None) -> bool:
+    if _macos():
+        if not force_focus_hwnd(hwnd, pid=pid):
+            return False
+        time.sleep(0.1)
+        import Quartz  # type: ignore
+
+        # VS Code/Cursor 기본 터미널 토글은 macOS에서도 Ctrl+` 그대로 유지(Cmd 아님).
+        _macos_key_combo(Quartz.kCGEventFlagMaskControl, _VK_GRAVE)
+        return True
     import win32con  # type: ignore
 
     return send_key_combo(hwnd, win32con.VK_CONTROL, getattr(win32con, "VK_OEM_3", 0xC0))
@@ -150,8 +295,13 @@ def type_unicode_text(
     delay_ms: int = 12,
     pump: Callable[[], None] | None = None,
 ) -> None:
-    """전면 창에 유니코드 타이핑 (KEYEVENTF_UNICODE)."""
-    if not _win32() or not text:
+    """전면 창에 유니코드 타이핑."""
+    if not text:
+        return
+    if _macos():
+        _macos_post_unicode_text(text, delay_ms=delay_ms, pump=pump)
+        return
+    if not _win32():
         return
     import ctypes
     from ctypes import wintypes
@@ -204,8 +354,22 @@ def type_unicode_text(
             time.sleep(delay)
 
 
-def click_editor_area(hwnd: int) -> bool:
+def click_editor_area(hwnd: int, *, pid: int | None = None) -> bool:
     """IDE 창 중앙-좌측(에디터 추정) 클릭으로 텍스트 버퍼 포커스."""
+    if _macos():
+        if not force_focus_hwnd(hwnd, pid=pid):
+            return False
+        info = _macos_window_info(hwnd)
+        bounds = info.get("kCGWindowBounds") if info else None
+        if not bounds:
+            return False
+        left, top = float(bounds["X"]), float(bounds["Y"])
+        w, h = float(bounds["Width"]), float(bounds["Height"])
+        x = left + w * 0.35
+        y = top + h * 0.45
+        _macos_click_point(x, y)
+        time.sleep(0.08)
+        return True
     if not _win32() or not hwnd:
         return False
     try:
@@ -234,8 +398,9 @@ def typewriter_into_ide(
     *,
     delay_ms: int | None = None,
     pump: Callable[[], None] | None = None,
+    pid: int | None = None,
 ) -> bool:
-    """IDE 포커스 후 본문 타이핑 + Ctrl+S 저장."""
+    """IDE 포커스 후 본문 타이핑 + 저장(Ctrl/Cmd+S)."""
     if not hwnd:
         return False
     body = str(text)
@@ -243,28 +408,38 @@ def typewriter_into_ide(
         # ponytail: 긴 파일도 ~8초 안에 끝나게 속도 조절
         n = max(len(body), 1)
         delay_ms = max(4, min(18, int(8000 / n)))
-    force_focus_hwnd(hwnd)
+    force_focus_hwnd(hwnd, pid=pid)
     time.sleep(0.15)
-    click_editor_area(hwnd)
-    # Escape로 팔레트/검색 닫기
-    try:
-        import win32api  # type: ignore
-        import win32con  # type: ignore
+    click_editor_area(hwnd, pid=pid)
+    if _macos():
+        import Quartz  # type: ignore
 
-        win32api.keybd_event(win32con.VK_ESCAPE, 0, 0, 0)
-        win32api.keybd_event(win32con.VK_ESCAPE, 0, win32con.KEYEVENTF_KEYUP, 0)
+        # Escape로 팔레트/검색 닫기
+        _macos_key_combo(0, _VK_ESCAPE)
         time.sleep(0.05)
-        # Ctrl+A / Delete 로 빈 버퍼 확보 (외부에서 쓴 잔여 대비)
-        send_key_combo(hwnd, win32con.VK_CONTROL, ord("A"))
+        # Cmd+A / Delete 로 빈 버퍼 확보 (외부에서 쓴 잔여 대비)
+        _macos_key_combo(Quartz.kCGEventFlagMaskCommand, _VK_A)
         time.sleep(0.05)
-        win32api.keybd_event(win32con.VK_DELETE, 0, 0, 0)
-        win32api.keybd_event(win32con.VK_DELETE, 0, win32con.KEYEVENTF_KEYUP, 0)
+        _macos_key_combo(0, _VK_DELETE)
         time.sleep(0.05)
-    except Exception:
-        pass
+    else:
+        try:
+            import win32api  # type: ignore
+            import win32con  # type: ignore
+
+            win32api.keybd_event(win32con.VK_ESCAPE, 0, 0, 0)
+            win32api.keybd_event(win32con.VK_ESCAPE, 0, win32con.KEYEVENTF_KEYUP, 0)
+            time.sleep(0.05)
+            send_key_combo(hwnd, win32con.VK_CONTROL, ord("A"))
+            time.sleep(0.05)
+            win32api.keybd_event(win32con.VK_DELETE, 0, 0, 0)
+            win32api.keybd_event(win32con.VK_DELETE, 0, win32con.KEYEVENTF_KEYUP, 0)
+            time.sleep(0.05)
+        except Exception:
+            pass
     type_unicode_text(body, delay_ms=int(delay_ms), pump=pump)
     time.sleep(0.1)
-    trigger_save(hwnd)
+    trigger_save(hwnd, pid=pid)
     return True
 
 
@@ -274,6 +449,7 @@ def open_file_in_workspace(
     *,
     workspace_root: str = "",
     pump: Callable[[], None] | None = None,
+    pid: int | None = None,
 ) -> bool:
     """현재 IDE 창의 Quick Open으로 파일을 연다."""
     if not hwnd:
@@ -288,30 +464,37 @@ def open_file_in_workspace(
             query = str(path.resolve().relative_to(root)).replace("\\", "/")
         except Exception:
             query = str(path.resolve())
-    force_focus_hwnd(hwnd)
+    force_focus_hwnd(hwnd, pid=pid)
     time.sleep(0.15)
-    try:
-        import win32api  # type: ignore
-        import win32con  # type: ignore
-
-        win32api.keybd_event(win32con.VK_ESCAPE, 0, 0, 0)
-        win32api.keybd_event(win32con.VK_ESCAPE, 0, win32con.KEYEVENTF_KEYUP, 0)
+    if _macos():
+        _macos_key_combo(0, _VK_ESCAPE)
         time.sleep(0.05)
-    except Exception:
-        pass
-    if not trigger_quick_open(hwnd):
+    else:
+        try:
+            import win32api  # type: ignore
+            import win32con  # type: ignore
+
+            win32api.keybd_event(win32con.VK_ESCAPE, 0, 0, 0)
+            win32api.keybd_event(win32con.VK_ESCAPE, 0, win32con.KEYEVENTF_KEYUP, 0)
+            time.sleep(0.05)
+        except Exception:
+            pass
+    if not trigger_quick_open(hwnd, pid=pid):
         return False
     time.sleep(0.15)
     type_unicode_text(query, delay_ms=4, pump=pump)
     time.sleep(0.05)
-    try:
-        import win32api  # type: ignore
-        import win32con  # type: ignore
+    if _macos():
+        _macos_key_combo(0, _VK_RETURN)
+    else:
+        try:
+            import win32api  # type: ignore
+            import win32con  # type: ignore
 
-        win32api.keybd_event(win32con.VK_RETURN, 0, 0, 0)
-        win32api.keybd_event(win32con.VK_RETURN, 0, win32con.KEYEVENTF_KEYUP, 0)
-    except Exception:
-        return False
+            win32api.keybd_event(win32con.VK_RETURN, 0, 0, 0)
+            win32api.keybd_event(win32con.VK_RETURN, 0, win32con.KEYEVENTF_KEYUP, 0)
+        except Exception:
+            return False
     return True
 
 
@@ -320,24 +503,28 @@ def run_command_in_ide_terminal(
     command: str,
     *,
     pump: Callable[[], None] | None = None,
+    pid: int | None = None,
 ) -> bool:
     """현재 IDE 창의 통합 터미널을 열고 명령 1개를 실행한다."""
     if not hwnd or not command:
         return False
-    force_focus_hwnd(hwnd)
+    force_focus_hwnd(hwnd, pid=pid)
     time.sleep(0.15)
-    if not trigger_integrated_terminal(hwnd):
+    if not trigger_integrated_terminal(hwnd, pid=pid):
         return False
     time.sleep(0.2)
     type_unicode_text(str(command), delay_ms=3, pump=pump)
-    try:
-        import win32api  # type: ignore
-        import win32con  # type: ignore
+    if _macos():
+        _macos_key_combo(0, _VK_RETURN)
+    else:
+        try:
+            import win32api  # type: ignore
+            import win32con  # type: ignore
 
-        win32api.keybd_event(win32con.VK_RETURN, 0, 0, 0)
-        win32api.keybd_event(win32con.VK_RETURN, 0, win32con.KEYEVENTF_KEYUP, 0)
-    except Exception:
-        return False
+            win32api.keybd_event(win32con.VK_RETURN, 0, 0, 0)
+            win32api.keybd_event(win32con.VK_RETURN, 0, win32con.KEYEVENTF_KEYUP, 0)
+        except Exception:
+            return False
     return True
 
 

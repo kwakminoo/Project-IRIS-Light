@@ -75,6 +75,10 @@ _DEFAULT_CY_RATIO = 0.36
 _COMPACT_HEIGHT = 320
 _COMPACT_CY_RATIO = 0.52
 _ORB_RAW_R_RATIO = 0.18
+# custom_center 모드(IDE companion 등) 기준 반경 — 메인 화면 구체(기본 창 크기 기준
+# 약 140px)와 비슷하게 맞춘 고정값. 창 폭과 무관하게 size_scale로만 조절되므로
+# IDE를 풀스크린으로 키워도 컬럼 폭에 비례해 커지지 않는다.
+_CUSTOM_CENTER_BASE_R = 60.0
 
 
 def orb_size_scale_for_square_fill(side: int) -> float:
@@ -118,6 +122,7 @@ class ParticleVisualizer(QWidget):
         self._cy = 0.0
         self._core_r = 60.0
         self._custom_center: tuple[float, float] | None = None
+        self._companion_mode = False
         self._size_scale = 1.0
         self._sphere_pts = _fibonacci_sphere(_PARTICLE_COUNT)
         self._core_image = QPixmap(str(_asset_path("visuals/iris_core.png")))
@@ -184,6 +189,13 @@ class ParticleVisualizer(QWidget):
         self._size_scale = max(0.25, float(scale))
         self._recompute_geometry()
 
+    def set_companion_mode(self, companion: bool) -> None:
+        """IDE Companion 여부 — custom_center는 항상(앵커 동기화로) 채워지므로
+        companion 여부로 크기 계산 방식을 나눈다(고정 반경 vs 창 비례)."""
+        self._companion_mode = bool(companion)
+        self._recompute_geometry()
+        self.update()
+
     def set_boot_reveal(self, value: float) -> None:
         """기동 등장 진행(0=숨김, 1=완전 표시)."""
         self._boot_reveal = max(0.0, min(1.0, float(value)))
@@ -208,8 +220,8 @@ class ParticleVisualizer(QWidget):
 
     def _recompute_geometry(self) -> None:
         width, height = max(self.width(), 1), max(self.height(), 1)
-        raw_r = min(width, height) * _ORB_RAW_R_RATIO * self._size_scale
         if self._custom_center is None:
+            raw_r = min(width, height) * _ORB_RAW_R_RATIO * self._size_scale
             self._cx = width * 0.5
             fit_r = self._fit_core_radius(width, height)
             self._core_r = min(raw_r, fit_r)
@@ -227,8 +239,16 @@ class ParticleVisualizer(QWidget):
                 self._core_r = fit_r
                 self._cy = height * 0.5
         else:
+            # custom_center는 앵커 동기화가 한 번이라도 돌면 항상 채워진다 — 메인
+            # 화면도 예외가 아니다. companion 여부로만 크기 계산을 나눠야 한다.
             self._cx, self._cy = self._custom_center
-            self._core_r = raw_r
+            if self._companion_mode:
+                # 창 폭과 무관한 고정 기준 반경 — width에 비례시키면 IDE를
+                # 풀스크린으로 키울 때 컬럼 폭도 같이 커져서 구체가 거대해졌었다.
+                self._core_r = _CUSTOM_CENTER_BASE_R * self._size_scale
+            else:
+                # 메인 화면 — 이전과 동일하게 창 크기에 비례.
+                self._core_r = min(width, height) * _ORB_RAW_R_RATIO * self._size_scale
 
     def _profile(self) -> dict[str, float | tuple[int, int, int]]:
         return _STATE_PROFILES.get(self._state_name, _STATE_PROFILES["IDLE"])

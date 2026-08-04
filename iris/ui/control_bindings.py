@@ -109,6 +109,7 @@ def _ide_open_file_path(
         path,
         workspace_root=session.workspace_root,
         pump=_qt_pump,
+        pid=session.pid,
     )
     visible = False
     if ok:
@@ -558,6 +559,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
             abs_path.parent.mkdir(parents=True, exist_ok=True)
             abs_path.write_text("", encoding="utf-8")
             hwnd = int(session.hwnd) if session is not None and session.hwnd else None
+            pid = session.pid if session is not None else None
             opened = bool(
                 hwnd
                 and open_file_in_workspace(
@@ -565,6 +567,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                     path_s,
                     workspace_root=session.workspace_root if session is not None else "",
                     pump=_qt_pump,
+                    pid=pid,
                 )
             )
             visible = False
@@ -582,6 +585,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                     text,
                     delay_ms=int(args["delay_ms"]) if args.get("delay_ms") is not None else None,
                     pump=_qt_pump,
+                    pid=pid,
                 )
                 abs_path.write_text(text, encoding="utf-8")
             elif do_type:
@@ -702,6 +706,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         ide_terminal = "failed"
         result: dict[str, Any]
         hwnd = int(session.hwnd) if session and session.hwnd else None
+        pid = session.pid if session else None
         t0 = time.monotonic()
 
         if not reveal:
@@ -713,7 +718,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 {"tasks_path": tasks_path or None, "hwnd": hwnd},
             )
         time.sleep(0.35)
-        triggered = trigger_default_build_task(hwnd)
+        triggered = trigger_default_build_task(hwnd, pid=pid)
         if not triggered:
             return err_result("project.run", "failed to trigger IDE integrated terminal run task")
         waited = wait_for_run_log(
@@ -724,7 +729,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         )
         elapsed = time.monotonic() - t0
         if not waited.get("found"):
-            rerun_ok = run_command_in_ide_terminal(hwnd, shell_cmd, pump=_qt_pump)
+            rerun_ok = run_command_in_ide_terminal(hwnd, shell_cmd, pump=_qt_pump, pid=pid)
             if not rerun_ok:
                 return err_result(
                     "project.run",
