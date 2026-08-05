@@ -169,14 +169,24 @@ def capture_window_by_hwnd(
     return holder[0]
 
 
-def capture_result_to_png_bytes(cap: CaptureResult) -> bytes | None:
-    """CaptureResult → PNG bytes (Ranker 멀티모달 전송용, 디스크 저장 없음)."""
+def capture_result_to_png_bytes(
+    cap: CaptureResult, *, max_width: int = 0
+) -> bytes | None:
+    """CaptureResult → PNG bytes (Ranker 멀티모달 전송용, 디스크 저장 없음).
+
+    max_width > 0 이면 가로가 그보다 클 때 비율을 유지해 축소한다.
+    비전 모델은 이미지를 타일로 쪼개 토큰화하므로, 원본 해상도를 그대로
+    보내면 토큰·메모리·지연이 급격히 늘어난다. 창 상태 판정에는 1024px
+    정도면 진행률·에러 문구를 읽기에 충분하다."""
     try:
         import io
 
         from PIL import Image  # type: ignore
 
         img = Image.frombytes("RGB", (cap.width, cap.height), cap.rgb_bytes)
+        if max_width > 0 and img.width > max_width:
+            height = max(1, round(img.height * max_width / img.width))
+            img = img.resize((max_width, height), Image.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue()

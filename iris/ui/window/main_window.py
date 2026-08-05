@@ -80,6 +80,8 @@ from iris.ui.window.startup_intro import StartupIntroAnimator
 from iris.ui.shared.theme_tokens import TOKENS
 from iris.ui.window.top_status_header import TopStatusHeader
 from iris.ui.monitor.unified_monitor_panel import UnifiedMonitorPanel
+from iris.monitoring.pin_store import PinStore
+from iris.monitoring.pinned_monitor import PinnedMonitorService
 from iris.ui.settings.user_profile_dialog import UserProfileDialog
 from iris.ui.widgets.ide_icons import show_ide_not_installed_dialog
 from iris.ui.widgets.visualizer import Visualizer
@@ -312,6 +314,20 @@ class MainWindow(QMainWindow):
         self._monitor = UnifiedMonitorPanel()
         self._monitor.set_database(self._db)
         self._monitor.setMinimumHeight(160)
+
+        # 고정(📌) 창 AI 감시 — 최대 3개, 30초 주기로 화면을 분석해 상태 변화를 알림
+        self._pin_store = PinStore(self._db)
+        self._pinned_monitor = PinnedMonitorService(
+            self._pin_store,
+            self._settings,
+            lambda: self._chat.current_model() or self._settings.ollama_model,
+            self,
+        )
+        self._monitor.set_pin_store(self._pin_store)
+        self._monitor.pin_changed.connect(self._on_pin_changed)
+        self._pinned_monitor.updated.connect(self._monitor.rerender_pins)
+        self._pinned_monitor.report.connect(self._on_pinned_report)
+        self._pinned_monitor.start()
 
         self._notif_policy = NotificationPolicy(self._db)
         self._notes = NotificationPanel(policy=self._notif_policy)
@@ -650,6 +666,41 @@ class MainWindow(QMainWindow):
             cache[model] = limit
         used = estimate_messages_tokens(self._history)
         self._chat.set_context_usage(used, limit)
+
+    # ------------------------------------------------------------------
+    # 고정 창 AI 감시
+    # ------------------------------------------------------------------
+
+    def _on_pin_changed(self) -> None:
+        """고정/해제 직후 — 결과를 오래 기다리지 않도록 즉시 1회 분석."""
+        count = self._pin_store.count()
+        self._live_activity.append_instant_line(f"AI 감시 대상 {count}개")
+        if count:
+            self._pinned_monitor.analyze_soon()
+
+    def _on_pinned_report(self, title: str, category: str, headline: str, detail: str) -> None:
+        """감시 중인 창의 상태가 주의 필요로 바뀐 순간 — 알림 패널에 띄운다."""
+        suppressed = None
+        try:
+            # target_id 0 = 고정 감시(테이블 등록 대상 아님) — 카테고리 쿨다운만 적용
+            suppressed = self._notif_policy.should_suppress(0, category)
+        except Exception:
+            suppressed = None
+        if suppressed:
+            return
+        self._notes.try_add_alert(
+            target_id=0,
+            category=category,
+            title=f"{headline} — {title[:40]}",
+            message=detail or headline,
+            focus_hint=title,
+            event_id=0,
+        )
+        try:
+            self._notif_policy.mark_shown(0, category)
+            self._notif_policy.log_notification(0, 0, category, title, detail or headline)
+        except Exception:
+            pass
 
     def _use_hermes_backend(self) -> bool:
         return bool(self._settings.hermes_enabled)
@@ -2138,6 +2189,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         try:
             stop_control_surface(self)
+            self._pinned_monitor.stop()
             if self._recorder.is_recording():
                 self._recorder.cancel_recording()
             self._stop_tts_playback()

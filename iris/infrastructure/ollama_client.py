@@ -302,6 +302,55 @@ class OllamaClient:
         except URLError as e:
             raise RuntimeError(f"Ollama 연결 실패: {e.reason}") from e
 
+    def chat_once_with_images(
+        self,
+        model: str,
+        prompt: str,
+        images_png: list[bytes],
+        *,
+        system: str = "",
+        timeout_sec: float = 90.0,
+    ) -> str:
+        """멀티모달 단발 호출 — 스트림 없이 최종 content만 반환.
+
+        이미지는 /api/chat의 messages[].images (base64 PNG)로 보낸다.
+        모델이 멀티모달이 아니면 이미지를 무시하고 텍스트만 보므로,
+        호출 측에서 결과가 쓸모없을 수 있음을 감안해야 한다."""
+        import base64
+
+        message: dict[str, Any] = {"role": "user", "content": prompt}
+        if images_png:
+            message["images"] = [
+                base64.b64encode(png).decode("ascii") for png in images_png if png
+            ]
+        messages: list[dict[str, Any]] = []
+        if system.strip():
+            messages.append({"role": "system", "content": system.strip()})
+        messages.append(message)
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+        }
+        req = Request(
+            f"{self.base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=timeout_sec) as resp:
+                obj = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")[:400]
+            raise RuntimeError(f"Ollama HTTP {e.code}: {detail or e.reason}") from e
+        except URLError as e:
+            raise RuntimeError(f"Ollama 연결 실패: {e.reason}") from e
+        msg = obj.get("message") or {}
+        return str(msg.get("content") or "") if isinstance(msg, dict) else ""
+
     def _get_json(self, path: str) -> dict[str, Any]:
         return self._get_json_url(f"{self.base_url}{path}")
 
