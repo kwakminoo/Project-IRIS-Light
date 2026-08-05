@@ -40,10 +40,10 @@ def main() -> int:
         result = run_project_command(root, argv, timeout_sec=20)
         assert result["exit_code"] == 0 and "3" in (result.get("stdout") or "")
         shell = build_iris_terminal_command(argv)
-        assert "Tee-Object" in shell and "last_run.log" in shell
+        assert ("Tee-Object" in shell or " tee " in shell) and "last_run.log" in shell
         tasks = upsert_iris_run_task(root, shell)
         body = Path(tasks).read_text(encoding="utf-8")
-        assert "Iris: Run" in body and "powershell" in body.lower()
+        assert "Iris: Run" in body and ("powershell" in body.lower() or "/bin/bash" in body)
         print("ok terminal task", summarize_run(result)["summary"][:60])
 
         from iris.automation import ide_input

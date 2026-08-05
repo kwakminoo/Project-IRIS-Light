@@ -238,6 +238,45 @@ def write_project_file(project_root: str | Path, rel_path: str, content: str) ->
     return {"path": str(path), "rel_path": rel, "bytes": len(content.encode("utf-8"))}
 
 
+def is_code_reveal_request(text: str) -> bool:
+    s = (text or "").lower()
+    code_words = ("코드", "프로그램", "파일", "script", "code", "program", "app")
+    make_words = ("만들", "작성", "짜", "구현", "생성", "write", "create", "make", "build")
+    return any(w in s for w in make_words) and (
+        any(w in s for w in code_words) or is_run_request(s) or "구구단" in s
+    )
+
+
+def is_run_request(text: str) -> bool:
+    s = (text or "").lower()
+    return any(w in s for w in ("실행", "출력", "돌려", "run", "execute", "print"))
+
+
+def extract_first_code_block(text: str) -> dict | None:
+    match = re.search(r"```([^\n`]*)\n(.*?)```", text or "", flags=re.DOTALL)
+    if not match:
+        return None
+    info = (match.group(1) or "").strip()
+    code = (match.group(2) or "").strip("\n")
+    if not code.strip():
+        return None
+    lang = (info.split() or [""])[0].lower()
+    return {"lang": lang, "code": code}
+
+
+def default_generated_rel_path(prompt: str, lang: str) -> str:
+    stem = "gugudan" if "구구단" in (prompt or "") else "iris_generated"
+    suffixes = {
+        "python": ".py",
+        "py": ".py",
+        "javascript": ".js",
+        "js": ".js",
+        "typescript": ".ts",
+        "ts": ".ts",
+    }
+    return stem + suffixes.get((lang or "").lower(), ".py")
+
+
 def write_project_file_stream(
     project_root: str | Path,
     rel_path: str,

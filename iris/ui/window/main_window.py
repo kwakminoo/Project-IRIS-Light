@@ -137,6 +137,7 @@ class MainWindow(QMainWindow):
         self._voice_prefs: VoicePreferences = load_voice_preferences(self._db)
         self._history: list[dict[str, str]] = []
         self._last_assistant_text = ""
+        self._pending_local_vibe_prompt = ""
         self._chat_worker: QThread | None = None
         self._stt_worker: STTTranscriptionWorker | None = None
         self._tts_worker: TTSSynthesisWorker | None = None
@@ -737,6 +738,7 @@ class MainWindow(QMainWindow):
         self._state.set_state(AppState.PROCESSING)
 
         if self._use_hermes_backend():
+            self._pending_local_vibe_prompt = ""
             messages = self._chat_messages_with_project_context()
             worker = HermesChatWorker(
                 self._settings.hermes_base_url,
@@ -755,6 +757,12 @@ class MainWindow(QMainWindow):
             worker.start()
             return
 
+        try:
+            from iris.system.project_ops import is_code_reveal_request
+
+            self._pending_local_vibe_prompt = text if is_code_reveal_request(text) else ""
+        except Exception:
+            self._pending_local_vibe_prompt = ""
         worker = OllamaChatWorker(
             self._settings.ollama_base_url,
             model,
@@ -819,6 +827,7 @@ class MainWindow(QMainWindow):
         if text:
             self._history.append({"role": "assistant", "content": text})
             self._last_assistant_text = text
+            self._try_reveal_local_vibe_code(text)
         self._refresh_context_gauge()
         if self._use_hermes_backend() and not self._hermes_online:
             self._hermes_online = True
@@ -831,6 +840,71 @@ class MainWindow(QMainWindow):
         self._state.set_state(AppState.IDLE)
         if text and self._voice_prefs.tts_enabled and self._voice_prefs.tts_mode == "auto":
             self._enqueue_tts(text, msg_id=self._chat._last_tts_id or "last")
+
+    def _try_reveal_local_vibe_code(self, assistant_text: str) -> None:
+        prompt = self._pending_local_vibe_prompt
+        self._pending_local_vibe_prompt = ""
+        if not prompt:
+            return
+        surface = getattr(self, "_control_surface", None)
+        if surface is None:
+            self._chat.append_message_instant("Iris", "IDE 제어면이 아직 준비되지 않았습니다.")
+            return
+        try:
+            from iris.system.project_ops import (
+                default_generated_rel_path,
+                extract_first_code_block,
+                is_run_request,
+            )
+
+            block = extract_first_code_block(assistant_text)
+            if not block:
+                return
+            profile = load_user_profile(self._db)
+            root = (profile.project_root or "").strip()
+            if not root:
+                self._chat.append_message_instant(
+                    "Iris",
+                    "외부 IDE에서 실행하려면 먼저 프로필에 project_root를 설정해 주세요.",
+                )
+                return
+            if self._ui_mode != "ide_companion" or not self._get_bound_ide_session(refresh=True):
+                opened = surface.registry.invoke("ide.open_folder", {"path": root})
+                if not opened.get("ok"):
+                    self._chat.append_message_instant(
+                        "Iris",
+                        f"IDE를 열지 못했습니다: {opened.get('error')}",
+                    )
+                    return
+            rel = default_generated_rel_path(prompt, str(block.get("lang") or ""))
+            written = surface.registry.invoke(
+                "project.write_file",
+                {
+                    "project_root": root,
+                    "rel_path": rel,
+                    "content": str(block.get("code") or ""),
+                    "open": True,
+                    "delay_ms": 1,
+                },
+            )
+            if not written.get("ok"):
+                self._chat.append_message_instant(
+                    "Iris",
+                    f"IDE에 파일을 쓰지 못했습니다: {written.get('error')}",
+                )
+                return
+            if not is_run_request(prompt):
+                self._chat.append_message_instant("Iris", f"IDE에 `{rel}` 파일을 열었습니다.")
+                return
+            ran = surface.registry.invoke(
+                "project.run",
+                {"project_root": root, "file": rel, "reveal_terminal": True},
+            )
+            result = ran.get("result") if isinstance(ran.get("result"), dict) else {}
+            summary = result.get("summary") or ran.get("error") or "실행 요청을 보냈습니다."
+            self._chat.append_message_instant("Iris", f"IDE 터미널 실행: {summary}")
+        except Exception as exc:  # noqa: BLE001
+            self._chat.append_message_instant("Iris", f"IDE 실행 연결 실패: {exc}")
 
     def _ensure_voice_runtime(self) -> bool:
         try:
