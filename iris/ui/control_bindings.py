@@ -1362,6 +1362,45 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         except AdbError as exc:
             return err_result("emulator.screenshot", str(exc))
 
+    def emu_ui_texts(_a: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.android_emulator import AdbError, ui_texts
+
+        try:
+            texts = ui_texts()
+            return ok_result("emulator.ui_texts", {"texts": texts, "count": len(texts)})
+        except AdbError as exc:
+            return err_result("emulator.ui_texts", str(exc))
+
+    def emu_tap_text(a: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.android_emulator import AdbError, tap_text
+
+        text = str(a.get("text") or "").strip()
+        if not text:
+            return err_result("emulator.tap_text", "text required")
+        try:
+            hit = tap_text(text, exact=bool(a.get("exact", False)))
+            _log(window, "emulator.tap_text", True)
+            return ok_result("emulator.tap_text", hit)
+        except AdbError as exc:
+            return err_result("emulator.tap_text", str(exc))
+
+    def emu_play_install(a: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.android_emulator import AdbError, play_install
+
+        app = str(a.get("app") or a.get("package") or "").strip()
+        if not app:
+            return err_result("emulator.play_install", "app/package required")
+        try:
+            result = play_install(app, timeout_s=float(a.get("timeout_s") or 300))
+            _log(window, "emulator.play_install", True)
+            window._live_activity.append_instant_line(
+                f"Play 설치 완료: {result['package']}"
+            )
+            return ok_result("emulator.play_install", result)
+        except (AdbError, ValueError, TypeError) as exc:
+            _log(window, "emulator.play_install", False)
+            return err_result("emulator.play_install", str(exc))
+
     def emu_logcat(a: dict[str, Any]) -> dict[str, Any]:
         from iris.system.android_emulator import AdbError, logcat_tail
 
@@ -1435,6 +1474,24 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         "emulator.screenshot",
         emu_screenshot,
         summary="Capture emulator screenshot to file",
+        risk="medium",
+    )
+    reg.register(
+        "emulator.ui_texts",
+        emu_ui_texts,
+        summary="List on-screen texts via uiautomator (no coordinates needed)",
+        risk="low",
+    )
+    reg.register(
+        "emulator.tap_text",
+        emu_tap_text,
+        summary="Tap the on-screen element whose text/description matches",
+        risk="medium",
+    )
+    reg.register(
+        "emulator.play_install",
+        emu_play_install,
+        summary="Install app from Play Store via market:// deep link + UI tree",
         risk="medium",
     )
     reg.register(

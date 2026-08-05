@@ -64,6 +64,9 @@ def main() -> int:
         "emulator.tap",
         "emulator.swipe",
         "emulator.screenshot",
+        "emulator.ui_texts",
+        "emulator.tap_text",
+        "emulator.play_install",
         "emulator.logcat_tail",
     }
     missing = [n for n in sorted(names_expected) if f'"{n}"' not in src]

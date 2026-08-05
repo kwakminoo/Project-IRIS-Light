@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from xml.etree import ElementTree
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ANDROID_EMU_DIR = PROJECT_ROOT / "android-emulator"
@@ -22,6 +24,8 @@ _SDCARD_SIZE = "2048M"
 # ponytail: 신규 AVD는 userdata 32G 생성이라 여유가 필요. 기존 이미지가 있으면 완화.
 _MIN_FREE_BYTES_FRESH = 40 * 1024 * 1024 * 1024
 _MIN_FREE_BYTES_EXISTING = 2 * 1024 * 1024 * 1024
+# adb emu kill 후 정상 종료를 기다리는 시간. 강제 종료는 창 잔상을 남긴다.
+_GRACEFUL_EXIT_S = 12.0
 _KEYBOARD_HINT_KO = (
     "한글은 에뮬 화면 키보드(IME) 사용. PC 키보드는 영문·특수키(hw.keyboard)용."
 )
@@ -29,6 +33,8 @@ _KEYBOARD_HINT_KO = (
 _launch_lock = threading.Lock()
 _launch_in_progress = False
 _launch_log_handle: object | None = None
+# 우리가 띄운 emulator.exe PID. cmdline이 비어 있는 자식(고스트 창) 추적용.
+_launched_pids: set[int] = set()
 
 
 def _sdk_root() -> Path:
@@ -135,48 +141,103 @@ def _matching_emulator_serials() -> list[str]:
     return [serial for serial in _running_emulator_serials() if _serial_avd_name(serial) == AVD_NAME]
 
 
-def _list_emulator_processes() -> list[tuple[str, int, str]]:
+def _scan_processes() -> list[tuple[str, int, int, str]]:
+    """(name, pid, ppid, cmdline) 전체 프로세스 목록."""
     if sys.platform == "win32":
         cmd = [
             "powershell",
             "-NoProfile",
             "-Command",
             (
-                "Get-CimInstance Win32_Process | "
-                "Where-Object { $_.Name -match 'emulator|qemu-system-x86_64' } | "
-                "ForEach-Object { "
-                "\"$($_.Name)`t$($_.ProcessId)`t$($_.CommandLine)\" "
+                "Get-CimInstance Win32_Process | ForEach-Object { "
+                "\"$($_.Name)`t$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.CommandLine)\" "
                 "}"
             ),
         ]
     else:
-        cmd = ["ps", "-ax", "-o", "pid=,command="]
+        cmd = ["ps", "-ax", "-o", "pid=,ppid=,command="]
     try:
-        output = subprocess.check_output(cmd, text=True, timeout=10)
+        output = subprocess.check_output(cmd, text=True, timeout=15, errors="replace")
     except (subprocess.SubprocessError, OSError):
         return []
 
-    rows: list[tuple[str, int, str]] = []
+    rows: list[tuple[str, int, int, str]] = []
     for line in output.splitlines():
         line = line.strip()
         if not line:
             continue
         if sys.platform == "win32":
-            parts = line.split("\t", 2)
-            if len(parts) != 3:
+            parts = line.split("\t", 3)
+            if len(parts) < 3:
                 continue
-            name, pid_s, cmdline = parts
+            name, pid_s, ppid_s = parts[0], parts[1], parts[2]
+            cmdline = parts[3] if len(parts) > 3 else ""
         else:
-            pid_s, _, cmdline = line.partition(" ")
+            fields = line.split(None, 2)
+            if len(fields) < 3:
+                continue
+            pid_s, ppid_s, cmdline = fields
             name = Path(cmdline.split(" ", 1)[0]).name
         try:
-            pid = int(pid_s)
+            pid, ppid = int(pid_s), int(ppid_s)
         except ValueError:
             continue
-        if f"-avd {AVD_NAME}" not in cmdline:
-            continue
-        rows.append((name, pid, cmdline))
+        rows.append((name, pid, ppid, cmdline))
     return rows
+
+
+def _is_emulator_binary(name: str) -> bool:
+    lowered = name.lower()
+    return "emulator" in lowered or "qemu-system" in lowered
+
+
+def _cmdline_is_project_avd(cmdline: str) -> bool:
+    """프로젝트 AVD를 가리키는 커맨드라인인가.
+
+    `-avd IrisLight_Pixel` 뿐 아니라 qemu 단계에서 남는 AVD 경로/datadir도 인정한다.
+    launcher만 매칭하면 UI(qemu) 프로세스가 살아남아 빈 창이 남는다.
+    """
+    if not cmdline:
+        return False
+    norm = cmdline.replace("\\", "/").lower()
+    markers = (
+        f"-avd {AVD_NAME}".lower(),
+        f"{AVD_NAME}.avd".lower(),
+        AVD_NAME.lower(),
+        str(DATA_DIR).replace("\\", "/").lower(),
+    )
+    return any(m in norm for m in markers)
+
+
+def _descendant_pids(procs: list[tuple[str, int, int, str]], roots: set[int]) -> set[int]:
+    """roots와 모든 자손 PID. Windows는 부모가 죽어도 ppid가 남아 추적된다."""
+    children: dict[int, list[int]] = {}
+    for _name, pid, ppid, _cmd in procs:
+        children.setdefault(ppid, []).append(pid)
+    seen: set[int] = set()
+    stack = [p for p in roots]
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        stack.extend(children.get(pid, []))
+    return seen
+
+
+def _emulator_rows(procs: list[tuple[str, int, int, str]]) -> list[tuple[str, int, str]]:
+    tracked = _descendant_pids(procs, set(_launched_pids)) if _launched_pids else set()
+    rows: list[tuple[str, int, str]] = []
+    for name, pid, _ppid, cmdline in procs:
+        if not _is_emulator_binary(name):
+            continue
+        if _cmdline_is_project_avd(cmdline) or pid in tracked:
+            rows.append((name, pid, cmdline))
+    return rows
+
+
+def _list_emulator_processes() -> list[tuple[str, int, str]]:
+    return _emulator_rows(_scan_processes())
 
 
 def is_emulator_headless() -> bool:
@@ -395,6 +456,7 @@ def launch_emulator(*, headless: bool = False) -> subprocess.Popen[bytes]:
             stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
         )
+        _launched_pids.add(proc.pid)
         _clear_launch_flag_later()
         return proc
     except Exception:
@@ -450,6 +512,9 @@ def adb_run(
             cmd,
             capture_output=True,
             text=True,
+            # adb 출력은 UTF-8. 기본 로케일(cp949)로 읽으면 한글 UI 덤프에서 깨진다.
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=_emulator_env(),
         )
@@ -555,8 +620,49 @@ def emulator_status() -> dict:
     }
 
 
+def _force_kill_pid(pid: int) -> bool:
+    if sys.platform == "win32":
+        kill_cmd = ["taskkill", "/PID", str(pid), "/F", "/T"]
+    else:
+        kill_cmd = ["kill", "-9", str(pid)]
+    try:
+        subprocess.run(
+            kill_cmd,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+        return True
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+def _kill_targets(procs: list[tuple[str, int, int, str]]) -> list[int]:
+    """종료 대상 PID — 에뮬 프로세스와 그 자손 전부, 자식(깊은 것) 먼저.
+
+    kill 중 리페어런팅으로 창 프로세스를 놓치지 않도록 트리를 먼저 스냅샷한다.
+    """
+    roots = {pid for _name, pid, _cmd in _emulator_rows(procs)}
+    roots |= set(_launched_pids)
+    if not roots:
+        return []
+    targets = _descendant_pids(procs, roots)
+    parent_of = {pid: ppid for _n, pid, ppid, _c in procs}
+    def depth(pid: int) -> int:
+        d, cur, guard = 0, pid, 0
+        while cur in parent_of and guard < 64:
+            cur = parent_of[cur]
+            if cur not in targets:
+                break
+            d += 1
+            guard += 1
+        return d
+    return sorted(targets, key=depth, reverse=True)
+
+
 def kill_emulator() -> bool:
-    """프로젝트 AVD 인스턴스 종료. 무언가 죽였으면 True."""
+    """프로젝트 AVD 인스턴스 종료 — 창(qemu UI)까지 사라진 것을 확인한다."""
     global _launch_in_progress
     killed = False
     adb = adb_exe()
@@ -573,24 +679,28 @@ def kill_emulator() -> bool:
         except (subprocess.SubprocessError, OSError):
             pass
 
-    for _name, pid, _cmdline in _list_emulator_processes():
-        if sys.platform == "win32":
-            kill_cmd = ["taskkill", "/PID", str(pid), "/F", "/T"]
-        else:
-            kill_cmd = ["kill", "-TERM", str(pid)]
-        try:
-            subprocess.run(
-                kill_cmd,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-            )
-            killed = True
-        except (subprocess.SubprocessError, OSError):
-            pass
+    # emu kill은 비동기다. 창이 정리되기 전에 taskkill /F 하면 Qt 창 잔상이 남으므로
+    # 먼저 정상 종료를 기다리고, 그래도 남은 것만 트리째 강제 종료한다.
+    if killed:
+        deadline = time.time() + _GRACEFUL_EXIT_S
+        while time.time() < deadline:
+            if not _list_emulator_processes():
+                break
+            time.sleep(1.0)
+
+    for _attempt in range(3):
+        procs = _scan_processes()
+        targets = _kill_targets(procs)
+        if not targets:
+            break
+        for pid in targets:
+            if _force_kill_pid(pid):
+                killed = True
+        time.sleep(1.5)
+
     with _launch_lock:
         _launch_in_progress = False
+    _launched_pids.clear()
     return killed
 
 
@@ -740,6 +850,273 @@ def screenshot(path: str = "", *, serial: str | None = None) -> str:
     return str(dest)
 
 
+# --- UI 인식 (uiautomator) + Play 스토어 설치 ---
+
+_PKG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+
+# 좌표 추정 대신 알려진 패키지로 Play 상세 페이지에 바로 진입한다.
+APP_ALIASES: dict[str, str] = {
+    "instagram": "com.instagram.android",
+    "인스타": "com.instagram.android",
+    "인스타그램": "com.instagram.android",
+    "telegram": "org.telegram.messenger",
+    "텔레그램": "org.telegram.messenger",
+    "kakaotalk": "com.kakao.talk",
+    "카카오톡": "com.kakao.talk",
+    "카톡": "com.kakao.talk",
+    "youtube": "com.google.android.youtube",
+    "유튜브": "com.google.android.youtube",
+    "whatsapp": "com.whatsapp",
+    "왓츠앱": "com.whatsapp",
+    "discord": "com.discord",
+    "디스코드": "com.discord",
+    "facebook": "com.facebook.katana",
+    "페이스북": "com.facebook.katana",
+    "twitter": "com.twitter.android",
+    "x": "com.twitter.android",
+    "line": "jp.naver.line.android",
+    "라인": "jp.naver.line.android",
+    "tiktok": "com.zhiliaoapp.musically",
+    "틱톡": "com.zhiliaoapp.musically",
+    "netflix": "com.netflix.mediaclient",
+    "넷플릭스": "com.netflix.mediaclient",
+    "spotify": "com.spotify.music",
+    "스포티파이": "com.spotify.music",
+    "chrome": "com.android.chrome",
+    "크롬": "com.android.chrome",
+    "settings": "com.android.settings",
+    "설정": "com.android.settings",
+}
+
+_PLAY_INSTALL_TEXTS = {"install", "설치", "받기", "get"}
+_PLAY_OPEN_TEXTS = {"open", "열기", "실행", "play"}
+_PLAY_BUSY_TEXTS = {
+    "installing",
+    "설치 중",
+    "설치중",
+    "pending",
+    "대기 중",
+    "대기중",
+    "downloading",
+    "다운로드 중",
+    "cancel",
+    "취소",
+    "verifying",
+    "확인 중",
+}
+_PLAY_SIGNIN_TEXTS = {
+    "sign in",
+    "로그인",
+    "add a google account",
+    "google 계정 추가",
+    "계정 추가",
+    "sign in to your google account",
+    "새 계정 만들기",
+    "create account",
+}
+
+
+def resolve_package(app: str) -> str:
+    """앱 별칭 또는 패키지명 → 패키지명."""
+    name = (app or "").strip()
+    if not name:
+        raise AdbError("app/package required")
+    alias = APP_ALIASES.get(name.lower())
+    if alias:
+        return alias
+    if not _PKG_RE.match(name):
+        known = ", ".join(sorted(set(APP_ALIASES)))
+        raise AdbError(f"알 수 없는 앱: {app} — 패키지명을 주거나 별칭 사용 ({known})")
+    return name
+
+
+def is_package_installed(package: str, *, serial: str | None = None) -> bool:
+    pkg = resolve_package(package)
+    ser = serial or require_serial()
+    code, out, _err = adb_run(["shell", "pm", "list", "packages", pkg], serial=ser, timeout=20.0)
+    if code != 0:
+        return False
+    return any(ln.strip() == f"package:{pkg}" for ln in out.splitlines())
+
+
+def ui_dump(*, serial: str | None = None, retries: int = 3) -> str:
+    """현재 화면의 uiautomator XML. 좌표 추정 대신 실제 노드 bounds를 쓴다."""
+    ser = serial or require_serial()
+    remote = "/sdcard/iris_ui_dump.xml"
+    last = ""
+    for attempt in range(max(1, retries)):
+        code, out, err = adb_run(
+            ["shell", "uiautomator", "dump", remote], serial=ser, timeout=40.0
+        )
+        last = (err or out or "").strip()
+        if code == 0 and "ERROR" not in last.upper():
+            code, xml, err = adb_run(["shell", "cat", remote], serial=ser, timeout=40.0)
+            xml = (xml or "").replace("\r\n", "\n")
+            if code == 0 and "<hierarchy" in xml:
+                return xml
+            last = (err or xml or "cat failed").strip()
+        time.sleep(1.5 * (attempt + 1))
+    raise AdbError(f"uiautomator dump 실패: {last[:200]}")
+
+
+def parse_ui_nodes(xml_text: str) -> list[dict]:
+    """XML → [{text, desc, id, cls, clickable, bounds, cx, cy}]."""
+    try:
+        root = ElementTree.fromstring(xml_text)
+    except ElementTree.ParseError as exc:
+        raise AdbError(f"UI XML 파싱 실패: {exc}") from exc
+    nodes: list[dict] = []
+    for el in root.iter("node"):
+        bounds = el.get("bounds") or ""
+        m = re.match(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]", bounds)
+        if not m:
+            continue
+        x1, y1, x2, y2 = (int(v) for v in m.groups())
+        nodes.append(
+            {
+                "text": (el.get("text") or "").strip(),
+                "desc": (el.get("content-desc") or "").strip(),
+                "id": el.get("resource-id") or "",
+                "cls": el.get("class") or "",
+                "clickable": el.get("clickable") == "true",
+                "bounds": [x1, y1, x2, y2],
+                "cx": (x1 + x2) // 2,
+                "cy": (y1 + y2) // 2,
+            }
+        )
+    return nodes
+
+
+def _node_labels(node: dict) -> list[str]:
+    return [s.lower() for s in (node.get("text", ""), node.get("desc", "")) if s]
+
+
+def find_ui_nodes(
+    needle: str,
+    *,
+    exact: bool = False,
+    serial: str | None = None,
+    nodes: list[dict] | None = None,
+) -> list[dict]:
+    """text/content-desc가 일치(또는 포함)하는 노드. clickable 우선 정렬."""
+    target = (needle or "").strip().lower()
+    if not target:
+        raise AdbError("text required")
+    pool = nodes if nodes is not None else parse_ui_nodes(ui_dump(serial=serial))
+    hits = [
+        n
+        for n in pool
+        if any(lbl == target if exact else target in lbl for lbl in _node_labels(n))
+    ]
+    hits.sort(key=lambda n: (not n["clickable"], n["cy"], n["cx"]))
+    return hits
+
+
+def ui_texts(*, serial: str | None = None) -> list[str]:
+    """화면에 보이는 텍스트/설명 목록 — 좌표를 찍기 전 상황 파악용."""
+    seen: list[str] = []
+    for node in parse_ui_nodes(ui_dump(serial=serial)):
+        for label in (node["text"], node["desc"]):
+            if label and label not in seen:
+                seen.append(label)
+    return seen
+
+
+def tap_text(needle: str, *, exact: bool = False, serial: str | None = None) -> dict:
+    ser = serial or require_serial()
+    hits = find_ui_nodes(needle, exact=exact, serial=ser)
+    if not hits:
+        raise AdbError(f"화면에서 '{needle}' 못 찾음")
+    node = hits[0]
+    tap(node["cx"], node["cy"], serial=ser)
+    return {"text": node["text"] or node["desc"], "x": node["cx"], "y": node["cy"]}
+
+
+def open_play_page(package: str, *, serial: str | None = None) -> str:
+    """market:// 딥링크로 Play 상세 페이지 직행 — 검색·좌표 탭 불필요."""
+    pkg = resolve_package(package)
+    ser = serial or require_serial()
+    code, out, err = adb_run(
+        [
+            "shell",
+            "am",
+            "start",
+            "-a",
+            "android.intent.action.VIEW",
+            "-d",
+            f"'market://details?id={pkg}'",
+        ],
+        serial=ser,
+        timeout=30.0,
+    )
+    text = (out + err).strip()
+    if code != 0 or "Error" in text:
+        raise AdbError(text or f"play page open failed code={code}")
+    return pkg
+
+
+def _match_labels(nodes: list[dict], wanted: set[str]) -> dict | None:
+    for node in nodes:
+        if any(lbl in wanted for lbl in _node_labels(node)):
+            return node
+    return None
+
+
+def play_install(
+    app: str,
+    *,
+    timeout_s: float = 300.0,
+    serial: str | None = None,
+) -> dict:
+    """Play 스토어에서 앱 설치 — 딥링크 진입 후 UI 트리에서 설치 버튼을 찾아 누른다."""
+    pkg = resolve_package(app)
+    ser = serial or require_serial()
+    timeout = max(30.0, min(float(timeout_s), 900.0))
+
+    if is_package_installed(pkg, serial=ser):
+        return {"package": pkg, "installed": True, "already_installed": True, "taps": 0}
+
+    open_play_page(pkg, serial=ser)
+    time.sleep(3.0)
+
+    deadline = time.time() + timeout
+    taps = 0
+    labels: list[str] = []
+    while time.time() < deadline:
+        if is_package_installed(pkg, serial=ser):
+            return {"package": pkg, "installed": True, "already_installed": False, "taps": taps}
+        try:
+            nodes = parse_ui_nodes(ui_dump(serial=ser))
+        except AdbError:
+            time.sleep(2.0)
+            continue
+        labels = [s for n in nodes for s in (n["text"], n["desc"]) if s][:40]
+
+        if _match_labels(nodes, _PLAY_SIGNIN_TEXTS):
+            raise AdbError(
+                f"Play 스토어에 Google 계정 로그인이 필요합니다 (앱: {pkg}). "
+                "에뮬레이터에서 로그인 후 다시 시도하세요."
+            )
+        if _match_labels(nodes, _PLAY_BUSY_TEXTS):
+            time.sleep(4.0)
+            continue
+        if _match_labels(nodes, _PLAY_OPEN_TEXTS) and taps:
+            time.sleep(2.0)
+            continue
+
+        button = _match_labels(nodes, _PLAY_INSTALL_TEXTS)
+        if button and taps < 3:
+            tap(button["cx"], button["cy"], serial=ser)
+            taps += 1
+            time.sleep(4.0)
+            continue
+        time.sleep(3.0)
+
+    raise AdbError(
+        f"설치 확인 실패 ({pkg}, taps={taps}, {timeout:.0f}s 초과). 화면 텍스트: {labels[:15]}"
+    )
+
+
 def logcat_tail(
     lines: int = 100,
     filter_spec: str = "",
@@ -774,6 +1151,26 @@ if __name__ == "__main__":
         "",
     )
     assert parsed == "IrisLight_Pixel"
+    # 종료 대상 매칭: launcher 뿐 아니라 qemu 창 프로세스도 잡아야 한다
+    assert _cmdline_is_project_avd(f"emulator.exe -avd {AVD_NAME} -gpu host")
+    assert _cmdline_is_project_avd(
+        r"C:\Sdk\emulator\qemu\windows-x86_64\qemu-system-x86_64.exe "
+        r"-android-hw C:\proj\android-emulator\avd\IrisLight_Pixel.avd\hardware-qemu.ini"
+    )
+    assert not _cmdline_is_project_avd("emulator.exe -avd Other_AVD")
+    assert not _cmdline_is_project_avd("")
+    _fake = [
+        ("emulator.exe", 100, 1, f"emulator.exe -avd {AVD_NAME}"),
+        ("qemu-system-x86_64.exe", 200, 100, ""),  # cmdline 없는 고스트 창
+        ("chrome.exe", 300, 1, "chrome.exe"),
+    ]
+    assert _descendant_pids(_fake, {100}) == {100, 200}
+    _launched_pids.add(100)
+    try:
+        assert {pid for _n, pid, _c in _emulator_rows(_fake)} == {100, 200}
+        assert _kill_targets(_fake)[0] == 200  # 자식 먼저
+    finally:
+        _launched_pids.discard(100)
     sdk_s = str(_sdk_root())
     assert "Android" in sdk_s and "Sdk" in sdk_s
     cfg = avd_config_path()
@@ -783,6 +1180,29 @@ if __name__ == "__main__":
         assert "hw.keyboard=yes" in text
         assert "hw.gpu.enabled=yes" in text
         assert "hw.gpu.mode=host" in text
+    # UI 인식: bounds 파싱 → 중심 좌표, 설치 버튼 라벨 매칭
+    assert resolve_package("인스타그램") == "com.instagram.android"
+    assert resolve_package("org.telegram.messenger") == "org.telegram.messenger"
+    try:
+        resolve_package("없는앱")
+        raise AssertionError("unknown app should fail")
+    except AdbError:
+        pass
+    _xml = (
+        '<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0">'
+        '<node text="" bounds="[0,0][1080,2400]" class="android.widget.FrameLayout">'
+        '<node text="Instagram" content-desc="" bounds="[40,300][600,380]" class="t"/>'
+        '<node text="설치" content-desc="" clickable="true" bounds="[700,300][1040,400]" class="b"/>'
+        '<node text="설치됨" content-desc="" bounds="[40,500][600,560]" class="t"/>'
+        "</node></hierarchy>"
+    )
+    _nodes = parse_ui_nodes(_xml)
+    assert len(_nodes) == 4
+    _btn = _match_labels(_nodes, _PLAY_INSTALL_TEXTS)
+    assert _btn is not None and (_btn["cx"], _btn["cy"]) == (870, 350)  # "설치됨" 아님
+    assert _match_labels(_nodes, _PLAY_SIGNIN_TEXTS) is None
+    assert find_ui_nodes("instagram", nodes=_nodes)[0]["text"] == "Instagram"
+
     need = _MIN_FREE_BYTES_EXISTING if _has_existing_userdata() else _MIN_FREE_BYTES_FRESH
     assert need in (_MIN_FREE_BYTES_EXISTING, _MIN_FREE_BYTES_FRESH)
     st = emulator_status()
