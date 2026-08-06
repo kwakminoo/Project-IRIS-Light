@@ -45,11 +45,14 @@ from iris.system.android_emulator import (
 from iris.system.api_quota_worker import ApiQuotaWorker
 from iris.system.ide_launcher import (
     get_ide_spec,
+    is_cursor_agents_title,
+    is_generic_ide_title,
     launch_ide,
     list_ide_windows,
     open_folder_in_ide,
     resolve_ide_exe,
     wait_for_new_ide_window,
+    workspace_title_lost_context,
 )
 from iris.system.ide_tiler import (
     compute_tile_rects,
@@ -1811,14 +1814,29 @@ class MainWindow(QMainWindow):
         return False
 
     def _chat_messages_with_project_context(self) -> list[dict[str, str]]:
-        """Hermes/Ollama 요청용 — Iris Control MCP 지침 + project_root."""
+        """Hermes/Ollama 요청용 — Iris Control MCP 지침 + project_root.
+
+        Hermes 경로는 HERMES_HOME/SOUL.md가 identity(slot #1)라 페르소나를
+        여기 넣지 않는다(중복·토큰 낭비). Ollama 직행만 SOUL 원본을 주입한다.
+        """
         messages = list(self._history)
         try:
             profile = load_user_profile(self._db)
             root = (profile.project_root or "").strip()
         except Exception:
             root = ""
-        bits = [
+        bits: list[str] = []
+        # ponytail: Hermes는 SOUL.md가 identity. Ollama만 여기 주입.
+        if not self._use_hermes_backend():
+            try:
+                from iris.system.hermes_soul_sync import load_iris_persona_text
+
+                persona = load_iris_persona_text()
+            except Exception:
+                persona = ""
+            if persona:
+                bits.append(persona)
+        bits.append(
             "Iris Light UI control: for IDE / Companion / open project / 작업 시작, "
             "use MCP tools iris_get_state / iris_get_catalog / iris_invoke "
             "(e.g. iris_invoke action=ide.enter_companion). "
@@ -1830,7 +1848,7 @@ class MainWindow(QMainWindow):
             "Sources section with markdown links [title](https://url) for each page you relied on. "
             "Never state researched facts without at least one citation link. "
             "Iris UI turns those links into clickable citation chips.",
-        ]
+        )
         if root:
             bits.append(f"Project root: {root}")
             bits.append(
@@ -1934,13 +1952,11 @@ class MainWindow(QMainWindow):
             try:
                 from iris.automation.ide_input import get_window_title
 
-                title = (get_window_title(int(hwnd)) or "").lower().strip()
-                workspace_name = Path(session.workspace_root).name.lower()
-                # ponytail: Cursor Agents는 현대 Cursor 기본 셸 — 제목에 폴더명이
-                # 안 보여도 문맥 상실로 보지 않는다. 구형 웰컴 제목만 끊는다.
-                generic_titles = {"cursor", "visual studio code", "code"}
-                if workspace_name and title and title in generic_titles:
-                    self._clear_ide_session("workspace 문맥 상실")
+                title = get_window_title(int(hwnd)) or ""
+                # ponytail: generic/Agents 제목은 로딩·셸 — companion/session 유지.
+                # 천장: 제목만으로 다른 workspace 판별 → 업그레이드: cwd/CLI 힌트.
+                if workspace_title_lost_context(title, session.workspace_root):
+                    self._clear_ide_session("다른 workspace로 변경")
                     return
             except Exception:
                 pass
@@ -1954,13 +1970,17 @@ class MainWindow(QMainWindow):
         ide_id: str,
         workspace_root: str,
     ) -> tuple[int | None, int | None, str]:
+        """c) workspace_root가 제목에 확실히 포함된 창만. Agents/generic 제외."""
         root_name = Path(workspace_root).name.strip().lower()
         if not root_name:
             return None, None, ""
         wins = list_ide_windows(ide_id, load_user_profile(self._db).ide_exe_path)
         for win in wins:
             title = str(win.get("title") or "").strip()
-            if root_name in title.lower():
+            low = title.lower()
+            if is_cursor_agents_title(title) or is_generic_ide_title(title):
+                continue
+            if root_name in low:
                 return int(win["hwnd"]), int(win["pid"]), title
         return None, None, ""
 
@@ -1973,7 +1993,10 @@ class MainWindow(QMainWindow):
         self._last_synced_iris_rect = QRect(self.geometry())
 
     def _schedule_companion_retile(self, ide_hwnd: int) -> None:
-        """Cursor가 자체 레이아웃으로 되돌리는 경우 대비 지연 재타일."""
+        """Cursor가 자체 레이아웃으로 되돌리는 경우 대비 지연 재타일.
+
+        Iris companion 레이아웃(_ui_mode)은 건드리지 않는다 — tile만 재적용.
+        """
         hwnd = int(ide_hwnd)
         pid = self._ide_pid
 
@@ -1982,6 +2005,7 @@ class MainWindow(QMainWindow):
                 return
             if not self._ide_hwnd_alive(hwnd):
                 return
+            # Iris 레이아웃을 풀지 않고 IDE/Iris 좌표만 다시 맞춤
             tile_ide_and_iris(hwnd, self, ide_ratio=0.8, ide_pid=pid)
             self._record_synced_rects()
 
@@ -2125,7 +2149,9 @@ class MainWindow(QMainWindow):
         if hwnd is None:
             before = {
                 int(w["hwnd"])
-                for w in list_ide_windows(ide_id, profile.ide_exe_path)
+                for w in list_ide_windows(
+                    ide_id, profile.ide_exe_path, include_untitled=True
+                )
             }
             launched_pid, launch_err = launch_ide(
                 ide_id,
@@ -2139,39 +2165,33 @@ class MainWindow(QMainWindow):
                 return
             pid = launched_pid or pid
             self._live_activity.append_instant_line("IDE 새 창을 기다리는 중…")
-            # 순서 1: IDE가 먼저 뜰 때까지 Iris 레이아웃은 유지
+            # processEvents로 UI 응답 유지하며 짧게 대기
+            deadline = _time.monotonic() + 4.0
             hwnd = None
             title = ""
-            deadline = _time.monotonic() + 14.0
-            while _time.monotonic() < deadline:
+            while _time.monotonic() < deadline and hwnd is None:
                 QApplication.processEvents()
                 hwnd, wait_pid, title = wait_for_new_ide_window(
                     ide_id,
                     ide_exe_path=profile.ide_exe_path,
                     exclude_hwnds=before,
                     title_substr="",
-                    timeout_sec=0.45,
+                    timeout_sec=0.35,
                 )
                 if wait_pid:
                     pid = wait_pid
-                if hwnd is not None and int(hwnd) not in before:
-                    if str(title or "").strip().lower() == "cursor agents":
-                        hwnd = None
-                        _time.sleep(0.2)
-                        continue
-                    break
-                hwnd = None
-                _time.sleep(0.2)
+                if hwnd is not None and is_cursor_agents_title(title):
+                    hwnd = None
             if hwnd is None:
                 self._live_activity.append_instant_line(
                     "IDE 새 창을 찾지 못했습니다. 설정에서 IDE 경로를 확인한 뒤 다시 시도하세요."
                 )
                 return
 
-        # 순서 2~3: Companion 레이아웃 + 70:30
+        # 순서 2~3: Companion 레이아웃 + 80:20
         spec = get_ide_spec(ide_id)
         name = spec.name if spec else ide_id
-        err2 = self._activate_companion_tile(int(hwnd), label=f"{name} (70:30)", pid=pid)
+        err2 = self._activate_companion_tile(int(hwnd), label=f"{name} (80:20)", pid=pid)
         if err2:
             self._live_activity.append_instant_line(f"타일 배치 실패: {err2}")
             return
@@ -2210,8 +2230,36 @@ class MainWindow(QMainWindow):
         save_user_profile(self._db, profile)
 
         session = self._get_bound_ide_session(refresh=True)
-        if session is None:
-            existing_hwnd, existing_pid, existing_title = self._find_workspace_window(ide_id, root_s)
+        # b) 이미 bound된 session — 같은 workspace면 즉시 타일
+        if (
+            session is not None
+            and session.ide_id == ide_id
+            and session.hwnd is not None
+            and session.workspace_root
+            and Path(session.workspace_root).resolve() == Path(root_s).resolve()
+        ):
+            err2 = self._activate_companion_tile(
+                int(session.hwnd), label=root.name, pid=session.pid
+            )
+            if err2:
+                return err2
+            self._bind_ide_session(
+                ide_id=ide_id,
+                hwnd=int(session.hwnd),
+                pid=session.pid,
+                workspace_root=root_s,
+                mode="workspace",
+                source=source,
+            )
+            return ""
+
+        # c) workspace 제목이 확실한 기존 창
+        if session is None or not (
+            session.ide_id == ide_id and session.hwnd is not None and not new_window
+        ):
+            existing_hwnd, existing_pid, existing_title = self._find_workspace_window(
+                ide_id, root_s
+            )
             if existing_hwnd is not None:
                 err2 = self._activate_companion_tile(
                     int(existing_hwnd),
@@ -2229,9 +2277,11 @@ class MainWindow(QMainWindow):
                     source=source,
                 )
                 return ""
+
+        # bound + reuse_window: 기존 창에 폴더 주입 후 즉시 타일
         if session is not None and session.ide_id == ide_id and session.hwnd is not None and not new_window:
             try:
-                from iris.automation.ide_input import force_focus_hwnd, get_window_title
+                from iris.automation.ide_input import force_focus_hwnd
 
                 force_focus_hwnd(int(session.hwnd))
             except Exception:
@@ -2246,44 +2296,77 @@ class MainWindow(QMainWindow):
             )
             if launch_err:
                 return launch_err
-            deadline = _time.monotonic() + 10.0
-            while _time.monotonic() < deadline:
-                QApplication.processEvents()
-                try:
-                    from iris.automation.ide_input import get_window_title
+            err2 = self._activate_companion_tile(
+                int(session.hwnd),
+                label=root.name,
+                pid=launched_pid or session.pid,
+            )
+            if err2:
+                return err2
+            self._bind_ide_session(
+                ide_id=ide_id,
+                hwnd=int(session.hwnd),
+                pid=launched_pid or session.pid,
+                workspace_root=root_s,
+                mode="workspace",
+                source=source,
+            )
+            return ""
 
-                    title = (get_window_title(int(session.hwnd)) or "").lower()
-                    if root.name.lower() in title:
-                        err2 = self._activate_companion_tile(
-                            int(session.hwnd),
-                            label=root.name,
-                            pid=launched_pid or session.pid,
-                        )
-                        if err2:
-                            return err2
-                        self._bind_ide_session(
-                            ide_id=ide_id,
-                            hwnd=int(session.hwnd),
-                            pid=launched_pid or session.pid,
-                            workspace_root=root_s,
-                            mode="workspace",
-                            source=source,
-                        )
-                        return ""
-                except Exception:
-                    pass
-                _time.sleep(0.2)
-            return "bound IDE session did not confirm requested workspace"
-
-        # 순서 1: 설정 IDE GUI exe 로 새 창을 먼저 연다 (CLI --new-window 는 Agents에 흡수됨)
         before = {
             int(w["hwnd"])
-            for w in list_ide_windows(ide_id, profile.ide_exe_path)
+            for w in list_ide_windows(
+                ide_id, profile.ide_exe_path, include_untitled=True
+            )
         }
         if self._ide_hwnd_alive(self._ide_hwnd):
             before.add(int(self._ide_hwnd))
 
-        if new_window:
+        self._live_activity.append_instant_line(f"IDE 폴더 여는 중: {root_s}")
+
+        hwnd = None
+        pid = None
+        title = ""
+
+        # Windows 우선 빠른 경로: GUI exe --new-window <folder> 한 방
+        launched_pid, launch_err = open_folder_in_ide(
+            ide_id,
+            root_s,
+            ide_exe_path=profile.ide_exe_path,
+            ide_cli_path=profile.ide_cli_path,
+            new_window=True,
+            reuse_window=False,
+        )
+        if launch_err:
+            self._live_activity.append_instant_line(f"IDE 폴더 열기 실패: {launch_err}")
+            return launch_err
+        pid = launched_pid or self._ide_pid
+
+        deadline = _time.monotonic() + 3.5
+        while _time.monotonic() < deadline and hwnd is None:
+            QApplication.processEvents()
+            hwnd, wait_pid, title = wait_for_new_ide_window(
+                ide_id,
+                ide_exe_path=profile.ide_exe_path,
+                exclude_hwnds=before,
+                title_substr=root.name,
+                timeout_sec=0.3,
+            )
+            if wait_pid:
+                pid = wait_pid
+            if hwnd is not None and is_cursor_agents_title(title):
+                hwnd = None
+
+        # 폴백: 빈 창 → reuse inject (one-shot이 새 hwnd를 안 줄 때만)
+        if hwnd is None and new_window:
+            before2 = {
+                int(w["hwnd"])
+                for w in list_ide_windows(
+                    ide_id, profile.ide_exe_path, include_untitled=True
+                )
+            }
+            if self._ide_hwnd_alive(self._ide_hwnd):
+                before2.add(int(self._ide_hwnd))
             launched_pid, launch_err = launch_ide(
                 ide_id,
                 ide_exe_path=profile.ide_exe_path,
@@ -2291,82 +2374,46 @@ class MainWindow(QMainWindow):
                 project_root="",
                 new_window=True,
             )
-        else:
-            launched_pid, launch_err = open_folder_in_ide(
-                ide_id,
-                root_s,
-                ide_exe_path=profile.ide_exe_path,
-                ide_cli_path=profile.ide_cli_path,
-                new_window=False,
-                reuse_window=True,
-            )
-        if launch_err:
-            self._live_activity.append_instant_line(f"IDE 폴더 열기 실패: {launch_err}")
-            return launch_err
-
-        self._live_activity.append_instant_line(f"IDE 새 창 여는 중: {root_s}")
-
-        hwnd = None
-        pid = launched_pid or self._ide_pid
-        title = ""
-        deadline = _time.monotonic() + 14.0
-        while _time.monotonic() < deadline:
-            QApplication.processEvents()
-            hwnd, wait_pid, title = wait_for_new_ide_window(
-                ide_id,
-                ide_exe_path=profile.ide_exe_path,
-                exclude_hwnds=before,
-                title_substr="" if new_window else root.name,
-                timeout_sec=0.5,
-            )
-            if wait_pid:
-                pid = wait_pid
-            if hwnd is not None and int(hwnd) not in before:
-                if str(title or "").strip().lower() == "cursor agents":
+            if launch_err:
+                return launch_err
+            pid = launched_pid or pid
+            deadline = _time.monotonic() + 3.5
+            while _time.monotonic() < deadline and hwnd is None:
+                QApplication.processEvents()
+                hwnd, wait_pid, title = wait_for_new_ide_window(
+                    ide_id,
+                    ide_exe_path=profile.ide_exe_path,
+                    exclude_hwnds=before2,
+                    title_substr="",
+                    timeout_sec=0.3,
+                )
+                if wait_pid:
+                    pid = wait_pid
+                if hwnd is not None and is_cursor_agents_title(title):
                     hwnd = None
-                    _time.sleep(0.2)
-                    continue
-                break
-            hwnd = None
-            _time.sleep(0.2)
+            if hwnd is not None:
+                try:
+                    from iris.automation.ide_input import force_focus_hwnd
+
+                    force_focus_hwnd(int(hwnd))
+                    QApplication.processEvents()
+                except Exception:
+                    pass
+                open_folder_in_ide(
+                    ide_id,
+                    root_s,
+                    ide_exe_path=profile.ide_exe_path,
+                    ide_cli_path=profile.ide_cli_path,
+                    new_window=False,
+                    reuse_window=True,
+                )
+                # ponytail: 제목 대기 생략 — bind는 workspace_root로, 타일 즉시.
+
         if hwnd is None:
             return "IDE new window started but window not found"
 
-        # 새 창 포커스 후 프로젝트 폴더 로드 (reuse)
-        try:
-            from iris.automation.ide_input import force_focus_hwnd
-
-            force_focus_hwnd(int(hwnd))
-            QApplication.processEvents()
-            _time.sleep(0.35)
-        except Exception:
-            pass
-        open_folder_in_ide(
-            ide_id,
-            root_s,
-            ide_exe_path=profile.ide_exe_path,
-            ide_cli_path=profile.ide_cli_path,
-            new_window=False,
-            reuse_window=True,
-        )
-        # 제목에 폴더명이 붙을 때까지 짧게 대기 (없어도 새 창으로 Companion)
-        label_deadline = _time.monotonic() + 4.0
-        while _time.monotonic() < label_deadline:
-            QApplication.processEvents()
-            try:
-                from iris.automation.ide_input import get_window_title
-
-                cur = (get_window_title(int(hwnd)) or "").strip()
-                if cur:
-                    title = cur
-                if root.name.lower() in title.lower():
-                    break
-            except Exception:
-                pass
-            _time.sleep(0.25)
-
-        # 순서 2~3: Companion + 타일
-        label = title or root.name
+        # 제목 대기 없이 즉시 Companion 타일 (generic title이어도 session 유지)
+        label = title if title and not is_generic_ide_title(title) else root.name
         err2 = self._activate_companion_tile(int(hwnd), label=label, pid=pid)
         if err2:
             return err2

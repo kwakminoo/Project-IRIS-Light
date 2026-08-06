@@ -792,6 +792,7 @@ class ChatPanel(QWidget):
         self._stream_block_start: int | None = None
         self._typing_body_start: int | None = None
         self._typing_render_markdown = False
+        self._typing_anchor_y: int | None = None
         self._user_listening_active = False
         self._tts_texts: dict[str, str] = {}
         self._tts_seq = 0
@@ -979,20 +980,45 @@ class ChatPanel(QWidget):
         self.model_changed.emit(self.current_model())
 
     def _scroll_log_to_bottom(self, *, deferred: bool = False) -> None:
-        """새 메시지·음성 인식 결과가 항상 보이도록 출력창을 맨 아래로 스크롤."""
+        """새 메시지·음성 인식 결과가 항상 보이도록 출력창을 맨 아래로 스크롤.
+
+        타이핑 앵커가 잡혀 있으면 맨 아래 대신 답변 시작 줄에서 멈춘다.
+        """
 
         def _do_scroll() -> None:
+            bar = self._log.verticalScrollBar()
+            if self._typing_anchor_y is not None:
+                # 답변 시작 줄이 화면 상단에 올 때까지만 내려가고 그 뒤로는 고정.
+                # 아래로만 이동 — 사용자가 직접 더 내려서 읽는 중이면 끌어당기지 않는다.
+                target = min(self._typing_anchor_y, bar.maximum())
+                if bar.value() < target:
+                    bar.setValue(target)
+                return
             cursor = self._log.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
             self._log.setTextCursor(cursor)
             self._log.ensureCursorVisible()
-            bar = self._log.verticalScrollBar()
             bar.setValue(bar.maximum())
 
         if deferred:
             QTimer.singleShot(0, _do_scroll)
         else:
             _do_scroll()
+
+    def _begin_typing_anchor(self) -> None:
+        """답변 시작 줄을 기준점으로 잡아 타이핑 중 화면이 계속 밀리지 않게 한다."""
+        self._typing_anchor_y = None
+        self._scroll_log_to_bottom()
+        QTimer.singleShot(0, self._capture_typing_anchor)
+
+    def _capture_typing_anchor(self) -> None:
+        """레이아웃 확정 후 답변 시작 줄의 문서 Y 좌표를 기록."""
+        if self._typing_body_start is None:
+            return
+        cursor = self._log.textCursor()
+        cursor.setPosition(self._typing_body_start)
+        bar = self._log.verticalScrollBar()
+        self._typing_anchor_y = max(0, bar.value() + self._log.cursorRect(cursor).top())
 
     def set_mic_level(self, level: float) -> None:
         """상시 듣기 마이크 레벨 — 하단 주파수 바에 반영."""
@@ -1005,6 +1031,7 @@ class ChatPanel(QWidget):
     def begin_user_listening(self) -> None:
         """발화 시작 — 플레이스홀더로 즉시 피드백."""
         self.finish_typing()
+        self._typing_anchor_y = None
         self._remove_user_listening_line()
         self._log.append("<b>나</b>: <i style='color:#94a3b8'>…</i>")
         self._user_listening_active = True
@@ -1014,6 +1041,7 @@ class ChatPanel(QWidget):
         """STT 진행 등 상태 문구 갱신."""
         if not self._user_listening_active:
             self.begin_user_listening()
+        self._typing_anchor_y = None
         self._remove_user_listening_line()
         safe = html.escape(status)
         self._log.append(f"<b>나</b>: <i style='color:#94a3b8'>{safe}</i>")
@@ -1084,11 +1112,11 @@ class ChatPanel(QWidget):
         fmt = self._message_block_format()
         cursor.insertBlock(fmt)
         self._clear_block_list(cursor, fmt)
-        self._log.setTextCursor(cursor)
 
     def append_message_instant(self, who: str, text: str) -> None:
         """사용자 입력 등 — 타이핑 없이 본문 전체를 즉시 표시."""
         self.finish_typing()
+        self._typing_anchor_y = None
         body = normalize_chat_body(who, prepare_chat_text(text))
         if not body:
             return
@@ -1121,7 +1149,7 @@ class ChatPanel(QWidget):
         self._typing_speech_duration_ms = None
         self._typing_speech_start = None
         self._typing_timer.stop()
-        self._scroll_log_to_bottom()
+        self._begin_typing_anchor()
 
     def append_stream_chunk(self, text: str) -> None:
         """스트리밍 청크 — speech_sync면 버퍼만, 아니면 누적 본문을 즉시 표시."""
@@ -1179,7 +1207,7 @@ class ChatPanel(QWidget):
         else:
             self._typing_timer.setInterval(TYPING_INTERVAL_MS)
             self._typing_timer.start()
-        self._scroll_log_to_bottom()
+        self._begin_typing_anchor()
 
     def sync_typing_to_speech(
         self,
@@ -1333,7 +1361,7 @@ class ChatPanel(QWidget):
         cursor.removeSelectedText()
         if visible:
             cursor.insertHtml(typing_body_to_html(visible))
-        self._log.setTextCursor(cursor)
+        # setTextCursor는 캐럿을 보이게 하려고 뷰를 끌어내린다 — 읽기 전용 로그라 생략.
 
     def _render_markdown_body(self) -> None:
         """타이핑 완료 후 마크다운 원문을 렌더링된 HTML로 교체."""
@@ -1347,7 +1375,6 @@ class ChatPanel(QWidget):
         cursor.insertHtml(iris_message_to_chat_html(body))
         msg_id = self.register_tts_message(body)
         cursor.insertHtml(self._speaker_link_html(msg_id))
-        self._log.setTextCursor(cursor)
 
     def _type_next_chunk(self) -> None:
         if self._typing_index >= len(self._typing_text):
@@ -1362,6 +1389,8 @@ class ChatPanel(QWidget):
             self._typing_body_start = None
             self._typing_render_markdown = False
             self._append_trailing_blank_line()
+            if self._typing_anchor_y is not None:
+                self._scroll_log_to_bottom()
             return
 
         if self._typing_speech_sync and self._typing_speech_duration_ms:

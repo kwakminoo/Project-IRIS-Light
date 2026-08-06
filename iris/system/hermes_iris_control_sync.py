@@ -522,6 +522,16 @@ def sync_iris_control(
     except Exception as exc:  # noqa: BLE001
         report.messages.append(f"memory nudge skip: {exc}")
 
+    try:
+        from iris.system.hermes_soul_sync import ensure_soul
+
+        soul = ensure_soul()
+        report.messages.append(soul)
+        if "updated" in soul:
+            report.needs_gateway_reload = True
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"soul sync skip: {exc}")
+
     verified = verify_install(repo)
     if not verified.ok:
         report.ok = False

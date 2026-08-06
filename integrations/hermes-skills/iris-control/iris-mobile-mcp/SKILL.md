@@ -20,7 +20,9 @@ Windows + 로컬 Android SDK + 프로젝트 AVD `IrisLight_Pixel` 전제.
 | Intent | Where |
 |--------|--------|
 | 에뮬 켜기/끄기/상태, 프로젝트 AVD, Iris UI | `iris_invoke` → `emulator.*` / `workspace.open_mobile` (iris-emulator) |
-| 디바이스 목록, 스크린샷, UI 요소, 좌표 탭/스와이프, 앱 설치·실행·종료, 키 입력 | **mobile-mcp** tools below |
+| **Play 스토어 앱 설치** (인스타/텔레그램 등) | `iris_invoke` → `emulator.play_install` (iris-emulator) — 딥링크 + UI 트리라 더 안정적 |
+| 화면 글자 확인·글자로 탭 | `iris_invoke` → `emulator.ui_texts` / `emulator.tap_text` (iris-emulator) |
+| 디바이스 목록, 스크린샷, UI 요소, 좌표 탭/스와이프, APK 설치·실행·종료, 키 입력 | **mobile-mcp** tools below |
 
 Do **not** reimplement mobile-mcp inside iris-control. Do **not** use iris-control alone for deep UI trees.
 
@@ -40,6 +42,7 @@ Crashes: `mobile_list_crashes`, `mobile_get_crash`
    If Iris `emulator_phase` is booting: `iris_invoke` `emulator.wait_ready` first.
 4. UI work: `mobile_take_screenshot` and/or `mobile_list_elements_on_screen` → `mobile_click_on_screen_at_coordinates` / `mobile_type_keys` / `mobile_swipe_on_screen` / `mobile_press_button`.
 5. APK: prefer `mobile_install_app` then `mobile_launch_app` (package name). Fallback: iris `emulator.install` / `emulator.start_app` if mobile-mcp unavailable.
+   Play 스토어 설치는 mobile-mcp로 검색·좌표 탭을 시도하지 말고 `emulator.play_install`을 쓴다.
 6. On failure: report serial, boot state, whether login/2FA is needed — do not invent success.
 
 ## Experimental examples (no guarantee)

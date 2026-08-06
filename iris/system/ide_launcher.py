@@ -380,8 +380,13 @@ def _list_ide_windows_macos(preferred_ide: str, ide_exe_path: str = "") -> list[
 def list_ide_windows(
     preferred_ide: str,
     ide_exe_path: str = "",
+    *,
+    include_untitled: bool = False,
 ) -> list[dict]:
-    """보이는 IDE top-level 창 목록: hwnd, pid, title, score."""
+    """보이는 IDE top-level 창 목록: hwnd, pid, title, score.
+
+    include_untitled: 제목 빈 창 포함 (새 창 부팅 직후 탐지용).
+    """
     if sys.platform == "darwin":
         return _list_ide_windows_macos(preferred_ide, ide_exe_path)
     if sys.platform != "win32":
@@ -411,14 +416,14 @@ def list_ide_windows(
             if pid not in target_pids:
                 return True
             title = (win32gui.GetWindowText(hwnd) or "").strip()
-            if not title:
+            if not title and not include_untitled:
                 return True
             left, top, right, bot = win32gui.GetWindowRect(hwnd)
             w, h = right - left, bot - top
             if w < 200 or h < 120:
                 return True
             score = w * h
-            if title_hints and any(h in title.lower() for h in title_hints):
+            if title_hints and title and any(h in title.lower() for h in title_hints):
                 score += 10_000_000
             found.append(
                 {
@@ -441,6 +446,36 @@ def list_ide_windows(
     return found
 
 
+def is_cursor_agents_title(title: str) -> bool:
+    t = (title or "").strip().lower()
+    return t == "cursor agents" or t.startswith("cursor agents")
+
+
+def is_generic_ide_title(title: str) -> bool:
+    """웰컴/로딩 제목 — workspace 문맥 상실로 보지 말 것."""
+    t = (title or "").strip().lower()
+    return t in {"", "cursor", "visual studio code", "code", "code - oss"}
+
+
+def workspace_title_lost_context(title: str, workspace_root: str) -> bool:
+    """True only when title clearly shows a *different* workspace.
+
+    generic/Agents/empty 는 로딩·셸일 수 있어 False.
+    """
+    t = (title or "").strip().lower()
+    if not t or not workspace_root:
+        return False
+    root_name = Path(workspace_root).name.strip().lower()
+    if not root_name:
+        return False
+    if is_cursor_agents_title(t) or is_generic_ide_title(t):
+        return False
+    if root_name in t:
+        return False
+    # "other — Cursor" / "other - Visual Studio Code" 형태만 다른 workspace로 본다
+    return (" - " in t) or (" — " in t) or (" – " in t)
+
+
 def wait_for_new_ide_window(
     preferred_ide: str,
     *,
@@ -453,45 +488,56 @@ def wait_for_new_ide_window(
     """새로 뜬 IDE 창을 고른다. (hwnd, pid, title).
 
     exclude_hwnds: 열기 전에 있던 창 — 새 창만 반환(타임아웃 전 폴백 없음).
-    title_substr: 폴더명 등 제목 힌트(있으면 가산).
+    title_substr: 폴더명 등 제목 힌트(가산만; 없어도 새 hwnd면 즉시 반환).
+    Cursor Agents 는 새 workspace 창으로 절대 반환하지 않는다.
     """
     exclude = set(exclude_hwnds or ())
     hint = (title_substr or "").strip().lower()
     deadline = time.monotonic() + timeout_sec
     last_pid: int | None = None
     while time.monotonic() < deadline:
-        wins = list_ide_windows(preferred_ide, ide_exe_path)
+        # include_untitled: 부팅 직후 빈 제목 새 창도 잡음
+        wins = list_ide_windows(
+            preferred_ide, ide_exe_path, include_untitled=True
+        )
         for w in wins:
             last_pid = int(w["pid"])
-        newcomers = [w for w in wins if int(w["hwnd"]) not in exclude]
+        # a) exclude 기준 새 hwnd만 — Agents 제외
+        newcomers = [
+            w
+            for w in wins
+            if int(w["hwnd"]) not in exclude
+            and not is_cursor_agents_title(str(w.get("title") or ""))
+        ]
         if not newcomers:
-            time.sleep(0.35)
+            time.sleep(0.12)
             continue
 
         def _rank(w: dict) -> tuple:
             title = str(w.get("title") or "").lower().strip()
             hit = 1 if hint and hint in title else 0
-            # Cursor Agents 는 기존 셸 — 새 창 후보에서 낮게
-            agents = 1 if title == "cursor agents" else 0
-            return (hit, -agents, int(w.get("score") or 0))
+            # 제목 있는 창 우선 (빈 제목은 부팅 중일 수 있음)
+            named = 1 if title else 0
+            return (hit, named, int(w.get("score") or 0))
 
         best = max(newcomers, key=_rank)
         title = str(best.get("title") or "")
-        # 제목에 폴더명이 아직 안 붙었으면 잠깐 더 대기(단, 새 창은 이미 있음)
-        if hint and hint not in title.lower() and (deadline - time.monotonic()) > 2.0:
-            time.sleep(0.35)
-            continue
-        # ponytail: Agents 단독 제목은 새 워크스페이스 창이 아님 — 타임아웃 직전만 허용
-        if title.lower().strip() == "cursor agents" and (deadline - time.monotonic()) > 1.0:
-            time.sleep(0.35)
-            continue
+        # ponytail: 제목 힌트는 가산만. 새 hwnd가 있으면 제목 안 붙어도 즉시 사용
+        # (천장: 폴더명 대기하면 수 초 낭비 → 호출측에서 tile 후 bind).
         return int(best["hwnd"]), int(best["pid"]), title
 
     # ponytail: 세션 라우팅에서는 새 창을 못 찾았을 때 임의 기존 창으로 붙지 않는다.
+    # Agents/generic 도 fallback 대상에서 제외.
     wins = list_ide_windows(preferred_ide, ide_exe_path)
     if fallback_to_existing and wins:
-        best = max(wins, key=lambda w: int(w.get("score") or 0))
-        return int(best["hwnd"]), int(best["pid"]), str(best.get("title") or "")
+        usable = [
+            w
+            for w in wins
+            if not is_cursor_agents_title(str(w.get("title") or ""))
+        ]
+        if usable:
+            best = max(usable, key=lambda w: int(w.get("score") or 0))
+            return int(best["hwnd"]), int(best["pid"]), str(best.get("title") or "")
     return None, last_pid, ""
 
 
@@ -573,7 +619,7 @@ def open_folder_in_ide(
     """폴더를 IDE에서 연다. (pid, error).
 
     new_window=True (Cursor/VS Code):
-      GUI exe --new-window 로 새 창만 spawn (폴더+CLI --new-window 는 Agents에 흡수됨).
+      GUI exe --new-window <folder> 한 방 (CLI --new-window 는 Agents에 흡수됨).
     reuse_window=True: CLI/exe 로 기존 창에 폴더 전달.
     """
     root = Path(_expand((folder or "").strip())).expanduser()
@@ -589,7 +635,9 @@ def open_folder_in_ide(
     supports_nw = ide_id in ("cursor", "vscode")
 
     if new_window and supports_nw:
-        return _popen_detached([exe, "--new-window"])
+        # ponytail: GUI exe 경로만. CLI는 Agents에 흡수.
+        # 천장: 일부 빌드가 빈 창만 뜨면 호출측이 empty→inject 폴백.
+        return _popen_detached([exe, "--new-window", root_s], cwd=root_s)
 
     use_shell = False
     if cli and cli.lower().endswith((".cmd", ".bat")):
@@ -709,6 +757,9 @@ if __name__ == "__main__":
     assert cur is not None and cur.name == "Cursor"
     vs = get_ide_spec("vscode")
     assert vs is not None and any("codeBin" in x for x in vs.which_exclude)
+    assert is_cursor_agents_title("Cursor Agents")
+    assert not workspace_title_lost_context("Cursor", "/tmp/MyProj")
+    assert workspace_title_lost_context("Other - Cursor", "/tmp/MyProj")
     exe, _err = resolve_ide_exe("cursor")
     print("cursor exe:", exe or "(missing)")
     print("vscode installed:", is_ide_installed("vscode"))

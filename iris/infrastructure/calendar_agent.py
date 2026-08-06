@@ -22,7 +22,7 @@ def build_calendar_agent_context(
     holidays: list[str],
 ) -> str:
     lines = [
-        "당신은 Iris Light 캘린더 도우미입니다.",
+        "당신은 Iris Light 캘린더 도우미입니다. 기본 페르소나(SOUL)의 말투·판단 원칙을 따릅니다.",
         "일정 추가·조회·삭제는 가능하면 Iris Control MCP(`iris_invoke`)를 사용하세요:",
         "- workspace.open_calendar",
         "- calendar.add_event {title, start_at, note?, place?}",
