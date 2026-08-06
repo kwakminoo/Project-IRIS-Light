@@ -1,0 +1,70 @@
+# main_window
+
+`iris/ui/window/main_window.py`
+
+메인 PyQt6 창 — Ollama 모델 선택 + Hermes/Ollama 채팅.
+
+## 주요 정의
+
+- `class IdeSession`
+- `class MainWindow`
+
+## 내부 의존성
+
+- [[activity_sink]]
+- [[android_emulator]]
+- [[api_quota_worker]]
+- [[assistant_workspace_page]]
+- [[boot_checks_worker]]
+- [[calendar_agent]]
+- [[calendar_events]]
+- [[calendar_workspace_page]]
+- [[chat_panel]]
+- [[context_ring]]
+- [[control_bindings]]
+- [[cyberspace_background]]
+- [[cyberspace_theme]]
+- [[database]]
+- [[drag_tab]]
+- [[email_accounts]]
+- [[email_client]]
+- [[email_detail_panel]]
+- [[email_workers]]
+- [[email_workspace_page]]
+- [[frameless_chrome]]
+- [[hermes_workers]]
+- [[ide_companion_page]]
+- [[ide_icons]]
+- [[ide_input]]
+- [[ide_launcher]]
+- [[ide_tiler]]
+- [[iris_wiki]]
+- [[kr_holiday_client]]
+- [[left_sidebar_panel]]
+- [[live_activity_panel]]
+- [[metrics_worker]]
+- [[model_descriptions]]
+- [[model_prefs]]
+- [[notification_panel]]
+- [[notification_policy]]
+- [[obsidian_workspace_page]]
+- [[ollama_client]]
+- [[ollama_workers]]
+- [[project_ops]]
+- [[recorder]]
+- [[settings]]
+- [[settings_dialog]]
+- [[startup_intro]]
+- [[state_machine]]
+- [[text_normalizer]]
+- [[theme_tokens]]
+- [[top_status_header]]
+- [[unified_monitor_panel]]
+- [[user_profile]]
+- [[user_profile_dialog]]
+- [[visualizer]]
+- [[voice_prefs]]
+- [[voice_runtime_client]]
+- [[voice_runtime_manager]]
+- [[window_controller]]
+- [[workers]]

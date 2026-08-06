@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QRadialGradient
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QRadialGradient,
+    QWheelEvent,
+)
 from PyQt6.QtWidgets import QWidget
 
 from iris.knowledge.iris_wiki import WIKI_NAME, IrisWiki
 
-_LINK_RE = re.compile(r"\[\[([^\]|#]+)")
 _PAD = 44.0
 _HIT_RADIUS = 16.0
-_STAR_COUNT = 2200
+_STAR_COUNT = 2800
 _HUB_PALETTE = (QColor(251, 210, 108), QColor(125, 245, 232), QColor(170, 210, 255))
 
 
@@ -26,6 +32,11 @@ class _Node:
     kind: str  # "root" | "hub" | "note"
     nx: float
     ny: float
+    depth: float = 1.0  # 1.0 = 구 표면, 작을수록 구 안쪽으로 파고든다
+    back: bool = False  # True면 z를 뒤집어 구의 뒷면 쪽에 둔다
+    x3: float | None = None
+    y3: float | None = None
+    z3: float | None = None
 
 
 class WikiGraphView(QWidget):
@@ -46,6 +57,7 @@ class WikiGraphView(QWidget):
         self._clouds: list[tuple[float, float, float, float, float, QColor]] = []
         self._selected_rel = ""
         self._hover_idx = -1
+        self._zoom = 1.0
         self._angle = 0.0
         self._tilt = -0.28
         self._spin_x = 0.0
@@ -64,6 +76,7 @@ class WikiGraphView(QWidget):
         self._edges = []
         self._hub_colors = {}
         hub_dirs: list[tuple[float, float, float, QColor]] = []
+        hub_positions: list[tuple[float, float, float, QColor]] = []
         if wiki is None:
             self._stars = []
             self._clouds = []
@@ -74,71 +87,89 @@ class WikiGraphView(QWidget):
         except Exception:  # noqa: BLE001
             notes = []
 
-        groups: dict[str, list] = {}
+        wiki_groups: dict[str, list] = {}
         for note in notes:
-            groups.setdefault(note.folder, []).append(note)
-        folders = sorted(groups)
+            wiki_groups.setdefault(note.folder, []).append(note)
+        wiki_folders = sorted(wiki_groups)
 
         self._nodes.append(_Node("", WIKI_NAME, "root", 0.5, 0.5))
         root_idx = 0
-        title_to_idx: dict[str, int] = {}
 
-        count = max(len(folders), 1)
-        for fi, folder in enumerate(folders):
-            ang = 2 * math.pi * fi / count - math.pi / 2
-            hx = 0.5 + 0.30 * math.cos(ang)
-            hy = 0.5 + 0.30 * math.sin(ang)
-            hub_idx = len(self._nodes)
-            label = folder.split("/")[-1] or folder
-            self._nodes.append(_Node("", label, "hub", hx, hy))
-            self._edges.append((root_idx, hub_idx, "structure", None))
-            hub_color = _HUB_PALETTE[fi % len(_HUB_PALETTE)]
-            self._hub_colors[hub_idx] = hub_color
-            hub_dirs.append((*self._node_xyz(hx, hy), hub_color))
-
-            members = groups[folder]
-            m = len(members)
-            # 가지처럼: 루트→허브 바깥 방향(ang)을 중심으로 부채꼴로 펼친다.
-            spread = math.radians(min(150.0, 40.0 + 14.0 * m))
-            member_idx: list[int] = []
-            for mi, note in enumerate(members):
-                if m <= 1:
-                    a2 = ang
-                else:
-                    a2 = ang - spread / 2 + spread * mi / (m - 1)
-                # 가지 길이를 번갈아 달리해 노드 겹침을 줄인다.
-                branch = 0.14 + 0.035 * (mi % 3)
-                nx = min(0.97, max(0.03, hx + branch * math.cos(a2)))
-                ny = min(0.97, max(0.03, hy + branch * math.sin(a2)))
-                ni = len(self._nodes)
-                self._nodes.append(_Node(note.rel_path, note.title, "note", nx, ny))
-                self._edges.append((hub_idx, ni, "structure", None))
-                title_to_idx[note.title] = ni
-                member_idx.append(ni)
-
-            # 형제 노트끼리 아주 옅은 실선으로 이어 성단(星團) 같은 그물 질감을 준다.
-            for mi, ni in enumerate(member_idx):
-                for skip in (1, 2):
-                    if mi + skip < len(member_idx):
-                        self._edges.append((ni, member_idx[mi + skip], "ambient", hub_idx))
-
-        # 위키링크 [[...]] → 노트 간 선
-        for idx, node in enumerate(self._nodes):
-            if node.kind != "note":
-                continue
-            try:
-                text = wiki.read_note(node.rel)
-            except Exception:  # noqa: BLE001
-                continue
-            for match in _LINK_RE.finditer(text):
-                target = match.group(1).strip()
-                dst = title_to_idx.get(target)
-                if dst is not None and dst != idx:
-                    self._edges.append((idx, dst, "link", None))
+        wiki_hub_groups = [
+            (folder, [(note.rel_path, note.title, note.title) for note in wiki_groups[folder]])
+            for folder in wiki_folders
+        ]
+        self._add_cluster(root_idx, wiki_hub_groups, "note", hub_dirs, hub_positions)
 
         self._stars = self._make_stars(hub_dirs)
-        self._clouds = self._make_clouds(hub_dirs)
+        self._clouds = self._make_clouds(hub_positions)
         self.update()
+
+    def _add_cluster(
+        self,
+        root_idx: int,
+        hub_groups: list[tuple[str, list[tuple[str, str, str]]]],
+        kind: str,
+        hub_dirs: list[tuple[float, float, float, QColor]],
+        hub_positions: list[tuple[float, float, float, QColor]],
+    ) -> dict[str, int]:
+        """폴더별로 허브를 두고 멤버를 부채꼴로 배치한다.
+
+        members는 (rel_path, label, link_key) 튜플. link_key -> 노드 인덱스 매핑을 돌려준다
+        (위키 노트 제목으로 [[위키링크]]를 잇는다).
+        """
+        link_to_idx: dict[str, int] = {}
+        count = max(len(hub_groups), 1)
+        max_members = max((len(members) for _, members in hub_groups), default=1) or 1
+        for fi, (folder, members) in enumerate(hub_groups):
+            m = len(members)
+            # 완벽한 원형 배치를 피하려고 각도·반지름에 고정 지터를 준다.
+            ang = 2 * math.pi * fi / count - math.pi / 2 + 0.5 * math.sin(fi * 2.7 + 1.0)
+            # 목표 위도(z)를 먼저 고르게 분산시킨 뒤 그걸 만드는 반지름을 역산한다 — 그래야
+            # 극지방에만 쏠리지 않고 적도 쪽까지 실제로 고르게 퍼진다(별 필드와 같은 원리).
+            # 세제곱 보정항은 유난히 멤버가 많은 허브(예: 70개짜리 폴더)만 골라서 극 쪽으로
+            # 밀어 부채꼴을 펼칠 여유 공간을 만든다 — 나머지 평범한 허브는 거의 해시값 그대로
+            # 써서 원래의 고른 위도 분포를 유지한다.
+            member_frac = m / max_members
+            z_target = 0.08 + 0.90 * (((fi * 53) % 100) / 100) + 0.80 * member_frac**3
+            hub_radius = 0.47 * math.sqrt(max(0.0, 1.0 - min(0.99, z_target) ** 2))
+            hx = 0.5 + hub_radius * math.cos(ang)
+            hy = 0.5 + hub_radius * math.sin(ang)
+            hub_idx = len(self._nodes)
+            label = folder.split("/")[-1] or folder
+            hub_depth = 0.45 + 0.5 * ((fi * 61) % 100) / 100
+            hub_back = ((fi * 83) % 100) < 50
+            self._nodes.append(_Node("", label, "hub", hx, hy, hub_depth, hub_back))
+            hub_color = _HUB_PALETTE[fi % len(_HUB_PALETTE)]
+            self._hub_colors[hub_idx] = hub_color
+            hub_pos = self._node_pos(self._nodes[hub_idx])
+            hub_dirs.append((*hub_pos, hub_color))
+            hub_positions.append((*hub_pos, hub_color))
+
+            member_idx: list[int] = []
+            for mi, (rel_path, member_label, link_key) in enumerate(members):
+                shell_a = (mi * 2.399963229728653 + fi * 0.7) % (math.pi * 2)
+                shell_z = 1.0 - 2.0 * ((mi + 0.5) / max(m, 1))
+                shell_r = math.sqrt(max(0.0, 1.0 - shell_z * shell_z))
+                cluster_r = min(0.24, 0.10 + 0.006 * m)
+                x3 = hub_pos[0] + cluster_r * shell_r * math.cos(shell_a)
+                y3 = hub_pos[1] + cluster_r * shell_r * math.sin(shell_a)
+                z3 = hub_pos[2] + cluster_r * shell_z
+                mag = math.sqrt(x3 * x3 + y3 * y3 + z3 * z3)
+                if mag > 0.96:
+                    scale = 0.96 / mag
+                    x3 *= scale
+                    y3 *= scale
+                    z3 *= scale
+                nx = 0.5 + 0.49 * x3
+                ny = 0.5 + 0.49 * y3
+                ni = len(self._nodes)
+                self._nodes.append(_Node(rel_path, member_label, kind, nx, ny, x3=x3, y3=y3, z3=z3))
+                self._edges.append((hub_idx, ni, "structure", hub_idx))
+                link_to_idx[link_key] = ni
+                member_idx.append(ni)
+
+        return link_to_idx
 
     def select(self, rel_path: str) -> None:
         self._selected_rel = rel_path or ""
@@ -158,7 +189,7 @@ class WikiGraphView(QWidget):
         return p
 
     def _node_radius(self, node: _Node, *, selected: bool, hover: bool) -> float:
-        base = {"root": 6.0, "hub": 4.2, "note": 2.2}[node.kind]
+        base = {"root": 7.0, "hub": 8.0, "note": 1.8}[node.kind]
         if selected:
             base += 3.0
         elif hover:
@@ -173,16 +204,15 @@ class WikiGraphView(QWidget):
             a = (i * 2.399963229728653) % (math.pi * 2)
             cz = 1.0 - 2.0 * ((i + 0.5) / _STAR_COUNT)
             cr = math.sqrt(max(0.0, 1.0 - cz * cz))
-            # 표면 셸이 아니라 중심 쪽으로 밀도가 몰리는 폭죽처럼, 구체 안쪽까지 입자를 채운다.
+            # 레퍼런스처럼 겉 원이 보이도록 입자를 구 표면 쪽에 몰아둔다.
             u = ((i * 61) % 1000) / 1000
-            depth = 0.05 + 0.95 * (u**1.8)
+            depth = 0.74 + 0.26 * (u**0.32)
             x = cr * math.cos(a) * depth
             y = cr * math.sin(a) * depth
             z = cz * depth
-            size = 0.4 + 1.1 * ((i * 37) % 100) / 100
-            alpha = 25 + 165 * ((i * 53) % 100) / 100
-            color = self._nearest_hub_color(x, y, z, hub_dirs)
-            stars.append((x, y, z, size, alpha + 35 * abs(z), color))
+            size = 0.35 + 0.85 * ((i * 37) % 100) / 100
+            alpha = 45 + 145 * ((i * 53) % 100) / 100
+            stars.append((x, y, z, size, alpha + 45 * abs(z), QColor(245, 248, 255)))
         return stars
 
     def _nearest_hub_color(
@@ -190,7 +220,7 @@ class WikiGraphView(QWidget):
     ) -> QColor:
         mag = math.sqrt(x * x + y * y + z * z) or 1e-6
         best_color = QColor(235, 245, 255)
-        best_dot = 0.82  # 클러스터 중심 가까이만 물들이고 나머지는 중립 흰색으로 남긴다.
+        best_dot = 0.94  # 색은 큰 성운 덩어리에 맡기고, 별 입자는 대부분 중립 흰색으로 남긴다.
         for hx, hy, hz, color in hub_dirs:
             dot = (x * hx + y * hy + z * hz) / mag
             if dot > best_dot:
@@ -199,27 +229,36 @@ class WikiGraphView(QWidget):
         return best_color
 
     def _make_clouds(
-        self, hub_dirs: list[tuple[float, float, float, QColor]]
+        self, hub_positions: list[tuple[float, float, float, QColor]]
     ) -> list[tuple[float, float, float, float, float, QColor]]:
+        # 허브 주변의 흩어진 네온을 큰 덩어리 성운으로 묶는다.
         clouds: list[tuple[float, float, float, float, float, QColor]] = []
-        for hi, (hx, hy, hz, color) in enumerate(hub_dirs):
-            for j in range(3):
-                a = (hi * 3 + j) * 1.913
-                jx = hx + 0.10 * math.cos(a)
-                jy = hy + 0.10 * math.sin(a)
-                jz = hz + 0.06 * math.sin(a * 1.7)
-                mag = math.sqrt(jx * jx + jy * jy + jz * jz) or 1.0
-                spread = 0.16 + 0.05 * j
-                alpha = 26 - 4 * j
-                clouds.append((jx / mag, jy / mag, jz / mag, spread, alpha, color))
+        for hi, (hx, hy, hz, color) in enumerate(hub_positions):
+            for j in range(2):
+                a = (hi * 2 + j) * 1.913
+                jx = hx + 0.04 * math.cos(a)
+                jy = hy + 0.04 * math.sin(a)
+                jz = hz + 0.03 * math.sin(a * 1.7)
+                spread = 0.30 + 0.10 * j
+                alpha = 34 - 6 * j
+                clouds.append((jx, jy, jz, spread, alpha, color))
         return clouds
 
     def _node_xyz(self, nx: float, ny: float) -> tuple[float, float, float]:
         x = (nx - 0.5) / 0.49
         y = (ny - 0.5) / 0.49
-        d2 = min(0.96, x * x + y * y)
+        d2 = min(0.99, x * x + y * y)  # 0.99까지 허용해 적도 근처까지 닿을 수 있게 한다
         z = math.sqrt(max(0.0, 1.0 - d2))
         return x, y, z
+
+    def _node_pos(self, node: _Node) -> tuple[float, float, float]:
+        """구 표면 방향에 노드별 depth를 곱하고, back이면 z를 뒤집어 뒷면에도 골고루 퍼지게 한다."""
+        if node.x3 is not None and node.y3 is not None and node.z3 is not None:
+            return node.x3, node.y3, node.z3
+        x, y, z = self._node_xyz(node.nx, node.ny)
+        if node.back:
+            z = -z
+        return x * node.depth, y * node.depth, z * node.depth
 
     def _rotate(self, x: float, y: float, z: float) -> tuple[float, float, float]:
         ca = math.cos(self._angle)
@@ -236,7 +275,7 @@ class WikiGraphView(QWidget):
         x, y, z = self._rotate(x, y, z)
         bounds = self._sphere_rect()
         center = bounds.center()
-        radius = min(bounds.width(), bounds.height()) / 2
+        radius = min(bounds.width(), bounds.height()) / 2 * self._zoom
         perspective = 1.7 / (2.45 - z)
         scale = 0.74 * perspective
         p = QPointF(center.x() + x * radius * scale, center.y() + y * radius * scale)
@@ -244,6 +283,14 @@ class WikiGraphView(QWidget):
         return p, scale, alpha, z
 
     # ---- 이벤트 ----
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+        self._zoom = max(0.5, min(3.5, self._zoom * (1.0015**delta)))
+        self.update()
+        event.accept()
+
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = True
@@ -305,7 +352,9 @@ class WikiGraphView(QWidget):
         best = -1
         best_d = _HIT_RADIUS
         for idx, node in enumerate(self._nodes):
-            p, scale, _alpha, z = self._project(*self._node_xyz(node.nx, node.ny))
+            if node.kind != "note":  # 허브/루트는 내용이 없는 안내점이라 클릭 대상에서 뺀다
+                continue
+            p, scale, _alpha, z = self._project(*self._node_pos(node))
             if z < -0.28:
                 continue
             d = math.hypot(p.x() - pos.x(), p.y() - pos.y())
@@ -334,6 +383,16 @@ class WikiGraphView(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(glow)
         painter.drawEllipse(bounds)
+
+        # 중심 성운 — 아주 옅은 청록/흰색으로 깊이감만 살짝 더한다.
+        core = QRadialGradient(center, radius * 0.55)
+        core.setColorAt(0.0, QColor(180, 235, 255, 22))
+        core.setColorAt(0.6, QColor(120, 200, 255, 10))
+        core.setColorAt(1.0, QColor(0, 0, 0, 0))
+        painter.setBrush(core)
+        painter.drawEllipse(center, radius * 0.55, radius * 0.55)
+
+        self._draw_sphere_nebula(painter)
         self._draw_nebula(painter)
 
         painter.setPen(Qt.PenStyle.NoPen)
@@ -349,16 +408,14 @@ class WikiGraphView(QWidget):
 
         # 선
         for a, b, kind, hub_idx in self._edges:
-            pa, _sa, aa, za = self._project(*self._node_xyz(self._nodes[a].nx, self._nodes[a].ny))
-            pb, _sb, ab, zb = self._project(*self._node_xyz(self._nodes[b].nx, self._nodes[b].ny))
+            pa, _sa, aa, za = self._project(*self._node_pos(self._nodes[a]))
+            pb, _sb, ab, zb = self._project(*self._node_pos(self._nodes[b]))
             alpha = max(4, min(24, int((aa + ab) / 16)))
-            if kind == "link":
-                pen = QPen(QColor(125, 211, 252, alpha), 1.0 if za + zb > 0 else 0.5)
-            elif kind == "ambient":
+            if hub_idx is not None:
                 c = self._hub_colors.get(hub_idx, QColor(226, 232, 240))
-                pen = QPen(QColor(c.red(), c.green(), c.blue(), max(3, alpha // 2)), 0.5)
+                pen = QPen(QColor(c.red(), c.green(), c.blue(), max(8, alpha)), 0.7)
             else:
-                pen = QPen(QColor(226, 232, 240, max(3, alpha // 2)), 0.5)
+                continue
             painter.setPen(pen)
             painter.drawLine(pa, pb)
 
@@ -366,33 +423,67 @@ class WikiGraphView(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         ordered = []
         for idx, node in enumerate(self._nodes):
-            p, scale, alpha, z = self._project(*self._node_xyz(node.nx, node.ny))
+            p, scale, alpha, z = self._project(*self._node_pos(node))
             ordered.append((z, idx, node, p, scale, alpha))
         for z, idx, node, p, scale, alpha in sorted(ordered, key=lambda item: item[0]):
-            selected = node.kind == "note" and node.rel == self._selected_rel
+            selected = node.rel == self._selected_rel
             hover = idx == self._hover_idx
             r = self._node_radius(node, selected=selected, hover=hover) * max(0.58, scale)
 
             if node.kind == "root":
                 fill = QColor(191, 247, 255)
-            elif node.kind == "hub":
+                fill.setAlpha(min(190, alpha))
+                self._draw_flare(painter, p, fill, max(11.0, r * 3.2), alpha)
+                self._draw_particle_core(painter, p, fill, r * 0.85, alpha)
+                continue
+            if node.kind == "hub":
                 fill = QColor(self._hub_colors.get(idx, _HUB_PALETTE[0]))
-            else:
-                fill = QColor(226, 232, 240) if not selected else QColor(165, 243, 252)
+                fill.setAlpha(min(245, alpha + 40))
+                self._draw_flare(painter, p, fill, max(18.0, r * 4.0), alpha)
+                self._draw_particle_core(painter, p, fill, r, alpha)
+                continue
 
+            fill = QColor(245, 248, 255) if not selected else QColor(165, 243, 252)
             fill.setAlpha(min(245, alpha + (60 if hover or selected else 0)))
-            if node.kind in ("root", "hub") or selected or hover:
-                self._draw_flare(painter, p, fill, max(9.0, r * 2.6), alpha)
-                painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(fill)
-            painter.drawEllipse(p, r, r)
-
+            if not selected and not hover:
+                r *= 0.62
+                self._draw_flare(painter, p, fill, max(2.8, r * 1.8), alpha)
+                self._draw_particle_core(painter, p, fill, r, alpha)
+                continue
             if selected or hover:
-                self._draw_label(painter, p, node.label, r, prominent=selected or hover)
+                self._draw_flare(painter, p, fill, max(9.0, r * 2.6), alpha)
+                self._draw_particle_core(painter, p, fill, r, alpha)
+                self._draw_label(painter, p, node.label, r)
 
     def _sphere_rect(self) -> QRectF:
         size = max(1.0, min(self.width(), self.height()) - 2 * _PAD)
         return QRectF((self.width() - size) / 2, (self.height() - size) / 2, size, size)
+
+    def _draw_sphere_nebula(self, painter: QPainter) -> None:
+        bounds = self._sphere_rect()
+        radius = min(bounds.width(), bounds.height()) / 2
+
+        def cloud(x: float, y: float, z: float, spread: float, color: QColor, alpha: int) -> None:
+            p, scale, depth_alpha, rz = self._project(x, y, z)
+            if rz < -0.55:
+                return
+            a = int(alpha * depth_alpha / 220)
+            rr = radius * spread * max(0.6, scale)
+            grad = QRadialGradient(p, rr)
+            grad.setColorAt(0.0, QColor(color.red(), color.green(), color.blue(), a))
+            grad.setColorAt(0.50, QColor(color.red(), color.green(), color.blue(), a // 3))
+            grad.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(grad)
+            painter.drawEllipse(p, rr, rr * 0.45)
+
+        cloud(-0.48, -0.12, 0.68, 0.46, QColor(112, 170, 220), 54)
+        cloud(-0.12, 0.02, 0.82, 0.32, QColor(190, 225, 245), 42)
+        cloud(0.25, 0.13, 0.76, 0.30, QColor(230, 120, 165), 54)
+        cloud(0.58, 0.20, 0.58, 0.24, QColor(255, 94, 150), 48)
+        cloud(0.66, -0.26, 0.46, 0.18, QColor(245, 100, 170), 38)
+        cloud(-0.12, -0.03, 0.86, 0.16, QColor(5, 8, 20), 58)
+        cloud(0.45, -0.05, 0.68, 0.15, QColor(8, 8, 22), 52)
 
     def _draw_nebula(self, painter: QPainter) -> None:
         bounds = self._sphere_rect()
@@ -401,7 +492,7 @@ class WikiGraphView(QWidget):
             p, scale, depth_alpha, rz = self._project(x, y, z)
             if rz < -0.72:
                 continue
-            a = min(70, int(alpha * depth_alpha / 150))
+            a = min(42, int(alpha * depth_alpha / 190))
             rr = radius * spread * max(0.65, scale)
             nebula = QRadialGradient(p, rr)
             nebula.setColorAt(0.0, QColor(color.red(), color.green(), color.blue(), a))
@@ -414,6 +505,16 @@ class WikiGraphView(QWidget):
     def _draw_flare(
         self, painter: QPainter, p: QPointF, color: QColor, radius: float, alpha: int
     ) -> None:
+        # 안개처럼 은은하게 번지는 바깥 레이어 — 코어 발광 효과는 그대로 두고 주변에만 haze를 더한다.
+        fog_radius = radius * 2.3
+        fog = QRadialGradient(p, fog_radius)
+        fog.setColorAt(0.0, QColor(color.red(), color.green(), color.blue(), min(38, alpha // 4)))
+        fog.setColorAt(0.5, QColor(color.red(), color.green(), color.blue(), min(16, alpha // 8)))
+        fog.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(fog)
+        painter.drawEllipse(p, fog_radius, fog_radius)
+
         halo = QRadialGradient(p, radius)
         halo.setColorAt(0.0, QColor(255, 255, 255, min(235, alpha + 60)))
         halo.setColorAt(0.18, QColor(color.red(), color.green(), color.blue(), min(220, alpha + 20)))
@@ -423,22 +524,30 @@ class WikiGraphView(QWidget):
         painter.setBrush(halo)
         painter.drawEllipse(p, radius, radius)
 
+    def _draw_particle_core(
+        self, painter: QPainter, p: QPointF, color: QColor, radius: float, alpha: int
+    ) -> None:
+        """단색 원판 대신 입자처럼 중심이 밝고 가장자리로 갈수록 번지는 코어를 그린다."""
+        core = QRadialGradient(p, max(1.0, radius))
+        a = min(255, alpha + 70)
+        core.setColorAt(0.0, QColor(255, 255, 255, a))
+        core.setColorAt(0.45, QColor(color.red(), color.green(), color.blue(), a))
+        core.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(core)
+        painter.drawEllipse(p, radius, radius)
+
     def _draw_label(
-        self, painter: QPainter, p: QPointF, label: str, radius: float, *, prominent: bool
+        self, painter: QPainter, p: QPointF, label: str, radius: float, *, text_alpha: int = 220
     ) -> None:
         font = QFont()
-        font.setPointSize(9 if prominent else 8)
-        font.setBold(prominent)
+        font.setPointSize(8)
         painter.setFont(font)
         fm = painter.fontMetrics()
-        text = fm.elidedText(label, Qt.TextElideMode.ElideRight, 220 if prominent else 120)
+        text = fm.elidedText(label, Qt.TextElideMode.ElideRight, 160)
         w = fm.horizontalAdvance(text) + 16
         h = fm.height() + 8
         x = min(max(8.0, p.x() + radius + 8), max(8.0, self.width() - w - 8))
         y = min(max(8.0, p.y() - h / 2), max(8.0, self.height() - h - 8))
-        if prominent:
-            painter.setPen(QPen(QColor(125, 211, 252, 145), 1.0))
-            painter.setBrush(QColor(2, 6, 23, 215))
-            painter.drawRoundedRect(QRectF(x, y, w, h), 6, 6)
-        painter.setPen(QColor(240, 249, 255, 240 if prominent else 170))
+        painter.setPen(QColor(240, 249, 255, text_alpha))
         painter.drawText(QRectF(x + 8, y + 4, w - 16, h - 8), Qt.AlignmentFlag.AlignVCenter, text)
