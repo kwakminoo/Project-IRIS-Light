@@ -8,10 +8,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
+    QBrush,
     QColor,
-    QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
     QGuiApplication,
@@ -36,8 +36,20 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+# 모델 콤보 아이템 메타 (addItem UserRole = runtime name)
+_ROLE_SUPPORTS_TOOLS = int(Qt.ItemDataRole.UserRole) + 1
+_ROLE_REQUIRES_SUB = int(Qt.ItemDataRole.UserRole) + 2
+_COLOR_MODEL_DEFAULT = QColor("#38bdf8")  # 도구 지원·일반 선택 가능 — 밝은 푸른색
+_COLOR_MODEL_NO_TOOLS = QColor("#9ca3af")  # 도구 미지원 — 회색
+_COLOR_MODEL_PRO = QColor("#fca5a5")  # Pro/구독 — 옅은 붉은색
+
 from iris.core.activity_privacy import prepare_chat_text
 from iris.core.chat_citations import iris_message_to_chat_html
+from iris.ui.chat.chat_image_view import (
+    attach_image_loader,
+    handle_chat_anchor_click,
+    prefetch_chat_html_images,
+)
 from iris.ui.chat.chat_display import (
     TYPING_CHARS_PER_TICK,
     TYPING_INTERVAL_MS,
@@ -53,6 +65,8 @@ from iris.ui.chat.chat_display import (
 )
 from iris.ui.chat.composer_plus_menu import ComposerPlusButton, ComposerPlusMenu, ComposerSendButton
 from iris.ui.chat.skill_mcp_dialogs import McpDialog, SkillsDialog
+from iris.ui.settings.hud_dialog import run_hud_confirm
+from iris.ui.shared.theme_tokens import TOKENS
 from iris.ui.widgets.context_ring import ContextRingWidget
 from iris.ui.widgets.mic_waveform_bar import MicWaveformBar
 
@@ -294,14 +308,17 @@ class ChatComposerInput(QPlainTextEdit):
 class ChatLogTextEdit(QTextEdit):
     speaker_clicked = pyqtSignal(str)
 
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        attach_image_loader(self)
+
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         anchor = self.anchorAt(event.pos())
         if anchor.startswith("iris-tts://"):
             self.speaker_clicked.emit(anchor.removeprefix("iris-tts://"))
             event.accept()
             return
-        if anchor.startswith("http://") or anchor.startswith("https://"):
-            QDesktopServices.openUrl(QUrl(anchor))
+        if handle_chat_anchor_click(self, anchor):
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -435,10 +452,9 @@ class _ChatInputBar(QWidget):
                 border-bottom: 1px solid rgba(56, 189, 248, 0.95);
                 outline: none;
                 padding: 4px 0;
-                color: #94a3b8;
             }
             QComboBox#ChatModelCombo QAbstractItemView::item {
-                color: #94a3b8;
+                /* 색은 ForegroundRole(도구/Pro 구분) — 스타일시트 고정색 금지 */
                 padding: 6px 10px;
                 min-height: 22px;
                 background: transparent;
@@ -448,7 +464,6 @@ class _ChatInputBar(QWidget):
                 background-color: rgba(56, 189, 248, 0.22);
             }
             QComboBox#ChatModelCombo QAbstractItemView::item:hover {
-                color: #cbd5e1;
                 background-color: rgba(56, 189, 248, 0.14);
             }
             """
@@ -738,6 +753,7 @@ class _ChatInputArea(QWidget):
 
 class ChatPanel(QWidget):
     send_clicked = pyqtSignal(str)
+    stop_clicked = pyqtSignal()
     model_changed = pyqtSignal(str)
     files_attached = pyqtSignal(list)
     skill_inserted = pyqtSignal(str)
@@ -749,6 +765,7 @@ class ChatPanel(QWidget):
         super().__init__()
         self.setObjectName("ChatPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._generating = False
         self._log = ChatLogTextEdit()
         self._log.setObjectName("ChatLog")
         self._log.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -804,9 +821,11 @@ class ChatPanel(QWidget):
         self._waveform = self._input_area.waveform
         self._context_limit = 128_000
         self._context_used = 0
-        self._input.submit_requested.connect(self._emit_send)
+        self._model_guard_prev_index = 0
+        self._model_guard_silent = False
+        self._input.submit_requested.connect(self._on_submit_or_stop)
         self._input.textChanged.connect(self._on_input_changed)
-        self._input_area.input_bar.send_button.clicked.connect(self._emit_send)
+        self._input_area.input_bar.send_button.clicked.connect(self._on_submit_or_stop)
         self._model_combo.currentIndexChanged.connect(self._on_model_index_changed)
         bar = self._input_area.input_bar
         bar.files_attached.connect(self.files_attached.emit)
@@ -916,49 +935,76 @@ class ChatPanel(QWidget):
         """Ollama 모델 목록으로 콤보 갱신 (표시=catalog, 값=runtime)."""
         from iris.infrastructure.ollama_client import OllamaModelInfo, display_name_from_runtime
 
+        self._model_guard_silent = True
         self._model_combo.blockSignals(True)
         self._model_combo.clear()
         if not models:
             self._model_combo.addItem("(모델 없음 — Ollama 확인)", "")
             self._model_combo.blockSignals(False)
+            self._model_guard_silent = False
+            self._model_guard_prev_index = 0
             return
 
-        entries: list[tuple[str, str]] = []
+        # label, runtime, supports_tools, requires_subscription
+        entries: list[tuple[str, str, bool, bool]] = []
         for item in models:
             if isinstance(item, OllamaModelInfo):
-                entries.append((item.catalog_name or display_name_from_runtime(item.name), item.name))
+                entries.append(
+                    (
+                        item.catalog_name or display_name_from_runtime(item.name),
+                        item.name,
+                        bool(item.supports_tools),
+                        bool(item.requires_subscription),
+                    )
+                )
             else:
                 runtime = str(item).strip()
                 if runtime:
-                    entries.append((display_name_from_runtime(runtime), runtime))
+                    entries.append((display_name_from_runtime(runtime), runtime, True, False))
 
         from iris.infrastructure.model_descriptions import describe_model
 
-        for i, (label, runtime) in enumerate(entries):
+        for i, (label, runtime, supports_tools, requires_sub) in enumerate(entries):
             self._model_combo.addItem(label, runtime)
+            self._model_combo.setItemData(i, supports_tools, _ROLE_SUPPORTS_TOOLS)
+            self._model_combo.setItemData(i, requires_sub, _ROLE_REQUIRES_SUB)
+            color = _COLOR_MODEL_DEFAULT
+            tip_extra = ""
+            if requires_sub:
+                color = _COLOR_MODEL_PRO
+                tip_extra = " (Pro/구독 전용)"
+            elif not supports_tools:
+                color = _COLOR_MODEL_NO_TOOLS
+                tip_extra = " (도구 호출 미지원)"
+            self._model_combo.setItemData(i, QBrush(color), Qt.ItemDataRole.ForegroundRole)
             desc = describe_model(runtime)
-            if desc:
-                self._model_combo.setItemData(i, desc, Qt.ItemDataRole.ToolTipRole)
+            tip = (desc or runtime) + tip_extra
+            self._model_combo.setItemData(i, tip, Qt.ItemDataRole.ToolTipRole)
 
         pick = selected.strip()
         idx = 0
         if pick:
-            for i, (label, runtime) in enumerate(entries):
+            for i, (label, runtime, _t, _s) in enumerate(entries):
                 if pick in (runtime, label):
                     idx = i
                     break
         self._model_combo.setCurrentIndex(idx)
+        self._model_guard_prev_index = idx
         self._model_combo.blockSignals(False)
+        self._model_guard_silent = False
         self._update_model_tooltip()
         self._input_area.input_bar.fit_model_picker()
         self.model_changed.emit(self.current_model())
 
     def set_model_status(self, text: str) -> None:
         """목록 로드 실패 등 상태 문구."""
+        self._model_guard_silent = True
         self._model_combo.blockSignals(True)
         self._model_combo.clear()
         self._model_combo.addItem(text, "")
         self._model_combo.blockSignals(False)
+        self._model_guard_silent = False
+        self._model_guard_prev_index = 0
         self._input_area.input_bar.fit_model_picker()
 
     def set_context_usage(self, used: int, limit: int) -> None:
@@ -974,7 +1020,65 @@ class ChatPanel(QWidget):
         desc = describe_model(self.current_model())
         self._model_combo.setToolTip(desc or "Ollama 모델 선택")
 
-    def _on_model_index_changed(self, _index: int) -> None:
+    def _confirm_special_model(self, *, requires_sub: bool, supports_tools: bool) -> bool:
+        """Pro/도구미지원 선택 시 Iris HUD 안내. True면 선택 확정."""
+        if requires_sub:
+            return run_hud_confirm(
+                self,
+                title="유료 모델",
+                badge="PRO",
+                accent=_COLOR_MODEL_PRO.name(),
+                body="이 모델은 Pro/구독 전용 유료 모델입니다.",
+                hint="구독이 없으면 호출에 실패할 수 있습니다. 그래도 선택하시겠습니까?",
+                ok_text="선택",
+                cancel_text="취소",
+            )
+        if not supports_tools:
+            return run_hud_confirm(
+                self,
+                title="도구 호출 미지원",
+                badge="NO TOOLS",
+                accent=TOKENS.text_muted,
+                body="이 모델은 도구 호출을 지원하지 않습니다.",
+                hint=(
+                    "에이전트 사용(웹검색·스킬·MCP 등)에 어려움이 있을 수 있습니다. "
+                    "그래도 선택하시겠습니까?"
+                ),
+                ok_text="선택",
+                cancel_text="취소",
+            )
+        return True
+
+    def _on_model_index_changed(self, index: int) -> None:
+        if self._model_guard_silent:
+            return
+        requires_sub = bool(self._model_combo.itemData(index, _ROLE_REQUIRES_SUB))
+        supports_tools = self._model_combo.itemData(index, _ROLE_SUPPORTS_TOOLS)
+        if supports_tools is None:
+            supports_tools = True
+        else:
+            supports_tools = bool(supports_tools)
+
+        needs_confirm = requires_sub or not supports_tools
+        if needs_confirm:
+            prev = self._model_guard_prev_index
+            # 확인 전에는 이전 선택 유지
+            self._model_guard_silent = True
+            self._model_combo.blockSignals(True)
+            self._model_combo.setCurrentIndex(prev)
+            self._model_combo.blockSignals(False)
+            self._model_guard_silent = False
+            if not self._confirm_special_model(
+                requires_sub=requires_sub, supports_tools=supports_tools
+            ):
+                return
+            self._model_guard_silent = True
+            self._model_combo.blockSignals(True)
+            self._model_combo.setCurrentIndex(index)
+            self._model_combo.blockSignals(False)
+            self._model_guard_silent = False
+
+        self._model_guard_prev_index = self._model_combo.currentIndex()
         self._update_model_tooltip()
         self._input_area.input_bar.fit_model_picker()
         self.model_changed.emit(self.current_model())
@@ -1123,7 +1227,9 @@ class ChatPanel(QWidget):
         cursor = self._begin_chat_message_cursor()
         cursor.insertHtml(f"<b>{html.escape(who)}</b>: ")
         if who.strip().lower() == "iris":
-            cursor.insertHtml(iris_message_to_chat_html(body))
+            html_body = iris_message_to_chat_html(body)
+            prefetch_chat_html_images(self._log, html_body)
+            cursor.insertHtml(html_body)
             msg_id = self.register_tts_message(body)
             cursor.insertHtml(self._speaker_link_html(msg_id))
         else:
@@ -1372,7 +1478,9 @@ class ChatPanel(QWidget):
         cursor.setPosition(self._typing_body_start)
         cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
         cursor.removeSelectedText()
-        cursor.insertHtml(iris_message_to_chat_html(body))
+        html_body = iris_message_to_chat_html(body)
+        prefetch_chat_html_images(self._log, html_body)
+        cursor.insertHtml(html_body)
         msg_id = self.register_tts_message(body)
         cursor.insertHtml(self._speaker_link_html(msg_id))
 
@@ -1419,7 +1527,30 @@ class ChatPanel(QWidget):
         self._scroll_log_to_bottom()
 
     def _on_input_changed(self) -> None:
+        if self._generating:
+            self._input_area.input_bar.send_button.setEnabled(True)
+            return
         self._input_area.input_bar.send_button.setEnabled(bool(self._input.text().strip()))
+
+    def set_generating(self, active: bool) -> None:
+        """생성 중이면 전송 화살표 → 정지 네모. 클릭 시 stop_clicked."""
+        on = bool(active)
+        self._generating = on
+        btn = self._input_area.input_bar.send_button
+        btn.set_stop_mode(on)
+        if on:
+            btn.setEnabled(True)
+        else:
+            btn.setEnabled(bool(self._input.text().strip()))
+
+    def is_generating(self) -> bool:
+        return self._generating
+
+    def _on_submit_or_stop(self) -> None:
+        if self._generating:
+            self.stop_clicked.emit()
+            return
+        self._emit_send()
 
     def _emit_send(self) -> None:
         t = self._input.text().strip()

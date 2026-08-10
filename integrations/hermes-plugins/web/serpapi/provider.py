@@ -204,6 +204,16 @@ def _normalize_results(data: Dict[str, Any], *, limit: int) -> List[Dict[str, An
             or r.get("address")
             or ""
         )
+        # 채팅 인라인 이미지용 — 직접 이미지 URL이 있으면 설명에 노출
+        thumb = str(
+            r.get("thumbnail")
+            or r.get("original")
+            or r.get("image")
+            or r.get("serpapi_thumbnail")
+            or ""
+        ).strip()
+        if thumb.startswith("http") and thumb not in desc and thumb != url:
+            desc = f"{desc} Image: {thumb}".strip() if desc else f"Image: {thumb}"
         out.append(
             {
                 "title": title,

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QSize, QTimer, QUrl
+from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -48,6 +49,24 @@ from iris.storage.voice_prefs import (
     load_voice_preferences,
     save_voice_preferences,
 )
+from iris.storage.learning_prefs import (
+    LearningPreferences,
+    load_learning_preferences,
+    save_learning_preferences,
+)
+from iris.storage.api_providers import (
+    ApiProvider,
+    delete_api_provider,
+    guess_base_url,
+    load_api_providers,
+    mask_api_key,
+    parse_models_text,
+    save_api_providers,
+    upsert_api_provider,
+)
+from iris.learning.permission import level_choices, policy_for, request_elevation_hint
+from iris.learning.aloha_runtime import bootstrap_runtime, runtime_status
+from iris.learning.hook_probe import probe_input_hooks
 from iris.storage.user_profile import UserProfile, load_user_profile, save_user_profile
 from iris.system.ide_launcher import get_ide_spec, ide_catalog, is_ide_installed
 from iris.ui.workers.email_workers import EmailVerifyWorker
@@ -65,6 +84,32 @@ from iris.ui.settings.hud_dialog import (
 from iris.ui.shared.theme_tokens import TOKENS
 
 
+class _StatusDot(QWidget):
+    """API 연결 상태 원 — ok=초록, error=빨강, unknown=회색."""
+
+    def __init__(self, status: str = "unknown", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._status = status if status in ("ok", "error", "unknown") else "unknown"
+        self.setFixedSize(10, 10)
+
+    def set_status(self, status: str) -> None:
+        self._status = status if status in ("ok", "error", "unknown") else "unknown"
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        colors = {
+            "ok": QColor("#22c55e"),
+            "error": QColor("#ef4444"),
+            "unknown": QColor("#94a3b8"),
+        }
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(colors.get(self._status, colors["unknown"]))
+        painter.drawEllipse(1, 1, 8, 8)
+        painter.end()
+
+
 @dataclass(frozen=True)
 class LightSettingsSelection:
     ollama_base_url: str
@@ -74,6 +119,7 @@ class LightSettingsSelection:
     hermes_base_url: str
     hermes_api_key: str
     voice_prefs: VoicePreferences
+    learning_prefs: LearningPreferences
 
 
 class SettingsDialog(QDialog):
@@ -95,6 +141,9 @@ class SettingsDialog(QDialog):
         self._result: LightSettingsSelection | None = None
         self._accounts = load_email_accounts(db) if db is not None else []
         self._voice_prefs = load_voice_preferences(db) if db is not None else VoicePreferences()
+        self._learning_prefs = (
+            load_learning_preferences(db) if db is not None else LearningPreferences()
+        )
         self._iris_root = Path(__file__).resolve().parents[3]
         self._voice_runtime = VoiceRuntimeProcessManager(
             base_url=self._voice_prefs.voice_runtime_url,
@@ -108,6 +157,11 @@ class SettingsDialog(QDialog):
         self._mic_monitor.level_changed.connect(self._on_mic_monitor_level)
         self._mic_monitor.failed.connect(self._on_mic_monitor_failed)
         self._verify_worker: EmailVerifyWorker | None = None
+        self._api_providers: list[ApiProvider] = (
+            load_api_providers(db) if db is not None else []
+        )
+        self._api_probe_worker = None
+        self._api_row_dots: dict[str, _StatusDot] = {}
         profile = load_user_profile(db) if db is not None else UserProfile()
         self._preferred_ide = (profile.preferred_ide or "cursor").strip().lower() or "cursor"
         self._ide_exe_path = profile.ide_exe_path or ""
@@ -123,7 +177,7 @@ class SettingsDialog(QDialog):
         root.addWidget(make_title("SETTINGS"))
         root.addWidget(
             make_hint(
-                "Ollama · Hermes · 음성 · 이메일 · IDE Companion을 설정합니다. "
+                "Ollama · Hermes · API · 음성 · 이메일 · IDE Companion을 설정합니다. "
                 "창을 늘리거나 스크롤하면 모든 항목을 가리지 않고 볼 수 있습니다."
             )
         )
@@ -166,7 +220,10 @@ class SettingsDialog(QDialog):
         content_lay.addWidget(conn_box)
 
         if db is not None:
+            content_lay.addWidget(self._build_api_providers_box())
             content_lay.addWidget(self._build_voice_box())
+            content_lay.addWidget(self._build_permission_box())
+            content_lay.addWidget(self._build_learning_runtime_box())
             content_lay.addWidget(self._build_email_box())
             content_lay.addWidget(self._build_ide_box())
             content_lay.addWidget(self._build_project_parents_box())
@@ -185,6 +242,460 @@ class SettingsDialog(QDialog):
         if db is not None:
             self._sync_ide_selection_ui()
             self._reload_account_list()
+
+    def _build_api_providers_box(self) -> QGroupBox:
+        box = QGroupBox("API (OpenAI 호환)")
+        lay = QVBoxLayout(box)
+        lay.setSpacing(TOKENS.spacing_sm)
+        lay.addWidget(
+            make_hint(
+                "이름·API Key·Base URL을 채운 뒤 「추가」를 누르세요. "
+                "추가된 API는 아래에 ●이름·키(마스킹)로 표시됩니다. "
+                "초록=연결 정상(채팅 모델에 표시), 빨강=실패, 회색=미검사."
+            )
+        )
+
+        form = QFormLayout()
+        configure_form(form)
+        self._api_name = QLineEdit()
+        self._api_name.setPlaceholderText("예: NVIDIA, OpenAI, OpenRouter")
+        self._api_base = QLineEdit()
+        self._api_base.setPlaceholderText("비우면 이름으로 추정 (NVIDIA→integrate.api.nvidia.com/v1)")
+        self._api_key = QLineEdit()
+        self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key.setPlaceholderText("API Key")
+        self._api_models = QLineEdit()
+        self._api_models.setPlaceholderText("선택: 모델 id (콤마 구분). 비우면 /v1/models 조회")
+        for edit in (self._api_name, self._api_base, self._api_key, self._api_models):
+            edit.setMinimumHeight(32)
+        form.addRow(make_form_label("이름"), self._api_name)
+        form.addRow(make_form_label("API Key"), self._api_key)
+        form.addRow(make_form_label("Base URL"), self._api_base)
+        form.addRow(make_form_label("모델 목록"), self._api_models)
+        lay.addLayout(form)
+
+        row = QHBoxLayout()
+        btn_add = QPushButton("추가")
+        btn_add.clicked.connect(self._on_api_add)
+        row.addWidget(btn_add)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        self._api_status = QLabel("")
+        self._api_status.setWordWrap(True)
+        self._api_status.setObjectName("HudHint")
+        lay.addWidget(self._api_status)
+
+        # 추가된 API 목록 — 폼 아래
+        lay.addWidget(make_hint("등록된 API"))
+        self._api_list_host = QVBoxLayout()
+        self._api_list_host.setSpacing(6)
+        lay.addLayout(self._api_list_host)
+        self._reload_api_provider_rows()
+        return box
+
+    def _reload_api_provider_rows(self) -> None:
+        while self._api_list_host.count():
+            item = self._api_list_host.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._api_row_dots.clear()
+        if not self._api_providers:
+            empty = QLabel("등록된 API 없음 — 위에서 추가하세요")
+            empty.setObjectName("HudHint")
+            self._api_list_host.addWidget(empty)
+            return
+        for p in self._api_providers:
+            row_w = QWidget()
+            row = QHBoxLayout(row_w)
+            row.setContentsMargins(0, 4, 0, 4)
+            row.setSpacing(10)
+            dot = _StatusDot(p.status)
+            self._api_row_dots[p.id] = dot
+            row.addWidget(dot, 0)
+
+            name_lbl = QLabel(p.name or "(이름 없음)")
+            name_lbl.setObjectName("HudMetricName")
+            name_lbl.setMinimumWidth(72)
+            row.addWidget(name_lbl, 0)
+
+            key_lbl = QLabel(mask_api_key(p.api_key))
+            key_lbl.setObjectName("HudHint")
+            key_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            tip_parts = [p.base_url or "(base url 없음)", p.status]
+            if p.models:
+                tip_parts.append("models: " + ", ".join(p.models[:8]))
+            if p.last_error:
+                tip_parts.append(p.last_error[:160])
+            key_lbl.setToolTip(" · ".join(tip_parts))
+            row.addWidget(key_lbl, 1)
+
+            btn_test = QPushButton("테스트")
+            btn_test.setFixedWidth(64)
+            btn_test.clicked.connect(lambda _=False, pid=p.id: self._on_api_test(pid))
+            btn_del = QPushButton("삭제")
+            btn_del.setFixedWidth(52)
+            btn_del.clicked.connect(lambda _=False, pid=p.id: self._on_api_delete(pid))
+            row.addWidget(btn_test)
+            row.addWidget(btn_del)
+            self._api_list_host.addWidget(row_w)
+
+    def _persist_api_providers(self) -> None:
+        if self._db is None:
+            return
+        # 폼에 남은 입력도 저장 전에 반영
+        self._flush_api_form_to_providers(silent=True)
+        save_api_providers(self._db, self._api_providers)
+
+    def _flush_api_form_to_providers(self, *, silent: bool = False) -> ApiProvider | None:
+        """이름+키가 채워져 있으면 목록에 추가(저장 버튼만 누른 경우 대비)."""
+        if self._db is None or not hasattr(self, "_api_name"):
+            return None
+        name = self._api_name.text().strip()
+        key = self._api_key.text().strip()
+        if not name or not key:
+            return None
+        base = guess_base_url(name, self._api_base.text())
+        if not base:
+            if not silent:
+                QMessageBox.warning(
+                    self,
+                    "API 추가",
+                    "Base URL이 필요합니다. NVIDIA/OpenAI 등이면 이름을 맞추거나 URL을 입력하세요.",
+                )
+            return None
+        models = parse_models_text(self._api_models.text())
+        # 같은 이름+url이면 키만 갱신
+        for existing in self._api_providers:
+            if existing.name == name and existing.base_url.rstrip("/") == base.rstrip("/"):
+                existing.api_key = key
+                if models:
+                    existing.models = models
+                upsert_api_provider(self._db, existing)
+                self._api_providers = load_api_providers(self._db)
+                self._api_name.clear()
+                self._api_base.clear()
+                self._api_key.clear()
+                self._api_models.clear()
+                self._reload_api_provider_rows()
+                return existing
+        provider = ApiProvider(
+            name=name,
+            base_url=base.rstrip("/"),
+            api_key=key,
+            models=models,
+            status="unknown",
+        )
+        upsert_api_provider(self._db, provider)
+        self._api_providers = load_api_providers(self._db)
+        self._api_name.clear()
+        self._api_base.clear()
+        self._api_key.clear()
+        self._api_models.clear()
+        self._reload_api_provider_rows()
+        return provider
+
+    def _on_api_add(self) -> None:
+        if self._db is None:
+            return
+        name = self._api_name.text().strip()
+        key = self._api_key.text().strip()
+        if not name:
+            QMessageBox.warning(self, "API 추가", "이름을 입력하세요.")
+            return
+        if not key:
+            QMessageBox.warning(self, "API 추가", "API Key를 입력하세요.")
+            return
+        base = guess_base_url(name, self._api_base.text())
+        if not base:
+            QMessageBox.warning(
+                self,
+                "API 추가",
+                "Base URL을 입력하세요.\n예: https://integrate.api.nvidia.com/v1",
+            )
+            return
+        # 폼에 추정 URL 반영
+        if not self._api_base.text().strip():
+            self._api_base.setText(base)
+        provider = self._flush_api_form_to_providers(silent=False)
+        if provider is None:
+            return
+        self._api_status.setText(f"추가됨: {provider.name} — 연결 테스트 중…")
+        self._on_api_test(provider.id)
+
+    def _on_api_delete(self, provider_id: str) -> None:
+        if self._db is None:
+            return
+        delete_api_provider(self._db, provider_id)
+        self._api_providers = load_api_providers(self._db)
+        self._reload_api_provider_rows()
+        self._api_status.setText("삭제됨")
+
+    def _on_api_test(self, provider_id: str) -> None:
+        if self._db is None:
+            return
+        provider = next((p for p in self._api_providers if p.id == provider_id), None)
+        if provider is None:
+            return
+        if self._api_probe_worker is not None and self._api_probe_worker.isRunning():
+            self._api_status.setText("다른 테스트가 진행 중입니다…")
+            return
+        self._api_status.setText(f"테스트 중: {provider.name}…")
+        from iris.ui.workers.api_provider_workers import ApiProbeWorker
+
+        worker = ApiProbeWorker(provider, parent=self)
+        self._api_probe_worker = worker
+        worker.finished_probe.connect(self._on_api_probe_done)
+        worker.start()
+
+    def _on_api_probe_done(
+        self, provider_id: str, ok: bool, detail: str, models: object
+    ) -> None:
+        self._api_probe_worker = None
+        if self._db is None:
+            return
+        from iris.storage.api_providers import mark_provider_status
+
+        model_list = [str(m) for m in models] if isinstance(models, list) else []
+        status = "ok" if ok else "error"
+        # ok이지만 모델이 없고 수동 목록도 없으면 피커에 못 올림 → error로
+        p = next((x for x in self._api_providers if x.id == provider_id), None)
+        manual = list(p.models) if p else []
+        merged = list(model_list)
+        for m in manual:
+            if m not in merged:
+                merged.append(m)
+        if ok and not merged:
+            status = "error"
+            detail = (detail or "") + " · 사용 가능한 모델이 없습니다. 모델 목록을 입력하세요."
+            ok = False
+        mark_provider_status(
+            self._db,
+            provider_id,
+            status=status,
+            error="" if ok else detail,
+            models=merged if merged else None,
+        )
+        self._api_providers = load_api_providers(self._db)
+        self._reload_api_provider_rows()
+        self._api_status.setText(
+            f"{'정상' if ok else '실패'}: {detail[:200]}"
+        )
+
+    def _build_permission_box(self) -> QGroupBox:
+        box = QGroupBox("권한 (업무 학습 · Computer-Use)")
+        lay = QVBoxLayout(box)
+        lay.setSpacing(TOKENS.spacing_sm)
+        lay.addWidget(
+            make_hint(
+                "학습/자동화가 PC에 접근하는 범위를 설정합니다. "
+                "‘제한 없음’은 입력·창·프로세스 조작을 최대한 허용합니다(비밀번호 마스킹은 유지)."
+            )
+        )
+        form = QFormLayout()
+        configure_form(form)
+        self._perm_level = QComboBox()
+        for key, label in level_choices():
+            self._perm_level.addItem(label, key)
+        self._suppress_unrestricted_prompt = True
+        idx = self._perm_level.findData(self._learning_prefs.permission_level)
+        self._perm_level.setCurrentIndex(max(0, idx))
+        self._perm_desc = QLabel()
+        self._perm_desc.setWordWrap(True)
+        self._perm_level.currentIndexChanged.connect(self._on_perm_level_changed)
+        form.addRow(make_form_label("권한 수준"), self._perm_level)
+        lay.addLayout(form)
+        lay.addWidget(self._perm_desc)
+        self._on_perm_level_changed()
+        self._suppress_unrestricted_prompt = False
+
+        tip = QLabel(
+            f"관리자: {request_elevation_hint()}\n"
+            "보안 소프트웨어가 훅을 막을 수 있습니다. Iris/python 예외 허용을 권장합니다.\n"
+            "접근성/앱 제어 정책은 회사 PC에서 IT 확인이 필요할 수 있습니다."
+        )
+        tip.setWordWrap(True)
+        tip.setObjectName("HudHint")
+        lay.addWidget(tip)
+
+        row = QHBoxLayout()
+        btn_probe = QPushButton("입력 훅 진단")
+        btn_probe.clicked.connect(self._on_hook_probe)
+        btn_pynput = QPushButton("pynput 설치")
+        btn_pynput.clicked.connect(self._install_pynput)
+        row.addWidget(btn_probe)
+        row.addWidget(btn_pynput)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self._hook_probe_label = QLabel("")
+        self._hook_probe_label.setWordWrap(True)
+        lay.addWidget(self._hook_probe_label)
+        return box
+
+    def _on_perm_level_changed(self) -> None:
+        key = str(self._perm_level.currentData() or "normal")
+        pol = policy_for(key)
+        self._perm_desc.setText(pol.description_ko)
+        if key == "unrestricted" and not getattr(self, "_suppress_unrestricted_prompt", False):
+            self._prompt_unrestricted_elevation()
+
+    def _prompt_unrestricted_elevation(self) -> None:
+        from iris.learning.elevation import is_elevated, relaunch_as_admin
+
+        if is_elevated():
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("제한 없음 · 관리자 권한")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("제한 없음은 관리자 권한으로 실행해야 합니다.")
+        box.setInformativeText(
+            "지금 재실행을 누르면 Iris가 종료된 뒤 UAC 확인 후 관리자 권한으로 다시 시작됩니다.\n"
+            "취소를 누르면 권한 수준을 이전 값으로 되돌립니다."
+        )
+        btn_restart = box.addButton("지금 재실행", QMessageBox.ButtonRole.AcceptRole)
+        btn_cancel = box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(btn_restart)
+        box.exec()
+        if box.clickedButton() is btn_restart:
+            # 저장 후 재실행 — prefs에 unrestricted 반영
+            self._learning_prefs.permission_level = "unrestricted"
+            if self._db is not None:
+                save_learning_preferences(self._db, self._learning_prefs)
+            if relaunch_as_admin():
+                # 현재 창 닫고 프로세스 종료
+                self.accept()
+                QApplication = __import__("PyQt6.QtWidgets", fromlist=["QApplication"]).QApplication
+                app = QApplication.instance()
+                if app is not None:
+                    app.quit()
+                import sys
+
+                sys.exit(0)
+            else:
+                QMessageBox.warning(
+                    self,
+                    "재실행 실패",
+                    "관리자 권한 재실행에 실패했습니다. 수동으로 ‘관리자 권한으로 실행’ 해 주세요.",
+                )
+        else:
+            # 취소 → 이전 권한으로
+            prev = self._learning_prefs.permission_level
+            if prev == "unrestricted":
+                prev = "normal"
+            self._suppress_unrestricted_prompt = True
+            idx = self._perm_level.findData(prev)
+            self._perm_level.setCurrentIndex(max(0, idx))
+            self._suppress_unrestricted_prompt = False
+            self._on_perm_level_changed()
+
+    def _on_hook_probe(self) -> None:
+        import sys
+
+        try:
+            result = probe_input_hooks()
+            lines = [
+                f"결과: {'OK' if result.ok else '실패'} · backend={result.backend}",
+                *result.messages[:6],
+            ]
+            try:
+                import pynput  # noqa: F401
+
+                lines.append(f"pynput: 설치됨 ({sys.executable})")
+            except ImportError:
+                lines.append(
+                    f"pynput: 없음 — 아래 ‘pynput 설치’로 현재 Iris Python에 설치하세요.\n"
+                    f"  {sys.executable} -m pip install pynput"
+                )
+                lines.append(
+                    "Win32 폴백: pynput이 없을 때 Windows 저수준 훅 API로 자동 연결됩니다 "
+                    "(별도 외부 프로그램 연결 불필요)."
+                )
+            if result.backend == "win32":
+                lines.append(
+                    "현재 진단은 Win32 폴백 가능 상태입니다. "
+                    "학습 시작 시 pynput이 없으면 자동으로 Win32 훅이 사용됩니다."
+                )
+            if not result.ok:
+                lines.append(result.security_hint)
+                lines.append(result.accessibility_hint)
+            from iris.learning.elevation import is_elevated
+
+            if not is_elevated():
+                lines.append(result.elevation_hint)
+            self._hook_probe_label.setText("\n".join(lines))
+        except Exception as exc:
+            self._hook_probe_label.setText(f"진단 오류: {exc}")
+
+    def _install_pynput(self) -> None:
+        import subprocess
+        import sys
+
+        self._hook_probe_label.setText("pynput 설치 중…")
+        try:
+            kw = {}
+            if sys.platform == "win32":
+                kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            proc = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "pynput>=1.7.7"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                **kw,
+            )
+            if proc.returncode != 0:
+                self._hook_probe_label.setText(
+                    f"설치 실패:\n{(proc.stderr or proc.stdout or '')[:400]}"
+                )
+                return
+            self._hook_probe_label.setText(
+                f"pynput 설치 완료 ({sys.executable}). 다시 ‘입력 훅 진단’을 누르세요."
+            )
+        except Exception as exc:
+            self._hook_probe_label.setText(f"설치 오류: {exc}")
+
+    def _build_learning_runtime_box(self) -> QGroupBox:
+        box = QGroupBox("ShowUI-Aloha Runtime (별도 Python)")
+        lay = QVBoxLayout(box)
+        lay.setSpacing(TOKENS.spacing_sm)
+        lay.addWidget(
+            make_hint(
+                "Actor 실행은 PySide6가 필요해 IRIS(PyQt6)와 분리된 venv를 사용합니다. "
+                "`~/.iris-light/runtimes/aloha`"
+            )
+        )
+        self._aloha_runtime_status = QLabel("")
+        self._aloha_runtime_status.setWordWrap(True)
+        lay.addWidget(self._aloha_runtime_status)
+        row = QHBoxLayout()
+        btn_refresh = QPushButton("상태 새로고침")
+        btn_install = QPushButton("Runtime 설치/복구")
+        btn_refresh.clicked.connect(self._refresh_aloha_runtime_status)
+        btn_install.clicked.connect(self._bootstrap_aloha_runtime)
+        row.addWidget(btn_refresh)
+        row.addWidget(btn_install)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self._refresh_aloha_runtime_status()
+        return box
+
+    def _refresh_aloha_runtime_status(self) -> None:
+        st = runtime_status()
+        self._aloha_runtime_status.setText(
+            f"{'준비됨' if st['ok'] else '미설치/불완전'} — {st['python']}\n{st['detail']}"
+        )
+
+    def _bootstrap_aloha_runtime(self) -> None:
+        self._aloha_runtime_status.setText("설치 중… (수 분 소요될 수 있음)")
+        try:
+            st = bootstrap_runtime(progress=lambda m: self._aloha_runtime_status.setText(m))
+            self._aloha_runtime_status.setText(
+                f"완료 — {st['python']}\n{st['detail']}"
+            )
+            QMessageBox.information(self, "Aloha Runtime", "설치가 완료되었습니다.")
+        except Exception as exc:
+            self._aloha_runtime_status.setText(f"실패: {exc}")
+            QMessageBox.warning(self, "Aloha Runtime", str(exc)[:400])
 
     def _build_email_box(self) -> QGroupBox:
         email_box = QGroupBox("이메일 계정 (Gmail · Naver 등)")
@@ -967,8 +1478,11 @@ class SettingsDialog(QDialog):
             return
         self._stop_mic_monitor()
         voice_prefs = self._current_voice_prefs_from_ui()
+        learning_prefs = self._current_learning_prefs_from_ui()
         if self._db is not None:
             save_voice_preferences(self._db, voice_prefs)
+            save_learning_preferences(self._db, learning_prefs)
+            self._persist_api_providers()
         self._result = LightSettingsSelection(
             ollama_base_url=self._ollama_url.text().strip() or "http://127.0.0.1:11434/v1",
             ollama_model=self._ollama_model.text().strip(),
@@ -977,8 +1491,48 @@ class SettingsDialog(QDialog):
             hermes_base_url=self._hermes_url.text().strip() or "http://127.0.0.1:8642/v1",
             hermes_api_key=self._hermes_key.text().strip(),
             voice_prefs=voice_prefs,
+            learning_prefs=learning_prefs,
         )
+        # 저장 후에도 비관리자면 재실행 유도 (다음 부팅 자동 elevation과 동일 정책)
+        if learning_prefs.permission_level == "unrestricted":
+            from iris.learning.elevation import is_elevated, relaunch_as_admin
+
+            if not is_elevated():
+                box = QMessageBox(self)
+                box.setWindowTitle("제한 없음 · 관리자 권한")
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setText("제한 없음은 관리자 권한으로 실행해야 합니다.")
+                box.setInformativeText(
+                    "지금 재실행을 누르면 관리자 권한으로 Iris를 다시 시작합니다."
+                )
+                btn_restart = box.addButton(
+                    "지금 재실행", QMessageBox.ButtonRole.AcceptRole
+                )
+                box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                if box.clickedButton() is btn_restart and relaunch_as_admin():
+                    self.accept()
+                    from PyQt6.QtWidgets import QApplication
+                    import sys
+
+                    app = QApplication.instance()
+                    if app is not None:
+                        app.quit()
+                    sys.exit(0)
         self.accept()
+
+    def _current_learning_prefs_from_ui(self) -> LearningPreferences:
+        if not hasattr(self, "_perm_level"):
+            return LearningPreferences()
+        prefs = LearningPreferences(
+            permission_level=str(self._perm_level.currentData() or "normal"),
+            vlm_provider=self._learning_prefs.vlm_provider,
+            vlm_model=self._learning_prefs.vlm_model,
+            api_fallback_provider=self._learning_prefs.api_fallback_provider,
+            api_fallback_model=self._learning_prefs.api_fallback_model,
+            aloha_runtime_python=self._learning_prefs.aloha_runtime_python,
+        )
+        return prefs
 
     def reject(self) -> None:
         self._stop_mic_monitor()

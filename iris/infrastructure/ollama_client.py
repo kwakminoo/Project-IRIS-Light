@@ -24,6 +24,9 @@ class OllamaModelInfo:
     catalog_name: str = ""
     size: int = 0
     digest: str = ""
+    # probe 전/실패 시 True — 숨기지 않고 기본(도구 지원) 스타일로 표시
+    supports_tools: bool = True
+    requires_subscription: bool = False
 
     def __post_init__(self) -> None:
         if not self.catalog_name:
@@ -33,6 +36,16 @@ class OllamaModelInfo:
     def is_cloud(self) -> bool:
         n = self.name.lower()
         return n.endswith("-cloud") or ":cloud" in n or n.endswith(":cloud")
+
+
+def probe_status_from_http_detail(detail: str) -> str:
+    """probe HTTP 본문 → 'ok' | 'subscription' | 'unavailable'."""
+    text = (detail or "").lower()
+    if "subscription" in text or "upgrade" in text:
+        return "subscription"
+    if "not found" in text:
+        return "unavailable"
+    return "unavailable"
 
 
 def display_name_from_runtime(runtime_name: str) -> str:
@@ -137,37 +150,47 @@ class OllamaClient:
         return out if out else self._local_cloud_fallback()
 
     def list_free_cloud_models(
-        self, *, probe: bool = True, tools_only: bool = True, max_workers: int = 6
+        self, *, probe: bool = True, tools_only: bool = False, max_workers: int = 6
     ) -> list[OllamaModelInfo]:
         """
-        무료 플랜에서 사용 가능한 클라우드 모델만 반환.
-        tools_only=True면 도구 호출(tool-calling) 지원 모델만 남긴다.
-        probe=False면 카탈로그 전체(Pro 포함) 반환.
+        클라우드 카탈로그 모델을 반환하고, probe 시 구독/도구 지원 플래그를 채운다.
+        tools_only=True면 예전처럼 무료+도구 지원만 남긴다(하위 호환).
+        probe=False면 카탈로그 전체(플래그 기본값) 반환.
         """
         catalog = self.list_cloud_catalog()
         if not probe or not catalog:
             return catalog
 
-        def _ok(name: str) -> bool:
-            if not self.probe_model_available(name):
-                return False
-            if tools_only and not self.model_supports_tools(name):
-                return False
-            return True
+        def _classify(model: OllamaModelInfo) -> OllamaModelInfo | None:
+            status = self.probe_model_status(model.name)
+            requires_sub = status == "subscription"
+            # 조회 실패(unavailable)도 목록에는 남긴다 — 색/경고만 다르게.
+            tools = True
+            if status in ("ok", "subscription"):
+                tools = self.model_supports_tools(model.name)
+            if tools_only and (requires_sub or not tools):
+                return None
+            return OllamaModelInfo(
+                name=model.name,
+                catalog_name=model.catalog_name,
+                size=model.size,
+                digest=model.digest,
+                supports_tools=tools,
+                requires_subscription=requires_sub,
+            )
 
-        available: list[OllamaModelInfo] = []
+        classified: list[OllamaModelInfo] = []
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_ok, m.name): m for m in catalog}
+            futures = {pool.submit(_classify, m): m for m in catalog}
             for fut in as_completed(futures):
-                model = futures[fut]
                 try:
-                    if fut.result():
-                        available.append(model)
+                    item = fut.result()
                 except Exception:
-                    pass
-        available.sort(key=lambda x: x.catalog_name.lower())
-        return available if available else catalog
-
+                    item = futures[fut]
+                if item is not None:
+                    classified.append(item)
+        classified.sort(key=lambda x: x.catalog_name.lower())
+        return classified if classified else catalog
     def show_model(self, runtime_name: str, *, timeout_sec: float = 15.0) -> dict[str, Any]:
         """POST /api/show — capabilities·model_info."""
         payload = {"model": runtime_name}
@@ -207,8 +230,8 @@ class OllamaClient:
         return supports_tools_capability(data.get("capabilities"))
 
 
-    def probe_model_available(self, runtime_name: str, *, timeout_sec: float = 25.0) -> bool:
-        """구독 없이 호출 가능하면 True (무료 tier 포함)."""
+    def probe_model_status(self, runtime_name: str, *, timeout_sec: float = 25.0) -> str:
+        """'ok' | 'subscription' | 'unavailable'."""
         payload = {
             "model": runtime_name,
             "messages": [{"role": "user", "content": "ping"}],
@@ -223,16 +246,16 @@ class OllamaClient:
         try:
             with urlopen(req, timeout=timeout_sec) as resp:
                 json.loads(resp.read().decode("utf-8"))
-            return True
+            return "ok"
         except HTTPError as e:
-            detail = e.read().decode("utf-8", errors="replace").lower()
-            if "subscription" in detail or "upgrade" in detail:
-                return False
-            if "not found" in detail:
-                return False
-            return False
+            detail = e.read().decode("utf-8", errors="replace")
+            return probe_status_from_http_detail(detail)
         except (URLError, TimeoutError, json.JSONDecodeError, OSError):
-            return False
+            return "unavailable"
+
+    def probe_model_available(self, runtime_name: str, *, timeout_sec: float = 25.0) -> bool:
+        """구독 없이 호출 가능하면 True (무료 tier 포함)."""
+        return self.probe_model_status(runtime_name, timeout_sec=timeout_sec) == "ok"
 
     def _local_cloud_fallback(self) -> list[OllamaModelInfo]:
         models = self.list_models()
@@ -240,13 +263,13 @@ class OllamaClient:
         return cloud if cloud else models
 
     def list_cloud_preferring(self) -> list[OllamaModelInfo]:
-        """하위 호환 — 무료 클라우드 모델 우선."""
+        """하위 호환 — 클라우드 카탈로그(+probe 분류)."""
         return self.list_free_cloud_models(probe=True)
 
     def list_chat_models(self, *, probe_cloud: bool = True) -> list[OllamaModelInfo]:
-        """로컬 설치 모델 + 무료 클라우드 병합 (로컬 우선). Hermes/Ollama 공용."""
+        """로컬 설치 모델 + 클라우드 카탈로그 병합 (로컬 우선). Hermes/Ollama 공용."""
         local = self.list_models()
-        cloud = self.list_free_cloud_models(probe=probe_cloud)
+        cloud = self.list_free_cloud_models(probe=probe_cloud, tools_only=False)
         seen: set[str] = set()
         out: list[OllamaModelInfo] = []
         for m in [*local, *cloud]:
@@ -255,7 +278,6 @@ class OllamaClient:
             seen.add(m.name)
             out.append(m)
         return out
-
     def stream_chat(
         self,
         model: str,
@@ -302,6 +324,56 @@ class OllamaClient:
         except URLError as e:
             raise RuntimeError(f"Ollama 연결 실패: {e.reason}") from e
 
+    def chat_once_with_images(
+        self,
+        model: str,
+        prompt: str,
+        images_png: list[bytes],
+        *,
+        system: str = "",
+        timeout_sec: float = 90.0,
+    ) -> str:
+        """멀티모달 단발 호출 — 스트림 없이 최종 content만 반환.
+
+        이미지는 /api/chat의 messages[].images (base64 PNG)로 보낸다.
+        모델이 멀티모달이 아니면 이미지를 무시하고 텍스트만 보므로,
+        호출 측에서 결과가 쓸모없을 수 있음을 감안해야 한다.
+        """
+        import base64
+
+        message: dict[str, Any] = {"role": "user", "content": prompt}
+        if images_png:
+            message["images"] = [
+                base64.b64encode(png).decode("ascii") for png in images_png if png
+            ]
+        messages: list[dict[str, Any]] = []
+        if system.strip():
+            messages.append({"role": "system", "content": system.strip()})
+        messages.append(message)
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+        }
+        req = Request(
+            f"{self.base_url}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=timeout_sec) as resp:
+                obj = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")[:400]
+            raise RuntimeError(f"Ollama HTTP {e.code}: {detail or e.reason}") from e
+        except URLError as e:
+            raise RuntimeError(f"Ollama 연결 실패: {e.reason}") from e
+        msg = obj.get("message") or {}
+        return str(msg.get("content") or "") if isinstance(msg, dict) else ""
+
     def _get_json(self, path: str) -> dict[str, Any]:
         return self._get_json_url(f"{self.base_url}{path}")
 
@@ -321,9 +393,14 @@ class OllamaClient:
 
 
 if __name__ == "__main__":
-    # 도구 지원 필터 핵심 로직 자체 점검(네트워크 불필요).
+    # 도구 지원·구독 분류 핵심 로직 자체 점검(네트워크 불필요).
     assert supports_tools_capability(["completion", "tools", "thinking"]) is True
     assert supports_tools_capability(["completion", "vision"]) is False
     assert supports_tools_capability([]) is False
     assert supports_tools_capability(None) is False
+    assert probe_status_from_http_detail("requires a subscription to use") == "subscription"
+    assert probe_status_from_http_detail("please upgrade your plan") == "subscription"
+    assert probe_status_from_http_detail("model not found") == "unavailable"
+    m = OllamaModelInfo(name="x:cloud", supports_tools=False, requires_subscription=True)
+    assert m.supports_tools is False and m.requires_subscription is True
     print("ollama_client self-check ok")

@@ -168,6 +168,8 @@ class HermesClient:
             )
         try:
             for cmd in cmds:
+                from iris.system.win_subprocess import no_window_kwargs
+
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -176,6 +178,7 @@ class HermesClient:
                     errors="replace",
                     timeout=30,
                     check=False,
+                    **no_window_kwargs(),
                 )
                 if proc.returncode != 0:
                     err = (proc.stderr or proc.stdout or "").strip()

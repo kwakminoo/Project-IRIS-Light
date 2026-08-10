@@ -1,0 +1,12 @@
+# Optional Aloha Act runtime deps (separate venv recommended)
+# IRIS uses PyQt6 — do NOT install PySide6 into the IRIS venv.
+flask>=2.0
+pyautogui==0.9.54
+openai
+anthropic>=0.37.1
+Pillow
+numpy
+opencv-python-headless>=4.8.0
+screeninfo
+jsonschema
+requests

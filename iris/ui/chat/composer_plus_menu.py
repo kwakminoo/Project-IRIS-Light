@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QPointF, Qt, pyqtSignal
@@ -57,7 +58,7 @@ def list_custom_skill_names(*, limit: int = 40) -> list[str]:
 
 
 def list_hermes_mcp_names(*, limit: int = 24) -> list[str]:
-    """config.yaml 의 mcp_servers 키만 가볍게 파싱 (의존성 없이)."""
+    """config.yaml 의 mcp_servers 최상위 키만 (args/env 중첩 키 제외)."""
     cfg = _hermes_root() / "config.yaml"
     if not cfg.is_file():
         return []
@@ -75,15 +76,15 @@ def list_hermes_mcp_names(*, limit: int = 24) -> list[str]:
             continue
         if line and not line.startswith((" ", "\t")) and not line.strip().startswith("#"):
             break
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        # 서버명만: mcp_servers 바로 아래 들여쓰기 2칸 키 (중첩 args/env 제외)
+        m = re.match(r"^  ([^\s:#][^:]*)\s*:\s*(?:#.*)?$", line)
+        if not m:
             continue
-        if stripped.endswith(":") and not stripped.startswith("-"):
-            key = stripped[:-1].strip().strip("\"'")
-            if key and key not in names:
-                names.append(key)
-            if len(names) >= limit:
-                break
+        key = m.group(1).strip().strip("\"'")
+        if key and key not in names:
+            names.append(key)
+        if len(names) >= limit:
+            break
     return names
 
 
@@ -351,13 +352,14 @@ class ComposerPlusButton(QPushButton):
 
 
 class ComposerSendButton(QPushButton):
-    """전송 ↑ — 원형 배경은 고정, 활성 시 화살표만 +와 동일 색·크기."""
+    """전송 ↑ / 생성 중 ■ — 원형 배경 고정, 아이콘만 전환."""
 
     _BTN = ComposerPlusButton._BTN
     _ARM = ComposerPlusButton._ARM
     _THICK = ComposerPlusButton._THICK
     _ARROW_RGB = ComposerPlusButton._PLUS_RGB  # #e2e8f0
     _ARROW_MUTED_RGB = (71, 85, 105)  # 기존 disabled 화살표 #475569
+    _STOP_SIDE = 8.0  # 네모 한 변 (원 안에 Cursor/GPT 스타일)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -367,6 +369,7 @@ class ComposerSendButton(QPushButton):
         self.setFixedSize(self._BTN, self._BTN)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setEnabled(False)
+        self._stop_mode = False
         # 원형 배경: 활성/비활성 모두 기존 disabled 톤 유지 (인디고 전환 없음)
         self.setStyleSheet(
             """
@@ -388,12 +391,43 @@ class ComposerSendButton(QPushButton):
             """
         )
 
+    def is_stop_mode(self) -> bool:
+        return self._stop_mode
+
+    def set_stop_mode(self, active: bool) -> None:
+        on = bool(active)
+        if on == self._stop_mode:
+            return
+        self._stop_mode = on
+        self.setToolTip("중지" if on else "전송")
+        self.update()
+
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         cx = self.width() / 2.0
         cy = self.height() / 2.0
+
+        if self._stop_mode:
+            r, g, b = self._ARROW_RGB
+            half = self._STOP_SIDE / 2.0
+            # 살짝 둥근 직사각형 정지 아이콘
+            for alpha, inset in ((70, 0.6), (230, 0.0)):
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(r, g, b, alpha))
+                s = self._STOP_SIDE - inset * 2
+                painter.drawRoundedRect(
+                    int(cx - s / 2),
+                    int(cy - s / 2),
+                    int(s),
+                    int(s),
+                    1.5,
+                    1.5,
+                )
+            painter.end()
+            return
+
         arm = float(self._ARM)
         if self.isEnabled():
             r, g, b = self._ARROW_RGB
@@ -419,11 +453,22 @@ class ComposerSendButton(QPushButton):
 
 
 if __name__ == "__main__":
+    import sys
+
+    from PyQt6.QtWidgets import QApplication
+
     assert isinstance(list_hermes_skill_names(), list)
     assert isinstance(list_hermes_mcp_names(), list)
     assert ComposerSendButton._BTN == ComposerPlusButton._BTN
     assert ComposerSendButton._ARM == ComposerPlusButton._ARM
     assert ComposerSendButton._ARROW_RGB == ComposerPlusButton._PLUS_RGB
+    app = QApplication.instance() or QApplication(sys.argv)
+    btn = ComposerSendButton()
+    assert not btn.is_stop_mode()
+    btn.set_stop_mode(True)
+    assert btn.is_stop_mode() and btn.toolTip() == "중지"
+    btn.set_stop_mode(False)
+    assert not btn.is_stop_mode() and btn.toolTip() == "전송"
     print(
         "composer_plus_menu ok",
         "skills",
@@ -431,3 +476,4 @@ if __name__ == "__main__":
         "mcp",
         len(list_hermes_mcp_names()),
     )
+    _ = app

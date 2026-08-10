@@ -6,11 +6,14 @@ import html
 import re
 from urllib.parse import urlparse
 
-# [title](https://...)
-_MD_LINK = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
+# ![alt](url) — 인용 칩으로 바꾸지 않음 (채팅 인라인 이미지)
+_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+# [title](https://...) — 이미지 마크다운(![...])은 제외
+_MD_LINK = re.compile(r"(?<!!)\[([^\]]*)\]\((https?://[^)\s]+)\)")
 # bare URL (마크다운 링크 처리 후 남은 것)
 _BARE_URL = re.compile(r"(?<![\w\"'=])(https?://[^\s<>\]\"']+)")
 _CITE_TOKEN = re.compile(r"%%IRIS_CITE_(\d+)%%")
+_IMG_HOLD = re.compile(r"%%IRIS_IMG_(\d+)%%")
 
 
 def _clean_url(url: str) -> str:
@@ -44,6 +47,14 @@ def collect_and_tokenize_citations(text: str) -> tuple[str, list[tuple[str, str]
     """마크다운/베어 URL을 %%IRIS_CITE_n%% 토큰으로 치환. sources=(title,url) 1-index 순."""
     sources: list[tuple[str, str]] = []
     url_to_n: dict[str, int] = {}
+    held_images: list[str] = []
+
+    def _hold_image(m: re.Match[str]) -> str:
+        held_images.append(m.group(0))
+        return f"%%IRIS_IMG_{len(held_images) - 1}%%"
+
+    # 이미지 URL이 bare/citation에 먹히지 않도록 먼저 보관
+    out = _MD_IMAGE.sub(_hold_image, text or "")
 
     def _num(title: str, url: str) -> int:
         u = _clean_url(url)
@@ -67,7 +78,7 @@ def collect_and_tokenize_citations(text: str) -> tuple[str, list[tuple[str, str]
             return f"{label} %%IRIS_CITE_{n}%%"
         return f"%%IRIS_CITE_{n}%%"
 
-    out = _MD_LINK.sub(md_repl, text or "")
+    out = _MD_LINK.sub(md_repl, out)
 
     def bare_repl(m: re.Match[str]) -> str:
         url = m.group(1)
@@ -75,6 +86,14 @@ def collect_and_tokenize_citations(text: str) -> tuple[str, list[tuple[str, str]
         return f"%%IRIS_CITE_{n}%%" if n else m.group(0)
 
     out = _BARE_URL.sub(bare_repl, out)
+
+    def _restore_image(m: re.Match[str]) -> str:
+        i = int(m.group(1))
+        if 0 <= i < len(held_images):
+            return held_images[i]
+        return m.group(0)
+
+    out = _IMG_HOLD.sub(_restore_image, out)
     return out, sources
 
 
@@ -128,4 +147,17 @@ if __name__ == "__main__":
     html_out = iris_message_to_chat_html(sample)
     assert "href=" in html_out and "SOURCES" in html_out
     assert html_out.count("openai.com") >= 1
-    print("chat_citations ok", len(src), "sources")
+    # 이미지 마크다운은 인용 칩으로 바꾸지 않음
+    with_img = (
+        "제품 예시입니다.\n"
+        "![TILSBERK HUD](https://cdn.example.com/tilsberk.jpg)\n"
+        "출처 [Maker](https://maker.example.com/)."
+    )
+    tok2, src2 = collect_and_tokenize_citations(with_img)
+    assert "![TILSBERK HUD](https://cdn.example.com/tilsberk.jpg)" in tok2, tok2
+    assert len(src2) == 1 and "maker.example.com" in src2[0][1]
+    html_img = iris_message_to_chat_html(with_img)
+    assert "iris-image:" in html_img and "<img " in html_img
+    assert "cdn.example.com/tilsberk.jpg" in html_img
+    print("chat_citations ok", len(src), "sources; images preserved")
+

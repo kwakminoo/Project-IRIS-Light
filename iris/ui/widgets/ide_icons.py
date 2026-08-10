@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import QMessageBox, QWidget
 
 from iris.system.ide_launcher import get_ide_spec
 
-_LOGO_DIR = Path(__file__).resolve().parent.parent / "assets" / "ide_logos"
+_LOGO_DIR = Path(__file__).resolve().parents[2] / "assets" / "ide_logos"
 
 # 다크 UI용 — 검정 실루엣 / fill 없는 SVG에 브랜드 색 주입
 _BRAND_FILL: dict[str, str] = {

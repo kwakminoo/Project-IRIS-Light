@@ -46,6 +46,19 @@
 4. 세그먼트별 `/v1/audio/speech` → `QSoundEffect` 순차 재생
 5. 새 재생 시작 시 기존 큐/재생 정리
 
+### qwen-tts 호출 규약 (실측으로 확정, 바꾸지 말 것)
+
+- `language="korean"` — **소문자**. 문자열이 프로세서 프롬프트에 그대로 들어가므로
+  `"Korean"`으로 주면 발음이 깨진다.
+- `x_vector_only_mode=True` — 화자 임베딩만 사용. ICL 모드는 `ref_text`가 기준 음성과
+  정확히 일치해야 해서 불안정하다.
+- 모델 로딩은 **bf16** (`dtype=torch.bfloat16`). fp16은 CUDA device-side assert로 죽는다.
+- 클로닝은 `*-Base` 모델 전용 (`tts_model_type == "base"`).
+- `generate_voice_clone`은 파일 경로가 아니라 `(파형 리스트, sample_rate)`를 반환한다.
+  런타임이 직접 16bit PCM wav로 저장한다.
+- 위 규약은 `tests/test_tts_service_contract.py`가 고정한다. mock 모드는 실제 모델을
+  호출하지 않으므로 시그니처 오류를 잡아주지 못한다.
+
 ## 녹음 폴더 분석
 
 - 재귀 검색: `.wav .mp3 .m4a .flac .ogg .aac`

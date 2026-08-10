@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QPointF, Qt, QSize, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, Qt, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -13,10 +13,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from iris.learning.models import LearningState
 from iris.ui.window.top_status_header import STATUS_BLOCK_HEIGHT
 
 _MIC_BTN_W = 36
 _MIC_BTN_H = 26
+_LEARN_BTN_W = 36
+_LEARN_BTN_H = 26
 
 
 def _win_ctrl_button(text: str, tooltip: str) -> QPushButton:
@@ -81,6 +84,92 @@ def _waveform_mic_icon(*, active: bool, size: QSize | None = None) -> QIcon:
     return QIcon(pm)
 
 
+def _learning_icon(state: LearningState, *, size: QSize | None = None, pulse: float = 1.0) -> QIcon:
+    """미니멀 모니터 선형 아이콘 — 화면 베젤 + 스탠드 (26–30px에서도 식별)."""
+    sz = size or QSize(_LEARN_BTN_W, _LEARN_BTN_H)
+    pm = QPixmap(sz)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    if state == LearningState.IDLE:
+        base = QColor(100, 116, 139)  # slate
+        glow = False
+    elif state == LearningState.ERROR:
+        base = QColor(248, 113, 113)
+        glow = True
+    else:
+        # RECORDING / PROCESSING — neon cyan
+        base = QColor(34, 211, 238)
+        glow = True
+
+    w, h = float(sz.width()), float(sz.height())
+    alpha_scale = max(0.35, min(1.0, pulse))
+
+    # 비율: 얇은 모니터 — 화면 영역 + 목 + 받침대
+    screen = (
+        0.14 * w,
+        0.12 * h,
+        0.72 * w,
+        0.52 * h,
+    )  # x, y, ww, hh
+    neck_top = screen[1] + screen[3]
+    neck_x = 0.46 * w
+    neck_w = 0.08 * w
+    neck_h = 0.14 * h
+    base_y = neck_top + neck_h
+    base_x = 0.28 * w
+    base_w = 0.44 * w
+    base_h = 0.08 * h
+
+    def _stroke(width: float, alpha: int) -> None:
+        color = QColor(base)
+        color.setAlpha(int(alpha * alpha_scale))
+        pen = QPen(color)
+        pen.setWidthF(width)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    layers = ((2.8, 24), (1.5, 70), (0.95, 220)) if glow else ((1.15, 175),)
+    screen_rect = QRectF(screen[0], screen[1], screen[2], screen[3])
+    for width, alpha in layers:
+        _stroke(width, alpha)
+        painter.drawRoundedRect(screen_rect, 1.6, 1.6)
+        painter.drawLine(
+            QPointF(neck_x + neck_w * 0.5, neck_top),
+            QPointF(neck_x + neck_w * 0.5, base_y),
+        )
+        painter.drawLine(
+            QPointF(base_x, base_y + base_h * 0.5),
+            QPointF(base_x + base_w, base_y + base_h * 0.5),
+        )
+
+    inset = 2.2
+    inner = screen_rect.adjusted(inset, inset, -inset, -inset)
+    if inner.width() > 2 and inner.height() > 2:
+        if glow:
+            fill = QColor(base)
+            fill.setAlpha(int(36 * alpha_scale))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(fill)
+            painter.drawRoundedRect(inner, 1.0, 1.0)
+            dot = QColor(255, 255, 255, int(210 * alpha_scale))
+            painter.setBrush(dot)
+            painter.drawEllipse(
+                QPointF(inner.right() - 2.2, inner.bottom() - 2.0),
+                1.1,
+                1.1,
+            )
+        else:
+            _stroke(0.7, 120)
+            painter.drawRoundedRect(inner, 1.0, 1.0)
+
+    painter.end()
+    return QIcon(pm)
+
+
 class DragTab(QWidget):
     """Frameless title bar with drag handling and window controls."""
 
@@ -89,6 +178,7 @@ class DragTab(QWidget):
     minimize_clicked = pyqtSignal()
     maximize_clicked = pyqtSignal()
     ide_toggle_clicked = pyqtSignal()
+    learning_clicked = pyqtSignal()
     mic_clicked = pyqtSignal()
 
     def __init__(self, parent_window: QWidget) -> None:
@@ -137,6 +227,16 @@ class DragTab(QWidget):
         # companion(Iris≈20%)에서만 표시 — 일반 모드는 좌측 하단 IDE로 진입
         self._btn_ide = _win_ctrl_button("</>", "일반 레이아웃으로 복귀")
         self._btn_ide.hide()
+        self._btn_learning = QPushButton()
+        self._btn_learning.setObjectName("WinCtrlLearning")
+        self._btn_learning.setToolTip("업무 학습 시작")
+        self._btn_learning.setFixedSize(_LEARN_BTN_W, _LEARN_BTN_H)
+        self._btn_learning.setIconSize(QSize(_LEARN_BTN_W - 8, _LEARN_BTN_H - 6))
+        self._btn_learning.setIcon(_learning_icon(LearningState.IDLE))
+        self._btn_learning.setText("")
+        self._btn_learning.setCheckable(True)
+        self._btn_learning.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._btn_learning.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn_mic = QPushButton()
         self._btn_mic.setObjectName("WinCtrlMic")
         self._btn_mic.setToolTip("음성 인식 켜기")
@@ -155,6 +255,7 @@ class DragTab(QWidget):
 
         for btn in (
             self._btn_ide,
+            self._btn_learning,
             self._btn_mic,
             self._btn_profile,
             self._btn_settings,
@@ -166,7 +267,15 @@ class DragTab(QWidget):
 
         lay.addLayout(ctrl_row)
 
+        self._learning_state = LearningState.IDLE
+        self._learning_pulse = 1.0
+        self._learning_pulse_dir = -1
+        self._learning_pulse_timer = QTimer(self)
+        self._learning_pulse_timer.setInterval(80)
+        self._learning_pulse_timer.timeout.connect(self._on_learning_pulse_tick)
+
         self._btn_ide.clicked.connect(self.ide_toggle_clicked.emit)
+        self._btn_learning.clicked.connect(self.learning_clicked.emit)
         self._btn_mic.clicked.connect(self.mic_clicked.emit)
         self._btn_min.clicked.connect(self.minimize_clicked.emit)
         self._btn_max.clicked.connect(self.maximize_clicked.emit)
@@ -174,6 +283,45 @@ class DragTab(QWidget):
         self._btn_profile.clicked.connect(self.profile_clicked.emit)
         self._btn_settings.clicked.connect(self.settings_clicked.emit)
         self._drag_pos = None
+
+    def set_learning_state(self, state: LearningState) -> None:
+        """MainWindow는 색을 직접 만지지 않고 이 API만 호출."""
+        self._learning_state = state
+        recording_like = state in {LearningState.RECORDING, LearningState.PROCESSING}
+        self._btn_learning.blockSignals(True)
+        self._btn_learning.setChecked(recording_like)
+        self._btn_learning.blockSignals(False)
+        self._btn_learning.setEnabled(state != LearningState.PROCESSING)
+        if state == LearningState.IDLE:
+            tip = "업무 학습 시작"
+        elif state == LearningState.RECORDING:
+            tip = "업무 학습 종료"
+        elif state == LearningState.PROCESSING:
+            tip = "업무 학습 정리 중…"
+        else:
+            tip = "업무 학습 오류"
+        self._btn_learning.setToolTip(tip)
+        if state == LearningState.PROCESSING:
+            if not self._learning_pulse_timer.isActive():
+                self._learning_pulse = 1.0
+                self._learning_pulse_dir = -1
+                self._learning_pulse_timer.start()
+        else:
+            self._learning_pulse_timer.stop()
+            self._learning_pulse = 1.0
+            self._btn_learning.setIcon(_learning_icon(state, pulse=1.0))
+
+    def _on_learning_pulse_tick(self) -> None:
+        self._learning_pulse += 0.08 * self._learning_pulse_dir
+        if self._learning_pulse <= 0.4:
+            self._learning_pulse = 0.4
+            self._learning_pulse_dir = 1
+        elif self._learning_pulse >= 1.0:
+            self._learning_pulse = 1.0
+            self._learning_pulse_dir = -1
+        self._btn_learning.setIcon(
+            _learning_icon(LearningState.PROCESSING, pulse=self._learning_pulse)
+        )
 
     def set_mic_recording(self, recording: bool) -> None:
         self._btn_mic.blockSignals(True)

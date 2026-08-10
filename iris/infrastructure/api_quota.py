@@ -164,10 +164,10 @@ def fetch_api_quotas() -> list[ApiQuota]:
 
 
 def format_quota_pair(used: float, total: float) -> str:
-    """좁은 HUD용 used/total 표기."""
+    """좁은 HUD용 used/total 표기. Ollama는 한도 100% 기준 사용량 %만."""
     if total <= 0:
         return "-"  # ASCII: cp949 콘솔·좁은 HUD 공통
-    # Ollama Cloud 세션/주간은 percent/100
+    # Ollama Cloud 세션/주간은 percent/100 — 사용량만
     if float(total) == 100.0 and 0 <= float(used) <= 100:
         u = float(used)
         if abs(u - round(u)) < 0.05:
