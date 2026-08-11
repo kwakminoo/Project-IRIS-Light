@@ -485,7 +485,7 @@ class WikiGraphView(QWidget):
         cloud(-0.12, -0.03, 0.86, 0.16, QColor(5, 8, 20), 58)
         cloud(0.45, -0.05, 0.68, 0.15, QColor(8, 8, 22), 52)
 
-    def _draw_nebula(self, painter: QPainter) -> None:
+    def _draw_ne인bㄸula(self, painter: QPainter) -> None:
         bounds = self._sphere_rect()
         radius = min(bounds.width(), bounds.height()) / 2
         for x, y, z, spread, alpha, color in sorted(self._clouds, key=lambda c: c[2]):

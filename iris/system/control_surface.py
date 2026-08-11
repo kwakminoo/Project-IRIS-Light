@@ -90,11 +90,11 @@ def clear_control_endpoint() -> None:
 
 
 def ok_result(action: str, result: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {"ok": True, "action": action, "result": result or {}, "error": None}
+    return {"ok": True, "action": action, "status": "success", "result": result or {}, "error": None}
 
 
 def err_result(action: str, error: str, result: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {"ok": False, "action": action, "result": result or {}, "error": error}
+    return {"ok": False, "action": action, "status": "failed", "result": result or {}, "error": error}
 
 
 class ActionRegistry:
@@ -292,12 +292,12 @@ class ControlSurface:
                             return surface.registry.invoke(action, args)
                         return surface.registry.invoke(action, args)
 
-                    # ponytail: stream write / project.run 은 메인스레드에서 길어질 수 있음
+                    # ponytail: live file stream / project.run 은 메인스레드에서 길어질 수 있음
                     timeout = 15.0
                     if action == "project.run":
                         timeout = float(args.get("timeout_sec") or 60) + 30.0
                     elif action == "project.write_file":
-                        # open+typewriter 기본 — 타이핑 대기
+                        # open+live stream 기본 — 작성 연출 대기
                         if bool(args.get("open", True)) and bool(
                             args.get("typewriter", args.get("stream", True))
                         ):

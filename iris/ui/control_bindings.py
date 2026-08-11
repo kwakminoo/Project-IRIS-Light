@@ -510,7 +510,11 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
             typewriter_into_ide,
             wait_ide_shows_file,
         )
-        from iris.system.project_ops import resolve_under_root, write_project_file
+        from iris.system.project_ops import (
+            resolve_under_root,
+            write_project_file,
+            write_project_file_stream,
+        )
 
         root = str(args.get("project_root") or args.get("root") or "").strip()
         if not root:
@@ -526,7 +530,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         session, session_err = _bound_session(window, require_workspace=do_open)
         if do_open and session_err:
             return err_result("project.write_file", session_err)
-        # open=true 이면 기본 타이핑 연출. 명시 stream/typewriter=false 만 즉시 쓰기.
+        # open=true 이면 기본 live file stream. 명시 stream/typewriter=false 만 즉시 쓰기.
         if "typewriter" in args:
             do_type = bool(args.get("typewriter"))
         elif "stream" in args:
@@ -579,7 +583,9 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                     pump=_qt_pump,
                 )
             typed = False
-            if do_type and hwnd and opened:
+            streamed = False
+            input_mode = str(args.get("input_mode") or "").strip().lower()
+            if do_type and hwnd and opened and input_mode == "keyboard":
                 typed = typewriter_into_ide(
                     hwnd,
                     text,
@@ -588,10 +594,20 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                     pid=pid,
                 )
                 abs_path.write_text(text, encoding="utf-8")
+            elif do_type and hwnd and opened:
+                write_project_file_stream(
+                    root,
+                    norm_rel,
+                    text,
+                    chunk_chars=int(args.get("chunk_chars") or 80),
+                    chunk_delay_ms=int(args.get("chunk_delay_ms") or args.get("delay_ms") or 80),
+                    pump=_qt_pump,
+                )
+                streamed = True
             elif do_type:
                 return err_result(
                     "project.write_file",
-                    "bound IDE session could not open file for typewriter write",
+                    "bound IDE session could not open file for live write",
                     {"path": path_s, "opened": bool(opened), "visible": bool(visible)},
                 )
             else:
@@ -611,7 +627,8 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 "open_error": None if opened else "quick open failed",
                 "visible": bool(visible),
                 "typed": bool(typed),
-                "streamed": bool(do_type),
+                "streamed": bool(streamed),
+                "input_mode": "keyboard" if typed else ("file_watch" if streamed else "instant"),
             }
         except Exception as exc:  # noqa: BLE001
             return err_result("project.write_file", str(exc))
@@ -843,7 +860,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     reg.register(
         "project.write_file",
         project_write_file,
-        summary="Write file under the bound IDE workspace; open=true reveals tab then typewriter",
+        summary="Write file under the bound IDE workspace; open=true reveals tab then streams chunks",
         risk="medium",
     )
     reg.register(

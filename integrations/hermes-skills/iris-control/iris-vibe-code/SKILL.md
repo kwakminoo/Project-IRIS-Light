@@ -13,11 +13,11 @@ description: >
 
 1. `iris_get_state` — need `project_root` and preferably `ui_mode=ide_companion`.
    If no project / not companion: follow **iris-work-start** first (`project.open_similar` / `ide.open_folder` / `project.create_scaffold`).
-2. **Write + reveal + type:**
+2. **Write + reveal live:**
    `iris_invoke` → `project.write_file` with
    `args`: `{ project_root?, rel_path, content, open: true }`
-   → Iris opens an empty tab, waits until the filename is visible in the IDE title, then **types** the code into the editor (typewriter). Do not set `typewriter:false` unless the user wants an instant dump.
-3. Optional speed: `delay_ms` (per character). `typewriter:false` / `stream:false` = write all at once after open.
+   → Iris opens an empty tab, waits until the filename is visible in the IDE title, then streams small chunks into the file so the IDE file watcher shows the code growing. Do not set `typewriter:false` unless the user wants an instant dump.
+3. Optional speed: `chunk_delay_ms` and `chunk_chars`. `typewriter:false` / `stream:false` = write all at once after open.
 4. **Run in IDE terminal:**
    `iris_invoke` → `project.run` with
    `args`: `{ file: "rel/path.py" }` or `{ command: "python …" }`, `reveal_terminal: true`

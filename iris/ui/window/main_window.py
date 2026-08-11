@@ -740,8 +740,14 @@ class MainWindow(QMainWindow):
         self._busy = True
         self._state.set_state(AppState.PROCESSING)
 
-        if self._use_hermes_backend():
+        try:
+            from iris.system.project_ops import is_code_reveal_request
+
+            self._pending_local_vibe_prompt = text if is_code_reveal_request(text) else ""
+        except Exception:
             self._pending_local_vibe_prompt = ""
+
+        if self._use_hermes_backend():
             messages = self._chat_messages_with_project_context()
             worker = HermesChatWorker(
                 self._settings.hermes_base_url,
@@ -760,12 +766,6 @@ class MainWindow(QMainWindow):
             worker.start()
             return
 
-        try:
-            from iris.system.project_ops import is_code_reveal_request
-
-            self._pending_local_vibe_prompt = text if is_code_reveal_request(text) else ""
-        except Exception:
-            self._pending_local_vibe_prompt = ""
         worker = OllamaChatWorker(
             self._settings.ollama_base_url,
             model,
@@ -887,7 +887,6 @@ class MainWindow(QMainWindow):
                     "rel_path": rel,
                     "content": str(block.get("code") or ""),
                     "open": True,
-                    "delay_ms": 1,
                 },
             )
             if not written.get("ok"):
@@ -1842,7 +1841,7 @@ class MainWindow(QMainWindow):
             "(e.g. iris_invoke action=ide.enter_companion). "
             "Do NOT use terminal cursor/code alone — that skips Companion tiling. "
             "Do NOT invent that Iris has no IDE — Iris controls the preferred IDE via MCP. "
-            "Writing code: project.write_file with open=true (typewriter into visible IDE tab). "
+            "Writing code: project.write_file with open=true (opens an empty IDE tab, then streams chunks into the file). "
             "Running code: project.run — output in IDE integrated terminal; summarize only in chat. "
             "When you use ANY web search/browse/fetch tool, the final answer MUST include a "
             "Sources section with markdown links [title](https://url) for each page you relied on. "
@@ -2672,6 +2671,11 @@ class MainWindow(QMainWindow):
                 self._email_chat_worker.wait(1500)
             if self._boot_checks_worker is not None and self._boot_checks_worker.isRunning():
                 self._boot_checks_worker.wait(3000)
+            if self._hermes_health_worker is not None and self._hermes_health_worker.isRunning():
+                # ponytail: gateway 재기동 체크는 최대 60s 걸릴 수 있어 종료를 막음 — 강제 종료
+                if not self._hermes_health_worker.wait(3000):
+                    self._hermes_health_worker.terminate()
+                    self._hermes_health_worker.wait(2000)
             self._metrics_worker.request_stop()
             self._metrics_worker.wait(2000)
             self._api_quota_worker.request_stop()

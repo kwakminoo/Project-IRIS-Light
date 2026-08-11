@@ -6,8 +6,8 @@ import re
 
 from iris.system.hermes_iris_control_sync import hermes_home
 
-_MARKER = "<!-- iris-control-nudge-v6 -->"
-_BLOCK = """<!-- iris-control-nudge-v6 -->
+_MARKER = "<!-- iris-control-nudge-v7 -->"
+_BLOCK = """<!-- iris-control-nudge-v7 -->
 ## Iris Light UI control
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
 1. Prefer MCP tools `iris_get_state`, `iris_get_catalog`, `iris_invoke` (skills: iris-work-start, iris-work-end, iris-session-status, iris-vibe-code, iris-calendar).
@@ -20,7 +20,7 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 8. "아이리스 라이트 작업" with no other project name: `project.open_similar` query `iris light`.
 9. If open_similar returns ambiguous/low_score: show `matches`, ask user, then `ide.open_folder`.
 10. Parents for search come from Iris settings (`project_parents`); inspect via `project.list_parents`.
-11. After creating/writing code: `project.write_file` with `open=true` (default typewriter: empty tab → wait visible → type into editor). Use `typewriter:false` only for instant dump.
+11. After creating/writing code: `project.write_file` with `open=true` (default live write: empty tab → wait visible → stream chunks into the file). Use `typewriter:false` only for instant dump.
 12. On run requests: `project.run` — output in **IDE integrated terminal** (not a log file tab); only summarize in chat.
 13. Calendar / 일정: `workspace.open_calendar`, then `calendar.add_event` / `calendar.list_events` / `calendar.select_day` / `calendar.delete_event` (skill iris-calendar).
 """
@@ -42,7 +42,7 @@ def ensure_memory_nudge() -> str:
     existing = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
     if (
         _MARKER in existing
-        and "typewriter" in existing
+        and "stream chunks" in existing
         and "integrated terminal" in existing
         and "iris-vibe-code" in existing
         and "iris-calendar" in existing

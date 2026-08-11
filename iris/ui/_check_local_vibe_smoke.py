@@ -77,7 +77,7 @@ def main() -> int:
             "delay_ms": 1,
         },
     )
-    if not step("write_file_typewriter", write):
+    if not step("write_file_live_stream", write):
         return finish(root, steps)
     run = invoke(
         "project.run",

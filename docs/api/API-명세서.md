@@ -379,7 +379,7 @@ MCP 도구: `iris_get_state`, `iris_get_catalog`, `iris_invoke`
 대표 액션: `ide.enter_companion`, `ide.exit_companion`, `ide.open_folder`, `ide.open_file`, `project.write_file` (`open`/`stream`), `project.run`, `workspace.open_*`, `profile.set`, `email.*`, `wiki.*`, `settings.*`  
 고위험(`email.send` 등)은 `args.confirm=true` 필수.
 
-바이브코딩: `project.write_file`(기본 open+typewriter)로 IDE 탭에 타이핑하고, 실행은 `project.run`이 **IDE 통합 터미널**에 출력(로그 파일 탭 아님). 채팅은 `summary`만.
+바이브코딩: `project.write_file`(기본 open+live stream)로 IDE 탭을 열고 파일 내용을 청크로 늘리며, 실행은 `project.run`이 **IDE 통합 터미널**에 출력(로그 파일 탭 아님). 채팅은 `summary`만.
 
 ---
 

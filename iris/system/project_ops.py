@@ -242,9 +242,9 @@ def is_code_reveal_request(text: str) -> bool:
     s = (text or "").lower()
     code_words = ("코드", "프로그램", "파일", "script", "code", "program", "app")
     make_words = ("만들", "작성", "짜", "구현", "생성", "write", "create", "make", "build")
-    return any(w in s for w in make_words) and (
-        any(w in s for w in code_words) or is_run_request(s) or "구구단" in s
-    )
+    if is_run_request(s) or "구구단" in s:
+        return True
+    return any(w in s for w in make_words) and any(w in s for w in code_words)
 
 
 def is_run_request(text: str) -> bool:
@@ -637,17 +637,16 @@ def summarize_run(result: dict, *, max_tail_lines: int = 12) -> dict:
 
 
 if __name__ == "__main__":
-    hits = find_similar_projects("ai guitar tab")
-    assert hits, "expected AI-Guitar-Tab-main nearby"
-    assert "guitar" in hits[0]["name"].lower()
-    best, amb, reason = pick_similar_project("ai guitar tab")
-    assert reason == "ok" and best is not None
-    parents = resolve_project_parents([])
-    assert parents
-    # stream self-check
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
+        parent = Path(td)
+        (parent / "AI-Guitar-Tab-main").mkdir()
+        hits = find_similar_projects("ai guitar tab", parents=[parent])
+        assert hits, "expected AI-Guitar-Tab-main"
+        assert "guitar" in hits[0]["name"].lower()
+        best, _amb, reason = pick_similar_project("ai guitar tab", parents=[parent])
+        assert reason == "ok" and best is not None
         r = write_project_file_stream(td, "a.txt", "abcdefghij", chunk_chars=3, chunk_delay_ms=0)
         assert Path(r["path"]).read_text(encoding="utf-8") == "abcdefghij"
         assert r["chunks"] == 4
