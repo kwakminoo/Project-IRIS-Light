@@ -30,6 +30,13 @@ from iris.core.activity_sink import register_activity_sink
 from iris.core.state_machine import AppState, StateMachine
 from iris.infrastructure.ollama_client import OllamaModelInfo
 from iris.knowledge.iris_wiki import IrisWiki
+from iris.storage.api_providers import (
+    get_api_provider,
+    is_api_runtime_model,
+    load_api_providers,
+    parse_runtime_model_id,
+    runtime_model_id,
+)
 from iris.storage.email_accounts import EmailAccount, find_account, load_email_accounts
 from iris.monitoring.notification_policy import NotificationPolicy
 from iris.storage.database import Database
@@ -85,11 +92,34 @@ from iris.ui.workers.hermes_workers import (
     HermesModelSyncWorker,
 )
 from iris.ui.workers.ollama_workers import OllamaChatWorker, OllamaModelListWorker
+from iris.ui.workers.api_provider_workers import OpenAICompatChatWorker
+from iris.ui.workers.learning_workers import LearningProcessWorker
+from iris.learning.manager import LearningManager
+from iris.learning.models import LearningState
+from iris.learning.aloha_learner import AlohaLearner, MockLearner
+from iris.learning.aloha_executor import MockExecutor
+from iris.learning.vlm_policy import (
+    evaluate_api_fallback,
+    evaluate_ollama_model,
+    list_learning_vlm_models,
+)
+from iris.learning.aloha_learner import _load_vlm_keys
+from iris.learning.hook_probe import probe_input_hooks
+from iris.learning.permission import policy_for, request_elevation_hint
+from iris.storage.learning_prefs import (
+    LearningPreferences,
+    load_learning_preferences,
+    save_learning_preferences,
+)
+from iris.ui.learning.vlm_guide_dialog import VlmGuideDialog
+from iris.infrastructure.ollama_client import OllamaClient
 from iris.ui.settings.settings_dialog import SettingsDialog
 from iris.ui.window.startup_intro import StartupIntroAnimator
 from iris.ui.shared.theme_tokens import TOKENS
 from iris.ui.window.top_status_header import TopStatusHeader
 from iris.ui.monitor.unified_monitor_panel import UnifiedMonitorPanel
+from iris.monitoring.pin_store import PinStore
+from iris.monitoring.pinned_monitor import PinnedMonitorService
 from iris.ui.settings.user_profile_dialog import UserProfileDialog
 from iris.ui.widgets.ide_icons import show_ide_not_installed_dialog
 from iris.ui.widgets.visualizer import Visualizer
@@ -158,6 +188,7 @@ class MainWindow(QMainWindow):
         self._calendar_busy = False
         self._boot_checks_worker: BootChecksWorker | None = None
         self._boot_checks_done = False
+        self._learning_worker: LearningProcessWorker | None = None
         self._email_preloaded = False
         self._tts_queue: list[str] = []
         self._tts_active_msg_id: str = ""
@@ -166,6 +197,11 @@ class MainWindow(QMainWindow):
         self._selected_email_account_id = ""
         self._hermes_online = False
         self._busy = False
+        self._ignore_chat_result = False
+        self._api_fallback_pending = False  # 직접 호출 실패 → Hermes 폴백 1회
+        self._api_fallback_model = ""  # Hermes에 넘길 모델 id
+        self._quota_by_key: dict[str, object] = {}
+        self._last_ollama_quota_refresh = 0.0
         self._workspace_mode = "assistant"
         self._ui_mode = "normal"  # "normal" | "ide_companion"
         self._ide_hwnd: int | None = None
@@ -237,8 +273,38 @@ class MainWindow(QMainWindow):
         self._drag.ide_toggle_clicked.connect(self._on_ide_icon)
         self._drag.minimize_clicked.connect(self.showMinimized)
         self._drag.maximize_clicked.connect(self._toggle_maximize)
+        self._drag.learning_clicked.connect(self._on_learning_toggle)
         self._drag.mic_clicked.connect(self._on_chat_mic_clicked)
         root.addWidget(self._drag)
+
+        # 업무 학습 — test_mode에서는 mock learner/executor
+        self._learning_prefs = load_learning_preferences(self._db)
+        if self._test_mode:
+            from iris.learning.workflow_registry import LearnedWorkflowRepository
+
+            repo = LearnedWorkflowRepository(self._db)
+            self._learning = LearningManager(
+                self._db,
+                learner=MockLearner(),
+                executor=MockExecutor(repo),
+                on_state=self._on_learning_state,
+                on_activity=lambda line: self._live_activity.append_instant_line(line)
+                if hasattr(self, "_live_activity")
+                else None,
+                iris_hwnd_provider=self._iris_learning_hwnds,
+                learning_prefs=self._learning_prefs,
+            )
+        else:
+            self._learning = LearningManager(
+                self._db,
+                learner=self._build_aloha_learner(),
+                on_state=self._on_learning_state,
+                on_activity=lambda line: self._live_activity.append_instant_line(line)
+                if hasattr(self, "_live_activity")
+                else None,
+                iris_hwnd_provider=self._iris_learning_hwnds,
+                learning_prefs=self._learning_prefs,
+            )
 
         status_header = TopStatusHeader()
         self._status_header = status_header
@@ -335,6 +401,7 @@ class MainWindow(QMainWindow):
         self._settings.always_listen_speech_rms = self._voice_prefs.stt_speech_rms
         self._chat.set_speech_threshold_rms(self._voice_prefs.stt_speech_rms)
         self._chat.send_clicked.connect(self._on_user_text)
+        self._chat.stop_clicked.connect(self._on_chat_stop)
         self._chat.model_changed.connect(self._on_model_changed)
         self._chat.files_attached.connect(self._on_composer_files)
         self._chat.skill_inserted.connect(self._on_composer_skill)
@@ -346,6 +413,20 @@ class MainWindow(QMainWindow):
         self._monitor = UnifiedMonitorPanel()
         self._monitor.set_database(self._db)
         self._monitor.setMinimumHeight(160)
+
+        # 고정(📌) 창 AI 감시 — 최대 3개, 30초 주기로 화면을 분석해 상태 변화를 알림
+        self._pin_store = PinStore(self._db)
+        self._pinned_monitor = PinnedMonitorService(
+            self._pin_store,
+            self._settings,
+            lambda: self._chat.current_model() or self._settings.ollama_model,
+            self,
+        )
+        self._monitor.set_pin_store(self._pin_store)
+        self._monitor.pin_changed.connect(self._on_pin_changed)
+        self._pinned_monitor.updated.connect(self._monitor.rerender_pins)
+        self._pinned_monitor.report.connect(self._on_pinned_report)
+        self._pinned_monitor.start()
 
         self._notif_policy = NotificationPolicy(self._db)
         self._notes = NotificationPanel(policy=self._notif_policy)
@@ -393,9 +474,21 @@ class MainWindow(QMainWindow):
         self._metrics_worker.snapshot_ready.connect(self._on_metrics_snapshot)
         self._api_quota_worker = ApiQuotaWorker(parent=self)
         self._api_quota_worker.quotas_ready.connect(self._on_api_quotas)
+        self._left_sidebar.utility.metrics.ollama_refresh_requested.connect(
+            self._on_ollama_quota_manual_refresh
+        )
         if not self._test_mode:
             self._metrics_worker.start()
             self._api_quota_worker.start()
+            # 시작 시 선택 모델이 클라우드면 짧은 폴링
+            boot_model = (
+                self._chat.current_model()
+                or self._saved_model
+                or self._settings.ollama_model
+                or ""
+            )
+            self._api_quota_worker.set_cloud_polling(self._is_cloud_model(boot_model))
+            self._maybe_refresh_ollama_quota(force=True)
 
         root.addWidget(self._body_stack, 1)
 
@@ -559,8 +652,38 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._on_models_failed)
         worker.start()
 
+    def _append_ok_api_models(self, items: list[OllamaModelInfo]) -> list[OllamaModelInfo]:
+        """status==ok 커스텀 API 모델을 피커 목록에 병합."""
+        out = list(items)
+        seen = {m.name for m in out}
+        try:
+            providers = load_api_providers(self._db)
+        except Exception:
+            return out
+        for p in providers:
+            # 정상(ok)이거나, 모델 목록이 있으면 피커에 노출 (채팅에서 직접 호출 시도)
+            if not p.enabled or not p.base_url:
+                continue
+            if p.status != "ok" and not p.models:
+                continue
+            for model in p.models:
+                rid = runtime_model_id(p.id, model)
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                out.append(
+                    OllamaModelInfo(
+                        name=rid,
+                        catalog_name=f"{p.name} · {model}",
+                        supports_tools=False,
+                        requires_subscription=False,
+                    )
+                )
+        return out
+
     def _on_models_loaded(self, models: object) -> None:
         items: list[OllamaModelInfo] = list(models) if isinstance(models, list) else []
+        items = self._append_ok_api_models(items)
         preferred = (
             self._saved_model
             or self._settings.ollama_model
@@ -572,20 +695,37 @@ class MainWindow(QMainWindow):
         if items:
             chosen = self._chat.current_model()
             self._apply_selected_model(chosen, persist=False)
-            n_cloud = sum(1 for m in items if getattr(m, "is_cloud", False))
-            n_local = len(items) - n_cloud
-            self._live_activity.append_instant_line(
-                f"Models: {n_local} local + {n_cloud} cloud"
+            n_api = sum(1 for m in items if is_api_runtime_model(m.name))
+            n_cloud = sum(
+                1
+                for m in items
+                if getattr(m, "is_cloud", False) and not is_api_runtime_model(m.name)
             )
-            if self._settings.hermes_enabled and chosen:
+            n_local = len(items) - n_cloud - n_api
+            self._live_activity.append_instant_line(
+                f"Models: {n_local} local + {n_cloud} cloud + {n_api} API"
+            )
+            if self._settings.hermes_enabled and chosen and not is_api_runtime_model(chosen):
                 self._sync_hermes_model(chosen)
         else:
-            self._chat.set_model_status("(클라우드 모델 없음)")
+            self._chat.set_model_status("(모델 없음)")
         if self._intro is not None:
             self._intro.notify_models_ready()
         self._start_boot_checks()
 
     def _on_models_failed(self, err: str) -> None:
+        # Ollama 실패해도 정상 API 모델은 피커에 표시
+        api_only = self._append_ok_api_models([])
+        if api_only:
+            preferred = self._saved_model or ""
+            self._chat.set_models(api_only, selected=preferred)
+            self._live_activity.append_instant_line(
+                f"Ollama 목록 실패 — API 모델 {len(api_only)}개만 표시: {err[:120]}"
+            )
+            if self._intro is not None:
+                self._intro.notify_models_ready()
+            self._start_boot_checks()
+            return
         self._chat.set_model_status("(Ollama 연결 실패)")
         self._live_activity.append_instant_line(f"Model list failed: {err}")
         self._notes.try_add_alert(
@@ -642,6 +782,7 @@ class MainWindow(QMainWindow):
 
     def _on_boot_checks_done(self) -> None:
         self._boot_checks_worker = None
+        self._sync_learning_wiki()
 
     def _on_model_changed(self, model: str) -> None:
         self._apply_selected_model(model, persist=True)
@@ -661,12 +802,44 @@ class MainWindow(QMainWindow):
             desc = describe_model(model)
             if desc:
                 self._live_activity.append_instant_line(f"모델: {desc}")
-        if self._settings.hermes_enabled:
+        if self._settings.hermes_enabled and not is_api_runtime_model(model):
             self._sync_hermes_model(model)
         self._refresh_context_gauge()
+        self._api_quota_worker.set_cloud_polling(self._is_cloud_model(model))
+
+    @staticmethod
+    def _is_cloud_model(model: str) -> bool:
+        if is_api_runtime_model(model):
+            return False
+        n = (model or "").strip().lower()
+        return n.endswith("-cloud") or ":cloud" in n or n.endswith(":cloud")
+
+    def _maybe_refresh_ollama_quota(self, *, force: bool = False) -> None:
+        """클라우드 턴 종료 시 Ollama SESS/WEEK만 즉시 1회 (debounce 8s)."""
+        model = (
+            self._chat.current_model()
+            or self._saved_model
+            or self._settings.ollama_model
+            or ""
+        )
+        if not force and not self._is_cloud_model(model):
+            return
+        now = time.monotonic()
+        if not force and (now - self._last_ollama_quota_refresh) < 8.0:
+            return
+        self._last_ollama_quota_refresh = now
+        self._api_quota_worker.request_refresh_ollama_now()
+
+    def _on_ollama_quota_manual_refresh(self) -> None:
+        """SESS/WEEK 행 클릭 — debounce 무시하고 즉시 갱신."""
+        self._live_activity.append_instant_line("Ollama usage refresh…")
+        self._maybe_refresh_ollama_quota(force=True)
 
     def _refresh_context_gauge(self) -> None:
-        """선택 모델 컨텍스트 한도 + 현재 대화 추정 토큰으로 원형 게이지 갱신."""
+        """선택 모델 컨텍스트 한도 + 실제 전송 메시지 추정 토큰으로 원형 게이지 갱신.
+
+        매 턴 user/assistant append 직후 호출되어 한도 대비 사용량이 누적 상승한다.
+        """
         model = self._chat.current_model()
         if not model:
             self._chat.set_context_usage(0, 128_000)
@@ -685,8 +858,48 @@ class MainWindow(QMainWindow):
             except Exception:
                 limit = 128_000
             cache[model] = limit
-        used = estimate_messages_tokens(self._history)
+        # history만이 아니라 시스템/프로젝트 컨텍스트 포함 — 호출마다 실제 페이로드 반영
+        try:
+            payload = self._chat_messages_with_project_context()
+        except Exception:
+            payload = list(self._history)
+        used = estimate_messages_tokens(payload)
         self._chat.set_context_usage(used, limit)
+
+    # ------------------------------------------------------------------
+    # 고정 창 AI 감시
+    # ------------------------------------------------------------------
+
+    def _on_pin_changed(self) -> None:
+        """고정/해제 직후 — 결과를 오래 기다리지 않도록 즉시 1회 분석."""
+        count = self._pin_store.count()
+        self._live_activity.append_instant_line(f"AI 감시 대상 {count}개")
+        if count:
+            self._pinned_monitor.analyze_soon()
+
+    def _on_pinned_report(self, title: str, category: str, headline: str, detail: str) -> None:
+        """감시 중인 창의 상태가 주의 필요로 바뀐 순간 — 알림 패널에 띄운다."""
+        suppressed = None
+        try:
+            # target_id 0 = 고정 감시(테이블 등록 대상 아님) — 카테고리 쿨다운만 적용
+            suppressed = self._notif_policy.should_suppress(0, category)
+        except Exception:
+            suppressed = None
+        if suppressed:
+            return
+        self._notes.try_add_alert(
+            target_id=0,
+            category=category,
+            title=f"{headline} — {title[:40]}",
+            message=detail or headline,
+            focus_hint=title,
+            event_id=0,
+        )
+        try:
+            self._notif_policy.mark_shown(0, category)
+            self._notif_policy.log_notification(0, 0, category, title, detail or headline)
+        except Exception:
+            pass
 
     def _use_hermes_backend(self) -> bool:
         return bool(self._settings.hermes_enabled)
@@ -738,6 +951,10 @@ class MainWindow(QMainWindow):
         self._history.append({"role": "user", "content": text})
         self._refresh_context_gauge()
         self._busy = True
+        self._ignore_chat_result = False
+        self._api_fallback_pending = False
+        self._api_fallback_model = ""
+        self._chat.set_generating(True)
         self._state.set_state(AppState.PROCESSING)
 
         try:
@@ -749,6 +966,43 @@ class MainWindow(QMainWindow):
 
         if self._use_hermes_backend():
             messages = self._chat_messages_with_project_context()
+        messages = self._chat_messages_with_project_context()
+
+        # 커스텀 API 모델 — 직접 호출 우선 (Hermes 에이전트와 병행 가능)
+        parsed = parse_runtime_model_id(model)
+        if parsed is not None:
+            pid, api_model = parsed
+            provider = get_api_provider(self._db, pid)
+            if provider is None or not provider.base_url:
+                self._busy = False
+                self._chat.set_generating(False)
+                if self._history and self._history[-1].get("role") == "user":
+                    self._history.pop()
+                self._chat.append_message_instant(
+                    "Iris",
+                    "선택한 API가 설정에서 삭제되었거나 Base URL이 없습니다. 설정을 확인하세요.",
+                )
+                self._state.set_state(AppState.IDLE)
+                return
+            self._api_fallback_pending = True
+            self._api_fallback_model = api_model
+            worker = OpenAICompatChatWorker(
+                provider.base_url,
+                provider.api_key,
+                api_model,
+                messages,
+                display_model=f"{provider.name}/{api_model}",
+                parent=self,
+            )
+            self._chat_worker = worker
+            worker.connecting.connect(self._on_chat_connecting)
+            worker.content_chunk.connect(self._on_content_chunk)
+            worker.finished_ok.connect(self._on_chat_finished)
+            worker.failed.connect(self._on_chat_failed)
+            worker.start()
+            return
+
+        if self._use_hermes_backend():
             worker = HermesChatWorker(
                 self._settings.hermes_base_url,
                 model,
@@ -769,7 +1023,7 @@ class MainWindow(QMainWindow):
         worker = OllamaChatWorker(
             self._settings.ollama_base_url,
             model,
-            self._chat_messages_with_project_context(),
+            messages,
             think=True,
             parent=self,
         )
@@ -783,12 +1037,41 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._on_chat_failed)
         worker.start()
 
+    def _on_chat_stop(self) -> None:
+        """생성 중 정지 버튼 — Cursor/GPT처럼 즉시 UI를 멈추고 워커에 취소 요청."""
+        if not self._busy:
+            return
+        self._ignore_chat_result = True
+        worker = self._chat_worker
+        if worker is not None:
+            cancel = getattr(worker, "request_cancel", None)
+            if callable(cancel):
+                cancel()
+        partial = (self._chat.typing_buffer_text or "").strip()
+        if getattr(self._chat, "_stream_active", False):
+            self._chat.end_stream_message(partial or None)
+            if partial:
+                self._history.append({"role": "assistant", "content": partial})
+                self._last_assistant_text = partial
+                self._refresh_context_gauge()
+        else:
+            self._chat.finish_typing()
+        self._busy = False
+        self._chat.set_generating(False)
+        self._state.set_state(AppState.IDLE)
+        self._live_activity.append_instant_line("Stopped.")
+        self._maybe_refresh_ollama_quota()
+
     def _on_hermes_tool_progress(self, message: str) -> None:
+        if self._ignore_chat_result:
+            return
         text = (message or "").strip()
         if text:
             self._live_activity.append_instant_line(f"[tool] {text}")
 
     def _on_chat_connecting(self, model: str, host: str) -> None:
+        if self._ignore_chat_result:
+            return
         backend = self._backend_label()
         self._live_activity.append_instant_line(
             f"Connecting to '{model}' via {backend} on '{host}'"
@@ -800,12 +1083,18 @@ class MainWindow(QMainWindow):
                 self._live_activity.append_instant_line(f">>> {last.get('content', '')}")
 
     def _on_thinking_started(self) -> None:
+        if self._ignore_chat_result:
+            return
         self._live_activity.append_instant_line("Thinking...")
 
     def _on_thinking_chunk(self, chunk: str) -> None:
+        if self._ignore_chat_result:
+            return
         self._live_activity.append_instant_chunk(chunk)
 
     def _on_thinking_done(self) -> None:
+        if self._ignore_chat_result:
+            return
         self._live_activity.append_instant_line("")
         self._live_activity.append_instant_line("...done thinking.")
         self._live_activity.append_instant_line("")
@@ -813,6 +1102,8 @@ class MainWindow(QMainWindow):
         self._chat.begin_stream_message("Iris", speech_sync=False)
 
     def _on_content_chunk(self, chunk: str) -> None:
+        if self._ignore_chat_result:
+            return
         if not getattr(self._chat, "_stream_active", False):
             # thinking 없이 content만 오는 모델
             self._state.set_state(AppState.RESPONDING)
@@ -820,6 +1111,13 @@ class MainWindow(QMainWindow):
         self._chat.append_stream_chunk(chunk)
 
     def _on_chat_finished(self, content: str) -> None:
+        if self._ignore_chat_result:
+            self._ignore_chat_result = False
+            self._chat_worker = None
+            self._busy = False
+            self._chat.set_generating(False)
+            self._maybe_refresh_ollama_quota()
+            return
         text = (content or "").strip()
         if getattr(self._chat, "_stream_active", False):
             self._chat.end_stream_message(text or None)
@@ -832,6 +1130,7 @@ class MainWindow(QMainWindow):
             self._last_assistant_text = text
             self._try_reveal_local_vibe_code(text)
         self._refresh_context_gauge()
+        self._api_fallback_pending = False
         if self._use_hermes_backend() and not self._hermes_online:
             self._hermes_online = True
             self._status_header.refresh_backend_status(
@@ -839,8 +1138,10 @@ class MainWindow(QMainWindow):
                 hermes_online=True,
             )
         self._busy = False
+        self._chat.set_generating(False)
         self._chat_worker = None
         self._state.set_state(AppState.IDLE)
+        self._maybe_refresh_ollama_quota()
         if text and self._voice_prefs.tts_enabled and self._voice_prefs.tts_mode == "auto":
             self._enqueue_tts(text, msg_id=self._chat._last_tts_id or "last")
 
@@ -927,6 +1228,232 @@ class MainWindow(QMainWindow):
         self._mic_listen_active = recording
         self._drag.set_mic_recording(recording)
         self._chat.set_mic_recording(recording)
+
+    def _build_aloha_learner(self) -> AlohaLearner:
+        prefs = getattr(self, "_learning_prefs", None) or load_learning_preferences(self._db)
+        model = prefs.vlm_model or (self._settings.ollama_model or "").strip()
+        provider = prefs.vlm_provider or "auto"
+        if provider == "auto":
+            provider = "ollama"
+        return AlohaLearner(
+            api_provider=provider,
+            ollama_model=model if provider == "ollama" else prefs.vlm_model,
+            openai_model=prefs.api_fallback_model or "gpt-4o",
+            claude_model=prefs.api_fallback_model or "claude-sonnet-4-20250514",
+            ollama_base_url=self._settings.ollama_base_url,
+        )
+
+    def _iris_learning_hwnds(self) -> list[int]:
+        try:
+            wid = int(self.winId())
+            return [wid] if wid else []
+        except Exception:
+            return []
+
+    def _on_learning_state(self, state: LearningState) -> None:
+        self._drag.set_learning_state(state)
+
+    def _on_learning_toggle(self) -> None:
+        """학습 아이콘만으로 시작/종료 — 채팅 명령 없음."""
+        st = self._learning.state
+        if st == LearningState.PROCESSING:
+            return
+        if st == LearningState.IDLE:
+            QTimer.singleShot(0, self._start_learning_session)
+            return
+        if st == LearningState.RECORDING:
+            self._stop_learning_session()
+            return
+        if st == LearningState.ERROR:
+            self._learning.recover_to_idle()
+
+    def _resolve_learning_vlm_or_guide(self) -> bool:
+        """True면 녹화 시작 진행. False면 취소."""
+        prefs = self._learning_prefs
+        client = OllamaClient(self._settings.ollama_base_url)
+        current = (prefs.vlm_model or self._settings.ollama_model or "").strip()
+        verdict = evaluate_ollama_model(client, current)
+
+        # prefs에 API fallback이 명시되고 ollama가 실패면 API 평가
+        keys = _load_vlm_keys()
+        if not verdict.ok and prefs.api_fallback_provider and prefs.api_fallback_model:
+            has = bool(
+                keys.get("OPENAI_API_KEY")
+                or keys.get("IRIS_OPENAI_API_KEY")
+                or keys.get("ANTHROPIC_API_KEY")
+                or keys.get("IRIS_ANTHROPIC_API_KEY")
+            )
+            api_v = evaluate_api_fallback(
+                prefs.api_fallback_provider, prefs.api_fallback_model, has_key=has
+            )
+            if api_v.ok:
+                self._learning.set_learner(
+                    AlohaLearner(
+                        api_provider=api_v.provider,
+                        openai_model=api_v.model,
+                        claude_model=api_v.model,
+                        ollama_base_url=self._settings.ollama_base_url,
+                    )
+                )
+                self._learning.set_record_only(False)
+                return True
+
+        if verdict.ok:
+            self._learning.set_learner(
+                AlohaLearner(
+                    api_provider="ollama",
+                    ollama_model=verdict.model,
+                    ollama_base_url=self._settings.ollama_base_url,
+                )
+            )
+            self._learning.set_record_only(False)
+            prefs.vlm_provider = "ollama"
+            prefs.vlm_model = verdict.model
+            self._learning_prefs = prefs
+            save_learning_preferences(self._db, prefs)
+            return True
+
+        # 안내 다이얼로그
+        ollama_opts = [
+            (m.name, reason) for m, reason in list_learning_vlm_models(client)
+        ]
+        api_opts: list[tuple[str, str, str]] = []
+        if keys.get("OPENAI_API_KEY") or keys.get("IRIS_OPENAI_API_KEY"):
+            api_opts.append(("openai", "gpt-4o", "gpt-4o (OpenAI Vision)"))
+            api_opts.append(("openai", "gpt-4.1", "gpt-4.1 (OpenAI Vision)"))
+        if keys.get("ANTHROPIC_API_KEY") or keys.get("IRIS_ANTHROPIC_API_KEY"):
+            api_opts.append(
+                ("anthropic", "claude-sonnet-4-20250514", "Claude Sonnet (Vision)")
+            )
+
+        dlg = VlmGuideDialog(
+            verdict=verdict,
+            ollama_options=ollama_opts,
+            api_options=api_opts,
+            parent=self,
+        )
+        if not dlg.exec():
+            return False
+        choice = dlg.choice()
+        if choice == VlmGuideDialog.RESULT_CANCEL:
+            return False
+        if choice == VlmGuideDialog.RESULT_RECORD_ONLY:
+            self._learning.set_record_only(True)
+            self._live_activity.append_instant_line(
+                "VLM 없이 녹화만 진행합니다 (pending_vlm)."
+            )
+            return True
+        # USE_VLM
+        provider = dlg.selected_provider()
+        model = dlg.selected_model()
+        prefs.vlm_provider = provider
+        prefs.vlm_model = model
+        if provider in {"openai", "anthropic"}:
+            prefs.api_fallback_provider = provider
+            prefs.api_fallback_model = model
+        self._learning_prefs = prefs
+        save_learning_preferences(self._db, prefs)
+        self._learning.set_learning_prefs(prefs)
+        self._learning.set_learner(
+            AlohaLearner(
+                api_provider=provider,
+                ollama_model=model if provider == "ollama" else "",
+                openai_model=model if provider == "openai" else "gpt-4o",
+                claude_model=model if provider in {"anthropic", "claude"} else "",
+                ollama_base_url=self._settings.ollama_base_url,
+            )
+        )
+        self._learning.set_record_only(False)
+        return True
+
+    def _start_learning_session(self) -> None:
+        if self._learning.state != LearningState.IDLE:
+            return
+        # E: 훅 진단
+        probe = probe_input_hooks()
+        if not probe.ok:
+            from PyQt6.QtWidgets import QMessageBox
+
+            msg = QMessageBox(self)
+            msg.setWindowTitle("입력 관찰 불가")
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setText("마우스/키보드 훅을 시작할 수 없습니다.")
+            msg.setInformativeText(
+                "\n".join(
+                    [
+                        *probe.messages[:3],
+                        "",
+                        probe.security_hint,
+                        probe.accessibility_hint,
+                        probe.elevation_hint,
+                        "",
+                        "설정 → 권한에서 진단/권한 수준을 확인하세요.",
+                    ]
+                )
+            )
+            msg.exec()
+            return
+
+        pol = policy_for(self._learning_prefs.permission_level)
+        if pol.prefer_elevation:
+            from iris.learning.permission import is_process_elevated
+
+            if not is_process_elevated():
+                self._live_activity.append_instant_line(request_elevation_hint())
+
+        if not self._resolve_learning_vlm_or_guide():
+            return
+
+        try:
+            self._learning.set_learning_prefs(self._learning_prefs)
+            self._learning.start_recording()
+        except Exception as exc:
+            self._learning.mark_error(str(exc))
+            QTimer.singleShot(1800, self._learning.recover_to_idle)
+
+    def _stop_learning_session(self) -> None:
+        if self._learning.state != LearningState.RECORDING:
+            return
+        self._learning.stop_hooks_immediately()
+        self._learning.mark_processing()
+        if self._learning_worker is not None and self._learning_worker.isRunning():
+            return
+        worker = LearningProcessWorker(self._learning, parent=self)
+        self._learning_worker = worker
+        worker.finished_ok.connect(self._on_learning_finished)
+        worker.failed.connect(self._on_learning_failed)
+        worker.start()
+
+    def _on_learning_finished(self, result: object) -> None:
+        self._learning_worker = None
+        payload = result if isinstance(result, dict) else {}
+        self._learning.mark_success(payload)
+        self._sync_learning_wiki()
+
+    def _on_learning_failed(self, err: str) -> None:
+        self._learning_worker = None
+        self._learning.mark_error(err)
+        QTimer.singleShot(1800, self._learning.recover_to_idle)
+
+    def _sync_learning_wiki(self) -> None:
+        """학습된 업무 목록을 Iris Wiki user/learning/workflows.md 에 반영."""
+        try:
+            wfs = self._learning.list_learned_workflows()
+            rows = [
+                {
+                    "id": str(w.id),
+                    "name": w.name,
+                    "summary": w.summary,
+                    "status": w.status,
+                    "primary_apps": w.primary_apps,
+                    "created_at": w.created_at,
+                    "trace_id": w.trace_id,
+                }
+                for w in wfs
+            ]
+            self._iris_wiki.sync_learned_workflows(rows)
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(f"Wiki 학습 동기화 스킵: {str(exc)[:80]}")
 
     def _on_chat_mic_clicked(self) -> None:
         if self._mic_listen_active or self._recorder.is_continuous():
@@ -1221,6 +1748,16 @@ class MainWindow(QMainWindow):
                 self._recorder.set_capture_paused(False)
 
     def _on_chat_failed(self, err: str) -> None:
+        if self._ignore_chat_result:
+            self._ignore_chat_result = False
+            self._chat_worker = None
+            self._busy = False
+            self._chat.set_generating(False)
+            self._api_fallback_pending = False
+            return
+        # 커스텀 API 직접 호출 실패 → Hermes online이면 1회 폴백
+        if self._try_hermes_fallback_after_api_fail(err):
+            return
         if getattr(self._chat, "_stream_active", False):
             self._chat.end_stream_message(None)
         # 실패한 user turn은 히스토리에서 제거 (재시도 깔끔하게)
@@ -1233,9 +1770,46 @@ class MainWindow(QMainWindow):
             f"{self._backend_label()} 오류: {err}",
         )
         self._busy = False
+        self._chat.set_generating(False)
         self._chat_worker = None
+        self._api_fallback_pending = False
         self._state.set_state(AppState.ERROR)
+        self._maybe_refresh_ollama_quota()
         QTimer.singleShot(800, lambda: self._state.set_state(AppState.IDLE))
+
+    def _try_hermes_fallback_after_api_fail(self, err: str) -> bool:
+        """직접 API 실패 시 Hermes 경유 재시도. 처리했으면 True."""
+        if not self._api_fallback_pending:
+            return False
+        self._api_fallback_pending = False
+        if not self._settings.hermes_enabled or not self._hermes_online:
+            return False
+        model = (self._api_fallback_model or "").strip()
+        if not model:
+            return False
+        if getattr(self._chat, "_stream_active", False):
+            self._chat.end_stream_message(None)
+        self._live_activity.append_instant_line(
+            f"API 직접 호출 실패 → Hermes 폴백: {err[:120]}"
+        )
+        self._chat_worker = None
+        messages = self._chat_messages_with_project_context()
+        worker = HermesChatWorker(
+            self._settings.hermes_base_url,
+            model,
+            messages,
+            api_key=self._settings.hermes_api_key,
+            command=self._settings.hermes_command,
+            parent=self,
+        )
+        self._chat_worker = worker
+        worker.connecting.connect(self._on_chat_connecting)
+        worker.tool_progress.connect(self._on_hermes_tool_progress)
+        worker.content_chunk.connect(self._on_content_chunk)
+        worker.finished_ok.connect(self._on_chat_finished)
+        worker.failed.connect(self._on_chat_failed)
+        worker.start()
+        return True
 
     def _on_app_state(self, state: object) -> None:
         if isinstance(state, AppState):
@@ -1246,7 +1820,15 @@ class MainWindow(QMainWindow):
         self._left_sidebar.utility.metrics.apply_snapshot(snapshot)
 
     def _on_api_quotas(self, quotas: object) -> None:
-        self._left_sidebar.utility.metrics.apply_quotas(quotas)
+        # 부분 갱신(Ollama만)이어도 SERP/FIRE 행이 사라지지 않게 머지
+        from iris.infrastructure.api_quota import ApiQuota
+
+        if isinstance(quotas, list):
+            for q in quotas:
+                if isinstance(q, ApiQuota):
+                    self._quota_by_key[q.key] = q
+        merged = list(self._quota_by_key.values())
+        self._left_sidebar.utility.metrics.apply_quotas(merged)
 
     def _set_workspace_icon_active(self, action_id: str | None) -> None:
         actions = self._left_sidebar.utility.actions
@@ -1846,7 +2428,11 @@ class MainWindow(QMainWindow):
             "When you use ANY web search/browse/fetch tool, the final answer MUST include a "
             "Sources section with markdown links [title](https://url) for each page you relied on. "
             "Never state researched facts without at least one citation link. "
-            "Iris UI turns those links into clickable citation chips.",
+            "Iris UI turns those links into clickable citation chips. "
+            "When a product/place/UI is clearer with a picture and you have a direct image URL "
+            "(search thumbnail, og image, or page asset), include it inline as "
+            "markdown ![short label](https://...png|jpg|gif|webp). "
+            "Iris shows those images in the chat; users can click to enlarge.",
         )
         if root:
             bits.append(f"Project root: {root}")
@@ -2606,6 +3192,11 @@ class MainWindow(QMainWindow):
             self._chat.set_speech_threshold_rms(self._voice_prefs.stt_speech_rms)
             self._recorder.set_speech_rms(self._voice_prefs.stt_speech_rms)
             self._voice_runtime.set_base_url(self._voice_prefs.voice_runtime_url)
+            if getattr(sel, "learning_prefs", None) is not None:
+                self._learning_prefs = sel.learning_prefs
+                self._learning.set_learning_prefs(self._learning_prefs)
+                if not self._test_mode:
+                    self._learning.set_learner(self._build_aloha_learner())
             self._status_header.set_tts_status(
                 "READY" if self._voice_prefs.tts_enabled else "OFF"
             )
@@ -2614,7 +3205,11 @@ class MainWindow(QMainWindow):
                 save_selected_model(self._db, self._saved_model)
             self._status_header.set_model_name(self._settings.model_name or "(unset)")
             self._refresh_hermes_health()
-            if self._settings.hermes_enabled and self._saved_model:
+            if (
+                self._settings.hermes_enabled
+                and self._saved_model
+                and not is_api_runtime_model(self._saved_model)
+            ):
                 self._sync_hermes_model(self._saved_model)
             self._refresh_models()
             self._refresh_ide_session_state()
@@ -2653,6 +3248,16 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         try:
             stop_control_surface(self)
+            self._pinned_monitor.stop()
+            try:
+                self._learning.interrupt_on_shutdown()
+            except Exception:
+                pass
+            if self._learning_worker is not None and self._learning_worker.isRunning():
+                cancel = getattr(self._learning_worker, "request_cancel", None)
+                if callable(cancel):
+                    cancel()
+                self._learning_worker.wait(2000)
             if self._recorder.is_recording():
                 self._recorder.cancel_recording()
             self._stop_tts_playback()

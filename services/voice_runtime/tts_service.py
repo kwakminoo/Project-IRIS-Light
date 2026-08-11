@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -11,9 +12,55 @@ from typing import Any
 from .config import CONFIG
 from .model_manager import PreparedVoiceClone, VoiceModelManager
 
+# qwen-tts는 language 문자열을 프로세서 프롬프트에 그대로 넣는다.
+# "Korean"(대문자)로 주면 발음이 깨지므로 반드시 소문자로 고정한다.
+TTS_LANGUAGE = "korean"
+
+# x_vector_only_mode=True: 화자 임베딩만 사용 (ref_text 무시).
+# ICL 모드(False)는 ref_text가 기준 음성과 정확히 일치해야 해서 불안정하다.
+TTS_X_VECTOR_ONLY_MODE = True
+
 
 def _sha256_text(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _pcm16_bytes(wav: Any) -> bytes:
+    """float 파형(-1..1)을 16bit PCM 리틀엔디안 바이트로 변환. numpy는 있으면 사용."""
+    try:
+        import numpy as np
+
+        data = np.asarray(wav, dtype="float32").reshape(-1)
+        peak = float(np.max(np.abs(data))) if data.size else 0.0
+        if peak > 1.0:
+            data = data / peak
+        return (np.clip(data, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+    except ImportError:
+        pass
+
+    import array
+
+    samples = [float(x) for x in wav]
+    peak = max((abs(x) for x in samples), default=0.0)
+    scale = 1.0 / peak if peak > 1.0 else 1.0
+    pcm = array.array(
+        "h",
+        (int(max(-1.0, min(1.0, x * scale)) * 32767.0) for x in samples),
+    )
+    if sys.byteorder == "big":
+        pcm.byteswap()
+    return pcm.tobytes()
+
+
+def _write_wav(path: Path, wav: Any, sample_rate: int) -> None:
+    """generate_voice_clone이 돌려준 float 파형을 16bit PCM wav로 저장."""
+    import wave
+
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(int(sample_rate))
+        wf.writeframes(_pcm16_bytes(wav))
 
 
 def _silence_wav_bytes(seconds: float = 1.0, sample_rate: int = 22050) -> bytes:
@@ -94,15 +141,28 @@ class TTSService:
                 "scripts/setup_voice_runtime 으로 .venv-voice를 구성하세요."
             ) from exc
 
+        # fp16은 CUDA device-side assert로 죽는다. GPU에서는 bf16 고정.
+        load_kwargs: dict[str, Any] = {}
         try:
-            model = Qwen3TTSModel.from_pretrained(model_name)
+            import torch
+
+            if torch.cuda.is_available():
+                load_kwargs = {"device_map": "cuda:0", "dtype": torch.bfloat16}
+            else:
+                load_kwargs = {"device_map": "cpu", "dtype": torch.float32}
+        except Exception:  # noqa: BLE001
+            load_kwargs = {}
+
+        try:
+            model = Qwen3TTSModel.from_pretrained(model_name, **load_kwargs)
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"TTS 모델 로딩 실패 ({model_name}): {exc}") from exc
         self._mm.set_tts(key, model)
         return model
 
     def _voice_prompt_hash(self, ref_audio_path: str, ref_text: str) -> str:
-        return _sha256_text(f"{ref_audio_path}::{ref_text}")
+        mode = "xvec" if TTS_X_VECTOR_ONLY_MODE else "icl"
+        return _sha256_text(f"{ref_audio_path}::{ref_text}::{mode}")
 
     def prepare_voice_clone_prompt(
         self,
@@ -134,9 +194,9 @@ class TTSService:
 
         tts_model = self._ensure_tts_model(tts_model_name)
         prompt = tts_model.create_voice_clone_prompt(
-            ref_audio_path=ref_audio_path,
+            ref_audio=ref_audio_path,
             ref_text=ref_text,
-            language="Korean",
+            x_vector_only_mode=TTS_X_VECTOR_ONLY_MODE,
         )
         prepared = PreparedVoiceClone(
             voice_prompt_hash=voice_prompt_hash, voice_clone_prompt=prompt
@@ -174,17 +234,22 @@ class TTSService:
             )
 
         tts_model = self._ensure_tts_model(tts_model_name)
-        wav_path = tts_model.generate_voice_clone(
-            voice_clone_prompt=prepared.voice_clone_prompt,
+        # generate_voice_clone은 파일 경로가 아니라 (파형 리스트, sample_rate)를 돌려준다.
+        generated = tts_model.generate_voice_clone(
             text=text,
-            language="Korean",
-            output_dir=str(output_dir),
+            language=TTS_LANGUAGE,
+            voice_clone_prompt=prepared.voice_clone_prompt,
+            x_vector_only_mode=TTS_X_VECTOR_ONLY_MODE,
         )
-        if isinstance(wav_path, (str, Path)):
-            return SpeechResult(audio_path=str(wav_path), text=text)
-        if isinstance(wav_path, (bytes, bytearray)):
-            h = hashlib.sha256(f"{voice_prompt_hash}::{text}".encode("utf-8", errors="ignore")).hexdigest()
-            out_path = output_dir / f"{h}.wav"
-            out_path.write_bytes(bytes(wav_path))
-            return SpeechResult(audio_path=str(out_path), text=text)
-        raise RuntimeError(f"TTS 생성 결과 형식을 알 수 없습니다: {type(wav_path)!r}")
+        try:
+            wavs, sample_rate = generated
+            wav = wavs[0]
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"TTS 생성 결과 형식을 알 수 없습니다: {type(generated)!r}"
+            ) from exc
+
+        h = hashlib.sha256(f"{voice_prompt_hash}::{text}".encode("utf-8", errors="ignore")).hexdigest()
+        out_path = output_dir / f"{h}.wav"
+        _write_wav(out_path, wav, sample_rate)
+        return SpeechResult(audio_path=str(out_path), text=text)

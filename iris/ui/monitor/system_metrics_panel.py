@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtCore import Qt, QRectF, pyqtSignal
+from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from iris.infrastructure.api_quota import ApiQuota, format_quota_pair
@@ -14,9 +14,12 @@ from iris.ui.shared.theme_tokens import TOKENS
 
 _ROW_GAP_PX = 2
 _LABEL_MIN_W = 58
-_USAGE_MIN_W = 52
+# "100%" / "24k/30k" 모노 폰트 — 텍스트·우측 바 잘림 방지
+_USAGE_MIN_W = 40
+_USAGE_MAX_W = 56
 _BAR_H = 7
 _LINE_CORE_PX = 1.5
+_BAR_INSET_PX = 1  # 펜·글로우가 위젯 경계에서 잘리지 않게
 
 
 class _NeonLineBar(QWidget):
@@ -44,14 +47,18 @@ class _NeonLineBar(QWidget):
         h = self.height()
         if w <= 0 or h <= 0:
             return
+        inset = _BAR_INSET_PX
+        usable = max(0, w - 2 * inset)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         mid_y = h * 0.5
+        x0 = inset
+        x1 = inset + usable
         track = QColor(TOKENS.metric_track)
         painter.setPen(QPen(track, _LINE_CORE_PX))
-        painter.drawLine(0, int(mid_y), w, int(mid_y))
+        painter.drawLine(x0, int(mid_y), x1, int(mid_y))
 
-        fill_w = int(round(w * self._ratio))
+        fill_w = int(round(usable * self._ratio))
         if fill_w <= 0:
             painter.end()
             return
@@ -61,22 +68,24 @@ class _NeonLineBar(QWidget):
         glow.setAlpha(55)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(glow)
-        painter.drawRect(QRectF(0, mid_y - 2.5, fill_w, 5.0))
+        painter.drawRect(QRectF(x0, mid_y - 2.5, fill_w, 5.0))
 
         soft = QColor(c)
         soft.setAlpha(140)
         painter.setBrush(soft)
-        painter.drawRect(QRectF(0, mid_y - 1.25, fill_w, 2.5))
+        painter.drawRect(QRectF(x0, mid_y - 1.25, fill_w, 2.5))
 
         core = QColor(c)
         core.setAlpha(255)
         painter.setPen(QPen(core, _LINE_CORE_PX))
-        painter.drawLine(0, int(mid_y), fill_w, int(mid_y))
+        painter.drawLine(x0, int(mid_y), x0 + fill_w, int(mid_y))
         painter.end()
 
 
 class _MetricRow(QWidget):
     """라벨(+사용량)과 네온 라인이 같은 줄."""
+
+    clicked = pyqtSignal(str)  # quota key
 
     def __init__(
         self,
@@ -84,10 +93,14 @@ class _MetricRow(QWidget):
         fill_color: str,
         *,
         show_usage: bool = False,
+        quota_key: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("HudMetricRow")
+        self._quota_key = quota_key
+        if quota_key in ("sess", "week"):
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, _ROW_GAP_PX, 0, _ROW_GAP_PX)
         lay.setSpacing(TOKENS.spacing_xs)
@@ -101,13 +114,26 @@ class _MetricRow(QWidget):
         self._usage = QLabel("")
         self._usage.setObjectName("HudMetricUsage")
         self._usage.setMinimumWidth(_USAGE_MIN_W if show_usage else 0)
-        self._usage.setMaximumWidth(72 if show_usage else 0)
+        self._usage.setMaximumWidth(_USAGE_MAX_W if show_usage else 0)
         self._usage.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._usage.setVisible(show_usage)
         lay.addWidget(self._usage, 0)
 
         self._bar = _NeonLineBar(fill_color)
+        # 우측 끝 1px 여유 — 패널 경계에서 바 잘림 방지
         lay.addWidget(self._bar, 1)
+        if show_usage:
+            lay.setContentsMargins(0, _ROW_GAP_PX, 2, _ROW_GAP_PX)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._quota_key in ("sess", "week")
+        ):
+            self.clicked.emit(self._quota_key)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def apply_percent(self, percent: float | None, *, label: str | None = None) -> None:
         if label is not None:
@@ -131,16 +157,20 @@ class _MetricRow(QWidget):
             self.setToolTip(
                 "Ollama Cloud usage: set OLLAMA_CLOUD_COOKIE or "
                 "%LOCALAPPDATA%/iris-light/ollama_cookie.txt "
-                "(from ollama.com/settings DevTools)"
+                "(from ollama.com/settings DevTools) · 클릭: 새로고침"
             )
         else:
-            # 빈 문자열도 Windows에서 검은 빈 툴팁 박스가 남을 수 있음
-            self.setToolTip("API 사용량")
+            if float(quota.total) == 100.0:
+                self.setToolTip(f"한도 대비 사용 {quota.used:g}% (클릭: 새로고침)")
+            else:
+                self.setToolTip("API 사용량 (클릭: 새로고침)")
             self._bar.set_ratio(quota.percent / 100.0)
 
 
 class SystemMetricsPanel(QWidget):
     """Realtime CPU/GPU/memory + API 월 할당량 HUD."""
+
+    ollama_refresh_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -161,13 +191,15 @@ class SystemMetricsPanel(QWidget):
             lay.addWidget(row)
 
         self._api_rows: dict[str, _MetricRow] = {
-            "serp": _MetricRow("SERP", TOKENS.metric_fill_api, show_usage=True),
-            "fire": _MetricRow("FIRE", TOKENS.metric_fill_api, show_usage=True),
-            "sess": _MetricRow("SESS", TOKENS.metric_fill_api, show_usage=True),
-            "week": _MetricRow("WEEK", TOKENS.metric_fill_api, show_usage=True),
+            "serp": _MetricRow("SERP", TOKENS.metric_fill_api, show_usage=True, quota_key="serp"),
+            "fire": _MetricRow("FIRE", TOKENS.metric_fill_api, show_usage=True, quota_key="fire"),
+            "sess": _MetricRow("SESS", TOKENS.metric_fill_api, show_usage=True, quota_key="sess"),
+            "week": _MetricRow("WEEK", TOKENS.metric_fill_api, show_usage=True, quota_key="week"),
         }
-        for row in self._api_rows.values():
+        for key, row in self._api_rows.items():
             row.hide()
+            if key in ("sess", "week"):
+                row.clicked.connect(lambda _k: self.ollama_refresh_requested.emit())
             lay.addWidget(row)
 
         lay.addStretch(1)

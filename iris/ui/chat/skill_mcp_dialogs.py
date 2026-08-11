@@ -139,6 +139,21 @@ def list_hermes_mcps(*, limit: int = 40) -> list[tuple[str, str]]:
         return [(n, _KNOWN_MCP_DESC.get(n, "(config.yaml)")) for n in list_hermes_mcp_names(limit=limit)]
 
 
+def _sync_wiki_catalog() -> None:
+    """스킬/MCP 변경 직후 Iris Wiki user 노트 갱신."""
+    try:
+        from iris.knowledge.iris_wiki import IrisWiki
+
+        wiki = IrisWiki()
+        root = str(hermes_root())
+        skills = [(n, d) for n, d, _p in list_hermes_skills(limit=120)]
+        mcps = list_hermes_mcps(limit=40)
+        wiki.sync_skills_catalog(skills, hermes_root=root)
+        wiki.sync_mcp_catalog(mcps, hermes_root=root)
+    except Exception:
+        pass
+
+
 def add_custom_skill(name: str, description: str) -> Path:
     safe = re.sub(r"[^\w\-]+", "-", name.strip(), flags=re.UNICODE).strip("-").lower()
     if not safe:
@@ -340,6 +355,7 @@ class SkillsDialog(QDialog):
         self._name_edit.clear()
         self._desc_edit.clear()
         self._reload()
+        _sync_wiki_catalog()
         QMessageBox.information(self, "스킬 추가", f"저장됨:\n{path}")
 
 
@@ -432,6 +448,7 @@ class McpDialog(QDialog):
         self._cmd_edit.clear()
         self._args_edit.clear()
         self._reload()
+        _sync_wiki_catalog()
         QMessageBox.information(
             self,
             "MCP 추가",

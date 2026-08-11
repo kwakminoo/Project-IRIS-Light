@@ -196,6 +196,11 @@ def fetch_ollama_quotas() -> list[ApiQuota]:
     if cached:
         return cached
 
+    # 쿠키 없을 때 오래된 캐시라도 표시 (완전 공란보다 나음)
+    stale = read_usage_cache(max_age_sec=30 * 24 * 3600)
+    if stale:
+        return stale
+
     # 쿠키·캐시 없으면 로그인 여부만 표시용 플레이스홀더
     if _ollama_signed_in():
         return [

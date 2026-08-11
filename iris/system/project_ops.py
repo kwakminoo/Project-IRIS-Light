@@ -550,6 +550,8 @@ def run_project_command(
         raise ValueError("empty command")
     t0 = time.monotonic()
     try:
+        from iris.system.win_subprocess import no_window_kwargs
+
         proc = subprocess.run(  # noqa: S603
             argv,
             cwd=str(root),
@@ -560,6 +562,7 @@ def run_project_command(
             timeout=float(timeout_sec),
             input=input_text,
             shell=False,
+            **no_window_kwargs(),
         )
         elapsed = time.monotonic() - t0
         return {

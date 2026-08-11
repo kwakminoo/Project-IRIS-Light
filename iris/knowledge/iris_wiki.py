@@ -43,6 +43,8 @@ class IrisWiki:
         self.user_root.mkdir(parents=True, exist_ok=True)
         (self.user_root / "profile").mkdir(parents=True, exist_ok=True)
         (self.user_root / "schedule").mkdir(parents=True, exist_ok=True)
+        (self.user_root / "integrations").mkdir(parents=True, exist_ok=True)
+        (self.user_root / "learning").mkdir(parents=True, exist_ok=True)
 
     def list_notes(self) -> list[IrisWikiNote]:
         notes: list[IrisWikiNote] = []
@@ -174,3 +176,111 @@ class IrisWiki:
                 lines.append(line)
         lines.append("")
         self.write_user_note("schedule/index.md", "\n".join(lines))
+
+    def sync_skills_catalog(
+        self,
+        skills: list[tuple[str, str]],
+        *,
+        hermes_root: str = "",
+    ) -> None:
+        """등록·사용 중인 Hermes 스킬 목록 → user/integrations/skills.md."""
+        lines = [
+            "# Iris Skills",
+            "",
+            "> Hermes `skills/` 폴더에 있는 SKILL.md 기준. Iris Composer + 메뉴와 동기화됩니다.",
+            "",
+        ]
+        if hermes_root:
+            lines.append(f"- 경로: `{hermes_root}`")
+            lines.append("")
+        if not skills:
+            lines.append("_등록된 스킬 없음_")
+        else:
+            lines.append(f"**총 {len(skills)}개**")
+            lines.append("")
+            for name, desc in skills:
+                d = (desc or "").strip() or "(설명 없음)"
+                lines.append(f"- **`{name}`** — {d}")
+        lines.append("")
+        self.write_user_note("integrations/skills.md", "\n".join(lines))
+
+    def sync_mcp_catalog(
+        self,
+        mcps: list[tuple[str, str]],
+        *,
+        hermes_root: str = "",
+    ) -> None:
+        """Hermes config.yaml mcp_servers → user/integrations/mcp.md."""
+        lines = [
+            "# Iris MCP Servers",
+            "",
+            "> Hermes `config.yaml`의 `mcp_servers` 등록분. Iris Composer + 메뉴와 동기화됩니다.",
+            "",
+        ]
+        if hermes_root:
+            lines.append(f"- 경로: `{hermes_root}`")
+            lines.append("")
+        if not mcps:
+            lines.append("_등록된 MCP 없음_")
+        else:
+            lines.append(f"**총 {len(mcps)}개**")
+            lines.append("")
+            for name, desc in mcps:
+                d = (desc or "").strip() or "(설정됨)"
+                lines.append(f"- **`{name}`** — {d}")
+        lines.append("")
+        self.write_user_note("integrations/mcp.md", "\n".join(lines))
+
+    def sync_learned_workflows(
+        self,
+        workflows: list[dict[str, str]],
+    ) -> None:
+        """화면 시연 학습(모니터링 학습) 결과 → user/learning/workflows.md."""
+        lines = [
+            "# 학습된 업무 (Learned Workflows)",
+            "",
+            "> 드래그 탭 학습 버튼으로 시연한 GUI 업무. 이름·요약·앱·상태가 기록됩니다.",
+            "",
+        ]
+        if not workflows:
+            lines.append("_아직 학습된 업무 없음_")
+        else:
+            lines.append(f"**총 {len(workflows)}개**")
+            lines.append("")
+            for wf in workflows:
+                name = wf.get("name") or "(이름 없음)"
+                summary = wf.get("summary") or ""
+                apps = wf.get("primary_apps") or ""
+                status = wf.get("status") or ""
+                created = wf.get("created_at") or ""
+                wid = wf.get("id") or ""
+                tid = wf.get("trace_id") or ""
+                line = f"- **{name}**"
+                if status:
+                    line += f" `{status}`"
+                if apps:
+                    line += f" · 앱: {apps}"
+                if created:
+                    line += f" · {created}"
+                if wid:
+                    line += f" _(id:{wid})_"
+                lines.append(line)
+                if summary:
+                    lines.append(f"  - 요약: {summary}")
+                if tid:
+                    lines.append(f"  - trace: `{tid}`")
+        lines.append("")
+        lines.append("## 이름 규칙")
+        lines.append("")
+        lines.append(
+            "1. 시맨틱 트레이스에 GitHub/메일/검색 등 패턴이 있으면 그 업무명 사용"
+        )
+        lines.append(
+            "2. 없으면 주요 앱명 + 동작(입력/작업/스크롤 탐색/드래그 편집)"
+        )
+        lines.append(
+            "3. 그래도 없으면 `학습된 업무 YYYY-MM-DD HHMM` 폴백"
+        )
+        lines.append("4. 좌표형 click 액션은 이름으로 쓰지 않음 (최대 25자)")
+        lines.append("")
+        self.write_user_note("learning/workflows.md", "\n".join(lines))

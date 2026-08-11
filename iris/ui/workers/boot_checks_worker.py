@@ -40,8 +40,17 @@ class BootChecksWorker(QThread):
 
     def _check_wiki(self) -> None:
         try:
+            from iris.ui.chat.skill_mcp_dialogs import hermes_root, list_hermes_mcps, list_hermes_skills
+
+            root = str(hermes_root())
+            skills = [(n, d) for n, d, _p in list_hermes_skills(limit=120)]
+            mcps = list_hermes_mcps(limit=40)
+            self._wiki.sync_skills_catalog(skills, hermes_root=root)
+            self._wiki.sync_mcp_catalog(mcps, hermes_root=root)
             count = len(self._wiki.list_notes())
-            self.progress.emit(f"Iris Wiki: 노트 {count}개 로드 완료")
+            self.progress.emit(
+                f"Iris Wiki: 노트 {count}개 · 스킬 {len(skills)} · MCP {len(mcps)} 동기화"
+            )
         except Exception as e:  # noqa: BLE001 - 점검은 실패해도 계속 진행
             self.progress.emit(f"Iris Wiki 확인 실패: {str(e)[:120]}")
 

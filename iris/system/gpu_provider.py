@@ -6,6 +6,8 @@ import re
 import subprocess
 from typing import Optional
 
+from iris.system.win_subprocess import no_window_kwargs
+
 _GPU_PDH_AVAILABLE: bool | None = None
 
 
@@ -36,6 +38,7 @@ def _read_nvidia_smi() -> Optional[float]:
             timeout=3,
             shell=False,
             check=False,
+            **no_window_kwargs(),
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None

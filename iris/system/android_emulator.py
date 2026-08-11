@@ -508,6 +508,8 @@ def adb_run(
         cmd.extend(["-s", serial])
     cmd.extend(args)
     try:
+        from iris.system.win_subprocess import no_window_kwargs
+
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -517,6 +519,7 @@ def adb_run(
             errors="replace",
             timeout=timeout,
             env=_emulator_env(),
+            **no_window_kwargs(),
         )
     except subprocess.TimeoutExpired as exc:
         raise AdbError(f"adb timeout ({timeout}s): {' '.join(args)}") from exc

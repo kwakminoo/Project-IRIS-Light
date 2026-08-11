@@ -6,7 +6,10 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
     QFormLayout,
+    QFrame,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -219,9 +222,150 @@ def make_scroll_body() -> tuple[QScrollArea, QVBoxLayout]:
     return scroll, lay
 
 
+def _confirm_qss(*, accent: str) -> str:
+    t = TOKENS
+    return (
+        hud_dialog_qss()
+        + f"""
+        QDialog#IrisHudConfirm {{
+            background: transparent;
+        }}
+        QFrame#HudConfirmShell {{
+            background-color: {t.space_deep};
+            border: 1px solid {accent};
+            border-radius: {t.radius_lg}px;
+        }}
+        QLabel#HudConfirmEyebrow {{
+            color: {accent};
+            font-size: {t.font_size_micro};
+            font-weight: 700;
+            letter-spacing: 0.14em;
+        }}
+        QLabel#HudConfirmBadge {{
+            color: {t.void_black};
+            background-color: {accent};
+            border-radius: {t.radius_sm}px;
+            padding: 3px 8px;
+            font-size: {t.font_size_micro};
+            font-weight: 700;
+            letter-spacing: 0.06em;
+        }}
+        QLabel#HudConfirmBody {{
+            color: {t.text_primary};
+            font-size: {t.font_size_body};
+            font-weight: 600;
+        }}
+        QLabel#HudConfirmHint {{
+            color: {t.text_secondary};
+            font-size: {t.font_size_caption};
+        }}
+        QPushButton#HudConfirmCancel {{
+            background-color: transparent;
+            color: {t.text_secondary};
+            border: 1px solid {t.border_subtle};
+            min-width: 88px;
+        }}
+        QPushButton#HudConfirmCancel:hover {{
+            color: {t.text_primary};
+            border-color: {t.border_color};
+            background-color: {t.panel_overlay};
+        }}
+        QPushButton#HudConfirmOk {{
+            background-color: {t.accent_primary};
+            color: {t.text_primary};
+            border: 1px solid {accent};
+            min-width: 96px;
+            font-weight: 600;
+        }}
+        QPushButton#HudConfirmOk:hover {{
+            background-color: {t.accent_hover};
+            border-color: {t.neon_cyan};
+        }}
+        """
+    )
+
+
+def run_hud_confirm(
+    parent: QWidget | None,
+    *,
+    title: str,
+    body: str,
+    hint: str,
+    badge: str,
+    accent: str | None = None,
+    ok_text: str = "선택",
+    cancel_text: str = "취소",
+) -> bool:
+    """컴팩트 Iris HUD 확인창. True면 확인."""
+    accent_color = accent or TOKENS.neon_cyan
+    dlg = QDialog(parent)
+    dlg.setObjectName("IrisHudConfirm")
+    dlg.setWindowTitle(title)
+    dlg.setModal(True)
+    dlg.setWindowFlags(
+        (dlg.windowFlags() | Qt.WindowType.FramelessWindowHint)
+        & ~Qt.WindowType.WindowContextHelpButtonHint
+    )
+    dlg.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    dlg.setFixedWidth(420)
+    dlg.setStyleSheet(_confirm_qss(accent=accent_color))
+
+    root = QVBoxLayout(dlg)
+    root.setContentsMargins(0, 0, 0, 0)
+    shell = QFrame(dlg)
+    shell.setObjectName("HudConfirmShell")
+    root.addWidget(shell)
+
+    lay = QVBoxLayout(shell)
+    lay.setContentsMargins(20, 18, 20, 16)
+    lay.setSpacing(TOKENS.spacing_sm)
+
+    top = QHBoxLayout()
+    top.setSpacing(TOKENS.spacing_sm)
+    eye = QLabel("MODEL NOTICE")
+    eye.setObjectName("HudConfirmEyebrow")
+    top.addWidget(eye, 0, Qt.AlignmentFlag.AlignVCenter)
+    top.addStretch(1)
+    badge_lab = QLabel(badge.upper())
+    badge_lab.setObjectName("HudConfirmBadge")
+    badge_lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    top.addWidget(badge_lab, 0)
+    lay.addLayout(top)
+
+    body_lab = QLabel(body)
+    body_lab.setObjectName("HudConfirmBody")
+    body_lab.setWordWrap(True)
+    lay.addWidget(body_lab)
+
+    hint_lab = QLabel(hint)
+    hint_lab.setObjectName("HudConfirmHint")
+    hint_lab.setWordWrap(True)
+    lay.addWidget(hint_lab)
+
+    btns = QHBoxLayout()
+    btns.setSpacing(TOKENS.spacing_sm)
+    btns.addStretch(1)
+    cancel = QPushButton(cancel_text)
+    cancel.setObjectName("HudConfirmCancel")
+    cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+    cancel.setDefault(True)
+    cancel.clicked.connect(dlg.reject)
+    ok = QPushButton(ok_text)
+    ok.setObjectName("HudConfirmOk")
+    ok.setCursor(Qt.CursorShape.PointingHandCursor)
+    ok.setAutoDefault(False)
+    ok.clicked.connect(dlg.accept)
+    btns.addWidget(cancel)
+    btns.addWidget(ok)
+    lay.addLayout(btns)
+
+    return dlg.exec() == QDialog.DialogCode.Accepted
+
+
 if __name__ == "__main__":
     qss = hud_dialog_qss()
     assert "IrisHudDialog" in qss or "QDialog#IrisHudDialog" in qss
     assert TOKENS.neon_cyan in qss
     assert "min-width: 148px" in qss
+    assert "IrisHudConfirm" in _confirm_qss(accent=TOKENS.warning)
     print("hud_dialog ok")

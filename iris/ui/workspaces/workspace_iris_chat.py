@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QMouseEvent, QTextCursor
 from PyQt6.QtWidgets import QTextEdit
 
 from iris.core.activity_privacy import prepare_chat_text, strip_emoji
@@ -15,6 +15,11 @@ from iris.ui.chat.chat_display import (
     normalize_chat_body,
     typing_body_to_html,
     visible_typing_text,
+)
+from iris.ui.chat.chat_image_view import (
+    attach_image_loader,
+    handle_chat_anchor_click,
+    prefetch_chat_html_images,
 )
 
 
@@ -30,9 +35,17 @@ class WorkspaceIrisChatLog(QTextEdit):
         self.setStyleSheet(
             f"QTextEdit#{object_name} {{ background: transparent; border: none; color: #e2e8f0; }}"
         )
+        attach_image_loader(self)
         self._iris_active = False
         self._iris_buf = ""
         self._iris_body_start: int | None = None
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        anchor = self.anchorAt(event.pos())
+        if handle_chat_anchor_click(self, anchor):
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def _scroll_bottom(self) -> None:
         bar = self.verticalScrollBar()
@@ -109,7 +122,9 @@ class WorkspaceIrisChatLog(QTextEdit):
                 self._iris_active = True
         body = normalize_chat_body("Iris", self._iris_buf)
         if body and self._iris_body_start is not None:
-            self._replace_iris_body(iris_message_to_chat_html(body))
+            html_body = iris_message_to_chat_html(body)
+            prefetch_chat_html_images(self, html_body)
+            self._replace_iris_body(html_body)
             self._append_trailing_blank()
         self._iris_active = False
         self._iris_buf = ""
