@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtMultimedia import QSoundEffect
 import tempfile
 
+from iris.assets.branding import APP_DISPLAY_NAME, load_app_icon
 from iris.audio.recorder import AudioRecorder, RecordingResult
 from iris.audio.text_normalizer import load_pronunciation_map, split_tts_sentences
 from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
@@ -28,6 +29,11 @@ from iris.audio.workers import STTTranscriptionWorker, TTSSynthesisWorker
 from iris.config.settings import load_settings
 from iris.core.activity_sink import register_activity_sink
 from iris.core.state_machine import AppState, StateMachine
+from iris.infrastructure.api_model_meta import (
+    api_model_supports_tools,
+    filter_nvidia_free_endpoint_models,
+    is_nvidia_provider,
+)
 from iris.infrastructure.ollama_client import OllamaModelInfo
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.storage.api_providers import (
@@ -147,12 +153,15 @@ class IdeSession:
 
 
 class MainWindow(QMainWindow):
-    """Iris Light — Hermes API 또는 Ollama 채팅 HUD."""
+    """IRIS — Hermes API 또는 Ollama 채팅 HUD."""
 
     def __init__(self, *, test_mode: bool = False) -> None:
         super().__init__()
         self._test_mode = test_mode
-        self.setWindowTitle("Iris Light")
+        self.setWindowTitle(APP_DISPLAY_NAME)
+        icon = load_app_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
         self.setMinimumSize(960, 640)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
 
@@ -554,7 +563,7 @@ class MainWindow(QMainWindow):
         self._notes.try_add_alert(
             target_id=0,
             category="NORMAL",
-            title="Iris Light",
+            title=APP_DISPLAY_NAME,
             message="Ollama 모델 목록이 연결되었습니다. Hermes gateway는 자동으로 기동됩니다.",
             focus_hint="",
             event_id=0,
@@ -666,7 +675,11 @@ class MainWindow(QMainWindow):
                 continue
             if p.status != "ok" and not p.models:
                 continue
-            for model in p.models:
+            model_ids = list(p.models)
+            if is_nvidia_provider(p.name, p.base_url):
+                # 카탈로그 전체가 아니라 무료 Public API 엔드포인트만
+                model_ids = filter_nvidia_free_endpoint_models(model_ids)
+            for model in model_ids:
                 rid = runtime_model_id(p.id, model)
                 if rid in seen:
                     continue
@@ -675,7 +688,9 @@ class MainWindow(QMainWindow):
                     OllamaModelInfo(
                         name=rid,
                         catalog_name=f"{p.name} · {model}",
-                        supports_tools=False,
+                        supports_tools=api_model_supports_tools(
+                            p.name, model, base_url=p.base_url
+                        ),
                         requires_subscription=False,
                     )
                 )

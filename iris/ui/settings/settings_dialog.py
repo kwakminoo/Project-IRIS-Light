@@ -478,6 +478,15 @@ class SettingsDialog(QDialog):
         for m in manual:
             if m not in merged:
                 merged.append(m)
+        if p is not None:
+            from iris.infrastructure.api_model_meta import (
+                filter_nvidia_free_endpoint_models,
+                is_nvidia_provider,
+            )
+
+            if is_nvidia_provider(p.name, p.base_url):
+                # /v1/models 전체(100+) 대신 무료 엔드포인트만 저장·표시
+                merged = filter_nvidia_free_endpoint_models(merged)
         if ok and not merged:
             status = "error"
             detail = (detail or "") + " · 사용 가능한 모델이 없습니다. 모델 목록을 입력하세요."

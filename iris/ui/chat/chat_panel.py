@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
 # 모델 콤보 아이템 메타 (addItem UserRole = runtime name)
 _ROLE_SUPPORTS_TOOLS = int(Qt.ItemDataRole.UserRole) + 1
 _ROLE_REQUIRES_SUB = int(Qt.ItemDataRole.UserRole) + 2
+_ROLE_PROVIDER_NAME = int(Qt.ItemDataRole.UserRole) + 3
 _COLOR_MODEL_DEFAULT = QColor("#38bdf8")  # 도구 지원·일반 선택 가능 — 밝은 푸른색
 _COLOR_MODEL_NO_TOOLS = QColor("#9ca3af")  # 도구 미지원 — 회색
 _COLOR_MODEL_PRO = QColor("#fca5a5")  # Pro/구독 — 옅은 붉은색
@@ -64,6 +65,12 @@ from iris.ui.chat.chat_display import (
     visible_typing_text,
 )
 from iris.ui.chat.composer_plus_menu import ComposerPlusButton, ComposerPlusMenu, ComposerSendButton
+from iris.ui.chat.model_picker_menu import (
+    ModelBrandDialog,
+    ModelPickerMenu,
+    PickerModel,
+    split_picker_groups,
+)
 from iris.ui.chat.skill_mcp_dialogs import McpDialog, SkillsDialog
 from iris.ui.settings.hud_dialog import run_hud_confirm
 from iris.ui.shared.theme_tokens import TOKENS
@@ -72,6 +79,18 @@ from iris.ui.widgets.mic_waveform_bar import MicWaveformBar
 
 if TYPE_CHECKING:
     from iris.infrastructure.ollama_client import OllamaModelInfo
+
+
+class _ModelCombo(QComboBox):
+    """네이티브 드롭다운 대신 Iris 모델 피커 팝업을 연다."""
+
+    popup_requested = pyqtSignal()
+
+    def showPopup(self) -> None:  # noqa: N802
+        self.popup_requested.emit()
+
+    def show_native_popup(self) -> None:
+        super().showPopup()
 
 
 _IMAGE_FILTER = (
@@ -415,7 +434,7 @@ class _ChatInputBar(QWidget):
         )
         self.input.files_attached.connect(self._on_paths_attached)
 
-        self.model_combo = QComboBox()
+        self.model_combo = _ModelCombo()
         self.model_combo.setObjectName("ChatModelCombo")
         self.model_combo.setToolTip("Ollama 모델 선택")
         self.model_combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -823,10 +842,13 @@ class ChatPanel(QWidget):
         self._context_used = 0
         self._model_guard_prev_index = 0
         self._model_guard_silent = False
+        self._picker_models: list[PickerModel] = []
+        self._model_picker_menu: ModelPickerMenu | None = None
         self._input.submit_requested.connect(self._on_submit_or_stop)
         self._input.textChanged.connect(self._on_input_changed)
         self._input_area.input_bar.send_button.clicked.connect(self._on_submit_or_stop)
         self._model_combo.currentIndexChanged.connect(self._on_model_index_changed)
+        self._model_combo.popup_requested.connect(self._open_model_picker_menu)
         bar = self._input_area.input_bar
         bar.files_attached.connect(self.files_attached.emit)
         bar.skill_inserted.connect(self.skill_inserted.emit)
@@ -939,35 +961,44 @@ class ChatPanel(QWidget):
         self._model_combo.blockSignals(True)
         self._model_combo.clear()
         if not models:
+            self._picker_models = []
             self._model_combo.addItem("(모델 없음 — Ollama 확인)", "")
             self._model_combo.blockSignals(False)
             self._model_guard_silent = False
             self._model_guard_prev_index = 0
             return
 
-        # label, runtime, supports_tools, requires_subscription
-        entries: list[tuple[str, str, bool, bool]] = []
+        from iris.infrastructure.model_descriptions import describe_model
+        from iris.storage.api_providers import is_api_runtime_model
+
+        # label, runtime, supports_tools, requires_subscription, provider_name
+        entries: list[tuple[str, str, bool, bool, str]] = []
         for item in models:
             if isinstance(item, OllamaModelInfo):
+                label = item.catalog_name or display_name_from_runtime(item.name)
+                provider = ""
+                if is_api_runtime_model(item.name) and " · " in label:
+                    provider = label.split(" · ", 1)[0].strip()
                 entries.append(
                     (
-                        item.catalog_name or display_name_from_runtime(item.name),
+                        label,
                         item.name,
                         bool(item.supports_tools),
                         bool(item.requires_subscription),
+                        provider,
                     )
                 )
             else:
                 runtime = str(item).strip()
                 if runtime:
-                    entries.append((display_name_from_runtime(runtime), runtime, True, False))
+                    entries.append((display_name_from_runtime(runtime), runtime, True, False, ""))
 
-        from iris.infrastructure.model_descriptions import describe_model
-
-        for i, (label, runtime, supports_tools, requires_sub) in enumerate(entries):
+        self._picker_models = []
+        for i, (label, runtime, supports_tools, requires_sub, provider) in enumerate(entries):
             self._model_combo.addItem(label, runtime)
             self._model_combo.setItemData(i, supports_tools, _ROLE_SUPPORTS_TOOLS)
             self._model_combo.setItemData(i, requires_sub, _ROLE_REQUIRES_SUB)
+            self._model_combo.setItemData(i, provider, _ROLE_PROVIDER_NAME)
             color = _COLOR_MODEL_DEFAULT
             tip_extra = ""
             if requires_sub:
@@ -977,14 +1008,32 @@ class ChatPanel(QWidget):
                 color = _COLOR_MODEL_NO_TOOLS
                 tip_extra = " (도구 호출 미지원)"
             self._model_combo.setItemData(i, QBrush(color), Qt.ItemDataRole.ForegroundRole)
-            desc = describe_model(runtime)
-            tip = (desc or runtime) + tip_extra
+            if is_api_runtime_model(runtime):
+                from iris.infrastructure.api_model_meta import card_blurb, describe_api_model
+                from iris.storage.api_providers import parse_runtime_model_id
+
+                parsed = parse_runtime_model_id(runtime)
+                mid = parsed[1] if parsed else runtime
+                tip = card_blurb(describe_api_model(provider or "API", mid)) + tip_extra
+            else:
+                desc = describe_model(runtime)
+                tip = (desc or runtime) + tip_extra
             self._model_combo.setItemData(i, tip, Qt.ItemDataRole.ToolTipRole)
+            self._picker_models.append(
+                PickerModel(
+                    runtime=runtime,
+                    label=label,
+                    supports_tools=supports_tools,
+                    requires_subscription=requires_sub,
+                    provider_name=provider,
+                    is_api=is_api_runtime_model(runtime),
+                )
+            )
 
         pick = selected.strip()
         idx = 0
         if pick:
-            for i, (label, runtime, _t, _s) in enumerate(entries):
+            for i, (label, runtime, _t, _s, _p) in enumerate(entries):
                 if pick in (runtime, label):
                     idx = i
                     break
@@ -1001,6 +1050,7 @@ class ChatPanel(QWidget):
         self._model_guard_silent = True
         self._model_combo.blockSignals(True)
         self._model_combo.clear()
+        self._picker_models = []
         self._model_combo.addItem(text, "")
         self._model_combo.blockSignals(False)
         self._model_guard_silent = False
@@ -1015,10 +1065,20 @@ class ChatPanel(QWidget):
 
     def _update_model_tooltip(self) -> None:
         """콤보 툴팁을 현재 선택 모델의 설명으로 갱신(없으면 기본 안내)."""
+        from iris.infrastructure.api_model_meta import card_blurb, describe_api_model
         from iris.infrastructure.model_descriptions import describe_model
+        from iris.storage.api_providers import is_api_runtime_model, parse_runtime_model_id
 
-        desc = describe_model(self.current_model())
-        self._model_combo.setToolTip(desc or "Ollama 모델 선택")
+        runtime = self.current_model()
+        if is_api_runtime_model(runtime):
+            idx = self._model_combo.currentIndex()
+            provider = str(self._model_combo.itemData(idx, _ROLE_PROVIDER_NAME) or "API")
+            parsed = parse_runtime_model_id(runtime)
+            mid = parsed[1] if parsed else runtime
+            self._model_combo.setToolTip(card_blurb(describe_api_model(provider, mid)))
+            return
+        desc = describe_model(runtime)
+        self._model_combo.setToolTip(desc or "모델 선택")
 
     def _confirm_special_model(self, *, requires_sub: bool, supports_tools: bool) -> bool:
         """Pro/도구미지원 선택 시 Iris HUD 안내. True면 선택 확정."""
@@ -1048,6 +1108,73 @@ class ChatPanel(QWidget):
                 cancel_text="취소",
             )
         return True
+
+    def _open_model_picker_menu(self) -> None:
+        """+ 메뉴와 동일한 팝업 — Ollama/NVIDIA › + 단일 모델."""
+        if self._model_picker_menu is not None:
+            self._model_picker_menu.hide()
+            self._model_picker_menu.deleteLater()
+            self._model_picker_menu = None
+        ollama, nvidia, multi, singles = split_picker_groups(self._picker_models)
+        nvidia_label = ""
+        if nvidia:
+            nvidia_label = next((m.provider_name for m in nvidia if m.provider_name), "NVIDIA")
+        multi_brands = []
+        for pid, items in multi.items():
+            name = next((m.provider_name for m in items if m.provider_name), pid)
+            multi_brands.append((pid, name))
+        menu = ModelPickerMenu(
+            has_ollama=bool(ollama),
+            nvidia_label=nvidia_label,
+            multi_brands=multi_brands,
+            singles=singles,
+            parent=self,
+        )
+        menu.open_ollama.connect(
+            lambda: QTimer.singleShot(0, lambda: self._show_brand_dialog("Ollama", ollama, False))
+        )
+        menu.open_nvidia.connect(
+            lambda: QTimer.singleShot(
+                0, lambda: self._show_brand_dialog(nvidia_label or "NVIDIA", nvidia, True)
+            )
+        )
+        menu.open_brand.connect(self._on_open_multi_brand)
+        menu.model_chosen.connect(self._select_model_runtime)
+        self._model_picker_menu = menu
+        menu.popup_above(self._input_area.input_bar._model_shell)
+
+    def _on_open_multi_brand(self, brand_id: str) -> None:
+        _ollama, _nvidia, multi, _singles = split_picker_groups(self._picker_models)
+        items = multi.get(brand_id) or []
+        title = next((m.provider_name for m in items if m.provider_name), brand_id)
+        QTimer.singleShot(0, lambda: self._show_brand_dialog(title, items, False))
+
+    def _show_brand_dialog(self, title: str, models: list[PickerModel], categorize: bool) -> None:
+        dlg = ModelBrandDialog(
+            title,
+            models,
+            self.window(),
+            categorize=categorize,
+            hint=(
+                "무료 Public API 엔드포인트에서 호출 가능한 NIM만 표시합니다. "
+                "시안=도구 가능 · 회색=도구 미지원(Hermes 부적합) · 붉음=유료/구독. "
+                "특징·장단점·한도는 카드에 요약되어 있습니다."
+                if categorize
+                else "시안=도구 가능 · 회색=도구 미지원 · 붉음=유료/구독. "
+                "모델을 고른 뒤 「사용」을 누르세요."
+            ),
+        )
+        dlg.model_chosen.connect(self._select_model_runtime)
+        dlg.exec()
+
+    def _select_model_runtime(self, runtime: str) -> None:
+        rt = (runtime or "").strip()
+        if not rt:
+            return
+        for i in range(self._model_combo.count()):
+            if self._model_combo.itemData(i) == rt:
+                self._model_combo.setCurrentIndex(i)
+                return
 
     def _on_model_index_changed(self, index: int) -> None:
         if self._model_guard_silent:

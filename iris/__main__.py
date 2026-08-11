@@ -41,10 +41,15 @@ def main() -> None:
     except Exception:
         pass
 
+    from iris.assets.branding import APP_DISPLAY_NAME, load_app_icon
     from iris.ui.window.main_window import MainWindow
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Iris Light")
+    app.setApplicationName(APP_DISPLAY_NAME)
+    app.setApplicationDisplayName(APP_DISPLAY_NAME)
+    icon = load_app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     app.setFont(QFont("Noto Sans KR", 10))
     win = MainWindow()
     win.show()

@@ -250,20 +250,64 @@ def _card_qss() -> str:
     """
 
 
+def probe_mcp_ok(name: str) -> bool:
+    """등록 MCP가 사용 가능·정상 연결 가능하면 True (stdio 커맨드/HTTP 사전점검)."""
+    try:
+        from iris.system.hermes_iris_control_sync import (
+            load_mcp_servers_config,
+            probe_mcp_server,
+        )
+
+        cfg = load_mcp_servers_config().get(name)
+        if cfg is None:
+            return False
+        return bool(probe_mcp_server(name, cfg).get("ok"))
+    except Exception:
+        return False
+
+
+class _StatusDot(QLabel):
+    """연결 상태 점 — ok=초록, bad=빨강."""
+
+    def __init__(self, ok: bool, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(8, 8)
+        color = TOKENS.success if ok else TOKENS.error
+        self.setStyleSheet(
+            f"background-color: {color}; border-radius: 4px; border: none;"
+        )
+        self.setToolTip("연결 정상" if ok else "연결 비정상")
+
+
 class _ItemCard(QFrame):
     use_clicked = pyqtSignal(str)
 
-    def __init__(self, name: str, desc: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        desc: str,
+        parent: QWidget | None = None,
+        *,
+        status_ok: bool | None = None,
+        title_color: str | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("SkillMcpCard")
         self._name = name
         lay = QHBoxLayout(self)
         lay.setContentsMargins(10, 8, 10, 8)
         lay.setSpacing(8)
+        if status_ok is not None:
+            lay.addWidget(_StatusDot(status_ok), 0, Qt.AlignmentFlag.AlignVCenter)
         col = QVBoxLayout()
         col.setSpacing(2)
         title = QLabel(name)
         title.setObjectName("SkillMcpCardName")
+        if title_color:
+            # objectName QSS보다 우선 — 모델 피커 tier 색
+            title.setStyleSheet(
+                f"color: {title_color}; font-size: 13px; font-weight: 600; background: transparent;"
+            )
         col.addWidget(title)
         sub = QLabel(desc)
         sub.setObjectName("SkillMcpCardDesc")
@@ -425,7 +469,7 @@ class McpDialog(QDialog):
             self._list_lay.addWidget(empty)
         else:
             for name, desc in mcps:
-                card = _ItemCard(name, desc)
+                card = _ItemCard(name, desc, status_ok=probe_mcp_ok(name))
                 card.use_clicked.connect(self._on_use)
                 self._list_lay.addWidget(card)
         self._list_lay.addStretch(1)
@@ -473,6 +517,7 @@ description: >
     assert d2 == "one liner", d2
     assert isinstance(list_hermes_skills(), list)
     assert isinstance(list_hermes_mcps(), list)
+    assert callable(probe_mcp_ok)
     print(
         "skill_mcp_dialogs ok",
         "skills",

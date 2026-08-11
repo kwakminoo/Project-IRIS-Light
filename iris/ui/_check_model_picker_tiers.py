@@ -47,6 +47,45 @@ def main() -> None:
 
     assert callable(hd.run_hud_confirm)
     assert "IrisHudConfirm" in hd._confirm_qss(accent="#fca5a5")
+    from iris.infrastructure.api_model_meta import api_model_supports_tools
+    from iris.ui.chat.model_picker_menu import (
+        PickerModel,
+        _COLOR_MODEL_NO_TOOLS,
+        _COLOR_MODEL_PRO,
+        picker_tier_color,
+        split_picker_groups,
+    )
+
+    assert api_model_supports_tools("NVIDIA", "meta/llama-3.1-8b-instruct") is True
+    assert api_model_supports_tools("NVIDIA", "black-forest-labs/flux.1-dev") is False
+    assert (
+        picker_tier_color(PickerModel("x", "x", supports_tools=False))
+        == _COLOR_MODEL_NO_TOOLS
+    )
+    assert (
+        picker_tier_color(PickerModel("y", "y", requires_subscription=True))
+        == _COLOR_MODEL_PRO
+    )
+    groups = split_picker_groups(
+        [
+            PickerModel("a:cloud", "a", True),
+            PickerModel(
+                "api:nv:meta/llama",
+                "NVIDIA · llama",
+                True,
+                provider_name="NVIDIA",
+                is_api=True,
+            ),
+            PickerModel(
+                "api:oa:gpt-4o",
+                "OpenAI · gpt-4o",
+                True,
+                provider_name="OpenAI",
+                is_api=True,
+            ),
+        ]
+    )
+    assert len(groups[0]) == 1 and len(groups[1]) == 1 and len(groups[3]) == 1
     print("model picker tiers self-check ok")
 
 

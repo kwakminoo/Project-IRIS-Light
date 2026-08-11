@@ -96,6 +96,7 @@ class _MenuRow(QPushButton):
         subtitle: str = "",
         *,
         show_arrow: bool = False,
+        title_color: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -122,6 +123,10 @@ class _MenuRow(QPushButton):
         text_col.setSpacing(0)
         title_lbl = QLabel(title)
         title_lbl.setObjectName("ComposerPlusMenuTitle")
+        if title_color:
+            title_lbl.setStyleSheet(
+                f"color: {title_color}; font-size: 12px; background: transparent;"
+            )
         text_col.addWidget(title_lbl)
         if subtitle:
             sub_lbl = QLabel(subtitle)
