@@ -511,6 +511,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
             typewriter_into_ide,
             wait_ide_shows_file,
         )
+        from iris.system.ide_launcher import open_file_in_ide
         from iris.system.project_ops import (
             resolve_under_root,
             write_project_file,
@@ -583,8 +584,25 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                     timeout_sec=float(args.get("visible_timeout_sec") or 6),
                     pump=_qt_pump,
                 )
+            if hwnd and opened and not visible:
+                profile = load_user_profile(window._db)
+                cli_opened, _cli_err = open_file_in_ide(
+                    profile.preferred_ide,
+                    path_s,
+                    ide_exe_path=profile.ide_exe_path,
+                    ide_cli_path=profile.ide_cli_path,
+                    reuse_window=True,
+                )
+                if cli_opened:
+                    visible = wait_ide_shows_file(
+                        hwnd,
+                        path_s,
+                        timeout_sec=float(args.get("visible_timeout_sec") or 6),
+                        pump=_qt_pump,
+                    )
             typed = False
             streamed = False
+            stream_result: dict[str, Any] = {}
             input_mode = str(args.get("input_mode") or "").strip().lower()
             if do_type and hwnd and opened and input_mode == "keyboard":
                 typed = typewriter_into_ide(
@@ -596,12 +614,17 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 )
                 abs_path.write_text(text, encoding="utf-8")
             elif do_type and hwnd and opened:
-                write_project_file_stream(
+                chunk_chars = int(
+                    args.get("chunk_chars")
+                    or max(12, min(48, max(1, len(text)) // 100))
+                )
+                chunk_delay_ms = int(args.get("chunk_delay_ms") or args.get("delay_ms") or 70)
+                stream_result = write_project_file_stream(
                     root,
                     norm_rel,
                     text,
-                    chunk_chars=int(args.get("chunk_chars") or 80),
-                    chunk_delay_ms=int(args.get("chunk_delay_ms") or args.get("delay_ms") or 80),
+                    chunk_chars=chunk_chars,
+                    chunk_delay_ms=chunk_delay_ms,
                     pump=_qt_pump,
                 )
                 streamed = True
@@ -630,6 +653,9 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 "typed": bool(typed),
                 "streamed": bool(streamed),
                 "input_mode": "keyboard" if typed else ("file_watch" if streamed else "instant"),
+                "chunks": int(stream_result.get("chunks") or 0),
+                "chunk_chars": int(stream_result.get("chunk_chars") or 0),
+                "chunk_delay_ms": int(stream_result.get("chunk_delay_ms") or 0),
             }
         except Exception as exc:  # noqa: BLE001
             return err_result("project.write_file", str(exc))

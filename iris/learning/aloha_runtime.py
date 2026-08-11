@@ -48,7 +48,17 @@ def runtime_status(root: Path | None = None) -> dict:
             from iris.system.win_subprocess import no_window_kwargs
 
             proc = subprocess.run(
-                [str(py), "-c", "import PySide6, flask, pyautogui; print('ok')"],
+                [
+                    str(py),
+                    "-c",
+                    (
+                        "import importlib.util, sys; "
+                        "mods=('PySide6','flask','pyautogui','pynput'); "
+                        "missing=[m for m in mods if importlib.util.find_spec(m) is None]; "
+                        "print('missing dependencies: '+', '.join(missing) if missing else 'ready'); "
+                        "sys.exit(1 if missing else 0)"
+                    ),
+                ],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -56,7 +66,7 @@ def runtime_status(root: Path | None = None) -> dict:
             )
             if proc.returncode != 0:
                 ok = False
-                detail = (proc.stderr or proc.stdout or "import failed")[:200]
+                detail = (proc.stdout or proc.stderr or "import failed")[:200]
             else:
                 detail = "ready"
         except Exception as exc:
@@ -110,7 +120,7 @@ def bootstrap_runtime(
     )
     cmd = [str(py), "-m", "pip", "install"]
     if req_file.is_file():
-        cmd += ["-r", str(req_file), "PySide6"]
+        cmd += ["-r", str(req_file), "PySide6", "pynput>=1.7.7"]
     else:
         cmd += list(_REQ_PACKAGES)
     proc = subprocess.run(cmd, capture_output=True, text=True, **kw)

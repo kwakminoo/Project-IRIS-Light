@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSize, QTimer, QUrl
+from PyQt6.QtCore import Qt, QSize, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
@@ -108,6 +108,18 @@ class _StatusDot(QWidget):
         painter.setBrush(colors.get(self._status, colors["unknown"]))
         painter.drawEllipse(1, 1, 8, 8)
         painter.end()
+
+
+class _AlohaRuntimeBootstrapWorker(QThread):
+    progress = pyqtSignal(str)
+    finished_ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def run(self) -> None:
+        try:
+            self.finished_ok.emit(bootstrap_runtime(progress=self.progress.emit))
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
 
 
 @dataclass(frozen=True)
@@ -668,34 +680,54 @@ class SettingsDialog(QDialog):
         self._aloha_runtime_status.setWordWrap(True)
         lay.addWidget(self._aloha_runtime_status)
         row = QHBoxLayout()
-        btn_refresh = QPushButton("상태 새로고침")
-        btn_install = QPushButton("Runtime 설치/복구")
-        btn_refresh.clicked.connect(self._refresh_aloha_runtime_status)
-        btn_install.clicked.connect(self._bootstrap_aloha_runtime)
-        row.addWidget(btn_refresh)
-        row.addWidget(btn_install)
+        self._aloha_runtime_refresh_btn = QPushButton("상태 새로고침")
+        self._aloha_runtime_install_btn = QPushButton("Runtime 설치/복구")
+        self._aloha_runtime_refresh_btn.clicked.connect(self._refresh_aloha_runtime_status)
+        self._aloha_runtime_install_btn.clicked.connect(self._bootstrap_aloha_runtime)
+        row.addWidget(self._aloha_runtime_refresh_btn)
+        row.addWidget(self._aloha_runtime_install_btn)
         row.addStretch(1)
         lay.addLayout(row)
         self._refresh_aloha_runtime_status()
         return box
 
     def _refresh_aloha_runtime_status(self) -> None:
-        st = runtime_status()
-        self._aloha_runtime_status.setText(
-            f"{'준비됨' if st['ok'] else '미설치/불완전'} — {st['python']}\n{st['detail']}"
-        )
+        try:
+            st = runtime_status()
+            self._aloha_runtime_status.setText(
+                f"{'준비됨' if st['ok'] else '미설치/불완전'} — {st['python']}\n{st['detail']}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._aloha_runtime_status.setText(f"상태 확인 실패: {exc}")
 
     def _bootstrap_aloha_runtime(self) -> None:
+        worker = getattr(self, "_aloha_runtime_worker", None)
+        if worker is not None and worker.isRunning():
+            return
         self._aloha_runtime_status.setText("설치 중… (수 분 소요될 수 있음)")
-        try:
-            st = bootstrap_runtime(progress=lambda m: self._aloha_runtime_status.setText(m))
-            self._aloha_runtime_status.setText(
-                f"완료 — {st['python']}\n{st['detail']}"
-            )
-            QMessageBox.information(self, "Aloha Runtime", "설치가 완료되었습니다.")
-        except Exception as exc:
-            self._aloha_runtime_status.setText(f"실패: {exc}")
-            QMessageBox.warning(self, "Aloha Runtime", str(exc)[:400])
+        self._aloha_runtime_refresh_btn.setEnabled(False)
+        self._aloha_runtime_install_btn.setEnabled(False)
+        worker = _AlohaRuntimeBootstrapWorker(self)
+        self._aloha_runtime_worker = worker
+        worker.progress.connect(self._aloha_runtime_status.setText)
+        worker.finished_ok.connect(self._on_aloha_runtime_bootstrap_ok)
+        worker.failed.connect(self._on_aloha_runtime_bootstrap_failed)
+        worker.finished.connect(lambda: self._aloha_runtime_refresh_btn.setEnabled(True))
+        worker.finished.connect(lambda: self._aloha_runtime_install_btn.setEnabled(True))
+        worker.start()
+
+    def _on_aloha_runtime_bootstrap_ok(self, st_obj: object) -> None:
+        st = st_obj if isinstance(st_obj, dict) else runtime_status()
+        self._aloha_runtime_status.setText(
+            f"완료 — {st.get('python', '')}\n{st.get('detail', '')}"
+        )
+
+    def _on_aloha_runtime_bootstrap_failed(self, error: str) -> None:
+        self._aloha_runtime_status.setText(f"실패: {error[:800]}")
+
+    def _aloha_runtime_busy(self) -> bool:
+        worker = getattr(self, "_aloha_runtime_worker", None)
+        return bool(worker is not None and worker.isRunning())
 
     def _build_email_box(self) -> QGroupBox:
         email_box = QGroupBox("이메일 계정 (Gmail · Naver 등)")
@@ -1474,6 +1506,9 @@ class SettingsDialog(QDialog):
         return True
 
     def _accept(self) -> None:
+        if self._aloha_runtime_busy():
+            self._aloha_runtime_status.setText("Runtime 설치가 끝난 뒤 설정을 닫아주세요.")
+            return
         if not self._save_profile_ide():
             return
         self._stop_mic_monitor()
@@ -1535,10 +1570,17 @@ class SettingsDialog(QDialog):
         return prefs
 
     def reject(self) -> None:
+        if self._aloha_runtime_busy():
+            self._aloha_runtime_status.setText("Runtime 설치가 끝난 뒤 설정을 닫아주세요.")
+            return
         self._stop_mic_monitor()
         super().reject()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._aloha_runtime_busy():
+            self._aloha_runtime_status.setText("Runtime 설치가 끝난 뒤 설정을 닫아주세요.")
+            event.ignore()
+            return
         self._stop_mic_monitor()
         super().closeEvent(event)
 

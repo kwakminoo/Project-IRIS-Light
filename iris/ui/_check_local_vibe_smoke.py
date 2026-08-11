@@ -74,10 +74,16 @@ def main() -> int:
             "rel_path": "gugudan.py",
             "content": code,
             "open": True,
-            "delay_ms": 1,
+            "chunk_chars": 12,
+            "chunk_delay_ms": 70,
         },
     )
-    if not step("write_file_live_stream", write):
+    write_result = write.get("result") if isinstance(write.get("result"), dict) else {}
+    if not step(
+        "write_file_live_stream",
+        write,
+        bool(write.get("ok")) and write_result.get("input_mode") == "file_watch" and write_result.get("chunks", 0) >= 3,
+    ):
         return finish(root, steps)
     run = invoke(
         "project.run",

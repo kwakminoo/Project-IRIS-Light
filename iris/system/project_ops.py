@@ -282,8 +282,8 @@ def write_project_file_stream(
     rel_path: str,
     content: str,
     *,
-    chunk_chars: int = 80,
-    chunk_delay_ms: int = 120,
+    chunk_chars: int = 32,
+    chunk_delay_ms: int = 70,
     on_first_chunk: Callable[[str], None] | None = None,
     pump: Callable[[], None] | None = None,
 ) -> dict:
@@ -300,7 +300,7 @@ def write_project_file_stream(
     text = str(content)
     size = max(1, int(chunk_chars or 80))
     delay = max(0, int(chunk_delay_ms or 0)) / 1000.0
-    chunks = [text[i : i + size] for i in range(0, len(text), size)] or [""]
+    chunks = _smooth_text_chunks(text, size)
     built = ""
     for i, chunk in enumerate(chunks):
         built += chunk
@@ -310,7 +310,7 @@ def write_project_file_stream(
         if i < len(chunks) - 1 and delay > 0:
             if pump is not None:
                 pump()
-            time.sleep(delay)
+            time.sleep(delay * (1.8 if chunk.endswith("\n") else 1.0))
             if pump is not None:
                 pump()
     return {
@@ -318,8 +318,30 @@ def write_project_file_stream(
         "rel_path": rel,
         "bytes": len(text.encode("utf-8")),
         "chunks": len(chunks),
+        "chunk_chars": size,
+        "chunk_delay_ms": int(chunk_delay_ms or 0),
         "streamed": True,
     }
+
+
+def _smooth_text_chunks(text: str, size: int) -> list[str]:
+    """코드가 IDE에서 자라나는 느낌이 나도록 단어/줄 경계 우선으로 자른다."""
+    if not text:
+        return [""]
+    size = max(1, int(size))
+    chunks: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        end = min(n, i + size)
+        if end < n:
+            window = text[i:end]
+            split = max(window.rfind("\n"), window.rfind(" "), window.rfind("\t"))
+            if split >= max(8, size // 2):
+                end = i + split + 1
+        chunks.append(text[i:end])
+        i = end
+    return chunks
 
 
 _IRIS_TASK_LABEL = "Iris: Run"
@@ -653,6 +675,7 @@ if __name__ == "__main__":
         r = write_project_file_stream(td, "a.txt", "abcdefghij", chunk_chars=3, chunk_delay_ms=0)
         assert Path(r["path"]).read_text(encoding="utf-8") == "abcdefghij"
         assert r["chunks"] == 4
+        assert _smooth_text_chunks("abc def\nghi", 8) == ["abc def\n", "ghi"]
         cmd = build_run_command(file="hello.py")
         assert cmd[0] == "python"
     print("project_ops ok", hits[0]["name"], hits[0]["score"], reason)
