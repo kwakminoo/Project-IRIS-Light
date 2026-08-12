@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -12,11 +13,15 @@ from pathlib import Path
 from iris.infrastructure.hermes_client import HermesClient
 
 
-def _windows_hermes_candidates() -> list[Path]:
+def hermes_home() -> Path:
     local = os.environ.get("LOCALAPPDATA", "").strip()
-    if not local:
-        return []
-    root = Path(local) / "hermes" / "hermes-agent" / "venv" / "Scripts"
+    if local:
+        return Path(local) / "hermes"
+    return Path.home() / ".hermes"
+
+
+def _windows_hermes_candidates() -> list[Path]:
+    root = hermes_home() / "hermes-agent" / "venv" / "Scripts"
     return [root / "hermes.exe", root / "hermes-agent.exe"]
 
 
@@ -36,12 +41,45 @@ def hermes_executable(command: str = "hermes") -> str | None:
     return None
 
 
+def load_hermes_dotenv() -> dict[str, str]:
+    """%LOCALAPPDATA%/hermes/.env → dict (API_SERVER_* 등)."""
+    path = hermes_home() / ".env"
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        out[key] = val.strip().strip('"').strip("'")
+    return out
+
+
+def resolve_hermes_api_key(api_key: str = "") -> str:
+    """Iris 설정 키 우선, 없으면 Hermes .env의 API_SERVER_KEY."""
+    key = (api_key or "").strip()
+    if key:
+        return key
+    return load_hermes_dotenv().get("API_SERVER_KEY", "").strip()
+
+
 def is_hermes_gateway_running(
     base_url: str,
     *,
     api_key: str = "",
 ) -> bool:
-    return HermesClient(base_url, api_key=api_key).health_ok()
+    return HermesClient(
+        base_url,
+        api_key=resolve_hermes_api_key(api_key),
+    ).health_ok()
 
 
 def _gateway_argv() -> list[str]:
@@ -49,21 +87,34 @@ def _gateway_argv() -> list[str]:
     return ["gateway", "run", "--quiet", "--accept-hooks"]
 
 
+def _gateway_child_env() -> dict[str, str]:
+    """Hermes gateway 자식 프로세스 환경 — .env + HERMES_HOME 필수."""
+    env = os.environ.copy()
+    home = hermes_home()
+    env["HERMES_HOME"] = str(home)
+    env["HERMES_ACCEPT_HOOKS"] = "1"
+    for key, val in load_hermes_dotenv().items():
+        # Iris 프로세스 값이 있어도 Hermes 전용 키는 파일 값을 쓴다
+        env[key] = val
+    env.setdefault("API_SERVER_ENABLED", "true")
+    return env
+
+
 def _windows_hidden_cmd(hermes_exe: str) -> list[str]:
-    """콘솔 창 없이 기동 — venv의 pythonw로 entry point 직접 호출."""
-    scripts = Path(hermes_exe).resolve().parent
-    pythonw = scripts / "pythonw.exe"
-    if pythonw.is_file():
-        code = (
-            "import sys; from hermes_cli.main import main; "
-            "sys.argv=['hermes','gateway','run','--quiet','--accept-hooks']; "
-            "raise SystemExit(main())"
-        )
-        return [str(pythonw), "-c", code]
+    """콘솔 창 없이 기동.
+
+    pythonw -c 보다 hermes.exe 직접 호출이 Windows에서 안정적이다
+    (자식 프로세스/락 소유권이 entrypoint와 일치).
+    """
     return [hermes_exe, *_gateway_argv()]
 
 
-def _popen_hidden(cmd: list[str], *, env: dict[str, str]) -> subprocess.Popen[bytes]:
+def _popen_hidden(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    cwd: str | None = None,
+) -> subprocess.Popen[bytes]:
     popen_kwargs: dict = {
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
@@ -71,9 +122,12 @@ def _popen_hidden(cmd: list[str], *, env: dict[str, str]) -> subprocess.Popen[by
         "env": env,
         "close_fds": True,
     }
+    if cwd:
+        popen_kwargs["cwd"] = cwd
     if sys.platform == "win32":
+        # CREATE_NEW_PROCESS_GROUP은 Hermes gateway가 수 초 내 종료되는 원인이 됨
+        # (자식/런타임 락과 충돌). CREATE_NO_WINDOW만 사용.
         creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = 0
@@ -89,13 +143,15 @@ def start_hermes_gateway(command: str = "hermes") -> bool:
     exe = hermes_executable(command)
     if not exe:
         return False
-    env = os.environ.copy()
-    env.setdefault("HERMES_ACCEPT_HOOKS", "1")
+    env = _gateway_child_env()
+    cwd = str(hermes_home() / "hermes-agent")
+    if not Path(cwd).is_dir():
+        cwd = None
     try:
         if sys.platform == "win32":
-            _popen_hidden(_windows_hidden_cmd(exe), env=env)
+            _popen_hidden(_windows_hidden_cmd(exe), env=env, cwd=cwd)
         else:
-            _popen_hidden([exe, *_gateway_argv()], env=env)
+            _popen_hidden([exe, *_gateway_argv()], env=env, cwd=cwd)
         return True
     except OSError:
         return False
@@ -105,7 +161,7 @@ def stop_hermes_gateway(command: str = "hermes", *, wait_sec: float = 20.0) -> b
     """`hermes gateway stop --all`로 락을 잡고 있는 구 프로세스를 내린다.
 
     ponytail: `--replace`만으로는 Windows에서 lock 보유 인스턴스가 남을 수 있음.
-    천장: CLI stop 실패 시 taskkill로 gateway run 프로세스만 강제 종료.
+    천장: CLI stop 실패 시 taskkill + stale gateway.lock 제거.
     """
     exe = hermes_executable(command)
     if exe:
@@ -118,6 +174,7 @@ def stop_hermes_gateway(command: str = "hermes", *, wait_sec: float = 20.0) -> b
                 errors="replace",
                 timeout=45,
                 check=False,
+                env=_gateway_child_env(),
                 creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 if sys.platform == "win32"
                 else 0,
@@ -126,69 +183,145 @@ def stop_hermes_gateway(command: str = "hermes", *, wait_sec: float = 20.0) -> b
             pass
 
     _force_kill_windows_gateway_procs()
+    _clear_stale_gateway_lock()
 
     deadline = time.monotonic() + wait_sec
     while time.monotonic() < deadline:
-        # base_url 모르는 stop 경로 — health는 호출측에서 확인
-        if not _windows_gateway_procs_alive():
+        if not _windows_gateway_procs_alive() and not _lock_pid_alive():
+            _clear_stale_gateway_lock()
             return True
         time.sleep(0.35)
+    _clear_stale_gateway_lock()
     return not _windows_gateway_procs_alive()
 
 
-def _gateway_process_pids() -> list[int]:
-    """Hermes CLI `gateway stop`가 못 잡는 pythonw -c 기동 인스턴스까지 수집.
+def _gateway_lock_path() -> Path:
+    return hermes_home() / "gateway.lock"
 
-    주의: CommandLine에 hermes/gateway/run 문자열이 있는 Iris/PowerShell 자기 자신을
-    죽이면 안 됨 → hermes_cli.main 기동 형태만 매칭.
-    """
+
+def _lock_pid_alive() -> bool:
+    path = _gateway_lock_path()
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        pid = int(data.get("pid") or 0)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    if pid <= 0:
+        return False
+    return _pid_exists(pid)
+
+
+def _pid_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
     if sys.platform == "win32":
-        # ponytail: 전체 JSON 덤프 금지. hermes_cli.main + gateway argv 만.
-        ps = (
-            "$procs = Get-CimInstance Win32_Process | "
-            "Where-Object { "
-            "$_.CommandLine -and "
-            "($_.CommandLine -like '*hermes_cli.main*') -and "
-            "($_.CommandLine -like '*gateway*') "
-            "}; "
-            "($procs | ForEach-Object { $_.ProcessId }) -join ','"
-        )
         try:
             out = subprocess.check_output(
-                ["powershell", "-NoProfile", "-Command", ps],
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
                 text=True,
-                timeout=20,
+                timeout=10,
                 creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
             )
         except (OSError, subprocess.SubprocessError):
-            return []
-        pids: list[int] = []
-        for part in (out or "").strip().split(","):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                pids.append(int(part))
-            except ValueError:
-                continue
-        return pids
+            return False
+        return str(pid) in (out or "")
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
-    # macOS/Linux: `hermes` 스크립트는 `venv/bin/python .../hermes gateway run
-    # --quiet --accept-hooks`로 뜬다 — cmdline에 hermes+gateway+run이 모두 있는
-    # 것만 매칭(Iris 자신이나 무관한 프로세스 오검출 방지).
+
+def _clear_stale_gateway_lock() -> None:
+    """죽은 PID가 남긴 gateway.lock / gateway.pid / kanban lock 제거.
+
+    Hermes는 gateway.pid를 O_CREAT|O_EXCL로 만들므로, 죽은 프로세스의 pid
+    파일이 남으면 새 기동이 FileExistsError로 즉시 종료한다(exit 계열).
+    """
+    home = hermes_home()
+    pid_path = home / "gateway.pid"
+    lock_path = home / "gateway.lock"
+
+    # pid 파일 — 기록된 PID가 없거나 죽었어야 삭제
+    if pid_path.is_file():
+        stale = True
+        try:
+            data = json.loads(pid_path.read_text(encoding="utf-8"))
+            pid = int(data.get("pid") or 0)
+            if pid > 0 and _pid_exists(pid):
+                stale = False
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            stale = True
+        if stale:
+            try:
+                pid_path.unlink()
+            except OSError:
+                pass
+
+    if lock_path.is_file() and not _lock_pid_alive():
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+    # kanban dispatcher stale lock
+    klock = home / "kanban" / ".dispatcher.lock"
+    if klock.is_file():
+        try:
+            raw = klock.read_text(encoding="utf-8", errors="replace").strip()
+            kpid = int(raw) if raw.isdigit() else 0
+        except (OSError, ValueError):
+            kpid = 0
+        if (not kpid) or (not _pid_exists(kpid)):
+            try:
+                klock.unlink()
+            except OSError:
+                pass
+
+
+def _gateway_process_pids() -> list[int]:
+    """Hermes gateway 프로세스 PID.
+
+    ponytail: Win32_Process 전체 스캔(PowerShell CIM)은 환경에 따라 수 초~무한 대기에
+    가깝게 느려질 수 있음 → gateway.lock PID + psutil(있으면)만 사용.
+    """
+    pids: set[int] = set()
+
+    lock = _gateway_lock_path()
+    if lock.is_file():
+        try:
+            data = json.loads(lock.read_text(encoding="utf-8"))
+            pid = int(data.get("pid") or 0)
+            if pid > 0 and _pid_exists(pid):
+                pids.add(pid)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+
     try:
         import psutil  # type: ignore
     except Exception:
-        return []
-    pids = []
-    for proc in psutil.process_iter(["pid", "cmdline"]):
+        return sorted(pids)
+
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
-            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
-            if "hermes" in cmdline and "gateway" in cmdline and "run" in cmdline:
-                pids.append(int(proc.info["pid"]))
+            name = (proc.info.get("name") or "").lower()
+            cmdline_list = proc.info.get("cmdline") or []
+            cmdline = " ".join(cmdline_list).lower()
+            if " -m iris" in cmdline or "iris_launcher" in cmdline:
+                continue
+            looks_hermes = (
+                name.startswith("hermes")
+                or "hermes_cli.main" in cmdline
+                or "\\hermes" in cmdline
+                or "/hermes" in cmdline
+            )
+            if looks_hermes and "gateway" in cmdline and "run" in cmdline:
+                pids.add(int(proc.info["pid"]))
         except (psutil.Error, TypeError, ValueError):
             continue
-    return pids
+    return sorted(pids)
 
 
 def _windows_gateway_procs_alive() -> bool:
@@ -239,16 +372,22 @@ def ensure_hermes_gateway_running(
     *,
     api_key: str = "",
     command: str = "hermes",
-    wait_sec: float = 30.0,
+    wait_sec: float = 45.0,
 ) -> bool:
     """켜져 있으면 즉시 True. 아니면 기동 후 /health 준비까지 대기."""
-    if is_hermes_gateway_running(base_url, api_key=api_key):
+    key = resolve_hermes_api_key(api_key)
+    if is_hermes_gateway_running(base_url, api_key=key):
         return True
+    # 좀비 프로세스/락만 있으면 정리 후 재기동
+    if _windows_gateway_procs_alive() or _gateway_lock_path().is_file():
+        stop_hermes_gateway(command, wait_sec=min(15.0, wait_sec / 2))
+        if is_hermes_gateway_running(base_url, api_key=key):
+            return True
     if not start_hermes_gateway(command):
         return False
     deadline = time.monotonic() + wait_sec
     while time.monotonic() < deadline:
-        if is_hermes_gateway_running(base_url, api_key=api_key):
+        if is_hermes_gateway_running(base_url, api_key=key):
             return True
         time.sleep(0.5)
     return False
@@ -266,21 +405,23 @@ def restart_hermes_gateway(
     `--replace`만 쓰면 Windows에서 'runtime lock already held'로 신 프로세스가
     죽고, 오전부터 떠 있던 구 gateway(MCP 0 tools)가 그대로 남는 문제가 있었다.
     """
+    key = resolve_hermes_api_key(api_key)
     stop_hermes_gateway(command, wait_sec=min(20.0, wait_sec / 2))
 
     # health가 내려갈 때까지 대기
     down_deadline = time.monotonic() + 15.0
     while time.monotonic() < down_deadline:
-        if not is_hermes_gateway_running(base_url, api_key=api_key):
+        if not is_hermes_gateway_running(base_url, api_key=key):
             break
         time.sleep(0.3)
 
+    _clear_stale_gateway_lock()
     if not start_hermes_gateway(command):
         return False
 
     deadline = time.monotonic() + wait_sec
     while time.monotonic() < deadline:
-        if is_hermes_gateway_running(base_url, api_key=api_key):
+        if is_hermes_gateway_running(base_url, api_key=key):
             return True
         time.sleep(0.5)
     return False
@@ -300,6 +441,7 @@ def verify_iris_mcp_tools(*, command: str = "hermes", timeout_sec: float = 45.0)
             errors="replace",
             timeout=timeout_sec,
             check=False,
+            env=_gateway_child_env(),
             creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if sys.platform == "win32"
             else 0,
@@ -316,12 +458,48 @@ def verify_iris_mcp_tools(*, command: str = "hermes", timeout_sec: float = 45.0)
     return False, snippet
 
 
+def ensure_hermes_provider_config() -> None:
+    """config.yaml provider 'ollama' → 'custom' (0.19+ 로컬 OpenAI-compat)."""
+    path = hermes_home() / "config.yaml"
+    if not path.is_file():
+        return
+    try:
+        import yaml  # type: ignore
+    except Exception:
+        return
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return
+    if not isinstance(data, dict):
+        return
+    model = data.get("model")
+    if not isinstance(model, dict):
+        return
+    if str(model.get("provider") or "").strip().lower() != "ollama":
+        return
+    model["provider"] = "custom"
+    data["model"] = model
+    try:
+        path.write_text(
+            yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
 if __name__ == "__main__":
+    ensure_hermes_provider_config()
     assert is_hermes_gateway_running("http://127.0.0.1:1/v1") is False
     exe = hermes_executable("hermes")
     print(
         "hermes_gateway ok - exe:",
         exe,
+        "home:",
+        hermes_home(),
+        "key_set:",
+        bool(resolve_hermes_api_key()),
         "running:",
         is_hermes_gateway_running("http://127.0.0.1:8642/v1"),
     )

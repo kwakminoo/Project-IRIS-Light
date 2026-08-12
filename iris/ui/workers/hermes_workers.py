@@ -7,6 +7,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from iris.infrastructure.hermes_client import HermesClient, host_label_for_hermes
 from iris.system.hermes_gateway import (
     ensure_hermes_gateway_running,
+    ensure_hermes_provider_config,
     is_hermes_gateway_running,
     restart_hermes_gateway,
     verify_iris_mcp_tools,
@@ -36,6 +37,7 @@ class HermesHealthWorker(QThread):
 
     def run(self) -> None:
         try:
+            ensure_hermes_provider_config()
             # Iris Control MCP·스킬 → Hermes 디스크, 기동 시마다 MCP 재연결
             try:
                 report = sync_iris_control(reconnect_gateway=True)

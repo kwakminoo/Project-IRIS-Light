@@ -41,10 +41,18 @@ def main() -> None:
     except Exception:
         pass
 
-    from iris.assets.branding import APP_DISPLAY_NAME, load_app_icon
+    from iris.assets.branding import (
+        APP_DISPLAY_NAME,
+        apply_windows_app_id,
+        load_app_icon,
+    )
     from iris.ui.window.main_window import MainWindow
 
+    # QApplication 전에 AppID — 작업표시줄이 python 아이콘으로 묶이지 않게
+    apply_windows_app_id()
+
     app = QApplication(sys.argv)
+    app.setOrganizationName(APP_DISPLAY_NAME)
     app.setApplicationName(APP_DISPLAY_NAME)
     app.setApplicationDisplayName(APP_DISPLAY_NAME)
     icon = load_app_icon()

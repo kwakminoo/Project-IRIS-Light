@@ -47,19 +47,47 @@ def hide_console_window() -> None:
         pass
 
 
+def _project_root() -> Path:
+    # iris/learning/elevation.py → repo root
+    return Path(__file__).resolve().parents[2]
+
+
+def _find_iris_exe() -> Path | None:
+    """UAC에 IRIS로 뜨도록 IRIS.exe를 우선 찾는다."""
+    # PyInstaller 빌드본 — 이미 IRIS.exe로 실행 중
+    if getattr(sys, "frozen", False):
+        frozen = Path(sys.executable)
+        if frozen.is_file() and frozen.name.lower() == "iris.exe":
+            return frozen
+
+    root = _project_root()
+    candidates = [
+        root / "dist" / "IRIS.exe",
+        root / "IRIS.exe",
+        Path(sys.executable).resolve().parent / "IRIS.exe",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
 def iris_launch_command() -> tuple[str, str]:
     """(executable, parameters) for ShellExecute runas.
 
-    pythonw.exe 우선 — 관리자 재실행 시 검은 터미널 창이 뜨지 않음.
+    UAC 프로그램명은 실행 파일 기준이므로 IRIS.exe를 우선 사용한다.
+    없을 때만 pythonw -m iris (개발 폴백).
     """
+    iris_exe = _find_iris_exe()
+    if iris_exe is not None:
+        return str(iris_exe), ""
+
     exe = Path(sys.executable)
     if exe.name.lower() == "python.exe":
         pythonw = exe.with_name("pythonw.exe")
         if pythonw.is_file():
             exe = pythonw
-    # python -m iris 로 재기동 (패키지 엔트리 유지)
-    params = "-m iris"
-    return str(exe), params
+    return str(exe), "-m iris"
 
 
 def relaunch_as_admin(*, working_directory: str | None = None) -> bool:
@@ -71,21 +99,25 @@ def relaunch_as_admin(*, working_directory: str | None = None) -> bool:
     import ctypes
 
     exe, params = iris_launch_command()
-    cwd = working_directory or str(Path(__file__).resolve().parents[2])
+    cwd = working_directory or str(_project_root())
     # SEE_MASK — return value > 32 means success
     rc = ctypes.windll.shell32.ShellExecuteW(
         None,
         "runas",
         exe,
-        params,
+        params or None,
         cwd,
-        _SW_HIDE,  # 콘솔/창 숨김 (pythonw + SW_HIDE)
+        _SW_HIDE,
     )
     return int(rc) > 32
 
 
 if __name__ == "__main__":
     exe, params = iris_launch_command()
-    assert "-m iris" in params
-    assert exe.lower().endswith(("python.exe", "pythonw.exe"))
-    print("elevation self-check ok", exe, params, "elevated=", is_elevated())
+    name = Path(exe).name.lower()
+    assert name in {"iris.exe", "python.exe", "pythonw.exe"}, exe
+    if name == "iris.exe":
+        assert params == ""
+    else:
+        assert "-m iris" in params
+    print("elevation self-check ok", exe, repr(params), "elevated=", is_elevated())
