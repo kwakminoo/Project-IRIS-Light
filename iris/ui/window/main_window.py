@@ -514,27 +514,64 @@ class MainWindow(QMainWindow):
         center_on_screen(self)
 
         if not self._test_mode:
-            start_control_surface(self)
-            # control이 뜬 뒤 MCP 동기화·gateway 점검 (백그라운드 워커)
-            self._refresh_hermes_health()
-            self._intro = StartupIntroAnimator(self)
-            self._intro.bind(
-                left=self._left_sidebar,
-                right=self._assistant_page.right_column,
-                orb=self._viz.particle_core(),
-                live=self._live_activity,
-                chat=self._chat,
-                waveform=self._chat.waveform,
-                chrome=[self._drag],
-            )
-            self._intro.finished.connect(self._on_intro_finished)
-            self._viz.particle_core().set_boot_reveal(0.0)
-            self._viz.particle_core().set_boot_glitch(1.0)
-            self._chat.waveform.set_reveal_progress(0.0)
-            self._intro.prepare_hidden()
-            QTimer.singleShot(40, self._begin_boot_sequence)
+            from iris.system.setup_protocol import is_setup_preview, mark_core_ready_if_healthy
+
+            if is_setup_preview():
+                # 미리보기/데모: 실제 설치 상태와 무관하게 위저드 강제
+                QTimer.singleShot(40, self._show_first_run_setup)
+            elif mark_core_ready_if_healthy(
+                ollama_base_url=self._settings.ollama_base_url,
+                hermes_base_url=self._settings.hermes_base_url,
+                hermes_command=self._settings.hermes_command,
+            ):
+                self._start_runtime_boot()
+            else:
+                # 첫 실행 — 위저드 완료 전엔 Hermes/채팅 부팅 보류
+                QTimer.singleShot(40, self._show_first_run_setup)
         else:
             self._chat.append_message("Iris", self._ready_status_message())
+
+    def _show_first_run_setup(self) -> None:
+        from iris.config.settings import load_settings
+        from iris.system.setup_protocol import is_core_ready, is_setup_preview
+        from iris.ui.window.setup_wizard import SetupWizard
+
+        dlg = SetupWizard(self._settings, mode="first_run", parent=self)
+        dlg.exec()
+        if is_core_ready() or is_setup_preview():
+            self._settings = load_settings(self._env_path)
+            self._start_runtime_boot()
+        else:
+            self._notes.try_add_alert(
+                target_id=0,
+                category="ERROR_DETECTED",
+                title="시작 프로토콜",
+                message="Core가 준비되지 않았습니다. 설정에서 「환경 다시 설정」을 실행하세요.",
+                focus_hint="",
+                event_id=0,
+            )
+
+    def _start_runtime_boot(self) -> None:
+        """Core Ready 이후(또는 이미 완료된 환경) 기존 부팅 흐름."""
+        start_control_surface(self)
+        # control이 뜬 뒤 MCP 동기화·gateway 점검 (백그라운드 워커)
+        self._refresh_hermes_health()
+        self._intro = StartupIntroAnimator(self)
+        self._intro.bind(
+            left=self._left_sidebar,
+            right=self._assistant_page.right_column,
+            orb=self._viz.particle_core(),
+            live=self._live_activity,
+            chat=self._chat,
+            waveform=self._chat.waveform,
+            chrome=[self._drag],
+        )
+        self._intro.finished.connect(self._on_intro_finished)
+        self._viz.particle_core().set_boot_reveal(0.0)
+        self._viz.particle_core().set_boot_glitch(1.0)
+        self._chat.waveform.set_reveal_progress(0.0)
+        self._intro.prepare_hidden()
+        QTimer.singleShot(40, self._begin_boot_sequence)
 
     def _begin_boot_sequence(self) -> None:
         """빈 창에서 UI 등장 연출 + 무료 모델 확인을 동시에 시작."""

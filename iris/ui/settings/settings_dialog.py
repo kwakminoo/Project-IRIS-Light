@@ -240,6 +240,7 @@ class SettingsDialog(QDialog):
             content_lay.addWidget(self._build_ide_box())
             content_lay.addWidget(self._build_project_parents_box())
             content_lay.addWidget(self._build_hermes_control_box())
+            content_lay.addWidget(self._build_setup_protocol_box())
 
         content_lay.addStretch(1)
         root.addWidget(scroll, 1)
@@ -1355,6 +1356,145 @@ class SettingsDialog(QDialog):
         lay.addWidget(self._sync_btn)
         self._sync_worker = None
         return box
+
+    def _build_setup_protocol_box(self) -> QGroupBox:
+        """설정 맨 아래 — 미설치면 가동, 준비되면 검사."""
+        box = QGroupBox("시작 프로토콜")
+        lay = QVBoxLayout(box)
+        lay.setSpacing(TOKENS.spacing_sm)
+        lay.addWidget(
+            make_hint(
+                "Ollama · Hermes · iris-control MCP 등 Core 환경을 설치하거나 상태를 검사합니다. "
+                "미설치면 「시작 프로토콜 가동」, 이미 준비됐으면 「검사」가 표시됩니다."
+            )
+        )
+        self._setup_status = QLabel("")
+        self._setup_status.setWordWrap(True)
+        lay.addWidget(self._setup_status)
+
+        row = QHBoxLayout()
+        self._setup_primary_btn = QPushButton("시작 프로토콜 가동")
+        self._setup_primary_btn.clicked.connect(self._on_setup_protocol_primary)
+        row.addWidget(self._setup_primary_btn)
+        self._setup_repair_btn = QPushButton("다시 설정")
+        self._setup_repair_btn.clicked.connect(self._open_setup_repair)
+        self._setup_repair_btn.hide()
+        row.addWidget(self._setup_repair_btn)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        self._setup_verify_worker = None
+        self._refresh_setup_protocol_ui()
+        return box
+
+    def _setup_protocol_instance(self):
+        from iris.system.setup_protocol import SetupProtocol
+
+        return SetupProtocol(
+            ollama_base_url=self._ollama_url.text().strip()
+            or self._settings.ollama_base_url,
+            hermes_base_url=self._hermes_url.text().strip()
+            or self._settings.hermes_base_url,
+            hermes_command=self._hermes_cmd.text().strip()
+            or self._settings.hermes_command
+            or "hermes",
+            min_model=self._ollama_model.text().strip() or self._settings.ollama_model,
+        )
+
+    def _setup_needs_install(self, snap: dict) -> bool:
+        """실행 파일·venv·core_ready 중 하나라도 없으면 설치 필요."""
+        return not (
+            bool(snap.get("ollama_exe"))
+            and bool(snap.get("hermes_exe"))
+            and bool(snap.get("venv_ok"))
+            and bool(snap.get("core_ready"))
+        )
+
+    def _refresh_setup_protocol_ui(self) -> None:
+        from iris.system.setup_protocol import is_core_ready
+
+        proto = self._setup_protocol_instance()
+        snap = proto.detect()
+        needs = self._setup_needs_install(snap)
+        bits = [
+            f"Ollama {'OK' if snap.get('ollama_exe') else '없음'}"
+            + (" · 실행 중" if snap.get("ollama_running") else ""),
+            f"Hermes {'OK' if snap.get('hermes_exe') else '없음'}"
+            + (" · Connected" if snap.get("hermes_running") else ""),
+            f"venv {'OK' if snap.get('venv_ok') else '없음'}",
+            f"API 키 {'설정됨' if snap.get('api_key_set') else '없음'}",
+            f"core_ready={'예' if is_core_ready() else '아니오'}",
+        ]
+        self._setup_status.setText("상태: " + " · ".join(bits))
+        if needs:
+            self._setup_primary_btn.setText("시작 프로토콜 가동")
+            self._setup_primary_btn.setEnabled(True)
+            self._setup_repair_btn.hide()
+        else:
+            self._setup_primary_btn.setText("검사")
+            self._setup_primary_btn.setEnabled(True)
+            self._setup_repair_btn.show()
+
+    def _on_setup_protocol_primary(self) -> None:
+        snap = self._setup_protocol_instance().detect()
+        if self._setup_needs_install(snap):
+            self._open_setup_wizard(mode="first_run")
+        else:
+            self._run_setup_verify()
+
+    def _open_setup_wizard(self, *, mode: str) -> None:
+        from iris.ui.window.setup_wizard import SetupWizard
+
+        dlg = SetupWizard(self._settings, mode=mode, parent=self)
+        dlg.exec()
+        self._sync_status.setText(self._load_sync_status_text())
+        self._refresh_setup_protocol_ui()
+
+    def _open_setup_repair(self) -> None:
+        self._open_setup_wizard(mode="repair")
+
+    def _run_setup_verify(self) -> None:
+        if self._setup_verify_worker is not None and self._setup_verify_worker.isRunning():
+            return
+
+        class _VerifyWorker(QThread):
+            finished_ok = pyqtSignal(bool, str)
+
+            def __init__(self, proto, parent=None) -> None:
+                super().__init__(parent)
+                self._proto = proto
+
+            def run(self) -> None:
+                try:
+                    ok, detail = self._proto.verify_core()
+                    self.finished_ok.emit(ok, detail)
+                except Exception as exc:  # noqa: BLE001
+                    self.finished_ok.emit(False, str(exc)[:240])
+
+        self._setup_primary_btn.setEnabled(False)
+        self._setup_status.setText("상태: Core 검사 중…")
+        worker = _VerifyWorker(self._setup_protocol_instance(), parent=self)
+        self._setup_verify_worker = worker
+        worker.finished_ok.connect(self._on_setup_verify_done)
+        worker.start()
+
+    def _on_setup_verify_done(self, ok: bool, detail: str) -> None:
+        self._setup_verify_worker = None
+        self._setup_primary_btn.setEnabled(True)
+        self._refresh_setup_protocol_ui()
+        text = (detail or "").strip() or ("정상" if ok else "실패")
+        if ok:
+            self._setup_status.setText(f"검사 결과: OK — {text}")
+            QMessageBox.information(self, "시작 프로토콜 검사", f"Core 정상\n{text}")
+        else:
+            self._setup_status.setText(f"검사 결과: 실패 — {text}")
+            QMessageBox.warning(
+                self,
+                "시작 프로토콜 검사",
+                f"Core 검사 실패\n{text}\n\n"
+                "「다시 설정」으로 시작 프로토콜을 다시 돌릴 수 있습니다.",
+            )
+            self._setup_repair_btn.show()
 
     def _load_sync_status_text(self) -> str:
         return settings_service.load_hermes_sync_status_text()
