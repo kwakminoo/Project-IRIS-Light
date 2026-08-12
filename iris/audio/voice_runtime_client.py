@@ -159,16 +159,27 @@ class VoiceRuntimeClient:
         res = self._post_json("/v1/voice/cache/clear", {"max_age_sec": float(max_age_sec)})
         return int(res.get("removed") or 0)
 
+    def voice_profile(self) -> dict[str, Any]:
+        """커밋된 보이스 프로필 정보. available=False면 수동 기준 음성이 필요하다."""
+        try:
+            return self._get_json("/v1/voice/profile")
+        except VoiceRuntimeError:
+            return {"available": False, "tones": {}}
+
     def tts_speech(
         self,
         *,
         text: str,
-        voice_prompt_hash: str,
+        voice_prompt_hash: str = "",
         tts_model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        tone: str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "text": text,
             "voice_prompt_hash": voice_prompt_hash,
             "tts_model_name": tts_model_name,
+            "tone": tone,
         }
-        return self._post_json("/v1/audio/speech", payload)
+        # 이 노트북 기준 한 문장 생성에 1분 이상 걸린다(RTF 10배 안팎).
+        # 기본 60초 타임아웃으로는 정상 생성도 실패로 잡힌다.
+        return self._post_json("/v1/audio/speech", payload, timeout=max(self._timeout, 600.0))

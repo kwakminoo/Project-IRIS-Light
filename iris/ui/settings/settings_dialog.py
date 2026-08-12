@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -780,6 +781,27 @@ class SettingsDialog(QDialog):
         email_lay.addLayout(btn_row)
         return email_box
 
+    def _voice_profile_summary(self) -> str:
+        """커밋된 보이스 프로필 요약. 런타임이 안 떠 있어도 보여야 하므로 파일을 직접 읽는다."""
+        manifest = Path(__file__).resolve().parents[2] / "assets" / "voice" / "iris_voice_profile.json"
+        if not manifest.is_file():
+            return "없음 — scripts/build_voice_profile.py 로 생성하세요."
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return f"읽기 실패: {exc}"
+
+        meta = data.get("meta") or {}
+        tones = data.get("tones") or {}
+        used = meta.get("sample_used") or 0
+        total = meta.get("sample_total") or 0
+        icl = sum(1 for info in tones.values() if info.get("supports_icl"))
+        names = ", ".join(sorted(tones))
+        return (
+            f"{data.get('name', '?')} — 녹음 {used}/{total}개 사용, "
+            f"톤 {len(tones)}개 (ICL {icl}개)\n{names}"
+        )
+
     def _build_voice_box(self) -> QGroupBox:
         box = QGroupBox("음성")
         lay = QVBoxLayout(box)
@@ -787,7 +809,8 @@ class SettingsDialog(QDialog):
         lay.addWidget(
             make_hint(
                 "STT는 녹음 후 입력창에 전사 결과만 넣고 자동 전송하지 않습니다. "
-                "TTS는 기준 음성/대본을 확정한 뒤에만 동작합니다. "
+                "TTS는 기본적으로 IRIS 보이스 프로필을 씁니다 — 기준 음성 파일을 고르지 않아도 됩니다. "
+                "프로필을 끄면 아래 기준 음성/대본을 확정한 뒤에만 동작합니다. "
                 "실제 모델은 .venv-voice + mock 해제 후 사용합니다."
             )
         )
@@ -844,6 +867,20 @@ class SettingsDialog(QDialog):
         mode_idx = self._voice_tts_mode.findData(self._voice_prefs.tts_mode)
         self._voice_tts_mode.setCurrentIndex(mode_idx if mode_idx >= 0 else 0)
 
+        self._voice_use_profile = QCheckBox("IRIS 보이스 프로필 사용 (녹음본에서 만든 목소리)")
+        self._voice_use_profile.setChecked(self._voice_prefs.tts_use_voice_profile)
+        self._voice_use_profile.setToolTip(
+            "끄면 아래 '선택된 참고 음성' 파일을 기준으로 합성합니다."
+        )
+        self._voice_tone_routing = QCheckBox("문장 유형에 맞춰 톤 자동 전환")
+        self._voice_tone_routing.setChecked(self._voice_prefs.tts_tone_routing)
+        self._voice_tone_routing.setToolTip(
+            "질문·브리핑·경고·숫자 낭독 등 문장 유형을 보고 톤을 고릅니다. "
+            "끄면 항상 담담한 기본 톤을 씁니다."
+        )
+        self._voice_profile_status = QLabel(self._voice_profile_summary())
+        self._voice_profile_status.setWordWrap(True)
+
         self._voice_tts_model = QComboBox()
         self._voice_tts_model.setEditable(True)
         default_tts = self._voice_prefs.tts_model or "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
@@ -889,6 +926,9 @@ class SettingsDialog(QDialog):
         form.addRow(make_form_label(""), self._voice_tts_on)
         form.addRow(make_form_label("TTS 모드"), self._voice_tts_mode)
         form.addRow(make_form_label("TTS 모델"), self._voice_tts_model)
+        form.addRow(make_form_label(""), self._voice_use_profile)
+        form.addRow(make_form_label(""), self._voice_tone_routing)
+        form.addRow(make_form_label("보이스 프로필"), self._voice_profile_status)
         form.addRow(make_form_label("녹음 폴더"), folder_row)
         form.addRow(make_form_label("선택된 참고 음성"), pick_row)
         form.addRow(make_form_label("참고 대본"), self._voice_ref_text)
@@ -983,6 +1023,8 @@ class SettingsDialog(QDialog):
             tts_reference_text=self._voice_ref_text.toPlainText().strip(),
             tts_voice_prompt_hash=self._voice_prefs.tts_voice_prompt_hash,
             tts_volume=self._voice_prefs.tts_volume,
+            tts_use_voice_profile=self._voice_use_profile.isChecked(),
+            tts_tone_routing=self._voice_tone_routing.isChecked(),
             voice_runtime_url=self._voice_runtime_url.text().strip() or "http://127.0.0.1:18765",
             voice_runtime_mock=self._voice_runtime_mock.isChecked(),
             voice_data_dir=self._voice_data_dir.text().strip() or default_voice_data_dir(),

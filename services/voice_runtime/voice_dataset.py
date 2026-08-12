@@ -95,6 +95,23 @@ def _analyze_with_soundfile(path: Path) -> tuple[float, int, int, float, float, 
     return _metrics_from_samples(samples, sample_rate=int(sample_rate), channels=channels)
 
 
+def _analyze_with_decoder(path: Path) -> tuple[float, int, int, float, float, float, bool]:
+    """PyAV 디코더로 지표를 낸다. m4a처럼 libsndfile이 못 여는 포맷도 처리된다."""
+    from .audio_io import decode_audio, waveform_metrics
+
+    decoded = decode_audio(path)
+    peak, rms, silence_ratio, clipping = waveform_metrics(decoded.samples)
+    return (
+        decoded.duration,
+        decoded.source_sample_rate or decoded.sample_rate,
+        decoded.source_channels or 1,
+        peak,
+        rms,
+        silence_ratio,
+        clipping,
+    )
+
+
 def quality_score(
     *,
     duration: float,
@@ -159,17 +176,20 @@ def analyze_voice_file(
                 duration, sample_rate, channels, peak, rms, silence_ratio, clipping = _analyze_with_soundfile(path)
         else:
             try:
-                duration, sample_rate, channels, peak, rms, silence_ratio, clipping = _analyze_with_soundfile(path)
-            except Exception as exc:  # noqa: BLE001
-                # ponytail: m4a 등은 mutagen 길이만이라도. 원본 미수정.
-                duration, sample_rate, channels = _probe_duration_meta(path)
-                if duration > 0:
-                    excluded_reason = f"waveform metrics unavailable: {exc}"
-                    silence_ratio = 0.2
-                    peak = 0.5
-                    rms = 0.1
-                else:
-                    excluded_reason = f"decoder unavailable: {exc}"
+                duration, sample_rate, channels, peak, rms, silence_ratio, clipping = _analyze_with_decoder(path)
+            except Exception:
+                try:
+                    duration, sample_rate, channels, peak, rms, silence_ratio, clipping = _analyze_with_soundfile(path)
+                except Exception as exc:  # noqa: BLE001
+                    # ponytail: m4a 등은 mutagen 길이만이라도. 원본 미수정.
+                    duration, sample_rate, channels = _probe_duration_meta(path)
+                    if duration > 0:
+                        excluded_reason = f"waveform metrics unavailable: {exc}"
+                        silence_ratio = 0.2
+                        peak = 0.5
+                        rms = 0.1
+                    else:
+                        excluded_reason = f"decoder unavailable: {exc}"
     except Exception as exc:  # noqa: BLE001
         readable = False
         excluded_reason = str(exc)
