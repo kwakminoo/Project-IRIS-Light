@@ -1,4 +1,4 @@
-# IRIS (Iris Light)
+# IRIS
 
 **유료 AI 구독·복잡한 설치 없이, 내 PC에서 바로 쓰는 오픈소스 데스크톱 AI 에이전트.**
 
@@ -9,7 +9,7 @@ IRIS는 [Ollama](https://ollama.com/)(로컬/클라우드 모델)와 [Hermes Age
 
 ---
 
-## 왜 만들었나 (문제 정의)
+## 문제 정의
 
 - 최신 AI 도구는 **구독비**와 **설치·연동 복잡도** 때문에 학생·취준생·초보 개발자에게 진입 장벽이 큽니다.
 - “모델만 돌리기”와 “실제 PC에서 코딩·문서·파일 작업을 시키는 에이전트” 사이에는 여전히 큰 간격이 있습니다.
@@ -38,33 +38,54 @@ IRIS는 [Ollama](https://ollama.com/)(로컬/클라우드 모델)와 [Hermes Age
 IRIS는 웹검색·셸·파일 IO를 자체 재구현하지 않습니다.  
 **세션·권한·스트리밍 UI·시작 프로토콜**을 담당하고, 실행은 Ollama/Hermes에 위임합니다.
 
-자세한 IA: [`docs/ia/IA.md`](docs/ia/IA.md) · 도메인: [`docs/domain.md`](docs/domain.md)
+자세한 IA: `[docs/ia/IA.md](docs/ia/IA.md)` · 도메인: `[docs/domain.md](docs/domain.md)`
 
 ---
 
 ## 주요 기능
 
-| 영역 | 내용 |
-|------|------|
-| **시작 프로토콜** | 첫 실행 시 Ollama·최소 모델·Hermes 설치/기동·provider·gateway·MCP 연동을 단계적으로 안내·자동화 |
-| **대화형 HUD** | 모델 선택, 대화 이력, 사고/도구 로그, 실시간 스트리밍 |
-| **에이전트 실행** | Hermes를 통한 파일·터미널·웹 등 도구 호출 (스킬·MCP 포함) |
-| **시스템 모니터** | 창/리소스 인식, 알림 정책, Live Activity |
-| **이메일** | 다중 계정 메일 워크스페이스 |
-| **Iris Wiki** | Obsidian vault 기반 프로젝트 문서 + `~/.iris-light/iris-wiki` 사용자 노트 |
-| **캘린더** | 일정 워크스페이스 + 에이전트 연동 |
-| **로컬 저장** | 설정·프로필 등 SQLite (`~/.iris-light/`) |
-| **선택 확장** | 음성 런타임, 화면 학습(Aloha), Android 에뮬레이터·mobile-mcp 등 |
+
+| 영역            | 내용                                                                     |
+| ------------- | ---------------------------------------------------------------------- |
+| **시작 프로토콜**   | 첫 실행 시 Ollama·최소 모델·Hermes 설치/기동·provider·gateway·MCP 연동을 단계적으로 안내·자동화 |
+| **대화형 HUD**   | 모델 선택, 대화 이력, 사고/도구 로그, 실시간 스트리밍                                       |
+| **에이전트 실행**   | Hermes를 통한 파일·터미널·웹 등 도구 호출 (스킬·MCP 포함)                                |
+| **시스템 모니터**   | 창/리소스 인식, 알림 정책, Live Activity                                         |
+| **이메일**       | 다중 계정 메일 워크스페이스                                                        |
+| **Iris Wiki** | Obsidian vault 기반 프로젝트 문서 + `~/.iris-light/iris-wiki` 사용자 노트           |
+| **캘린더**       | 일정 워크스페이스 + 에이전트 연동                                                    |
+| **로컬 저장**     | 설정·프로필 등 SQLite (`~/.iris-light/`)                                     |
+| **선택 확장**     | 음성 런타임, 화면 학습(Aloha), Android 에뮬레이터·mobile-mcp 등                       |
+
 
 ---
 
-## 빠른 시작
+## 필요 사양
 
-### 요구 사항
+### 소프트웨어
 
 - **Windows 10/11** 권장 (시작 프로토콜·winget/Hermes 설치 스크립트 기준)
 - Python **3.11+** 권장
-- (선택) GPU — 로컬 모델 성능에 영향
+- **안정적인 인터넷** 필수 (클라우드 모델·도구 호출)
+
+### 하드웨어 (클라우드 모델 위주)
+
+IRIS는 기본적으로 **클라우드 모델**로 추론하고, 로컬에는 UI·Hermes 게이트웨이·도구 실행만 둡니다.  
+로컬 LLM용 GPU/VRAM은 필요하지 않습니다. 아래 저장 공간은 **IRIS 관련 설치분**(앱·venv·Ollama/Hermes 런타임, 대용량 로컬 모델·에뮬레이터 제외) 기준입니다.
+
+| 구분 | 최소 | 권장 |
+|------|------|------|
+| **OS** | Windows 10/11 64bit | Windows 11 |
+| **CPU** | 듀얼~쿼드코어 (사무용 i3 / Ryzen 3 이상) | i5 / Ryzen 5 이상 |
+| **RAM** | **8GB** (가능하나 도구·브라우저 병행 시 빡쁨) | **16GB** |
+| **GPU** | **불필요** | 불필요 |
+| **저장 (IRIS만)** | 여유 **약 20GB** | 여유 **약 30GB** |
+| **네트워크** | 인터넷 연결 | 지연 낮은 안정 회선 |
+
+**참고**
+
+- OS·다른 프로그램용 SSD 용량은 별도입니다. PC 구매 시에는 보통 256GB 이상을 권합니다.
+- Android 에뮬레이터·화면 학습·로컬 대용량 모델을 쓰면 저장·RAM이 추가로 필요합니다.
 
 ### 설치
 
@@ -130,14 +151,16 @@ run.bat / run.sh
 
 ## 기술 스택
 
-| 구분 | 기술 |
-|------|------|
-| UI | Python, PyQt6, PyQt6-WebEngine |
-| 모델 | Ollama (OpenAI 호환 `/v1`) |
-| 에이전트 | Hermes Agent (gateway API, skills, MCP) |
-| 저장 | SQLite (`~/.iris-light/`) |
-| 지식 | Obsidian 호환 Markdown vault |
-| 기타 | psutil, mss, openai/anthropic SDK 등 (`requirements.txt`) |
+
+| 구분   | 기술                                                       |
+| ---- | -------------------------------------------------------- |
+| UI   | Python, PyQt6, PyQt6-WebEngine                           |
+| 모델   | Ollama (OpenAI 호환 `/v1`)                                 |
+| 에이전트 | Hermes Agent (gateway API, skills, MCP)                  |
+| 저장   | SQLite (`~/.iris-light/`)                                |
+| 지식   | Obsidian 호환 Markdown vault                               |
+| 기타   | psutil, mss, openai/anthropic SDK 등 (`requirements.txt`) |
+
 
 ---
 
@@ -152,12 +175,14 @@ run.bat / run.sh
 
 ## 문서
 
-| 문서 | 설명 |
-|------|------|
-| [`docs/domain.md`](docs/domain.md) | 바운디드 컨텍스트·Runtime Gateway 설계 |
-| [`docs/ia/IA.md`](docs/ia/IA.md) | 정보 구조·요청 경로 |
-| [`docs/api/`](docs/api/) | API 관련 문서 |
-| [`integrations/hermes-skills/README.md`](integrations/hermes-skills/README.md) | Iris Control Surface (Hermes ↔ UI) |
+
+| 문서                                                                             | 설명                                 |
+| ------------------------------------------------------------------------------ | ---------------------------------- |
+| `[docs/domain.md](docs/domain.md)`                                             | 바운디드 컨텍스트·Runtime Gateway 설계       |
+| `[docs/ia/IA.md](docs/ia/IA.md)`                                               | 정보 구조·요청 경로                        |
+| `[docs/api/](docs/api/)`                                                       | API 관련 문서                          |
+| `[integrations/hermes-skills/README.md](integrations/hermes-skills/README.md)` | Iris Control Surface (Hermes ↔ UI) |
+
 
 ---
 
