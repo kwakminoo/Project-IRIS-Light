@@ -11,17 +11,76 @@ FastAPI 런타임은 **`127.0.0.1:18765`에만** 바인딩됩니다.
 - 문장 분할 순차 재생 / 중지 / 캐시 정리
 - 녹음 폴더 분석 → `~/.iris-light/voice/manifest.jsonl` + `manifest.csv`
 - 추천 참고 음성 top 5 표시, 기준 음성/대본 확정
+- **IRIS 보이스 프로필** — 2차 녹음 150개에서 뽑은 화자 임베딩으로 상황별 톤 자동 전환
 - **mock 모드**에서 STT/TTS HTTP 경로 검증 (모델 다운로드 없이)
 
 ## 아직 제한된 것
 
 - 실제 faster-whisper / Qwen3-TTS 품질은 `.venv-voice`에 모델 설치 + mock 해제 후 별도 검증 필요
-- 이 노트북(RTX 4050 6GB, flash-attn 없음)에서는 **실시간 불가**: RTF 약 8배
-  (3.8초 문장 생성에 약 32초). 모델을 1.7B → 0.6B로 줄여도 동일 → 병목은 모델 크기가 아니라
-  느린 어텐션 경로. 실시간이 필요하면 고정 멘트 캐싱 / 별도 GPU 서비스 / 클라우드 TTS 필요.
-- m4a 등 비-WAV는 `soundfile`(+시스템 디코더)이 있어야 길이/RMS 분석 가능
+- 이 노트북(RTX 4050 6GB, flash-attn 없음)에서는 **실시간 불가**: 프로필 적용 전 RTF 약 8배,
+  ICL 참조가 붙는 프로필 경로는 **약 11~13배**(4초 문장에 50~70초). 모델을 1.7B → 0.6B로 줄여도
+  동일 → 병목은 모델 크기가 아니라 느린 어텐션 경로. 실시간이 필요하면 고정 멘트 캐싱 /
+  별도 GPU 서비스 / 클라우드 TTS 필요.
+- 같은 톤·같은 문장은 생성 결과를 파일 캐시에서 바로 돌려준다(재생성 없음).
 - QTextEdit 기반 채팅이라 스피커 상태는 아이콘(🔊/⏳/▶/⚠) 수준
-- 여러 파일을 하나의 reference로 합치지 않음 (단일 파일만)
+- 6GB VRAM에서는 TTS 파인튜닝 불가. 프로필은 파인튜닝이 아니라 **화자 임베딩 추출/집계**다.
+
+## IRIS 보이스 프로필
+
+`iris/assets/voice/iris_voice_profile.npz` + `.json` (약 51KB).
+녹음 원본(m4a)은 `.gitignore` 대상이라 커밋되지 않지만, 이 프로필만 있으면
+**원본 오디오 없이 같은 목소리로 합성된다.**
+
+담긴 것:
+
+| 항목 | 설명 |
+|--|--|
+| `base_x_vector` | 녹음 150개 화자 임베딩의 이상치 제거 평균 (1024차원) |
+| 톤별 `x_vector` | 상황별 평균 임베딩 |
+| 톤별 `ref_code` | 대표 녹음 1개의 스피치 코드. ICL 모드에서 억양·속도를 복제 |
+| 톤별 `ref_text` | 그 대표 녹음의 전사문 (ICL에 필요) |
+
+### 톤
+
+파일명이 대본이 아니라 감정/상황 라벨이라, 그 라벨을 6개 정규 톤으로 접었다.
+
+| 톤 | 상황 | 출처 |
+|--|--|--|
+| `neutral` | 담담한 보고·안내 | E, A(차분·공감·정중·사과) |
+| `question` | 확인·선택 질문 | C |
+| `briefing` | 나열·요약 브리핑 | D, A(경쾌·설득·기쁨) |
+| `caution` | 경고·거절·오류 | G, A(단호·놀람) |
+| `numeric` | 숫자·시간·경로 낭독 | B |
+| `narration` | 중길이 설명 낭독 | H |
+
+합성할 때 `services/voice_runtime/tone_router.py`가 문장을 같은 체계로 분류해
+맞는 톤을 고른다. 우선순위는 **경고 > 질문 > 나열 > 숫자 > 길이**다.
+
+빈정거림·짜증·한탄·화남·머뭇거림 10개는 연기된 부정 감정이라 비서 기본 음성에
+어울리지 않고 평균 음색을 흐려서 **기본 프로필에서 제외**했다.
+
+### 다시 빌드하기
+
+```powershell
+.\.venv-voice\Scripts\python.exe scripts\build_voice_profile.py "2차 아이리스 녹음 A-B" "2차 아이리스 녹음 C-H"
+```
+
+전사는 faster-whisper가, 임베딩은 Qwen3-TTS speaker encoder가 맡는다.
+6GB VRAM에서 둘을 동시에 못 올리므로 전사를 전부 끝낸 뒤 whisper를 내리고 TTS를 올린다.
+
+### 귀로 확인하기
+
+```powershell
+$env:VOICE_RUNTIME_MOCK=0
+.\.venv-voice\Scripts\python.exe scripts\preview_voice_profile.py
+```
+
+톤마다 대표 문장을 합성해 `~/.iris-light/audio/preview/<톤>.wav`에 모아 둔다.
+
+### 끄는 법
+
+설정 `tts_use_voice_profile=false` → 기존 단일 기준 음성 경로로 돌아간다.
+`tts_tone_routing=false` → 프로필은 쓰되 항상 `neutral` 톤.
 
 ## 설치
 

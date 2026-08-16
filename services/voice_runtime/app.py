@@ -109,13 +109,16 @@ def voice_prepare(req: VoicePrepareRequest) -> Any:
 
 class SpeechRequest(BaseModel):
     text: str
-    voice_prompt_hash: str
+    # 비우면 커밋된 보이스 프로필을 쓰고 톤은 텍스트에서 추론한다.
+    voice_prompt_hash: str = ""
     tts_model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+    tone: str | None = None
 
 
 class SpeechResponse(BaseModel):
     audio_path: str
     text: str
+    tone: str = ""
 
 
 @app.post("/v1/audio/speech", response_model=SpeechResponse)
@@ -127,10 +130,28 @@ def speech(req: SpeechRequest) -> Any:
             voice_prompt_hash=req.voice_prompt_hash,
             tts_model_name=req.tts_model_name,
             output_dir=out_dir,
+            tone=req.tone,
         )
-        return SpeechResponse(audio_path=result.audio_path, text=result.text)
+        return SpeechResponse(
+            audio_path=result.audio_path, text=result.text, tone=result.tone
+        )
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.get("/v1/voice/profile")
+def voice_profile() -> Any:
+    """커밋된 보이스 프로필 정보. 설정창에서 적용 여부를 보여주는 데 쓴다."""
+    return tts_service.profile_info()
+
+
+class ToneClassifyRequest(BaseModel):
+    text: str
+
+
+@app.post("/v1/voice/tone")
+def voice_tone(req: ToneClassifyRequest) -> Any:
+    return {"tone": tts_service.resolve_tone(req.text)}
 
 
 class VoiceAnalyzeRequest(BaseModel):

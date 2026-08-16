@@ -11,14 +11,20 @@ from typing import Any
 
 from .config import CONFIG
 from .model_manager import PreparedVoiceClone, VoiceModelManager
+from .tone_router import TONE_NEUTRAL, classify_text_tone
+from .voice_profile import VoiceProfile, load_default_profile
 
 # qwen-tts는 language 문자열을 프로세서 프롬프트에 그대로 넣는다.
 # "Korean"(대문자)로 주면 발음이 깨지므로 반드시 소문자로 고정한다.
 TTS_LANGUAGE = "korean"
 
-# x_vector_only_mode=True: 화자 임베딩만 사용 (ref_text 무시).
-# ICL 모드(False)는 ref_text가 기준 음성과 정확히 일치해야 해서 불안정하다.
+# 사용자가 폴더에서 고른 단일 기준 음성 경로의 기본값.
+# ICL은 ref_text가 기준 음성과 정확히 일치해야 하는데, 사용자가 손으로 적은
+# 대본은 어긋나기 쉬워서 이 경로에서는 화자 임베딩만 쓴다.
 TTS_X_VECTOR_ONLY_MODE = True
+
+# 보이스 프로필 경로는 전사문이 녹음과 함께 저장돼 있어 ICL을 신뢰할 수 있다.
+PROFILE_PROMPT_PREFIX = "profile"
 
 
 def _sha256_text(s: str) -> str:
@@ -111,6 +117,7 @@ def clear_generated_audio_cache(
 class SpeechResult:
     audio_path: str
     text: str
+    tone: str = ""
 
 
 class TTSService:
@@ -123,6 +130,111 @@ class TTSService:
 
     def __init__(self, model_manager: VoiceModelManager) -> None:
         self._mm = model_manager
+        self._profile: VoiceProfile | None = None
+        self._profile_loaded = False
+
+    # ---- 보이스 프로필 -----------------------------------------------------
+
+    @property
+    def profile(self) -> VoiceProfile | None:
+        """저장소에 커밋된 IRIS 보이스 프로필. 없으면 None."""
+        if not self._profile_loaded:
+            self._profile = load_default_profile()
+            self._profile_loaded = True
+        return self._profile
+
+    def profile_info(self) -> dict[str, Any]:
+        profile = self.profile
+        if profile is None:
+            return {"available": False, "tones": {}}
+        return {
+            "available": True,
+            "name": profile.name,
+            "model_name": profile.model_name,
+            "dim": profile.dim,
+            "tones": {
+                tone: {
+                    "sample_count": ref.sample_count,
+                    "supports_icl": ref.supports_icl,
+                    "ref_text": ref.ref_text,
+                }
+                for tone, ref in profile.tones.items()
+            },
+            "meta": profile.meta,
+        }
+
+    def profile_prompt_hash(self, tone: str) -> str:
+        profile = self.profile
+        name = profile.name if profile is not None else "none"
+        return f"{PROFILE_PROMPT_PREFIX}:{name}:{tone}"
+
+    def resolve_tone(self, text: str, requested: str | None = None) -> str:
+        """요청 톤이 프로필에 있으면 그대로, 없으면 텍스트에서 추론."""
+        profile = self.profile
+        if profile is None:
+            return TONE_NEUTRAL
+        if requested and requested in profile.tones:
+            return requested
+        tone = classify_text_tone(text)
+        return tone if tone in profile.tones else TONE_NEUTRAL
+
+    def _build_profile_prompt_item(self, tone: str) -> Any:
+        """저장된 x-vector/ref_code로 VoiceClonePromptItem을 직접 만든다.
+
+        녹음 원본이 없어도 되는 이유가 여기 있다. create_voice_clone_prompt는
+        오디오에서 이 두 값을 뽑을 뿐이고, 생성 경로는 값만 있으면 동작한다.
+        """
+        import torch
+        from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem  # type: ignore
+
+        profile = self.profile
+        if profile is None:
+            raise RuntimeError("보이스 프로필이 없습니다.")
+        ref = profile.tone_reference(tone)
+        x_vector = profile.x_vector_for(tone)
+
+        spk = torch.from_numpy(x_vector.copy()).float()
+        if ref is not None and ref.supports_icl:
+            return VoiceClonePromptItem(
+                ref_code=torch.from_numpy(ref.ref_code.copy()).long(),  # type: ignore[union-attr]
+                ref_spk_embedding=spk,
+                x_vector_only_mode=False,
+                icl_mode=True,
+                ref_text=ref.ref_text,
+            )
+        return VoiceClonePromptItem(
+            ref_code=None,
+            ref_spk_embedding=spk,
+            x_vector_only_mode=True,
+            icl_mode=False,
+            ref_text=None,
+        )
+
+    def prepare_profile_prompt(self, tone: str) -> PreparedVoiceClone:
+        """톤별 프로필 프롬프트를 만들어 캐시한다. 모델 로딩이 필요 없다."""
+        if self.profile is None:
+            raise RuntimeError(
+                "보이스 프로필이 없습니다. scripts/build_voice_profile.py 로 먼저 생성하세요."
+            )
+        prompt_hash = self.profile_prompt_hash(tone)
+        cached = self._mm.get_prepared_voice(prompt_hash)
+        if cached is not None:
+            return cached
+
+        if CONFIG.mock_mode:
+            prepared = PreparedVoiceClone(
+                voice_prompt_hash=prompt_hash,
+                voice_clone_prompt={"mock": True, "tone": tone},
+            )
+        else:
+            prepared = PreparedVoiceClone(
+                voice_prompt_hash=prompt_hash,
+                voice_clone_prompt=[self._build_profile_prompt_item(tone)],
+            )
+        self._mm.set_prepared_voice(prepared)
+        return prepared
+
+    # ---- 모델 ------------------------------------------------------------
 
     def _get_tts_model_key(self, model_name: str) -> str:
         return model_name
@@ -211,22 +323,40 @@ class TTSService:
         voice_prompt_hash: str,
         tts_model_name: str,
         output_dir: Path,
+        tone: str | None = None,
     ) -> SpeechResult:
         if not (text or "").strip():
             raise RuntimeError("TTS 텍스트가 비어 있습니다.")
-        if not (voice_prompt_hash or "").strip():
-            raise RuntimeError("voice_prompt_hash가 없습니다. /v1/voice/prepare 를 먼저 호출하세요.")
+
+        use_profile = self._should_use_profile(voice_prompt_hash)
+        resolved_tone = ""
+        if use_profile:
+            resolved_tone = self.resolve_tone(text, tone)
+            prepared = self.prepare_profile_prompt(resolved_tone)
+            voice_prompt_hash = prepared.voice_prompt_hash
+        else:
+            if not (voice_prompt_hash or "").strip():
+                raise RuntimeError(
+                    "보이스 프로필이 없고 voice_prompt_hash도 비어 있습니다. "
+                    "scripts/build_voice_profile.py 로 프로필을 만들거나, "
+                    "기준 음성을 고른 뒤 /v1/voice/prepare 를 호출하세요."
+                )
+            prepared = self._mm.get_prepared_voice(voice_prompt_hash)
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        prepared = self._mm.get_prepared_voice(voice_prompt_hash)
+        cache_key = f"{voice_prompt_hash}::{text}"
+        h = hashlib.sha256(cache_key.encode("utf-8", errors="ignore")).hexdigest()
+        out_path = output_dir / f"{h}.wav"
 
         if CONFIG.mock_mode:
-            audio_bytes = _silence_wav_bytes(1.0)
-            h = hashlib.sha256(f"{voice_prompt_hash}::{text}".encode("utf-8", errors="ignore")).hexdigest()
-            out_path = output_dir / f"{h}.wav"
             if not out_path.is_file():
-                out_path.write_bytes(audio_bytes)
-            return SpeechResult(audio_path=str(out_path), text=text)
+                out_path.write_bytes(_silence_wav_bytes(1.0))
+            return SpeechResult(audio_path=str(out_path), text=text, tone=resolved_tone)
+
+        # 같은 톤·같은 문장이면 이미 만든 파일을 그대로 쓴다.
+        # 이 노트북은 RTF가 8배라 재생성 비용이 크다.
+        if out_path.is_file() and out_path.stat().st_size > 0:
+            return SpeechResult(audio_path=str(out_path), text=text, tone=resolved_tone)
 
         if prepared is None or prepared.voice_clone_prompt is None:
             raise RuntimeError(
@@ -234,13 +364,18 @@ class TTSService:
             )
 
         tts_model = self._ensure_tts_model(tts_model_name)
+        generate_kwargs: dict[str, Any] = {
+            "text": text,
+            "language": TTS_LANGUAGE,
+            "voice_clone_prompt": prepared.voice_clone_prompt,
+        }
+        # 프로필 경로는 프롬프트 아이템이 모드를 이미 들고 있다.
+        # 여기서 x_vector_only_mode를 덮어쓰면 ICL 참조가 무시된다.
+        if not use_profile:
+            generate_kwargs["x_vector_only_mode"] = TTS_X_VECTOR_ONLY_MODE
+
         # generate_voice_clone은 파일 경로가 아니라 (파형 리스트, sample_rate)를 돌려준다.
-        generated = tts_model.generate_voice_clone(
-            text=text,
-            language=TTS_LANGUAGE,
-            voice_clone_prompt=prepared.voice_clone_prompt,
-            x_vector_only_mode=TTS_X_VECTOR_ONLY_MODE,
-        )
+        generated = tts_model.generate_voice_clone(**generate_kwargs)
         try:
             wavs, sample_rate = generated
             wav = wavs[0]
@@ -249,7 +384,12 @@ class TTSService:
                 f"TTS 생성 결과 형식을 알 수 없습니다: {type(generated)!r}"
             ) from exc
 
-        h = hashlib.sha256(f"{voice_prompt_hash}::{text}".encode("utf-8", errors="ignore")).hexdigest()
-        out_path = output_dir / f"{h}.wav"
         _write_wav(out_path, wav, sample_rate)
-        return SpeechResult(audio_path=str(out_path), text=text)
+        return SpeechResult(audio_path=str(out_path), text=text, tone=resolved_tone)
+
+    def _should_use_profile(self, voice_prompt_hash: str) -> bool:
+        """빈 해시이거나 profile: 해시면 프로필 경로를 쓴다."""
+        value = (voice_prompt_hash or "").strip()
+        if self.profile is None:
+            return False
+        return not value or value.startswith(f"{PROFILE_PROMPT_PREFIX}:")

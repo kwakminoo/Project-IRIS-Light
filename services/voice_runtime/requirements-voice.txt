@@ -10,4 +10,8 @@ soundfile>=0.12.0
 numpy>=1.24.0
 mutagen>=1.47.0
 
+# m4a(AAC) 디코딩. libsndfile은 m4a를 못 열어서 녹음본 분석/프로필 빌드가 막힌다.
+# PyAV는 ffmpeg 라이브러리를 휠에 포함하므로 시스템 ffmpeg 설치가 필요 없다.
+av>=12.0.0
+
 # TTS 실모델은 setup_voice_runtime.ps1 -Full 로 설치 (torch, qwen-tts)

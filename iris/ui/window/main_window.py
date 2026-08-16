@@ -1698,15 +1698,18 @@ class MainWindow(QMainWindow):
         cleaned = split_tts_sentences(normalize_tts_text(text, mapping))
         if not cleaned:
             return
-        ref_audio = self._voice_prefs.tts_reference_audio
-        ref_text = self._voice_prefs.tts_reference_text
-        if not ref_audio or not ref_text:
-            self._live_activity.append_instant_line("TTS 기준 음성이 아직 설정되지 않았습니다.")
-            return
-        if not Path(ref_audio).is_file():
-            self._live_activity.append_instant_line(f"기준 음성 파일이 없습니다: {ref_audio}")
-            self._chat.set_speaker_status(msg_id, "error")
-            return
+        # 보이스 프로필을 쓰면 기준 음성 파일이 없어도 된다.
+        # 프로필이 런타임에 없으면 서버가 알아서 수동 기준 음성 경로로 떨어진다.
+        if not self._voice_prefs.tts_use_voice_profile:
+            ref_audio = self._voice_prefs.tts_reference_audio
+            ref_text = self._voice_prefs.tts_reference_text
+            if not ref_audio or not ref_text:
+                self._live_activity.append_instant_line("TTS 기준 음성이 아직 설정되지 않았습니다.")
+                return
+            if not Path(ref_audio).is_file():
+                self._live_activity.append_instant_line(f"기준 음성 파일이 없습니다: {ref_audio}")
+                self._chat.set_speaker_status(msg_id, "error")
+                return
         if not self._ensure_voice_runtime():
             self._chat.set_speaker_status(msg_id, "error")
             return
@@ -1724,7 +1727,9 @@ class MainWindow(QMainWindow):
                 self._chat.set_speaker_status(self._tts_active_msg_id, "idle")
             self._status_header.set_tts_status("READY" if self._voice_prefs.tts_enabled else "OFF")
             return
-        if not self._voice_prefs.tts_voice_prompt_hash:
+        use_profile = self._voice_prefs.tts_use_voice_profile
+        # 프로필 경로는 준비 단계가 없다. 저장된 x-vector로 바로 프롬프트를 만든다.
+        if not use_profile and not self._voice_prefs.tts_voice_prompt_hash:
             try:
                 from iris.audio.voice_runtime_client import VoiceRuntimeClient
 
@@ -1751,8 +1756,10 @@ class MainWindow(QMainWindow):
         worker = TTSSynthesisWorker(
             runtime_url=self._voice_prefs.voice_runtime_url,
             text=text,
-            voice_prompt_hash=self._voice_prefs.tts_voice_prompt_hash,
+            voice_prompt_hash="" if use_profile else self._voice_prefs.tts_voice_prompt_hash,
             model_name=self._voice_prefs.tts_model,
+            # 톤 라우팅을 끄면 서버가 추론하지 않도록 기본 톤을 못 박는다.
+            tone=None if self._voice_prefs.tts_tone_routing else "neutral",
             parent=self,
         )
         self._tts_worker = worker

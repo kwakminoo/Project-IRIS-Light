@@ -38,6 +38,10 @@ class VoicePreferences:
     tts_reference_text: str = ""
     tts_voice_prompt_hash: str = ""
     tts_volume: float = 1.0
+    # 저장소에 커밋된 IRIS 보이스 프로필을 쓴다. 끄면 아래 기준 음성 파일로 돌아간다.
+    tts_use_voice_profile: bool = True
+    # 문장 유형에 맞춰 톤을 자동 선택. 끄면 항상 기본(neutral) 톤.
+    tts_tone_routing: bool = True
 
     voice_runtime_url: str = "http://127.0.0.1:18765"
     voice_runtime_mock: bool = True
@@ -90,6 +94,10 @@ def load_voice_preferences(db: Database) -> VoicePreferences:
     prefs.tts_reference_text = str(data.get("tts_reference_text", prefs.tts_reference_text) or "")
     prefs.tts_voice_prompt_hash = str(data.get("tts_voice_prompt_hash", prefs.tts_voice_prompt_hash) or "")
     prefs.tts_volume = _to_float(data.get("tts_volume"), prefs.tts_volume)
+    prefs.tts_use_voice_profile = _to_bool(
+        data.get("tts_use_voice_profile"), prefs.tts_use_voice_profile
+    )
+    prefs.tts_tone_routing = _to_bool(data.get("tts_tone_routing"), prefs.tts_tone_routing)
     prefs.voice_runtime_url = str(data.get("voice_runtime_url", prefs.voice_runtime_url) or prefs.voice_runtime_url)
     # 구 기본 포트 8765는 다른 로컬 서비스와 충돌 → 새 기본으로 이전
     if prefs.voice_runtime_url.rstrip("/").endswith(":8765"):

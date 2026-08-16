@@ -60,8 +60,9 @@ class TTSSynthesisWorker(QThread):
         *,
         runtime_url: str,
         text: str,
-        voice_prompt_hash: str,
+        voice_prompt_hash: str = "",
         model_name: str,
+        tone: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -69,6 +70,7 @@ class TTSSynthesisWorker(QThread):
         self._text = text
         self._voice_prompt_hash = voice_prompt_hash
         self._model_name = model_name
+        self._tone = tone
 
     def run(self) -> None:
         client = VoiceRuntimeClient(base_url=self._runtime_url)
@@ -77,6 +79,7 @@ class TTSSynthesisWorker(QThread):
                 text=self._text,
                 voice_prompt_hash=self._voice_prompt_hash,
                 tts_model_name=self._model_name,
+                tone=self._tone,
             )
             self.finished_ok.emit(res)
         except Exception as exc:  # noqa: BLE001
