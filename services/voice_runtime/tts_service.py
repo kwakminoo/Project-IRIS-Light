@@ -26,6 +26,14 @@ TTS_X_VECTOR_ONLY_MODE = True
 # 보이스 프로필 경로는 전사문이 녹음과 함께 저장돼 있어 ICL을 신뢰할 수 있다.
 PROFILE_PROMPT_PREFIX = "profile"
 
+# qwen-tts는 language 문자열을 프로세서 프롬프트에 그대로 넣는다.
+# "Korean"(대문자)로 주면 발음이 깨지므로 반드시 소문자로 고정한다.
+TTS_LANGUAGE = "korean"
+
+# x_vector_only_mode=True: 화자 임베딩만 사용 (ref_text 무시).
+# ICL 모드(False)는 ref_text가 기준 음성과 정확히 일치해야 해서 불안정하다.
+TTS_X_VECTOR_ONLY_MODE = True
+
 
 def _sha256_text(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()
