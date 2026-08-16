@@ -14,3 +14,4 @@ if (-not (Test-Path "dist\IRIS.exe")) {
 }
 
 Write-Host "OK:" (Resolve-Path "dist\IRIS.exe")
+& (Join-Path $PSScriptRoot "install_iris_shortcuts.ps1")

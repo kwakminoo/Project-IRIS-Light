@@ -6,8 +6,10 @@ __pycache__/
 .Python
 *.egg-info/
 .eggs/
-dist/
+dist/*
+!dist/IRIS.exe
 build/
+IRIS.lnk
 *.egg
 
 # Virtual environment
