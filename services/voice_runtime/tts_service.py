@@ -66,6 +66,18 @@ def _pcm16_bytes(wav: Any) -> bytes:
     return pcm.tobytes()
 
 
+def _wav_is_silent(path: Path) -> bool:
+    """mock 무음 캐시(1초 제로 PCM)인지. 실제 모드에서 재사용하면 안 된다."""
+    import wave
+
+    try:
+        with wave.open(str(path), "rb") as wf:
+            raw = wf.readframes(wf.getnframes())
+    except Exception:
+        return False
+    return (not raw) or raw == b"\x00" * len(raw)
+
+
 def _write_wav(path: Path, wav: Any, sample_rate: int) -> None:
     """generate_voice_clone이 돌려준 float 파형을 16bit PCM wav로 저장."""
     import wave
@@ -363,7 +375,8 @@ class TTSService:
 
         # 같은 톤·같은 문장이면 이미 만든 파일을 그대로 쓴다.
         # 이 노트북은 RTF가 8배라 재생성 비용이 크다.
-        if out_path.is_file() and out_path.stat().st_size > 0:
+        # mock이 남긴 무음 파일은 캐시로 치지 않는다.
+        if out_path.is_file() and out_path.stat().st_size > 0 and not _wav_is_silent(out_path):
             return SpeechResult(audio_path=str(out_path), text=text, tone=resolved_tone)
 
         if prepared is None or prepared.voice_clone_prompt is None:

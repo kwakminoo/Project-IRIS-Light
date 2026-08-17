@@ -154,6 +154,29 @@ class RealModeCallContractTests(TestCase):
             )
         self.assertNotEqual(prepared.voice_prompt_hash, other)
 
+    def test_skips_silent_mock_cache(self) -> None:
+        prepared = self._prepare()
+        out_dir = self.root / "generated"
+        cache_key = f"{prepared.voice_prompt_hash}::캐시검증"
+        import hashlib
+
+        h = hashlib.sha256(cache_key.encode("utf-8", errors="ignore")).hexdigest()
+        stale = out_dir / f"{h}.wav"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(tts_module._silence_wav_bytes(1.0))
+        self.fake.generate_call = None
+        result = self.service.synthesize_speech(
+            text="캐시검증",
+            voice_prompt_hash=prepared.voice_prompt_hash,
+            tts_model_name=MODEL_NAME,
+            output_dir=out_dir,
+        )
+        self.assertIsNotNone(self.fake.generate_call)
+        with wave.open(result.audio_path, "rb") as wf:
+            self.assertEqual(wf.getnframes(), SAMPLE_RATE)
+            raw = wf.readframes(wf.getnframes())
+        self.assertNotEqual(raw, b"\x00" * len(raw))
+
 
 def _qwen_tts_available() -> bool:
     try:

@@ -44,7 +44,7 @@ class VoicePreferences:
     tts_tone_routing: bool = True
 
     voice_runtime_url: str = "http://127.0.0.1:18765"
-    voice_runtime_mock: bool = True
+    voice_runtime_mock: bool = False
     voice_data_dir: str = ""
     pronunciation_dict_json: str = ""
 

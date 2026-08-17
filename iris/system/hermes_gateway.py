@@ -11,13 +11,11 @@ import time
 from pathlib import Path
 
 from iris.infrastructure.hermes_client import HermesClient
-
-
-def hermes_home() -> Path:
-    local = os.environ.get("LOCALAPPDATA", "").strip()
-    if local:
-        return Path(local) / "hermes"
-    return Path.home() / ".hermes"
+from iris.infrastructure.hermes_credentials import (
+    hermes_home,
+    load_hermes_dotenv,
+    resolve_hermes_api_key,
+)
 
 
 def _windows_hermes_candidates() -> list[Path]:
@@ -41,36 +39,6 @@ def hermes_executable(command: str = "hermes") -> str | None:
     return None
 
 
-def load_hermes_dotenv() -> dict[str, str]:
-    """%LOCALAPPDATA%/hermes/.env → dict (API_SERVER_* 등)."""
-    path = hermes_home() / ".env"
-    out: dict[str, str] = {}
-    if not path.is_file():
-        return out
-    try:
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
-    except OSError:
-        return out
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, val = line.split("=", 1)
-        key = key.strip()
-        if not key:
-            continue
-        out[key] = val.strip().strip('"').strip("'")
-    return out
-
-
-def resolve_hermes_api_key(api_key: str = "") -> str:
-    """Iris 설정 키 우선, 없으면 Hermes .env의 API_SERVER_KEY."""
-    key = (api_key or "").strip()
-    if key:
-        return key
-    return load_hermes_dotenv().get("API_SERVER_KEY", "").strip()
-
-
 def is_hermes_gateway_running(
     base_url: str,
     *,
@@ -79,7 +47,7 @@ def is_hermes_gateway_running(
     return HermesClient(
         base_url,
         api_key=resolve_hermes_api_key(api_key),
-    ).health_ok()
+    ).gateway_ready()
 
 
 def _gateway_argv() -> list[str]:

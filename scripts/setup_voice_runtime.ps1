@@ -20,12 +20,13 @@ $Pip = Join-Path $VenvPath "Scripts/pip.exe"
 & $Pip install -r "services/voice_runtime/requirements-voice.txt"
 
 if ($Full) {
-    Write-Host "Installing full voice models (torch, qwen-tts)..."
-    & $Pip install torch qwen-tts
+    Write-Host "Installing full voice models (CUDA torch, qwen-tts)..."
+    & $Pip install torch --index-url https://download.pytorch.org/whl/cu128
+    & $Pip install qwen-tts
 }
 
 Write-Host "voice runtime ready:" $Py
-Write-Host "mock default: VOICE_RUNTIME_MOCK=1"
+Write-Host "Iris TTS 기본: mock 해제 (Qwen). 개발 검증만 VOICE_RUNTIME_MOCK=1"
 Write-Host "bind: 127.0.0.1:18765 only (8765 is Iris control surface)"
 if (-not $Full) {
     Write-Host "tip: re-run with -Full to install torch/qwen-tts for real TTS"

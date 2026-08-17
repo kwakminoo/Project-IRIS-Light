@@ -211,7 +211,13 @@ class SettingsDialog(QDialog):
         self._ollama_model = QLineEdit(settings.ollama_model)
         self._hermes_cmd = QLineEdit(settings.hermes_command)
         self._hermes_url = QLineEdit(settings.hermes_base_url)
-        self._hermes_key = QLineEdit(settings.hermes_api_key)
+        try:
+            from iris.infrastructure.hermes_credentials import resolve_hermes_api_key
+
+            hermes_key_default = resolve_hermes_api_key(settings.hermes_api_key)
+        except Exception:
+            hermes_key_default = settings.hermes_api_key
+        self._hermes_key = QLineEdit(hermes_key_default)
         self._hermes_key.setEchoMode(QLineEdit.EchoMode.Password)
         self._hermes_on = QCheckBox("Hermes Agent 사용 (채팅을 Hermes API로 전달)")
         self._hermes_on.setChecked(settings.hermes_enabled)
@@ -811,7 +817,8 @@ class SettingsDialog(QDialog):
                 "STT는 녹음 후 입력창에 전사 결과만 넣고 자동 전송하지 않습니다. "
                 "TTS는 기본적으로 IRIS 보이스 프로필을 씁니다 — 기준 음성 파일을 고르지 않아도 됩니다. "
                 "프로필을 끄면 아래 기준 음성/대본을 확정한 뒤에만 동작합니다. "
-                "실제 모델은 .venv-voice + mock 해제 후 사용합니다."
+                "실제 목소리는 커밋된 IRIS 보이스 프로필(2차 녹음본) + Qwen TTS입니다. "
+                "개발용 mock을 켜면 무음만 나옵니다."
             )
         )
 
@@ -856,8 +863,11 @@ class SettingsDialog(QDialog):
         self._mic_threshold_bar = MicThresholdBar(speech_rms=self._voice_prefs.stt_speech_rms)
 
         self._voice_runtime_url = QLineEdit(self._voice_prefs.voice_runtime_url)
-        self._voice_runtime_mock = QCheckBox("voice runtime mock 모드")
+        self._voice_runtime_mock = QCheckBox("개발용 mock (무음 WAV — Qwen TTS 사용 안 함)")
         self._voice_runtime_mock.setChecked(self._voice_prefs.voice_runtime_mock)
+        self._voice_runtime_mock.setToolTip(
+            "켜면 모델 없이 UI만 검증합니다. 실제 팀 녹음 목소리를 들으려면 끄세요."
+        )
 
         self._voice_tts_on = QCheckBox("TTS 사용")
         self._voice_tts_on.setChecked(self._voice_prefs.tts_enabled)
@@ -1709,13 +1719,19 @@ class SettingsDialog(QDialog):
             save_voice_preferences(self._db, voice_prefs)
             save_learning_preferences(self._db, learning_prefs)
             self._persist_api_providers()
+        try:
+            from iris.infrastructure.hermes_credentials import resolve_hermes_api_key
+
+            hermes_api_key = resolve_hermes_api_key(self._hermes_key.text().strip())
+        except Exception:
+            hermes_api_key = self._hermes_key.text().strip()
         self._result = LightSettingsSelection(
             ollama_base_url=self._ollama_url.text().strip() or "http://127.0.0.1:11434/v1",
             ollama_model=self._ollama_model.text().strip(),
             hermes_enabled=self._hermes_on.isChecked(),
             hermes_command=self._hermes_cmd.text().strip() or "hermes",
             hermes_base_url=self._hermes_url.text().strip() or "http://127.0.0.1:8642/v1",
-            hermes_api_key=self._hermes_key.text().strip(),
+            hermes_api_key=hermes_api_key,
             voice_prefs=voice_prefs,
             learning_prefs=learning_prefs,
         )

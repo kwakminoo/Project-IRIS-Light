@@ -56,10 +56,16 @@ class VoiceRuntimeProcessManager:
             return ""
         return raw[-limit:].strip()
 
-    def ensure_started(self, *, mock_mode: bool = True, timeout_sec: float = 120.0) -> VoiceRuntimeStatus:
+    def ensure_started(self, *, mock_mode: bool = False, timeout_sec: float = 120.0) -> VoiceRuntimeStatus:
         if self.is_running():
             h = self._client.health()
-            return VoiceRuntimeStatus(running=True, mock_mode=h.mock_mode, pid=h.pid)
+            if bool(h.mock_mode) == bool(mock_mode):
+                return VoiceRuntimeStatus(running=True, mock_mode=h.mock_mode, pid=h.pid)
+            # mock↔실모델 전환은 프로세스 환경변수라 재기동이 필요하다
+            self.shutdown(timeout_sec=min(10.0, timeout_sec))
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline and self.is_running():
+                time.sleep(0.3)
 
         py = self._venv_python()
         if not py.is_file():

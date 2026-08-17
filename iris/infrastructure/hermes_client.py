@@ -10,6 +10,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from iris.infrastructure.hermes_credentials import resolve_hermes_api_key
+
 
 def api_root_from_base(base_url: str) -> str:
     """http://127.0.0.1:8642/v1 → http://127.0.0.1:8642"""
@@ -66,7 +68,7 @@ class HermesClient:
     ) -> None:
         self.base_url = (base_url or "http://127.0.0.1:8642/v1").strip().rstrip("/")
         self.api_root = api_root_from_base(self.base_url)
-        self.api_key = (api_key or "").strip()
+        self.api_key = resolve_hermes_api_key(api_key)
         self.command = (command or "hermes").strip() or "hermes"
         self.timeout_sec = timeout_sec
 
@@ -78,7 +80,7 @@ class HermesClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    def health_ok(self) -> bool:
+    def _health_ping_ok(self) -> bool:
         for path in (f"{self.api_root}/health", f"{self.base_url}/health"):
             try:
                 req = Request(path, method="GET", headers=self._headers())
@@ -91,6 +93,22 @@ class HermesClient:
             except Exception:
                 continue
         return False
+
+    def health_ok(self) -> bool:
+        """/health — 프로세스 생존만 (Bearer 불필요)."""
+        return self._health_ping_ok()
+
+    def gateway_ready(self) -> bool:
+        """/health + /v1/models — 채팅과 동일한 Bearer 인증까지 확인."""
+        if not self._health_ping_ok():
+            return False
+        if not self.api_key:
+            return False
+        try:
+            self._get_json(f"{self.base_url}/models")
+            return True
+        except Exception:
+            return False
 
     def list_models(self) -> list[str]:
         try:
@@ -272,6 +290,13 @@ class HermesClient:
                             yield {"content": None, "tool_progress": msg, "done": False}
         except HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:400]
+            if e.code == 401:
+                hint = (
+                    "Hermes API 키가 맞지 않습니다. "
+                    "설정 → Hermes API Key가 "
+                    r"%LOCALAPPDATA%\hermes\.env 의 API_SERVER_KEY 와 같아야 합니다."
+                )
+                raise RuntimeError(f"Hermes HTTP 401: {detail or hint}") from e
             raise RuntimeError(f"Hermes HTTP {e.code}: {detail or e.reason}") from e
         except URLError as e:
             raise RuntimeError(f"Hermes 연결 실패: {e.reason}") from e
@@ -312,4 +337,7 @@ if __name__ == "__main__":
         }
     )
     assert _sse_error_message({"choices": [{"delta": {"content": "hi"}}]}) == ""
+    resolved = resolve_hermes_api_key("")
+    client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
+    assert client.api_key == resolved
     print("hermes_client self-check ok")
