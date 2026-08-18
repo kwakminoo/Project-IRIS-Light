@@ -6,6 +6,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 
 from iris.audio.pcm_stream import DEFAULT_SAMPLE_RATE, START_MS, should_open_speakers
+from iris.audio.voice_effects import VoiceAssistantEffect
 
 
 class PcmPlayer(QObject):
@@ -23,6 +24,7 @@ class PcmPlayer(QObject):
         self._io = None
         self._opened = False
         self._ending = False
+        self._voice_effect = VoiceAssistantEffect(self._sr)
 
     def is_open(self) -> bool:
         return self._opened
@@ -35,6 +37,10 @@ class PcmPlayer(QObject):
         if self._sink is not None:
             self._sink.setVolume(self._volume)
 
+    def set_voice_effect(self, *, enabled: bool, intensity: float) -> None:
+        """모델의 음색은 그대로 두고 speaker PCM에만 AI 비서 질감을 더한다."""
+        self._voice_effect.configure(enabled=enabled, intensity=intensity)
+
     def set_format(self, sample_rate: int) -> None:
         rate = int(sample_rate or DEFAULT_SAMPLE_RATE)
         if rate == self._sr:
@@ -42,10 +48,14 @@ class PcmPlayer(QObject):
         had = self.is_busy()
         self.stop()
         self._sr = rate
+        self._voice_effect.set_sample_rate(rate)
         if had:
             self.failed.emit("샘플레이트가 바뀌어 재생을 다시 시작합니다.")
 
     def feed(self, pcm: bytes) -> None:
+        if not pcm:
+            return
+        pcm = self._voice_effect.process(pcm)
         if not pcm:
             return
         self._ending = False
@@ -81,6 +91,7 @@ class PcmPlayer(QObject):
 
     def stop(self) -> None:
         self._buf.clear()
+        self._voice_effect.reset()
         self._opened = False
         self._ending = False
         io, self._io = self._io, None

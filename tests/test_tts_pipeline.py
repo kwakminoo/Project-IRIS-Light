@@ -177,6 +177,29 @@ class PcmBufferTests(TestCase):
         self.assertEqual(bytes(io.written), b"abcdefgh")
         self.assertEqual(bytes(player._buf), b"")
 
+    def test_pcm_player_applies_enabled_ai_voice_effect(self) -> None:
+        from iris.audio.pcm_player import PcmPlayer
+
+        class CollectingIo:
+            def __init__(self) -> None:
+                self.written = bytearray()
+
+            def write(self, raw: bytes) -> int:
+                self.written.extend(raw)
+                return len(raw)
+
+        player = PcmPlayer(start_ms=100)
+        io = CollectingIo()
+        player._opened = True
+        player._io = io
+        player.set_voice_effect(enabled=True, intensity=0.35)
+        raw = b"\x10\x27" * 256
+        player.feed(raw)
+
+        self.assertEqual(len(io.written), len(raw))
+        self.assertNotEqual(bytes(io.written), raw)
+        player.stop()
+
 
 class TtsStreamWorkerTests(TestCase):
     def test_cancel_closes_active_http_stream(self) -> None:

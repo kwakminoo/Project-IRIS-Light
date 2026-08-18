@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -60,6 +61,9 @@ class VoicePreferences:
     tts_use_voice_profile: bool = True
     # 문장 유형에 맞춰 톤을 자동 선택. 끄면 항상 기본(neutral) 톤.
     tts_tone_routing: bool = True
+    # 재생 단계에서만 적용하는 절제된 AI 비서 음향 효과. 원본 보이스 클론은 바꾸지 않는다.
+    tts_ai_voice_fx_enabled: bool = True
+    tts_ai_voice_fx_intensity: float = 0.75
     # qwen | qwen_custom | gpt_sovits
     tts_engine: str = "qwen"
     tts_custom_speaker: str = "iris"
@@ -121,6 +125,15 @@ def load_voice_preferences(db: Database) -> VoicePreferences:
         data.get("tts_use_voice_profile"), prefs.tts_use_voice_profile
     )
     prefs.tts_tone_routing = _to_bool(data.get("tts_tone_routing"), prefs.tts_tone_routing)
+    prefs.tts_ai_voice_fx_enabled = _to_bool(
+        data.get("tts_ai_voice_fx_enabled"), prefs.tts_ai_voice_fx_enabled
+    )
+    fx_intensity = _to_float(
+        data.get("tts_ai_voice_fx_intensity"), prefs.tts_ai_voice_fx_intensity
+    )
+    if not math.isfinite(fx_intensity):
+        fx_intensity = prefs.tts_ai_voice_fx_intensity
+    prefs.tts_ai_voice_fx_intensity = max(0.0, min(1.0, fx_intensity))
     engine = str(data.get("tts_engine", prefs.tts_engine) or prefs.tts_engine).strip().lower()
     prefs.tts_engine = engine if engine in ("qwen", "qwen_custom", "gpt_sovits") else "qwen"
     prefs.tts_custom_speaker = str(data.get("tts_custom_speaker", prefs.tts_custom_speaker) or "iris")

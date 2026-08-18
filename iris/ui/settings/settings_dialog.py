@@ -894,6 +894,26 @@ class SettingsDialog(QDialog):
             "질문·브리핑·경고·숫자 낭독 등 문장 유형을 보고 톤을 고릅니다. "
             "끄면 항상 담담한 기본 톤을 씁니다."
         )
+        self._voice_ai_voice_fx = QCheckBox("AI 비서 음향 효과 (에코·메탈릭)")
+        self._voice_ai_voice_fx.setChecked(self._voice_prefs.tts_ai_voice_fx_enabled)
+        self._voice_ai_voice_fx.setToolTip(
+            "원본 IRIS 보이스 클론은 유지하고, 재생 단계에만 절제된 에코와 메탈릭 질감을 더합니다."
+        )
+        self._voice_ai_voice_fx_intensity = QComboBox()
+        for label, value in (
+            ("절제됨", 0.35),
+            ("표준", 0.55),
+            ("강하게 (권장)", 0.75),
+        ):
+            self._voice_ai_voice_fx_intensity.addItem(label, value)
+        fx_idx = min(
+            range(self._voice_ai_voice_fx_intensity.count()),
+            key=lambda i: abs(
+                float(self._voice_ai_voice_fx_intensity.itemData(i))
+                - self._voice_prefs.tts_ai_voice_fx_intensity
+            ),
+        )
+        self._voice_ai_voice_fx_intensity.setCurrentIndex(fx_idx)
         self._voice_profile_status = QLabel(self._voice_profile_summary())
         self._voice_profile_status.setWordWrap(True)
 
@@ -963,6 +983,8 @@ class SettingsDialog(QDialog):
         form.addRow(make_form_label("GPT-SoVITS URL"), self._voice_sovits_url)
         form.addRow(make_form_label(""), self._voice_use_profile)
         form.addRow(make_form_label(""), self._voice_tone_routing)
+        form.addRow(make_form_label(""), self._voice_ai_voice_fx)
+        form.addRow(make_form_label("효과 강도"), self._voice_ai_voice_fx_intensity)
         form.addRow(make_form_label("보이스 프로필"), self._voice_profile_status)
         form.addRow(make_form_label("녹음 폴더"), folder_row)
         form.addRow(make_form_label("선택된 참고 음성"), pick_row)
@@ -1060,6 +1082,10 @@ class SettingsDialog(QDialog):
             tts_volume=self._voice_prefs.tts_volume,
             tts_use_voice_profile=self._voice_use_profile.isChecked(),
             tts_tone_routing=self._voice_tone_routing.isChecked(),
+            tts_ai_voice_fx_enabled=self._voice_ai_voice_fx.isChecked(),
+            tts_ai_voice_fx_intensity=float(
+                self._voice_ai_voice_fx_intensity.currentData() or 0.75
+            ),
             tts_engine=str(self._voice_tts_engine.currentData() or "qwen"),
             tts_custom_speaker=self._voice_custom_speaker.text().strip() or "iris",
             tts_custom_model_path=self._voice_custom_model.text().strip(),
@@ -1275,6 +1301,10 @@ class SettingsDialog(QDialog):
         if not payload.get("running"):
             self._on_settings_tts_runtime_failed("Voice runtime을 시작하지 못했습니다.", job_id)
             return
+        self._preview_player.set_voice_effect(
+            enabled=prefs.tts_ai_voice_fx_enabled,
+            intensity=prefs.tts_ai_voice_fx_intensity,
+        )
         self._voice_status.setText("테스트 음성 생성 중…")
         worker = TTSStreamWorker(
             runtime_url=prefs.voice_runtime_url,

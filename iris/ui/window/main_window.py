@@ -282,6 +282,10 @@ class MainWindow(QMainWindow):
         self._recorder.failed.connect(self._on_recording_failed)
         self._pcm_player = PcmPlayer(self)
         self._pcm_player.set_volume(self._voice_prefs.tts_volume)
+        self._pcm_player.set_voice_effect(
+            enabled=self._voice_prefs.tts_ai_voice_fx_enabled,
+            intensity=self._voice_prefs.tts_ai_voice_fx_intensity,
+        )
         self._pcm_player.speakers_opened.connect(self._on_pcm_speakers_opened)
         self._pcm_player.drained.connect(self._on_pcm_drained)
         self._pcm_player.failed.connect(self._on_pcm_failed)
@@ -3738,7 +3742,15 @@ class MainWindow(QMainWindow):
             previous_tts_mode = self._voice_prefs.tts_mode
             previous_runtime_url = self._voice_prefs.voice_runtime_url
             previous_runtime_mock = self._voice_prefs.voice_runtime_mock
+            previous_voice_fx = (
+                self._voice_prefs.tts_ai_voice_fx_enabled,
+                self._voice_prefs.tts_ai_voice_fx_intensity,
+            )
             self._voice_prefs = sel.voice_prefs
+            voice_fx_changed = previous_voice_fx != (
+                self._voice_prefs.tts_ai_voice_fx_enabled,
+                self._voice_prefs.tts_ai_voice_fx_intensity,
+            )
             runtime_changed = (
                 self._voice_prefs.voice_runtime_url != previous_runtime_url
                 or self._voice_prefs.voice_runtime_mock != previous_runtime_mock
@@ -3752,6 +3764,7 @@ class MainWindow(QMainWindow):
                 not self._voice_prefs.tts_enabled
                 or self._voice_prefs.tts_mode != previous_tts_mode
                 or runtime_changed
+                or voice_fx_changed
             ):
                 self._stop_tts_playback()
             elif self._voice_prefs.tts_model != previous_tts_model:
@@ -3762,6 +3775,10 @@ class MainWindow(QMainWindow):
             self._settings.always_listen_speech_rms = self._voice_prefs.stt_speech_rms
             self._chat.set_speech_threshold_rms(self._voice_prefs.stt_speech_rms)
             self._recorder.set_speech_rms(self._voice_prefs.stt_speech_rms)
+            self._pcm_player.set_voice_effect(
+                enabled=self._voice_prefs.tts_ai_voice_fx_enabled,
+                intensity=self._voice_prefs.tts_ai_voice_fx_intensity,
+            )
             self._voice_runtime.set_base_url(self._voice_prefs.voice_runtime_url)
             QTimer.singleShot(0, self._schedule_tts_runtime_bootstrap)
             if getattr(sel, "learning_prefs", None) is not None:

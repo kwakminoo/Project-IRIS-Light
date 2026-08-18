@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from iris.storage.database import Database
 from iris.storage.voice_prefs import (
+    VOICE_PREFS_KEY,
     VoicePreferences,
     default_voice_data_dir,
     load_voice_preferences,
@@ -30,6 +31,8 @@ class VoicePrefsTests(TestCase):
                 tts_mode="manual",
                 tts_reference_audio=r"C:\tmp\ref.wav",
                 tts_reference_text="hello",
+                tts_ai_voice_fx_enabled=False,
+                tts_ai_voice_fx_intensity=0.55,
                 voice_runtime_mock=False,
                 voice_data_dir=r"C:\voice",
             )
@@ -43,6 +46,8 @@ class VoicePrefsTests(TestCase):
             self.assertEqual(loaded.tts_reference_text, "hello")
             self.assertEqual(loaded.tts_engine, "qwen")
             self.assertEqual(loaded.tts_custom_speaker, "iris")
+            self.assertFalse(loaded.tts_ai_voice_fx_enabled)
+            self.assertAlmostEqual(loaded.tts_ai_voice_fx_intensity, 0.55)
             self.assertFalse(loaded.voice_runtime_mock)
             self.assertEqual(loaded.voice_data_dir, r"C:\voice")
             db._conn.close()
@@ -63,6 +68,27 @@ class VoicePrefsTests(TestCase):
             self.assertEqual(resolve_saved_voice_data_dir(str(custom)), str(custom))
             missing = str(Path(td) / "no-such-folder")
             self.assertEqual(resolve_saved_voice_data_dir(missing), missing)
+
+    def test_legacy_preferences_enable_strong_ai_voice_fx(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db = Database(Path(td) / "t.db")
+            db.set_preference(VOICE_PREFS_KEY, json.dumps({"tts_enabled": True}))
+            loaded = load_voice_preferences(db)
+            self.assertTrue(loaded.tts_ai_voice_fx_enabled)
+            self.assertAlmostEqual(loaded.tts_ai_voice_fx_intensity, 0.75)
+            db._conn.close()
+
+    def test_ai_voice_fx_intensity_is_clamped(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db = Database(Path(td) / "t.db")
+            db.set_preference(
+                VOICE_PREFS_KEY,
+                json.dumps({"tts_ai_voice_fx_enabled": "off", "tts_ai_voice_fx_intensity": 9}),
+            )
+            loaded = load_voice_preferences(db)
+            self.assertFalse(loaded.tts_ai_voice_fx_enabled)
+            self.assertEqual(loaded.tts_ai_voice_fx_intensity, 1.0)
+            db._conn.close()
 
 
 class VoiceRuntimeClientTests(TestCase):
