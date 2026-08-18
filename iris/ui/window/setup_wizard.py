@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtGui import QDesktopServices, QTextCursor
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QTextEdit,
@@ -31,7 +32,7 @@ from iris.system.setup_protocol import (
     is_setup_preview,
     reset_core_ready,
 )
-from iris.ui.settings.hud_dialog import configure_hud_dialog, make_hint, make_title
+from iris.ui.settings.hud_dialog import configure_hud_dialog, make_hint, make_title, run_hud_confirm
 from iris.ui.shared.theme_tokens import TOKENS
 from iris.ui.workers.setup_protocol_worker import SetupProtocolWorker
 
@@ -43,6 +44,16 @@ _STATUS_MARK = {
     "done": "✓",
     "failed": "✗",
     "skipped": "–",
+}
+
+
+_STREAM_STEPS = {
+    "mcp_venv",
+    "ollama_install",
+    "ollama_model",
+    "hermes_install",
+    "voice",
+    "emulator",
 }
 
 
@@ -86,10 +97,55 @@ class _NeedsUserCard(QFrame):
         self._done_btn.clicked.connect(lambda: self.done_clicked.emit(self._paste.text()))
         row.addWidget(self._done_btn)
         lay.addLayout(row)
+        self._bar = QProgressBar()
+        self._bar.setObjectName("SetupInstallBar")
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(3)
+        self._bar.setRange(0, 0)
+        self._bar.setStyleSheet(
+            f"""
+            QProgressBar#SetupInstallBar {{
+                background-color: {TOKENS.metric_track};
+                border: none;
+                border-radius: 1px;
+                max-height: 3px;
+                min-height: 3px;
+            }}
+            QProgressBar#SetupInstallBar::chunk {{
+                background-color: {TOKENS.neon_cyan};
+                border-radius: 1px;
+            }}
+            """
+        )
+        self._bar.hide()
+        lay.addWidget(self._bar)
+        self._term = QPlainTextEdit()
+        self._term.setObjectName("SetupInstallTerm")
+        self._term.setReadOnly(True)
+        self._term.setMaximumBlockCount(800)
+        self._term.setMinimumHeight(96)
+        self._term.setMaximumHeight(160)
+        self._term.setStyleSheet(
+            f"""
+            QPlainTextEdit#SetupInstallTerm {{
+                background-color: {TOKENS.void_black};
+                color: {TOKENS.neon_cyan};
+                border: 1px solid {TOKENS.panel_border};
+                border-radius: {TOKENS.radius_sm}px;
+                font-family: {TOKENS.font_mono};
+                font-size: {TOKENS.font_size_micro};
+                padding: 6px;
+            }}
+            """
+        )
+        self._term.hide()
+        lay.addWidget(self._term)
 
     def bind(self, result: SetupStepResult, *, allow_skip: bool) -> None:
+        self.end_install()
         self._why.setText(result.message or result.label)
         self._hint.setText(result.action_hint or "")
+        self._hint.setVisible(bool(result.action_hint))
         self._url = (result.action_url or "").strip()
         self._open_btn.setVisible(bool(self._url))
         self._install_btn.setVisible(bool(result.can_install))
@@ -98,7 +154,55 @@ class _NeedsUserCard(QFrame):
         self._paste.setVisible(need_paste and result.step_id in ("external_api",))
         self._paste.clear()
         self._later_btn.setVisible(allow_skip)
+        self._done_btn.setVisible(True)
         self.setVisible(True)
+
+    def is_installing(self) -> bool:
+        return self._bar.isVisible()
+
+    def begin_install(self, why: str = "", *, reset: bool = True) -> None:
+        if why:
+            self._why.setText(why)
+        self._hint.hide()
+        self._paste.hide()
+        self._open_btn.hide()
+        self._install_btn.hide()
+        self._later_btn.hide()
+        self._done_btn.hide()
+        if reset or not self._bar.isVisible():
+            self._bar.setRange(0, 0)
+            self._bar.setValue(0)
+            if reset:
+                self._term.clear()
+        self._bar.show()
+        self._term.show()
+        self.setVisible(True)
+
+    def set_install_chunk(self, text: str, percent: int | None, replace: bool) -> None:
+        if not self._bar.isVisible():
+            self.begin_install(reset=False)
+        if percent is not None:
+            self._bar.setRange(0, 100)
+            self._bar.setValue(max(0, min(100, int(percent))))
+        line = (text or "").rstrip()
+        if line:
+            if replace:
+                cursor = self._term.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                cursor.movePosition(
+                    QTextCursor.MoveOperation.StartOfBlock,
+                    QTextCursor.MoveMode.KeepAnchor,
+                )
+                cursor.insertText(line)
+                self._term.setTextCursor(cursor)
+            else:
+                self._term.appendPlainText(line)
+            bar = self._term.verticalScrollBar()
+            bar.setValue(bar.maximum())
+
+    def end_install(self) -> None:
+        self._bar.hide()
+        self._term.hide()
 
     def _open_url(self) -> None:
         if self._url:
@@ -130,6 +234,7 @@ class SetupWizard(QDialog):
         self._settings = settings
         self._mode = mode
         self._worker: SetupProtocolWorker | None = None
+        self._force_close = False
         self._core_phase = True
         self._step_status: dict[str, str] = {s: "pending" for s in CORE_STEP_IDS}
         self._finished = False
@@ -232,10 +337,15 @@ class SetupWizard(QDialog):
         worker.step_changed.connect(self._on_step)
         worker.needs_user.connect(self._on_needs_user)
         worker.log_line.connect(self._append_log)
+        worker.install_chunk.connect(self._on_install_chunk)
         worker.phase_changed.connect(self._on_phase)
         worker.failed.connect(self._on_failed)
         worker.finished_ok.connect(self._on_finished)
         worker.start()
+        if is_setup_preview():
+            self._append_log("미리보기 모드 — 실제 설치는 하지 않습니다.")
+        else:
+            self._append_log("실제 설치 모드 — 「설치」를 누르면 winget/공식 스크립트가 실행됩니다.")
 
     def _append_log(self, line: str) -> None:
         text = (line or "").strip()
@@ -256,6 +366,15 @@ class SetupWizard(QDialog):
     def _on_step(self, result: object) -> None:
         if not isinstance(result, SetupStepResult):
             return
+        if result.status == "installing" and result.step_id in _STREAM_STEPS:
+            self._card.begin_install(
+                result.message or result.label,
+                reset=not self._card.is_installing(),
+            )
+        elif result.status in ("done", "failed", "skipped"):
+            if self._card.is_installing():
+                self._card.end_install()
+                self._card.hide()
         if result.step_id in self._step_status:
             self._step_status[result.step_id] = result.status
             self._refresh_list()
@@ -295,19 +414,24 @@ class SetupWizard(QDialog):
             self._worker.resume_user("skip")
 
     def _on_user_install(self) -> None:
-        self._card.hide()
-        self._current.setText("설치 실행 중… UAC가 뜨면 허용해 주세요.")
+        self._card.begin_install("설치 실행 중… UAC가 뜨면 허용해 주세요.", reset=True)
         self._append_log("설치 시작…")
         if self._worker is not None:
             self._worker.resume_user("install")
 
+    def _on_install_chunk(self, text: str, percent: object, replace: bool) -> None:
+        pct = percent if isinstance(percent, int) else None
+        self._card.set_install_chunk(text, pct, bool(replace))
+
     def _on_failed(self, err: str) -> None:
+        self._card.end_install()
         self._append_log(f"실패: {err}")
         self._current.setText(f"실패 — {err}")
         self._retry_btn.show()
 
     def _on_finished(self, ok: bool) -> None:
         self._worker = None
+        self._card.end_install()
         if ok and is_core_ready():
             self._finished = True
             self._current.setText("Core Ready — 메인 HUD로 들어갈 수 있습니다.")
@@ -321,14 +445,43 @@ class SetupWizard(QDialog):
     def _accept_ok(self) -> None:
         self.accept()
 
-    def reject(self) -> None:
-        # 데모/repair: 닫기 허용. first_run 실사용: Core 미완료면 차단
-        if not is_setup_preview() and self._mode != "repair" and not is_core_ready():
-            self._append_log("Core가 아직 준비되지 않았습니다. 재시도하세요.")
-            return
+    def _is_install_running(self) -> bool:
+        if self._card.is_installing():
+            return True
+        return bool(self._worker is not None and self._worker.is_install_running())
+
+    def _abort_worker(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             self._worker.request_abort()
-            self._worker.wait(3000)
+            self._worker.wait(5000)
+
+    def allow_close(self) -> bool:
+        """설치 중이면 확인창. True면 닫기 허용."""
+        if self._force_close or is_setup_preview():
+            return True
+        if not self._is_install_running():
+            return True
+        stay = run_hud_confirm(
+            self,
+            title="시작 프로토콜",
+            body="지금 설치가 진행 중입니다. 닫으면 설치가 중단됩니다.",
+            hint="「계속 진행」을 누르면 설치를 이어서 합니다.",
+            badge="INSTALL",
+            ok_text="계속 진행",
+            cancel_text="닫기",
+            default_ok=True,
+        )
+        return not stay
+
+    def abort_and_close(self) -> None:
+        self._force_close = True
+        self._abort_worker()
+        self.reject()
+
+    def reject(self) -> None:
+        if not self.allow_close():
+            return
+        self._abort_worker()
         if self._mode == "repair" and not is_core_ready() and not is_setup_preview():
             from iris.system.setup_protocol import mark_core_ready_if_healthy
 
@@ -340,13 +493,10 @@ class SetupWizard(QDialog):
         super().reject()
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        if not is_setup_preview() and self._mode != "repair" and not is_core_ready():
+        if not self.allow_close():
             event.ignore()
-            self._append_log("Core 완료 전까지 창을 닫을 수 없습니다.")
             return
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.request_abort()
-            self._worker.wait(3000)
+        self._abort_worker()
         if self._mode == "repair" and not is_core_ready() and not is_setup_preview():
             from iris.system.setup_protocol import mark_core_ready_if_healthy
 

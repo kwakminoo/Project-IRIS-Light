@@ -295,6 +295,7 @@ def run_hud_confirm(
     accent: str | None = None,
     ok_text: str = "선택",
     cancel_text: str = "취소",
+    default_ok: bool = False,
 ) -> bool:
     """컴팩트 Iris HUD 확인창. True면 확인."""
     accent_color = accent or TOKENS.neon_cyan
@@ -348,12 +349,13 @@ def run_hud_confirm(
     cancel = QPushButton(cancel_text)
     cancel.setObjectName("HudConfirmCancel")
     cancel.setCursor(Qt.CursorShape.PointingHandCursor)
-    cancel.setDefault(True)
+    cancel.setDefault(not default_ok)
     cancel.clicked.connect(dlg.reject)
     ok = QPushButton(ok_text)
     ok.setObjectName("HudConfirmOk")
     ok.setCursor(Qt.CursorShape.PointingHandCursor)
     ok.setAutoDefault(False)
+    ok.setDefault(default_ok)
     ok.clicked.connect(dlg.accept)
     btns.addWidget(cancel)
     btns.addWidget(ok)

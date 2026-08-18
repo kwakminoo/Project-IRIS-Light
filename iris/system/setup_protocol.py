@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import json
 import os
+import queue
+import re
 import secrets
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -157,6 +160,44 @@ class SetupStepResult:
 ProgressFn = Callable[[SetupStepResult], None]
 # 반환: "done"(재검증) | "skip"(optional만) | "abort" | "install"(설치 실행)
 UserActionFn = Callable[[SetupStepResult], str]
+# text, percent(0-100 또는 None=미보고), replace(터미널 \r)
+StreamFn = Callable[[str, int | None, bool], None]
+
+_PERCENT_RE = re.compile(r"(?<!\d)(\d{1,3}(?:\.\d+)?)\s*%")
+_ANSI_RE = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def parse_install_percent(text: str) -> int | None:
+    """설치기 stdout의 마지막 N%만. 없으면 None — 추정하지 않음."""
+    found: int | None = None
+    for match in _PERCENT_RE.finditer(text or ""):
+        try:
+            val = float(match.group(1))
+        except ValueError:
+            continue
+        if 0 <= val <= 100:
+            found = int(val)
+    return found
+
+
+def _decode_frame(raw: bytes) -> str:
+    cleaned = _ANSI_RE.sub(b"", raw or b"")
+    return cleaned.decode("utf-8", "replace").replace("\x00", "").rstrip()
+
+
+def _split_off_frame(buf: bytes) -> tuple[bytes, bytes, bool] | None:
+    """완전 프레임이면 (frame, rest, replace). replace=True 는 \\r 덮어쓰기."""
+    cr = buf.find(b"\r")
+    nl = buf.find(b"\n")
+    if cr < 0 and nl < 0:
+        return None
+    if nl >= 0 and (cr < 0 or nl < cr):
+        return buf[:nl], buf[nl + 1 :], False
+    if cr + 1 == len(buf):
+        return None
+    if buf[cr + 1 : cr + 2] == b"\n":
+        return buf[:cr], buf[cr + 2 :], False
+    return buf[:cr], buf[cr + 1 :], True
 
 
 def _utc_now() -> str:
@@ -278,31 +319,38 @@ def _upsert_dotenv(path: Path, updates: dict[str, str]) -> None:
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
-def _run_hidden(
-    cmd: list[str],
-    *,
-    cwd: str | None = None,
-    env: dict[str, str] | None = None,
-    timeout: float | None = None,
-) -> subprocess.CompletedProcess[str]:
-    kwargs: dict[str, Any] = {
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "check": False,
-        "cwd": cwd,
-        "env": env,
-    }
-    if timeout is not None:
-        kwargs["timeout"] = timeout
-    if sys.platform == "win32":
-        kwargs["creationflags"] = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    return subprocess.run(cmd, **kwargs)
+def _winget_exe() -> str | None:
+    found = shutil.which("winget")
+    if found:
+        return found
+    local = os.environ.get("LOCALAPPDATA", "")
+    candidate = Path(local) / "Microsoft" / "WindowsApps" / "winget.exe"
+    if candidate.is_file():
+        return str(candidate)
+    return None
 
 
 def _winget_available() -> bool:
-    return shutil.which("winget") is not None
+    return _winget_exe() is not None
+
+
+def _kill_proc_tree(proc: subprocess.Popen[bytes]) -> None:
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32" and proc.pid:
+        flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+            creationflags=flags,
+            timeout=8,
+            check=False,
+        )
+        return
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 class SetupProtocol:
@@ -324,6 +372,119 @@ class SetupProtocol:
         self.dry_run = is_setup_dry_run() if dry_run is None else bool(dry_run)
         self._state = load_setup_state()
         self._sim_user_done: set[str] = set()
+        self._on_stream: StreamFn | None = None
+        self._abort = False
+        self._active_proc: subprocess.Popen[bytes] | None = None
+
+    def bind_stream(self, fn: StreamFn | None) -> None:
+        self._on_stream = fn
+
+    def is_busy(self) -> bool:
+        proc = self._active_proc
+        return proc is not None and proc.poll() is None
+
+    def abort(self) -> None:
+        self._abort = True
+        proc = self._active_proc
+        if proc is not None:
+            _kill_proc_tree(proc)
+
+    def _emit_stream(self, text: str, percent: int | None, *, replace: bool = False) -> None:
+        if self._on_stream and (text or percent is not None):
+            self._on_stream(text, percent, replace)
+
+    def _run_streamed(
+        self,
+        cmd: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float | None = None,
+        hidden: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        kwargs: dict[str, Any] = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.DEVNULL,
+            "cwd": cwd,
+            "env": env,
+            "bufsize": 0,
+            "close_fds": True,
+        }
+        if sys.platform == "win32":
+            # winget/UAC 설치는 창 숨기면 승격 프롬프트가 안 뜨거나 파이프에 손자가 붙어 멈춤
+            if hidden:
+                kwargs["creationflags"] = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        proc = subprocess.Popen(cmd, **kwargs)
+        self._active_proc = proc
+        collected: list[str] = []
+        buf = b""
+        started = time.monotonic()
+        out_q: queue.Queue[bytes | None] = queue.Queue()
+        idle_after_exit = 0
+
+        def _reader() -> None:
+            try:
+                stdout = proc.stdout
+                if stdout is None:
+                    return
+                while True:
+                    chunk = stdout.read(256)
+                    if not chunk:
+                        break
+                    out_q.put(chunk)
+            finally:
+                out_q.put(None)
+
+        threading.Thread(target=_reader, daemon=True).start()
+        timed_out = False
+        try:
+            while True:
+                if self._abort:
+                    _kill_proc_tree(proc)
+                    break
+                if timeout is not None and (time.monotonic() - started) > timeout:
+                    timed_out = True
+                    _kill_proc_tree(proc)
+                    break
+                try:
+                    piece = out_q.get(timeout=0.2)
+                except queue.Empty:
+                    if proc.poll() is not None:
+                        idle_after_exit += 1
+                        # 손자가 stdout을 붙잡고 EOF가 안 오면 설치기는 이미 끝난 것으로 본다
+                        if idle_after_exit >= 8:
+                            break
+                    continue
+                if piece is None:
+                    break
+                idle_after_exit = 0
+                buf += piece
+                while True:
+                    split = _split_off_frame(buf)
+                    if split is None:
+                        break
+                    frame, buf, replace = split
+                    text = _decode_frame(frame)
+                    if not text:
+                        continue
+                    collected.append(text)
+                    self._emit_stream(text, parse_install_percent(text), replace=replace)
+            leftover = _decode_frame(buf)
+            if leftover:
+                collected.append(leftover)
+                self._emit_stream(leftover, parse_install_percent(leftover), replace=False)
+            try:
+                proc.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                _kill_proc_tree(proc)
+                proc.wait(timeout=3)
+        finally:
+            self._active_proc = None
+        code = proc.returncode if proc.returncode is not None else 1
+        if timed_out:
+            raise subprocess.TimeoutExpired(cmd, timeout or 0)
+        return subprocess.CompletedProcess(cmd, code, "\n".join(collected), "")
 
     def last_error(self) -> str:
         return str(self._state.get("last_error") or "")
@@ -399,6 +560,7 @@ class SetupProtocol:
         on_progress: ProgressFn | None = None,
         on_user: UserActionFn | None = None,
     ) -> bool:
+        self._abort = False
         if self.simulate:
             return self._run_core_simulated(on_progress, on_user)
         if self.dry_run:
@@ -903,7 +1065,7 @@ class SetupProtocol:
             else:
                 cmd = [creator, "-m", "venv", str(repo / ".venv")]
             try:
-                proc = _run_hidden(cmd, cwd=str(repo), timeout=180)
+                proc = self._run_streamed(cmd, cwd=str(repo), timeout=180)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 return self._record_step("mcp_venv", "failed", f"venv 생성 실패: {exc}")
             if proc.returncode != 0:
@@ -914,9 +1076,12 @@ class SetupProtocol:
                 return self._record_step("mcp_venv", "failed", ".venv python을 찾지 못함")
 
         if req.is_file():
-            pip = [str(py), "-m", "pip", "install", "-r", str(req)]
+            pip_env = os.environ.copy()
+            pip_env["PYTHONUNBUFFERED"] = "1"
+            pip_env["PIP_PROGRESS_BAR"] = "on"
+            pip = [str(py), "-u", "-m", "pip", "install", "-r", str(req), "--progress-bar", "on"]
             try:
-                proc = _run_hidden(pip, cwd=str(repo), timeout=600)
+                proc = self._run_streamed(pip, cwd=str(repo), env=pip_env, timeout=600)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 return self._record_step("mcp_venv", "failed", f"pip 실패: {exc}")
             if proc.returncode != 0:
@@ -949,53 +1114,57 @@ class SetupProtocol:
     def _install_ollama(self) -> SetupStepResult:
         if ollama_executable() and ensure_ollama_running(self.ollama_base_url, wait_sec=15.0):
             return self._record_step("ollama_install", "done", "Ollama 이미 사용 가능")
-        if sys.platform == "win32" and _winget_available():
-            try:
-                proc = _run_hidden(
-                    [
-                        "winget",
-                        "install",
-                        "-e",
-                        "--id",
-                        "Ollama.Ollama",
-                        "--accept-package-agreements",
-                        "--accept-source-agreements",
-                    ],
-                    timeout=600,
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
+        if sys.platform == "win32":
+            winget = _winget_exe()
+            if winget:
+                self._emit_stream(f"winget 설치 시작: {winget}", None, replace=False)
+                try:
+                    proc = self._run_streamed(
+                        [
+                            winget,
+                            "install",
+                            "-e",
+                            "--id",
+                            "Ollama.Ollama",
+                            "--accept-package-agreements",
+                            "--accept-source-agreements",
+                        ],
+                        timeout=600,
+                        hidden=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    return SetupStepResult(
+                        step_id="ollama_install",
+                        status="needs_user",
+                        message=f"winget 설치 실패: {exc}. 「열기」로 수동 설치하세요.",
+                        action_url=OLLAMA_DOWNLOAD_URL,
+                        action_hint="설치 후 「완료했어요」를 누르세요.",
+                        label=CORE_STEP_LABELS["ollama_install"],
+                        can_install=True,
+                    )
+                if proc.returncode == 0:
+                    time.sleep(2)
+                    if ollama_executable() and ensure_ollama_running(self.ollama_base_url, wait_sec=25.0):
+                        return self._record_step("ollama_install", "done", "winget으로 Ollama 설치됨")
+                    return SetupStepResult(
+                        step_id="ollama_install",
+                        status="needs_user",
+                        message="설치는 됐지만 PATH에 없습니다. Iris를 재시작한 뒤 「완료했어요」.",
+                        action_url="",
+                        action_hint="재시작 후 「완료했어요」를 누르세요.",
+                        label=CORE_STEP_LABELS["ollama_install"],
+                        can_install=False,
+                    )
+                err = (proc.stderr or proc.stdout or "")[:160]
                 return SetupStepResult(
                     step_id="ollama_install",
                     status="needs_user",
-                    message=f"winget 설치 실패: {exc}. 「열기」로 수동 설치하세요.",
+                    message=f"winget 실패. 「열기」로 수동 설치하세요. {err}",
                     action_url=OLLAMA_DOWNLOAD_URL,
-                    action_hint="설치 후 「완료했어요」를 누르세요.",
+                    action_hint="설치 후 「완료했어요」.",
                     label=CORE_STEP_LABELS["ollama_install"],
                     can_install=True,
                 )
-            if proc.returncode == 0:
-                time.sleep(2)
-                if ollama_executable() and ensure_ollama_running(self.ollama_base_url, wait_sec=25.0):
-                    return self._record_step("ollama_install", "done", "winget으로 Ollama 설치됨")
-                return SetupStepResult(
-                    step_id="ollama_install",
-                    status="needs_user",
-                    message="설치는 됐지만 PATH에 없습니다. Iris를 재시작한 뒤 「완료했어요」.",
-                    action_url="",
-                    action_hint="재시작 후 「완료했어요」를 누르세요.",
-                    label=CORE_STEP_LABELS["ollama_install"],
-                    can_install=False,
-                )
-            err = (proc.stderr or proc.stdout or "")[:160]
-            return SetupStepResult(
-                step_id="ollama_install",
-                status="needs_user",
-                message=f"winget 실패. 「열기」로 수동 설치하세요. {err}",
-                action_url=OLLAMA_DOWNLOAD_URL,
-                action_hint="설치 후 「완료했어요」.",
-                label=CORE_STEP_LABELS["ollama_install"],
-                can_install=True,
-            )
         return SetupStepResult(
             step_id="ollama_install",
             status="needs_user",
@@ -1018,18 +1187,11 @@ class SetupProtocol:
             if names and not want:
                 return self._record_step("ollama_model", "done", f"모델 {len(names)}개 확인")
 
-        exe = ollama_executable()
-        if not exe:
-            return self._record_step("ollama_model", "failed", "ollama 실행 파일 없음")
         model = self.min_model
         self._record_step("ollama_model", "installing", f"{model} 받는 중…")
-        try:
-            proc = _run_hidden([exe, "pull", model], timeout=1800)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return self._record_step("ollama_model", "failed", f"pull 실패: {exc}")
-        if proc.returncode != 0:
-            err = (proc.stderr or proc.stdout or "")[:200]
-            return self._record_step("ollama_model", "failed", f"pull 실패: {err}")
+        pulled = self._pull_ollama_model(model)
+        if pulled is not None:
+            return pulled
         names = _list_ollama_model_names(self.ollama_base_url)
         if not names:
             return self._record_step("ollama_model", "failed", "pull 후에도 모델 목록이 비어 있습니다")
@@ -1038,6 +1200,63 @@ class SetupProtocol:
             _upsert_dotenv(_iris_env_path(), {"IRIS_OLLAMA_MODEL": model})
             os.environ["IRIS_OLLAMA_MODEL"] = model
         return self._record_step("ollama_model", "done", f"{model} 준비됨")
+
+    def _pull_ollama_model(self, model: str) -> SetupStepResult | None:
+        """Ollama /api/pull 바이트 진행률. 실패 시 CLI pull. 성공이면 None."""
+        err = self._pull_ollama_api(model)
+        if err is None:
+            return None
+        self._emit_stream(f"API pull 실패, CLI로 재시도: {err}", None, replace=False)
+        exe = ollama_executable()
+        if not exe:
+            return self._record_step("ollama_model", "failed", "ollama 실행 파일 없음")
+        try:
+            proc = self._run_streamed([exe, "pull", model], timeout=1800)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return self._record_step("ollama_model", "failed", f"pull 실패: {exc}")
+        if proc.returncode != 0:
+            tail = (proc.stdout or "")[-200:]
+            return self._record_step("ollama_model", "failed", f"pull 실패: {tail}")
+        return None
+
+    def _pull_ollama_api(self, model: str) -> str | None:
+        """성공이면 None. completed/total 은 현재 레이어 실제 바이트."""
+        from iris.infrastructure.ollama_client import _native_base
+
+        url = f"{_native_base(self.ollama_base_url)}/api/pull"
+        body = json.dumps({"model": model, "name": model, "stream": True}).encode("utf-8")
+        req = Request(url, data=body, method="POST")
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urlopen(req, timeout=1800) as resp:
+                while True:
+                    if self._abort:
+                        return "사용자가 중단함"
+                    raw = resp.readline()
+                    if not raw:
+                        break
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        self._emit_stream(line, parse_install_percent(line), replace=False)
+                        continue
+                    if not isinstance(ev, dict):
+                        continue
+                    err = ev.get("error")
+                    if err:
+                        return str(err)[:200]
+                    status = str(ev.get("status") or "pull")
+                    total = int(ev.get("total") or 0)
+                    completed = int(ev.get("completed") or 0)
+                    pct = int(100 * completed / total) if total > 0 else None
+                    msg = f"{status}  {completed}/{total}" if total > 0 else status
+                    self._emit_stream(msg, pct, replace=total > 0)
+        except (URLError, TimeoutError, OSError) as exc:
+            return str(exc)[:200]
+        return None
 
     def _step_hermes_install(self) -> SetupStepResult:
         if hermes_executable(self.hermes_command):
@@ -1070,8 +1289,9 @@ class SetupProtocol:
             + HERMES_INSTALL_URL
             + "'))) -SkipSetup -NonInteractive"
         )
+        self._emit_stream("Hermes 설치 스크립트 실행 중…", None, replace=False)
         try:
-            proc = _run_hidden(
+            proc = self._run_streamed(
                 [
                     "powershell",
                     "-NoProfile",
@@ -1081,6 +1301,7 @@ class SetupProtocol:
                     ps,
                 ],
                 timeout=1800,
+                hidden=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return SetupStepResult(
@@ -1231,7 +1452,7 @@ class SetupProtocol:
                 "voice", "skipped", "setup_voice_runtime.ps1 없음", label="음성 런타임"
             )
         try:
-            proc = _run_hidden(
+            proc = self._run_streamed(
                 [
                     "powershell",
                     "-NoProfile",
@@ -1306,55 +1527,59 @@ class SetupProtocol:
                     can_install=True,
                 )
 
-        if sys.platform == "win32" and _winget_available():
-            try:
-                proc = _run_hidden(
-                    [
-                        "winget",
-                        "install",
-                        "-e",
-                        "--id",
-                        "Google.AndroidStudio",
-                        "--accept-package-agreements",
-                        "--accept-source-agreements",
-                    ],
-                    timeout=3600,
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                return SetupStepResult(
-                    step_id="emulator",
-                    status="needs_user",
-                    message=f"Android Studio 설치 실패: {exc}",
-                    action_url=ANDROID_STUDIO_URL,
-                    action_hint="「열기」로 수동 설치 후 SDK·AVD를 준비하세요.",
-                    label="Android 에뮬레이터",
-                    can_install=True,
-                )
-            if proc.returncode == 0:
-                ok2, detail2 = is_emulator_available()
-                if ok2:
-                    try:
-                        ensure_avd()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    return SetupStepResult(
-                        "emulator",
-                        "done",
-                        detail2 or "Android Studio 설치됨",
-                        label="Android 에뮬레이터",
+        if sys.platform == "win32":
+            winget = _winget_exe()
+            if winget:
+                self._emit_stream(f"winget 설치 시작: {winget}", None, replace=False)
+                try:
+                    proc = self._run_streamed(
+                        [
+                            winget,
+                            "install",
+                            "-e",
+                            "--id",
+                            "Google.AndroidStudio",
+                            "--accept-package-agreements",
+                            "--accept-source-agreements",
+                        ],
+                        timeout=3600,
+                        hidden=False,
                     )
-                return SetupStepResult(
-                    step_id="emulator",
-                    status="needs_user",
-                    message=(
-                        "Android Studio는 설치됐습니다. Studio를 열어 SDK Platform-Tools·"
-                        "Emulator를 받은 뒤 「완료했어요」를 누르세요."
-                    ),
-                    action_url=ANDROID_STUDIO_URL,
-                    action_hint="SDK 준비 후 「완료했어요」, 아니면 「나중에」.",
-                    label="Android 에뮬레이터",
-                    can_install=False,
-                )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    return SetupStepResult(
+                        step_id="emulator",
+                        status="needs_user",
+                        message=f"Android Studio 설치 실패: {exc}",
+                        action_url=ANDROID_STUDIO_URL,
+                        action_hint="「열기」로 수동 설치 후 SDK·AVD를 준비하세요.",
+                        label="Android 에뮬레이터",
+                        can_install=True,
+                    )
+                if proc.returncode == 0:
+                    ok2, detail2 = is_emulator_available()
+                    if ok2:
+                        try:
+                            ensure_avd()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return SetupStepResult(
+                            "emulator",
+                            "done",
+                            detail2 or "Android Studio 설치됨",
+                            label="Android 에뮬레이터",
+                        )
+                    return SetupStepResult(
+                        step_id="emulator",
+                        status="needs_user",
+                        message=(
+                            "Android Studio는 설치됐습니다. Studio를 열어 SDK Platform-Tools·"
+                            "Emulator를 받은 뒤 「완료했어요」를 누르세요."
+                        ),
+                        action_url=ANDROID_STUDIO_URL,
+                        action_hint="SDK 준비 후 「완료했어요」, 아니면 「나중에」.",
+                        label="Android 에뮬레이터",
+                        can_install=False,
+                    )
 
         return SetupStepResult(
             step_id="emulator",
@@ -1437,6 +1662,64 @@ def _self_check() -> None:
     assert "mcp_venv" in CORE_STEP_IDS
     # 키 마스킹: 메시지에 raw key 넣지 않는지 상수만 검사
     assert "token_urlsafe" not in DEFAULT_MIN_MODEL
+    assert parse_install_percent("Downloading  67%") == 67
+    assert parse_install_percent("no percent here") is None
+    assert parse_install_percent("150%") is None
+    split = _split_off_frame(b"abc\rdef")
+    assert split is not None
+    frame, rest, replace = split
+    assert frame == b"abc" and rest == b"def" and replace is True
+    proto = SetupProtocol(simulate=False, dry_run=False)
+    seen: list[tuple[str, int | None]] = []
+    proto.bind_stream(lambda text, pct, _rep: seen.append((text, pct)))
+    streamed = proto._run_streamed(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write('Downloading  10%\\rDownloading  55%\\nDone 100%\\n'); sys.stdout.flush()",
+        ],
+        timeout=15,
+    )
+    assert streamed.returncode == 0, streamed.stdout
+    pcts = [p for _, p in seen if p is not None]
+    assert 10 in pcts and 55 in pcts and 100 in pcts, seen
+    marker = iris_state_dir() / "_setup_stream_probe.txt"
+    marker.unlink(missing_ok=True)
+    wrote = proto._run_streamed(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; Path(%r).write_text('ok', encoding='utf-8')" % str(marker),
+        ],
+        timeout=15,
+        hidden=True,
+    )
+    assert wrote.returncode == 0, wrote.stdout
+    assert marker.read_text(encoding="utf-8") == "ok"
+    marker.unlink(missing_ok=True)
+    sleepy = SetupProtocol(simulate=False, dry_run=False)
+    sleeper = threading.Thread(
+        target=lambda: sleepy._run_streamed(
+            [sys.executable, "-c", "import time; time.sleep(20)"],
+            timeout=30,
+            hidden=True,
+        ),
+        daemon=True,
+    )
+    sleeper.start()
+    for _ in range(25):
+        if sleepy.is_busy():
+            break
+        time.sleep(0.1)
+    assert sleepy.is_busy()
+    sleepy.abort()
+    sleeper.join(8)
+    assert not sleepy.is_busy()
+    winget = _winget_exe()
+    if winget:
+        ver = proto._run_streamed([winget, "--version"], timeout=20, hidden=True)
+        assert ver.returncode == 0, ver.stdout
+        assert (ver.stdout or "").strip()
     d = iris_state_dir()
     assert d.is_dir()
     print("setup_protocol ok", d, "core_ready=", is_core_ready())

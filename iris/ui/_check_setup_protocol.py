@@ -9,6 +9,7 @@ from iris.system.setup_protocol import (
     default_min_model,
     iris_state_dir,
     load_setup_state,
+    parse_install_percent,
     setup_state_path,
 )
 
@@ -25,6 +26,8 @@ def main() -> None:
     assert "ollama_exe" in snap
     d = iris_state_dir()
     assert d.is_dir()
+    assert parse_install_percent("  ████  42%") == 42
+    assert parse_install_percent("pulling manifest") is None
     print("setup_protocol check ok", setup_state_path(), "detect.keys=", sorted(snap))
 
 

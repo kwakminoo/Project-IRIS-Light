@@ -22,6 +22,7 @@ class SetupProtocolWorker(QThread):
     step_changed = pyqtSignal(object)  # SetupStepResult
     needs_user = pyqtSignal(object)  # SetupStepResult
     log_line = pyqtSignal(str)
+    install_chunk = pyqtSignal(str, object, bool)  # text, percent|None, replace
     finished_ok = pyqtSignal(bool)
     failed = pyqtSignal(str)
     phase_changed = pyqtSignal(str)  # "core" | "optional" | "done"
@@ -47,9 +48,16 @@ class SetupProtocolWorker(QThread):
         self._user_choice = (choice or "done").strip().lower() or "done"
         self._user_gate.set()
 
+    def is_install_running(self) -> bool:
+        return self._protocol.is_busy()
+
     def request_abort(self) -> None:
         self._abort = True
+        self._protocol.abort()
         self.resume_user("abort")
+
+    def _on_stream(self, text: str, percent: int | None, replace: bool) -> None:
+        self.install_chunk.emit(text, percent, replace)
 
     def _on_progress(self, result: SetupStepResult) -> None:
         self.step_changed.emit(result)
@@ -67,6 +75,7 @@ class SetupProtocolWorker(QThread):
         return self._user_choice
 
     def run(self) -> None:
+        self._protocol.bind_stream(self._on_stream)
         try:
             self.phase_changed.emit("core")
             self.log_line.emit("Core 설치를 시작합니다…")
@@ -98,3 +107,5 @@ class SetupProtocolWorker(QThread):
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc)[:240])
             self.finished_ok.emit(False)
+        finally:
+            self._protocol.bind_stream(None)
