@@ -12,7 +12,7 @@
   6) iris/assets/voice/ 에 프로필 저장 (녹음 원본 없이도 동작)
 
 사용:
-    .\\.venv-voice\\Scripts\\python.exe scripts\\build_voice_profile.py "2차 아이리스 녹음 A-B" "2차 아이리스 녹음 C-H"
+    .\\.venv-voice\\Scripts\\python.exe scripts\\build_voice_profile.py "아이리스 녹음"
 """
 
 from __future__ import annotations

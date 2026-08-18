@@ -86,6 +86,43 @@ class TTSSynthesisWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class TTSStreamWorker(QThread):
+    started_fmt = pyqtSignal(int)
+    chunk = pyqtSignal(bytes)
+    finished_ok = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        *,
+        runtime_url: str,
+        text: str,
+        payload: dict,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._runtime_url = runtime_url
+        self._text = text
+        self._payload = dict(payload or {})
+
+    def run(self) -> None:
+        import base64
+
+        client = VoiceRuntimeClient(base_url=self._runtime_url)
+        try:
+            for event in client.iter_tts_speech_stream(text=self._text, **self._payload):
+                kind = str(event.get("type") or "")
+                if kind == "start":
+                    self.started_fmt.emit(int(event.get("sample_rate") or 24000))
+                elif kind == "chunk":
+                    raw = str(event.get("pcm_b64") or "")
+                    if raw:
+                        self.chunk.emit(base64.b64decode(raw))
+            self.finished_ok.emit()
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
 class VoiceAnalyzeWorker(QThread):
     finished_ok = pyqtSignal(object)  # dict
     failed = pyqtSignal(str)

@@ -114,6 +114,10 @@ class ParticleVisualizer(QWidget):
         super().__init__(parent)
         self._state_name = "IDLE"
         self._t = 0.0
+        # ponytail: 상태 변경 시 회전 속도/스핀 배율이 즉시 점프하면
+        # "딱딱"하게 느껴질 수 있어, 화면상 체감 개선을 위해 보간 상태를 따로 둔다.
+        self._speed_current = float(_STATE_PROFILES["IDLE"]["speed"]) * 1.0
+        self._spin_current = float(_STATE_PROFILES["IDLE"]["spin"])
         self._audio_level = 0.0
         self._smooth_audio = 0.0
         self._activity_level = 1.0
@@ -254,8 +258,13 @@ class ParticleVisualizer(QWidget):
         return _STATE_PROFILES.get(self._state_name, _STATE_PROFILES["IDLE"])
 
     def _tick(self) -> None:
-        speed = float(self._profile()["speed"]) * self._activity_level
-        self._t += 0.026 * max(0.35, speed)
+        profile = self._profile()
+        speed_target = float(profile["speed"]) * self._activity_level
+        # 0.0~1.0 사이로 동작하도록 보간 계수를 고정
+        self._speed_current += (speed_target - self._speed_current) * 0.18
+        spin_target = float(profile["spin"])
+        self._spin_current += (spin_target - self._spin_current) * 0.18
+        self._t += 0.026 * max(0.35, float(self._speed_current))
         self._smooth_audio += (self._audio_level - self._smooth_audio) * 0.14
         self._audio_level *= 0.88
         self._state_burst *= 0.90
@@ -462,7 +471,7 @@ class ParticleVisualizer(QWidget):
         inner_clip = QPainterPath()
         inner_clip.addEllipse(inner_rect)
         # 동작 중 spin 배율 ↑ → 외곽 링이 빠르게 회전
-        rotation = self._t * float(self._profile()["spin"])
+        rotation = self._t * self._spin_current
 
         painter.save()
         painter.setOpacity(0.50 + min(0.22, energy * 0.20))

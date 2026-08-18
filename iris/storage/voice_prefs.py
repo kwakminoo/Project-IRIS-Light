@@ -10,17 +10,35 @@ from iris.storage.database import Database
 
 VOICE_PREFS_KEY = "voice_prefs_v1"
 
-# 사용자 지정 기본 경로. 없으면 프로젝트 내 동명 폴더를 쓴다.
-_DESKTOP_VOICE_DIR = Path(r"c:\Users\kwakm\Desktop\1차 아이리스 녹음")
-_PROJECT_VOICE_DIR = Path(__file__).resolve().parents[2] / "1차 아이리스 녹음"
+_VOICE_DIR_NAME = "아이리스 녹음"
+_LEGACY_VOICE_DIR_NAMES = ("1차 아이리스 녹음",)
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
 
 def default_voice_data_dir() -> str:
-    if _DESKTOP_VOICE_DIR.is_dir():
-        return str(_DESKTOP_VOICE_DIR)
-    if _PROJECT_VOICE_DIR.is_dir():
-        return str(_PROJECT_VOICE_DIR)
-    return str(_DESKTOP_VOICE_DIR)
+    project = _project_root() / _VOICE_DIR_NAME
+    if project.is_dir():
+        return str(project)
+    for name in _LEGACY_VOICE_DIR_NAMES:
+        for candidate in (_project_root() / name, Path.home() / "Desktop" / name):
+            if candidate.is_dir():
+                return str(candidate)
+    return str(project)
+
+
+def resolve_saved_voice_data_dir(saved: str) -> str:
+    raw = (saved or "").strip()
+    if not raw:
+        return default_voice_data_dir()
+    path = Path(raw)
+    if path.is_dir():
+        return str(path)
+    if path.name in _LEGACY_VOICE_DIR_NAMES:
+        return default_voice_data_dir()
+    return raw
 
 
 @dataclass
@@ -42,6 +60,11 @@ class VoicePreferences:
     tts_use_voice_profile: bool = True
     # 문장 유형에 맞춰 톤을 자동 선택. 끄면 항상 기본(neutral) 톤.
     tts_tone_routing: bool = True
+    # qwen | qwen_custom | gpt_sovits
+    tts_engine: str = "qwen"
+    tts_custom_speaker: str = "iris"
+    tts_custom_model_path: str = ""
+    gpt_sovits_url: str = "http://127.0.0.1:9880"
 
     voice_runtime_url: str = "http://127.0.0.1:18765"
     voice_runtime_mock: bool = False
@@ -98,12 +121,19 @@ def load_voice_preferences(db: Database) -> VoicePreferences:
         data.get("tts_use_voice_profile"), prefs.tts_use_voice_profile
     )
     prefs.tts_tone_routing = _to_bool(data.get("tts_tone_routing"), prefs.tts_tone_routing)
+    engine = str(data.get("tts_engine", prefs.tts_engine) or prefs.tts_engine).strip().lower()
+    prefs.tts_engine = engine if engine in ("qwen", "qwen_custom", "gpt_sovits") else "qwen"
+    prefs.tts_custom_speaker = str(data.get("tts_custom_speaker", prefs.tts_custom_speaker) or "iris")
+    prefs.tts_custom_model_path = str(data.get("tts_custom_model_path", prefs.tts_custom_model_path) or "")
+    prefs.gpt_sovits_url = str(data.get("gpt_sovits_url", prefs.gpt_sovits_url) or prefs.gpt_sovits_url)
     prefs.voice_runtime_url = str(data.get("voice_runtime_url", prefs.voice_runtime_url) or prefs.voice_runtime_url)
     # 구 기본 포트 8765는 다른 로컬 서비스와 충돌 → 새 기본으로 이전
     if prefs.voice_runtime_url.rstrip("/").endswith(":8765"):
         prefs.voice_runtime_url = "http://127.0.0.1:18765"
     prefs.voice_runtime_mock = _to_bool(data.get("voice_runtime_mock"), prefs.voice_runtime_mock)
-    prefs.voice_data_dir = str(data.get("voice_data_dir", prefs.voice_data_dir) or "") or default_voice_data_dir()
+    prefs.voice_data_dir = resolve_saved_voice_data_dir(
+        str(data.get("voice_data_dir", prefs.voice_data_dir) or "")
+    )
     prefs.pronunciation_dict_json = str(
         data.get("pronunciation_dict_json", prefs.pronunciation_dict_json) or ""
     )

@@ -15,3 +15,4 @@ mutagen>=1.47.0
 av>=12.0.0
 
 # TTS 실모델은 setup_voice_runtime.ps1 -Full 로 설치 (torch, qwen-tts)
+# 선택: pip install faster-qwen3-tts  (CUDA graph 스트리밍, RTF 개선)

@@ -10,12 +10,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import CONFIG
 from .model_manager import VoiceModelManager
 from .stt_service import STTService
 from .tts_service import TTSService, clear_generated_audio_cache
+from .tts_stream import StreamSynthRequest, faster_qwen_available, iter_pcm_events
 from .voice_dataset import analyze_folder, load_manifest, recommend_reference_samples
 
 
@@ -32,6 +34,7 @@ class HealthResponse(BaseModel):
     status: str
     pid: int
     mock_mode: bool
+    faster_qwen: bool = False
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -40,6 +43,7 @@ def health() -> Any:
         status="ok",
         pid=os.getpid(),
         mock_mode=CONFIG.mock_mode,
+        faster_qwen=faster_qwen_available(),
     )
 
 
@@ -113,6 +117,12 @@ class SpeechRequest(BaseModel):
     voice_prompt_hash: str = ""
     tts_model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
     tone: str | None = None
+    engine: str = "qwen"
+    custom_speaker: str = "iris"
+    custom_model_path: str = ""
+    gpt_sovits_url: str = "http://127.0.0.1:9880"
+    voice_data_dir: str = ""
+    tone_routing: bool = True
 
 
 class SpeechResponse(BaseModel):
@@ -137,6 +147,35 @@ def speech(req: SpeechRequest) -> Any:
         )
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+def _ndjson(event: dict[str, Any]) -> bytes:
+    return (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+@app.post("/v1/audio/speech/stream")
+def speech_stream(req: SpeechRequest) -> Any:
+    synth = StreamSynthRequest(
+        text=req.text,
+        engine=req.engine,
+        voice_prompt_hash=req.voice_prompt_hash,
+        tts_model_name=req.tts_model_name,
+        tone=req.tone,
+        custom_speaker=req.custom_speaker,
+        custom_model_path=req.custom_model_path,
+        gpt_sovits_url=req.gpt_sovits_url,
+        voice_data_dir=req.voice_data_dir,
+        tone_routing=req.tone_routing,
+    )
+
+    def _gen() -> Any:
+        try:
+            for event in iter_pcm_events(tts_service, synth):
+                yield _ndjson(event)
+        except Exception as exc:  # noqa: BLE001
+            yield _ndjson({"type": "error", "message": str(exc)})
+
+    return StreamingResponse(_gen(), media_type="application/x-ndjson")
 
 
 @app.get("/v1/voice/profile")

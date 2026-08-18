@@ -7,9 +7,9 @@ import sys
 from pathlib import Path
 import time
 
-from PyQt6.QtCore import QEvent, QRect, Qt, QThread, QTimer
+from PyQt6.QtCore import QEvent, QRect, Qt, QThread, QTimer, QUrl
 from PyQt6.QtGui import QAction, QCloseEvent
-from PyQt6.QtCore import QUrl
+from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (
     QMainWindow,
     QSizePolicy,
@@ -18,15 +18,13 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtMultimedia import QSoundEffect
-import tempfile
-
 from iris.assets.branding import APP_DISPLAY_NAME, load_app_icon
+from iris.audio.pcm_player import PcmPlayer
 from iris.audio.recorder import AudioRecorder, RecordingResult
 from iris.audio.text_normalizer import load_pronunciation_map, split_tts_sentences
-from iris.audio.tts_pipeline import should_start_tts_synth
+from iris.audio.tts_pipeline import TtsSentencePump, should_start_tts_synth
 from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
-from iris.audio.workers import STTTranscriptionWorker, TTSSynthesisWorker
+from iris.audio.workers import STTTranscriptionWorker, TTSSynthesisWorker, TTSStreamWorker
 from iris.config.settings import load_settings
 from iris.core.activity_sink import register_activity_sink
 from iris.core.state_machine import AppState, StateMachine
@@ -201,11 +199,11 @@ class MainWindow(QMainWindow):
         self._learning_worker: LearningProcessWorker | None = None
         self._email_preloaded = False
         self._tts_queue: list[str] = []
-        self._tts_ready: list[str] = []
         self._tts_job_id = 0
         self._tts_stopping = False
         self._tts_active_play = False
         self._tts_active_msg_id: str = ""
+        self._tts_pump: TtsSentencePump | None = None
         self._email_view: tuple[str, str] = ("inbox", "")  # (folder_key, gmail_category)
         self._email_folder = "inbox"  # 메시지 조회용 메일함 키
         self._selected_email_account_id = ""
@@ -263,8 +261,16 @@ class MainWindow(QMainWindow):
         self._recorder.recording_cancelled.connect(self._on_recording_cancelled)
         self._recorder.utterance_ready.connect(self._on_utterance_ready)
         self._recorder.failed.connect(self._on_recording_failed)
-        self._tts_player = QSoundEffect(self)
-        self._tts_player.playingChanged.connect(self._on_tts_playing_changed)
+        self._pcm_player = PcmPlayer(self)
+        self._pcm_player.set_volume(self._voice_prefs.tts_volume)
+        self._pcm_player.speakers_opened.connect(self._on_pcm_speakers_opened)
+        self._pcm_player.drained.connect(self._on_pcm_drained)
+        self._pcm_player.failed.connect(self._on_pcm_failed)
+        self._media_audio_out = QAudioOutput(self)
+        self._media_audio_out.setVolume(self._voice_prefs.tts_volume)
+        self._media_player = QMediaPlayer(self)
+        self._media_player.setAudioOutput(self._media_audio_out)
+        self._media_player.playbackStateChanged.connect(self._on_media_playback_state)
 
         central = CyberspaceBackground()
         self._cyberspace_bg = central
@@ -1013,6 +1019,8 @@ class MainWindow(QMainWindow):
         self._refresh_context_gauge()
         self._busy = True
         self._ignore_chat_result = False
+        self._tts_pump = None
+        self._stop_tts_playback()
         self._api_fallback_pending = False
         self._api_fallback_model = ""
         self._chat.set_generating(True)
@@ -1120,6 +1128,7 @@ class MainWindow(QMainWindow):
         self._busy = False
         self._chat.set_generating(False)
         self._state.set_state(AppState.IDLE)
+        self._tts_pump = None
         self._live_activity.append_instant_line("Stopped.")
         self._maybe_refresh_ollama_quota()
 
@@ -1160,7 +1169,12 @@ class MainWindow(QMainWindow):
         self._live_activity.append_instant_line("...done thinking.")
         self._live_activity.append_instant_line("")
         self._state.set_state(AppState.RESPONDING)
-        self._chat.begin_stream_message("Iris", speech_sync=False)
+        tts_auto = bool(self._voice_prefs.tts_enabled and self._voice_prefs.tts_mode == "auto")
+        self._chat.begin_stream_message(
+            "Iris",
+            speech_sync=tts_auto,
+            wait_for_tts_completion=tts_auto,
+        )
 
     def _on_content_chunk(self, chunk: str) -> None:
         if self._ignore_chat_result:
@@ -1168,8 +1182,22 @@ class MainWindow(QMainWindow):
         if not getattr(self._chat, "_stream_active", False):
             # thinking 없이 content만 오는 모델
             self._state.set_state(AppState.RESPONDING)
-            self._chat.begin_stream_message("Iris", speech_sync=False)
+            tts_auto = bool(self._voice_prefs.tts_enabled and self._voice_prefs.tts_mode == "auto")
+            self._chat.begin_stream_message(
+                "Iris",
+                speech_sync=tts_auto,
+                wait_for_tts_completion=tts_auto,
+            )
         self._chat.append_stream_chunk(chunk)
+        self._feed_tts_stream(chunk)
+
+    def _feed_tts_stream(self, chunk: str, *, flush: bool = False) -> None:
+        if not self._voice_prefs.tts_enabled or self._voice_prefs.tts_mode != "auto":
+            return
+        # ponytail: auto 모드에서는 스트리밍 도중 TTS를 쪼개지 않고,
+        # 답변 완료 후 "한 번"만 합성한다. (이때까지는 텍스트 표시도 대기)
+        del chunk, flush
+        return
 
     def _on_chat_finished(self, content: str) -> None:
         if self._ignore_chat_result:
@@ -1177,6 +1205,7 @@ class MainWindow(QMainWindow):
             self._chat_worker = None
             self._busy = False
             self._chat.set_generating(False)
+            self._tts_pump = None
             self._maybe_refresh_ollama_quota()
             return
         text = (content or "").strip()
@@ -1201,10 +1230,25 @@ class MainWindow(QMainWindow):
         self._busy = False
         self._chat.set_generating(False)
         self._chat_worker = None
-        self._state.set_state(AppState.IDLE)
+        tts_auto = bool(text and self._voice_prefs.tts_enabled and self._voice_prefs.tts_mode == "auto")
+        # ponytail: TTS 자동 재생 구간에서는 아이리스 구체가
+        # `TTS BUSY`가 끝나고 `TTS SPEAK`가 시작될 때까지 회전하도록 상태를 유지한다.
+        self._state.set_state(AppState.RESPONDING if tts_auto else AppState.IDLE)
         self._maybe_refresh_ollama_quota()
-        if text and self._voice_prefs.tts_enabled and self._voice_prefs.tts_mode == "auto":
+        if not tts_auto:
+            return
+        if self._tts_pump is not None:
+            self._feed_tts_stream("", flush=True)
+        else:
             self._enqueue_tts(text, msg_id=self._chat._last_tts_id or "last")
+            if (
+                not self._tts_queue
+                and self._tts_worker is None
+                and not self._tts_active_play
+                and getattr(self._chat, "_typing_wait_for_tts_completion", False)
+            ):
+                self._chat.fallback_typing_if_waiting_for_tts()
+                self._state.set_state(AppState.IDLE)
 
     def _try_reveal_local_vibe_code(self, assistant_text: str) -> None:
         prompt = self._pending_local_vibe_prompt
@@ -1676,14 +1720,14 @@ class MainWindow(QMainWindow):
     def _stop_tts_playback(self) -> None:
         self._tts_job_id += 1
         self._tts_queue = []
-        self._tts_ready = []
         self._tts_active_play = False
         if self._tts_active_msg_id:
             self._chat.set_speaker_status(self._tts_active_msg_id, "idle")
         self._tts_active_msg_id = ""
         self._tts_stopping = True
         try:
-            self._tts_player.stop()
+            self._media_player.stop()
+            self._pcm_player.stop()
         except Exception:
             pass
         finally:
@@ -1710,48 +1754,98 @@ class MainWindow(QMainWindow):
         mapping = load_pronunciation_map(self._voice_prefs.pronunciation_dict_json)
         from iris.audio.text_normalizer import normalize_tts_text
 
-        cleaned = split_tts_sentences(normalize_tts_text(text, mapping))
+        # ponytail: TTS를 "첫 문장/이후 덩어리"로 분할하지 않고 한 번에 합성.
+        normed = normalize_tts_text(text, mapping)
+        normed = (normed or "").strip()
+        if not normed:
+            return
+        max_chars = max(1, len(normed))
+        cleaned = split_tts_sentences(
+            normed,
+            max_chars=max_chars,
+            first_max_chars=max_chars,
+        )
         if not cleaned:
             return
-        # 보이스 프로필을 쓰면 기준 음성 파일이 없어도 된다.
-        # 프로필이 런타임에 없으면 서버가 알아서 수동 기준 음성 경로로 떨어진다.
-        if not self._voice_prefs.tts_use_voice_profile:
-            ref_audio = self._voice_prefs.tts_reference_audio
-            ref_text = self._voice_prefs.tts_reference_text
-            if not ref_audio or not ref_text:
-                self._live_activity.append_instant_line("TTS 기준 음성이 아직 설정되지 않았습니다.")
-                return
-            if not Path(ref_audio).is_file():
-                self._live_activity.append_instant_line(f"기준 음성 파일이 없습니다: {ref_audio}")
-                self._chat.set_speaker_status(msg_id, "error")
-                return
-        if not self._ensure_voice_runtime():
-            self._chat.set_speaker_status(msg_id, "error")
+        self._tts_pump = None
+        if not self._tts_can_start(msg_id):
             return
         self._stop_tts_playback()
         self._tts_active_msg_id = msg_id
         self._chat.set_speaker_status(msg_id, "busy")
         self._tts_queue = cleaned
-        self._tts_ready = []
+        self._start_next_tts_segment()
+
+    def _tts_can_start(self, msg_id: str) -> bool:
+        engine = (self._voice_prefs.tts_engine or "qwen").strip().lower()
+        if engine == "qwen_custom" and not (self._voice_prefs.tts_custom_model_path or "").strip():
+            self._live_activity.append_instant_line(
+                "Qwen 파인튜닝 경로가 비어 있습니다. 설정에서 custom checkpoint를 지정하세요."
+            )
+            return False
+        if engine == "gpt_sovits":
+            if not (self._voice_prefs.gpt_sovits_url or "").strip():
+                self._live_activity.append_instant_line("GPT-SoVITS URL이 비어 있습니다.")
+                return False
+        elif not self._voice_prefs.tts_use_voice_profile:
+            ref_audio = self._voice_prefs.tts_reference_audio
+            ref_text = self._voice_prefs.tts_reference_text
+            if not ref_audio or not ref_text:
+                self._live_activity.append_instant_line("TTS 기준 음성이 아직 설정되지 않았습니다.")
+                return False
+            if not Path(ref_audio).is_file():
+                self._live_activity.append_instant_line(f"기준 음성 파일이 없습니다: {ref_audio}")
+                self._chat.set_speaker_status(msg_id, "error")
+                return False
+        if not self._ensure_voice_runtime():
+            self._chat.set_speaker_status(msg_id, "error")
+            return False
+        return True
+
+    def _append_tts_chunks(self, chunks: list[str]) -> None:
+        if not chunks:
+            return
+        msg_id = self._chat._last_tts_id or self._tts_active_msg_id or "last"
+        live = bool(self._tts_busy() or self._tts_active_play or self._tts_queue)
+        if not live:
+            if not self._tts_can_start(msg_id):
+                return
+            self._tts_active_msg_id = msg_id
+            self._chat.set_speaker_status(msg_id, "busy")
+        self._tts_queue.extend(chunks)
         self._start_next_tts_segment()
 
     def _tts_busy(self) -> bool:
         return self._tts_worker is not None and self._tts_worker.isRunning()
 
+    def _tts_stream_payload(self) -> dict:
+        use_profile = self._voice_prefs.tts_use_voice_profile
+        return {
+            "voice_prompt_hash": "" if use_profile else self._voice_prefs.tts_voice_prompt_hash,
+            "tts_model_name": self._voice_prefs.tts_model,
+            "tone": None if self._voice_prefs.tts_tone_routing else "neutral",
+            "engine": self._voice_prefs.tts_engine or "qwen",
+            "custom_speaker": self._voice_prefs.tts_custom_speaker or "iris",
+            "custom_model_path": self._voice_prefs.tts_custom_model_path,
+            "gpt_sovits_url": self._voice_prefs.gpt_sovits_url,
+            "voice_data_dir": self._voice_prefs.voice_data_dir,
+            "tone_routing": self._voice_prefs.tts_tone_routing,
+        }
+
     def _start_next_tts_segment(self) -> None:
         if not should_start_tts_synth(
             synthesizing=self._tts_busy(),
             pending_count=len(self._tts_queue),
-            ready_count=len(self._tts_ready),
         ):
-            if not self._tts_busy() and not self._tts_queue and not self._tts_ready and not self._tts_active_play:
-                if self._tts_active_msg_id:
-                    self._chat.set_speaker_status(self._tts_active_msg_id, "idle")
-                self._status_header.set_tts_status("READY" if self._voice_prefs.tts_enabled else "OFF")
+            if not self._tts_busy() and not self._tts_queue:
+                if not self._tts_active_play:
+                    if self._tts_active_msg_id:
+                        self._chat.set_speaker_status(self._tts_active_msg_id, "idle")
+                    self._status_header.set_tts_status("READY" if self._voice_prefs.tts_enabled else "OFF")
             return
         use_profile = self._voice_prefs.tts_use_voice_profile
-        # 프로필 경로는 준비 단계가 없다. 저장된 x-vector로 바로 프롬프트를 만든다.
-        if not use_profile and not self._voice_prefs.tts_voice_prompt_hash:
+        engine = (self._voice_prefs.tts_engine or "qwen").strip().lower()
+        if engine == "qwen" and not use_profile and not self._voice_prefs.tts_voice_prompt_hash:
             try:
                 from iris.audio.voice_runtime_client import VoiceRuntimeClient
 
@@ -1770,7 +1864,6 @@ class MainWindow(QMainWindow):
                     self._chat.set_speaker_status(self._tts_active_msg_id, "error")
                 self._live_activity.append_instant_line(f"TTS 준비 실패: {exc}")
                 self._tts_queue = []
-                self._tts_ready = []
                 return
         text = self._tts_queue.pop(0)
         if not self._tts_active_play:
@@ -1778,78 +1871,36 @@ class MainWindow(QMainWindow):
             if self._tts_active_msg_id:
                 self._chat.set_speaker_status(self._tts_active_msg_id, "busy")
         job_id = self._tts_job_id
+        payload = self._tts_stream_payload()
         worker = TTSSynthesisWorker(
             runtime_url=self._voice_prefs.voice_runtime_url,
             text=text,
-            voice_prompt_hash="" if use_profile else self._voice_prefs.tts_voice_prompt_hash,
-            model_name=self._voice_prefs.tts_model,
-            # 톤 라우팅을 끄면 서버가 추론하지 않도록 기본 톤을 못 박는다.
-            tone=None if self._voice_prefs.tts_tone_routing else "neutral",
+            voice_prompt_hash=payload.get("voice_prompt_hash", ""),
+            model_name=payload.get("tts_model_name", self._voice_prefs.tts_model),
+            tone=payload.get("tone"),
             parent=self,
         )
         self._tts_worker = worker
-        worker.finished_ok.connect(lambda payload, j=job_id: self._on_tts_finished(payload, j))
+        worker.finished_ok.connect(lambda res, j=job_id: self._on_tts_synth_done(res, j))
         worker.failed.connect(lambda err, j=job_id: self._on_tts_failed(err, j))
         worker.start()
 
-    def _play_tts_file(self, audio_path: str) -> None:
-        self._tts_stopping = True
-        try:
-            self._tts_player.setSource(QUrl.fromLocalFile(audio_path))
-            self._tts_player.setVolume(max(0.0, min(1.0, self._voice_prefs.tts_volume)))
-            if self._mic_listen_active:
-                self._recorder.set_capture_paused(True)
-            self._tts_player.play()
-        finally:
-            self._tts_stopping = False
+    def _on_pcm_chunk(self, pcm: bytes) -> None:
+        if self._mic_listen_active:
+            self._recorder.set_capture_paused(True)
+        self._pcm_player.set_volume(self._voice_prefs.tts_volume)
+        self._pcm_player.feed(pcm)
+
+    def _on_pcm_speakers_opened(self) -> None:
         self._tts_active_play = True
         self._status_header.set_tts_status("SPEAK")
         if self._tts_active_msg_id:
             self._chat.set_speaker_status(self._tts_active_msg_id, "playing")
 
-    def _on_tts_finished(self, payload: object, job_id: int | None = None) -> None:
-        if job_id is not None and job_id != self._tts_job_id:
-            return
-        self._tts_worker = None
-        data = payload if isinstance(payload, dict) else {}
-        audio_path = str(data.get("audio_path") or "").strip()
-        if not audio_path:
-            self._on_tts_failed("생성 파일 경로가 비어 있습니다.", job_id)
-            return
-        if not Path(audio_path).is_file():
-            self._on_tts_failed(f"생성 파일이 없습니다: {audio_path}", job_id)
-            return
-        if self._tts_active_play:
-            self._tts_ready.append(audio_path)
-        else:
-            self._play_tts_file(audio_path)
-        self._start_next_tts_segment()
-
-    def _on_tts_failed(self, err: str, job_id: int | None = None) -> None:
-        if job_id is not None and job_id != self._tts_job_id:
-            return
-        self._tts_worker = None
-        self._tts_queue = []
-        self._tts_ready = []
-        self._tts_active_play = False
-        self._status_header.set_tts_status("ERROR")
-        if self._tts_active_msg_id:
-            self._chat.set_speaker_status(self._tts_active_msg_id, "error")
-        self._live_activity.append_instant_line(f"TTS 오류: {err}")
-
-    def _on_tts_playing_changed(self) -> None:
+    def _on_pcm_drained(self) -> None:
         if self._tts_stopping:
             return
-        if self._tts_player.isPlaying():
-            self._tts_active_play = True
-            return
-        if not self._tts_active_play:
-            return
         self._tts_active_play = False
-        if self._tts_ready:
-            self._play_tts_file(self._tts_ready.pop(0))
-            self._start_next_tts_segment()
-            return
         if self._tts_busy() or self._tts_queue:
             if self._tts_active_msg_id:
                 self._chat.set_speaker_status(self._tts_active_msg_id, "busy")
@@ -1862,17 +1913,90 @@ class MainWindow(QMainWindow):
         if self._mic_listen_active and (self._stt_worker is None or not self._stt_worker.isRunning()):
             self._recorder.set_capture_paused(False)
 
+    def _on_pcm_failed(self, err: str) -> None:
+        self._live_activity.append_instant_line(f"TTS 재생 오류: {err}")
+
+    def _on_media_playback_state(self, state: object) -> None:
+        from PyQt6.QtMultimedia import QMediaPlayer as _MP
+        if state == _MP.PlaybackState.StoppedState:
+            self._on_media_finished()
+
+    def _on_media_finished(self) -> None:
+        if self._tts_stopping:
+            return
+        self._tts_active_play = False
+        if self._tts_busy() or self._tts_queue:
+            if self._tts_active_msg_id:
+                self._chat.set_speaker_status(self._tts_active_msg_id, "busy")
+            self._status_header.set_tts_status("BUSY")
+            self._start_next_tts_segment()
+            return
+        if self._tts_active_msg_id:
+            self._chat.set_speaker_status(self._tts_active_msg_id, "idle")
+        self._status_header.set_tts_status("READY" if self._voice_prefs.tts_enabled else "OFF")
+        if self._mic_listen_active and (self._stt_worker is None or not self._stt_worker.isRunning()):
+            self._recorder.set_capture_paused(False)
+
+    def _on_tts_synth_done(self, res: dict, job_id: int | None = None) -> None:
+        if job_id is not None and job_id != self._tts_job_id:
+            return
+        self._tts_worker = None
+        audio_path = str(res.get("audio_path") or "")
+        if not audio_path or not Path(audio_path).is_file():
+            self._on_tts_failed("합성된 파일을 찾을 수 없습니다.", job_id)
+            return
+        if self._mic_listen_active:
+            self._recorder.set_capture_paused(True)
+
+        # TTS 준비가 끝나면 예전 일반 타이핑 속도로 바로 출력한다.
+        self._chat.fallback_typing_if_waiting_for_tts()
+
+        self._media_audio_out.setVolume(self._voice_prefs.tts_volume)
+        self._tts_active_play = True
+        self._status_header.set_tts_status("SPEAK")
+        if self._tts_active_msg_id:
+            self._chat.set_speaker_status(self._tts_active_msg_id, "playing")
+        self._media_player.setSource(QUrl.fromLocalFile(audio_path))
+        self._media_player.play()
+        if self._voice_prefs.tts_enabled and self._voice_prefs.tts_mode == "auto":
+            # ponytail: SPEAK 시작 이후에는 기존 UI 상태대로 되돌려
+            # "BUSY→SPEAK" 구간에서만 회전이 유지되도록 한다.
+            self._state.set_state(AppState.IDLE)
+
+    def _on_tts_stream_finished(self, job_id: int | None = None) -> None:
+        if job_id is not None and job_id != self._tts_job_id:
+            return
+        self._tts_worker = None
+        self._pcm_player.flush_start()
+        self._start_next_tts_segment()
+
+    def _on_tts_failed(self, err: str, job_id: int | None = None) -> None:
+        if job_id is not None and job_id != self._tts_job_id:
+            return
+        self._tts_worker = None
+        self._tts_queue = []
+        self._tts_active_play = False
+        self._media_player.stop()
+        self._pcm_player.stop()
+        self._status_header.set_tts_status("ERROR")
+        if self._tts_active_msg_id:
+            self._chat.set_speaker_status(self._tts_active_msg_id, "error")
+        self._live_activity.append_instant_line(f"TTS 오류: {err}")
+        self._chat.fallback_typing_if_waiting_for_tts()
+
     def _on_chat_failed(self, err: str) -> None:
         if self._ignore_chat_result:
             self._ignore_chat_result = False
             self._chat_worker = None
             self._busy = False
             self._chat.set_generating(False)
+            self._tts_pump = None
             self._api_fallback_pending = False
             return
         # 커스텀 API 직접 호출 실패 → Hermes online이면 1회 폴백
         if self._try_hermes_fallback_after_api_fail(err):
             return
+        self._tts_pump = None
         if getattr(self._chat, "_stream_active", False):
             self._chat.end_stream_message(None)
         # 실패한 user turn은 히스토리에서 제거 (재시도 깔끔하게)
@@ -3391,7 +3515,8 @@ class MainWindow(QMainWindow):
                 self._stt_worker.wait(1500)
             if self._tts_worker is not None and self._tts_worker.isRunning():
                 self._tts_worker.wait(1500)
-            self._tts_player.stop()
+            self._media_player.stop()
+            self._pcm_player.stop()
             if self._email_chat_worker is not None and self._email_chat_worker.isRunning():
                 self._email_chat_worker.request_cancel()
                 self._email_chat_worker.wait(1500)

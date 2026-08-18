@@ -37,3 +37,17 @@ class TextNormalizerTests(TestCase):
         self.assertGreaterEqual(len(parts), 2)
         self.assertTrue(all(part.strip() for part in parts))
 
+    def test_packs_sentences_instead_of_period_splits(self) -> None:
+        text = "첫 문장입니다. 둘째 문장입니다. 셋째 문장입니다."
+        parts = split_tts_sentences(text, max_chars=200, first_max_chars=200)
+        self.assertEqual(parts, [text])
+
+    def test_first_chunk_is_first_sentence_only(self) -> None:
+        sentences = [f"이것은 테스트 문장 번호 {i} 입니다." for i in range(12)]
+        text = " ".join(sentences)
+        parts = split_tts_sentences(text, max_chars=600, min_chars=8)
+        self.assertGreaterEqual(len(parts), 2)
+        self.assertEqual(parts[0], sentences[0])
+        self.assertGreater(len(parts[1]), len(parts[0]))
+        self.assertIn("번호 11", parts[-1])
+

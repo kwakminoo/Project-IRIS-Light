@@ -32,10 +32,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from iris.audio.pcm_player import PcmPlayer
 from iris.audio.recorder import AudioRecorder
 from iris.audio.voice_runtime_client import VoiceRuntimeClient, VoiceRuntimeError
 from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
-from iris.audio.workers import TTSSynthesisWorker, VoiceAnalyzeWorker
+from iris.audio.workers import TTSStreamWorker, VoiceAnalyzeWorker
 from iris.config.settings import Settings
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.storage.database import Database
@@ -164,8 +165,9 @@ class SettingsDialog(QDialog):
         )
         self._voice_recommendations: list[dict] = []
         self._analyze_worker: VoiceAnalyzeWorker | None = None
-        self._settings_tts_worker: TTSSynthesisWorker | None = None
-        self._preview_player = QSoundEffect(self)
+        self._settings_tts_worker: TTSStreamWorker | None = None
+        self._preview_player = PcmPlayer(self)
+        self._ref_preview_player = QSoundEffect(self)
         self._mic_monitor = AudioRecorder(self)
         self._mic_monitor.level_changed.connect(self._on_mic_monitor_level)
         self._mic_monitor.failed.connect(self._on_mic_monitor_failed)
@@ -900,6 +902,21 @@ class SettingsDialog(QDialog):
         else:
             self._voice_tts_model.setCurrentText(default_tts)
 
+        self._voice_tts_engine = QComboBox()
+        for engine, label in (
+            ("qwen", "Qwen 스트림 (CUDA graph)"),
+            ("qwen_custom", "Qwen 파인튜닝 (custom voice)"),
+            ("gpt_sovits", "GPT-SoVITS"),
+        ):
+            self._voice_tts_engine.addItem(label, engine)
+        engine_idx = self._voice_tts_engine.findData(self._voice_prefs.tts_engine or "qwen")
+        self._voice_tts_engine.setCurrentIndex(engine_idx if engine_idx >= 0 else 0)
+
+        self._voice_custom_model = QLineEdit(self._voice_prefs.tts_custom_model_path)
+        self._voice_custom_model.setPlaceholderText("SFT/LoRA 체크포인트 경로")
+        self._voice_custom_speaker = QLineEdit(self._voice_prefs.tts_custom_speaker or "iris")
+        self._voice_sovits_url = QLineEdit(self._voice_prefs.gpt_sovits_url or "http://127.0.0.1:9880")
+
         self._voice_ref_audio = QLineEdit(self._voice_prefs.tts_reference_audio)
         self._voice_ref_text = QTextEdit()
         self._voice_ref_text.setPlaceholderText("기준 대본 (사용자가 최종 확정)")
@@ -935,7 +952,11 @@ class SettingsDialog(QDialog):
         form.addRow(make_form_label(""), self._voice_runtime_mock)
         form.addRow(make_form_label(""), self._voice_tts_on)
         form.addRow(make_form_label("TTS 모드"), self._voice_tts_mode)
+        form.addRow(make_form_label("TTS 엔진"), self._voice_tts_engine)
         form.addRow(make_form_label("TTS 모델"), self._voice_tts_model)
+        form.addRow(make_form_label("커스텀 체크포인트"), self._voice_custom_model)
+        form.addRow(make_form_label("커스텀 스피커"), self._voice_custom_speaker)
+        form.addRow(make_form_label("GPT-SoVITS URL"), self._voice_sovits_url)
         form.addRow(make_form_label(""), self._voice_use_profile)
         form.addRow(make_form_label(""), self._voice_tone_routing)
         form.addRow(make_form_label("보이스 프로필"), self._voice_profile_status)
@@ -1035,6 +1056,10 @@ class SettingsDialog(QDialog):
             tts_volume=self._voice_prefs.tts_volume,
             tts_use_voice_profile=self._voice_use_profile.isChecked(),
             tts_tone_routing=self._voice_tone_routing.isChecked(),
+            tts_engine=str(self._voice_tts_engine.currentData() or "qwen"),
+            tts_custom_speaker=self._voice_custom_speaker.text().strip() or "iris",
+            tts_custom_model_path=self._voice_custom_model.text().strip(),
+            gpt_sovits_url=self._voice_sovits_url.text().strip() or "http://127.0.0.1:9880",
             voice_runtime_url=self._voice_runtime_url.text().strip() or "http://127.0.0.1:18765",
             voice_runtime_mock=self._voice_runtime_mock.isChecked(),
             voice_data_dir=self._voice_data_dir.text().strip() or default_voice_data_dir(),
@@ -1158,10 +1183,10 @@ class SettingsDialog(QDialog):
         if not Path(path).is_file():
             QMessageBox.warning(self, "미리듣기", f"파일이 없습니다:\n{path}")
             return
-        self._preview_player.stop()
-        self._preview_player.setSource(QUrl.fromLocalFile(path))
-        self._preview_player.setVolume(1.0)
-        self._preview_player.play()
+        self._ref_preview_player.stop()
+        self._ref_preview_player.setSource(QUrl.fromLocalFile(path))
+        self._ref_preview_player.setVolume(1.0)
+        self._ref_preview_player.play()
 
     def _select_recommendation(self) -> None:
         item = self._selected_recommendation()
@@ -1206,33 +1231,38 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "테스트 음성", str(exc))
             return
         self._voice_status.setText("테스트 음성 생성 중…")
-        worker = TTSSynthesisWorker(
+        self._preview_player.stop()
+        worker = TTSStreamWorker(
             runtime_url=prefs.voice_runtime_url,
             text=text,
-            voice_prompt_hash=self._voice_prefs.tts_voice_prompt_hash,
-            model_name=prefs.tts_model,
+            payload={
+                "voice_prompt_hash": self._voice_prefs.tts_voice_prompt_hash if not prefs.tts_use_voice_profile else "",
+                "tts_model_name": prefs.tts_model,
+                "engine": prefs.tts_engine,
+                "custom_speaker": prefs.tts_custom_speaker,
+                "custom_model_path": prefs.tts_custom_model_path,
+                "gpt_sovits_url": prefs.gpt_sovits_url,
+                "voice_data_dir": prefs.voice_data_dir,
+                "tone_routing": prefs.tts_tone_routing,
+            },
             parent=self,
         )
         self._settings_tts_worker = worker
+        worker.started_fmt.connect(self._preview_player.set_format)
+        worker.chunk.connect(self._preview_player.feed)
         worker.finished_ok.connect(self._on_settings_tts_ok)
         worker.failed.connect(self._on_settings_tts_failed)
         worker.start()
 
-    def _on_settings_tts_ok(self, payload: object) -> None:
+    def _on_settings_tts_ok(self) -> None:
         self._settings_tts_worker = None
-        data = payload if isinstance(payload, dict) else {}
-        path = str(data.get("audio_path") or "")
-        if not path or not Path(path).is_file():
-            self._voice_status.setText("테스트 음성 경로가 비어 있습니다.")
-            return
-        self._preview_player.stop()
-        self._preview_player.setSource(QUrl.fromLocalFile(path))
-        self._preview_player.setVolume(1.0)
-        self._preview_player.play()
-        self._voice_status.setText(f"테스트 재생: {path}")
+        self._preview_player.flush_start()
+        self._preview_player.end_session()
+        self._voice_status.setText("테스트 재생 중")
 
     def _on_settings_tts_failed(self, err: str) -> None:
         self._settings_tts_worker = None
+        self._preview_player.stop()
         self._voice_status.setText(f"테스트 실패: {err}")
         QMessageBox.warning(self, "테스트 음성", err)
 

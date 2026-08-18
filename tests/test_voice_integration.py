@@ -10,7 +10,9 @@ from unittest.mock import MagicMock, patch
 from iris.storage.database import Database
 from iris.storage.voice_prefs import (
     VoicePreferences,
+    default_voice_data_dir,
     load_voice_preferences,
+    resolve_saved_voice_data_dir,
     save_voice_preferences,
 )
 
@@ -39,9 +41,28 @@ class VoicePrefsTests(TestCase):
             self.assertAlmostEqual(loaded.stt_speech_rms, 0.035)
             self.assertEqual(loaded.tts_mode, "manual")
             self.assertEqual(loaded.tts_reference_text, "hello")
+            self.assertEqual(loaded.tts_engine, "qwen")
+            self.assertEqual(loaded.tts_custom_speaker, "iris")
             self.assertFalse(loaded.voice_runtime_mock)
             self.assertEqual(loaded.voice_data_dir, r"C:\voice")
             db._conn.close()
+
+    def test_legacy_missing_dir_maps_to_default(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db = Database(Path(td) / "t.db")
+            gone = str(Path(td) / "1차 아이리스 녹음")
+            save_voice_preferences(db, VoicePreferences(voice_data_dir=gone))
+            loaded = load_voice_preferences(db)
+            self.assertEqual(loaded.voice_data_dir, default_voice_data_dir())
+            db._conn.close()
+
+    def test_existing_custom_dir_is_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            custom = Path(td) / "my-voice"
+            custom.mkdir()
+            self.assertEqual(resolve_saved_voice_data_dir(str(custom)), str(custom))
+            missing = str(Path(td) / "no-such-folder")
+            self.assertEqual(resolve_saved_voice_data_dir(missing), missing)
 
 
 class VoiceRuntimeClientTests(TestCase):
