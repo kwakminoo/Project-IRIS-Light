@@ -30,10 +30,14 @@ def _hermes_root() -> Path:
 
 def list_hermes_skill_names(*, limit: int = 80) -> list[str]:
     root = _hermes_root() / "skills"
-    if not root.is_dir():
+    try:
+        if not root.is_dir():
+            return []
+        paths = sorted(root.rglob("SKILL.md"))
+    except OSError:
         return []
     names: list[str] = []
-    for path in sorted(root.rglob("SKILL.md")):
+    for path in paths:
         name = path.parent.name.strip()
         if name and name not in names:
             names.append(name)
@@ -45,10 +49,14 @@ def list_hermes_skill_names(*, limit: int = 80) -> list[str]:
 def list_custom_skill_names(*, limit: int = 40) -> list[str]:
     """하위 호환 — custom 폴더만."""
     root = _hermes_root() / "skills" / "custom"
-    if not root.is_dir():
+    try:
+        if not root.is_dir():
+            return []
+        paths = sorted(root.rglob("SKILL.md"))
+    except OSError:
         return []
     names: list[str] = []
-    for path in sorted(root.rglob("SKILL.md")):
+    for path in paths:
         name = path.parent.name.strip()
         if name and name not in names:
             names.append(name)
@@ -60,9 +68,9 @@ def list_custom_skill_names(*, limit: int = 40) -> list[str]:
 def list_hermes_mcp_names(*, limit: int = 24) -> list[str]:
     """config.yaml 의 mcp_servers 최상위 키만 (args/env 중첩 키 제외)."""
     cfg = _hermes_root() / "config.yaml"
-    if not cfg.is_file():
-        return []
     try:
+        if not cfg.is_file():
+            return []
         text = cfg.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []

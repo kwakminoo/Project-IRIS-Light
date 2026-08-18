@@ -50,6 +50,12 @@ class PcmPlayer(QObject):
             return
         self._ending = False
         if self._opened:
+            # A full QAudioSink can leave the tail of the previous write in
+            # _buf.  Always drain that tail before accepting newer PCM so
+            # clauses cannot be heard out of order under backpressure.
+            if self._buf:
+                pcm = bytes(self._buf) + pcm
+                self._buf.clear()
             self._write(pcm)
             return
         self._buf.extend(pcm)
@@ -86,7 +92,15 @@ class PcmPlayer(QObject):
                 pass
         if sink is not None:
             try:
+                sink.stateChanged.disconnect(self._on_state)
+            except Exception:
+                pass
+            try:
                 sink.stop()
+            except Exception:
+                pass
+            try:
+                sink.deleteLater()
             except Exception:
                 pass
 
@@ -130,14 +144,19 @@ class PcmPlayer(QObject):
             while offset < len(view):
                 n = io.write(bytes(view[offset:]))
                 if n <= 0:
-                    # 버퍼가 가득 찼으면 남은 분량을 앞에 넣어 다음 feed 때 재시도
-                    self._buf[0:0] = view[offset:]
+                    # 버퍼가 가득 차면 남은 분량을 보관해 다음 feed/state 전환 때 재시도
+                    self._buf.extend(view[offset:])
                     break
                 offset += n
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"PCM 쓰기 실패: {exc}")
 
     def _on_state(self, state: object) -> None:
+        # A stopped, parented QAudioSink can report Idle after a newer session
+        # has opened.  Its state must never drain the current session.
+        sender = self.sender()
+        if sender is not None and sender is not self._sink:
+            return
         if state != QAudio.State.IdleState:
             return
         # IdleState: 아직 보낼 데이터가 버퍼에 있으면 먼저 내보냄

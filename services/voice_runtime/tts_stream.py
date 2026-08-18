@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,6 +21,12 @@ from services.voice_runtime.tts_service import TTS_LANGUAGE, TTSService, _pcm16_
 DEFAULT_SAMPLE_RATE = 24000
 PCM_YIELD_BYTES = 4096
 ENGINES = ("qwen", "qwen_custom", "gpt_sovits")
+DEFAULT_TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+
+LOGGER = logging.getLogger(__name__)
+_FAST_INFERENCE_LOCK = threading.RLock()
+_FAST_WARMUP_LOCK = threading.RLock()
+_FAST_WARMUPS: set[tuple[int, str]] = set()
 
 
 @dataclass(frozen=True)
@@ -26,7 +34,7 @@ class StreamSynthRequest:
     text: str
     engine: str = "qwen"
     voice_prompt_hash: str = ""
-    tts_model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+    tts_model_name: str = DEFAULT_TTS_MODEL
     tone: str | None = None
     custom_speaker: str = "iris"
     custom_model_path: str = ""
@@ -92,24 +100,126 @@ def resolve_tone_ref_file(source_file: str, voice_data_dir: str) -> str:
     return ""
 
 
+def _fast_model_key(model_name: str) -> str:
+    return f"fast:{model_name}"
+
+
+def _fast_warmup_key(service: TTSService, model_name: str) -> tuple[int, str]:
+    return id(service), model_name
+
+
+def _fast_model_warmed(model: Any | None) -> bool:
+    return bool(model and (getattr(model, "_iris_fast_warmed", False) or getattr(model, "_warmed_up", False)))
+
+
 def _load_fast_model(service: TTSService, model_name: str) -> Any | None:
-    key = f"fast:{model_name}"
+    """CUDA graph 모델을 한 번만 로드하고, 실패를 절대 묵살하지 않는다."""
+    key = _fast_model_key(model_name)
     cached = service._mm.get_tts(key)
     if cached is not None:
         return cached
     try:
         import faster_qwen3_tts as fast_mod  # type: ignore
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("SLOW FALLBACK ACTIVE: faster-qwen3-tts unavailable (%s)", exc)
         return None
-    cls = getattr(fast_mod, "FasterQwen3TTS", None) or getattr(fast_mod, "Qwen3TTS", None)
+
+    cls = getattr(fast_mod, "FasterQwen3TTS", None)
     if cls is None:
+        LOGGER.error("FAST STREAM ERROR: FasterQwen3TTS class is unavailable")
         return None
+
+    def _load() -> Any:
+        try:
+            import torch
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("torch is required for Faster Qwen") from exc
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is unavailable; Faster Qwen needs CUDA graphs")
+        LOGGER.info(
+            "FAST QWEN AVAILABLE: version=%s model=%s",
+            getattr(fast_mod, "__version__", "unknown"),
+            model_name,
+        )
+        model = cls.from_pretrained(model_name, device="cuda:0", dtype=torch.bfloat16)
+        LOGGER.info("FAST QWEN LOADED: model=%s", model_name)
+        return model
+
     try:
-        model = cls.from_pretrained(model_name)
-    except Exception:
+        return service._mm.get_or_load_tts(key, _load)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("FAST STREAM ERROR: model load failed (%s): %s", model_name, exc)
         return None
-    service._mm.set_tts(key, model)
-    return model
+
+
+def fast_backend_diagnostics(
+    service: TTSService, model_name: str = DEFAULT_TTS_MODEL
+) -> dict[str, bool | str]:
+    """health/warmup 응답용으로 실제 fast backend 상태를 노출한다."""
+    model = service._mm.get_tts(_fast_model_key(model_name))
+    available = faster_qwen_available()
+    has_stream = callable(getattr(model, "generate_voice_clone_streaming", None))
+    with _FAST_WARMUP_LOCK:
+        warming = _fast_warmup_key(service, model_name) in _FAST_WARMUPS
+    return {
+        "faster_qwen": available,
+        "fast_model_loaded": model is not None,
+        "fast_model_warmed": _fast_model_warmed(model),
+        "fast_model_warming": warming,
+        "stream_backend": "faster_qwen3_tts" if has_stream else "qwen_tts_fallback",
+    }
+
+
+def _warm_fast_model(model: Any, model_name: str) -> None:
+    with _FAST_INFERENCE_LOCK:
+        if _fast_model_warmed(model):
+            return
+        warmup = getattr(model, "warmup", None)
+        if not callable(warmup):
+            raise RuntimeError("FasterQwen3TTS warmup() is unavailable")
+        LOGGER.info("FAST QWEN WARMUP START: model=%s", model_name)
+        try:
+            # faster-qwen3-tts 0.3.2의 기본 prefill_len=100을 그대로 사용한다.
+            warmup()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("FAST STREAM ERROR: warmup failed (%s): %s", model_name, exc)
+            raise
+        setattr(model, "_iris_fast_warmed", True)
+        LOGGER.info("FAST QWEN WARMED: model=%s", model_name)
+
+
+def warmup_faster_qwen(service: TTSService, model_name: str = DEFAULT_TTS_MODEL) -> dict[str, bool | str]:
+    if CONFIG.mock_mode:
+        raise RuntimeError("mock mode does not load Faster Qwen")
+    model = _load_fast_model(service, model_name)
+    if model is None:
+        raise RuntimeError("Faster Qwen is unavailable; see voice runtime logs for the cause")
+    _warm_fast_model(model, model_name)
+    return fast_backend_diagnostics(service, model_name)
+
+
+def schedule_faster_qwen_warmup(service: TTSService, model_name: str = DEFAULT_TTS_MODEL) -> bool:
+    """API 요청을 즉시 반환하기 위한 daemon warmup. 중복 요청은 합친다."""
+    if CONFIG.mock_mode or not faster_qwen_available():
+        return False
+    key = _fast_warmup_key(service, model_name)
+    with _FAST_WARMUP_LOCK:
+        model = service._mm.get_tts(_fast_model_key(model_name))
+        if _fast_model_warmed(model) or key in _FAST_WARMUPS:
+            return False
+        _FAST_WARMUPS.add(key)
+
+    def _run() -> None:
+        try:
+            warmup_faster_qwen(service, model_name)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("FAST STREAM ERROR: background warmup failed (%s): %s", model_name, exc)
+        finally:
+            with _FAST_WARMUP_LOCK:
+                _FAST_WARMUPS.discard(key)
+
+    threading.Thread(target=_run, name="iris-fast-tts-warmup", daemon=True).start()
+    return True
 
 
 def _pcm_from_audio(audio: Any, sample_rate: int) -> tuple[bytes, int]:
@@ -140,6 +250,27 @@ def _iter_stream_call(fn: Any, **kwargs: Any) -> Iterator[tuple[bytes, int]]:
                 if len(item) > 1 and isinstance(item[1], (int, float)) and int(item[1]) > 1000:
                     sr = int(item[1])
             yield _pcm_from_audio(audio, sr)
+
+
+def _iter_fast_voice_clone_stream(fn: Any, **kwargs: Any) -> Iterator[tuple[bytes, int]]:
+    """FasterQwen의 실제 generator만 허용한다. 통짜 WAV 반환은 fast stream이 아니다."""
+    with _FAST_INFERENCE_LOCK:
+        result = fn(**kwargs)
+        if isinstance(result, (bytes, bytearray, str, tuple, list)):
+            raise RuntimeError("Faster Qwen streaming API returned a non-streaming result")
+        try:
+            iterator = iter(result)
+        except TypeError as exc:
+            raise RuntimeError("Faster Qwen streaming API returned a non-iterable result") from exc
+        for item in iterator:
+            if not isinstance(item, (tuple, list)) or len(item) < 2:
+                raise RuntimeError("Faster Qwen streaming chunk must be (audio, sample_rate, timing)")
+            audio, sample_rate = item[0], item[1]
+            if not isinstance(sample_rate, (int, float)) or int(sample_rate) <= 1000:
+                raise RuntimeError("Faster Qwen streaming chunk has an invalid sample rate")
+            pcm, sr = _pcm_from_audio(audio, int(sample_rate))
+            if pcm:
+                yield pcm, sr
 
 
 def _wav_bytes_to_pcm(blob: bytes) -> tuple[bytes, int]:
@@ -262,7 +393,7 @@ def iter_pcm_chunks(service: TTSService, req: StreamSynthRequest) -> Iterator[tu
             yield from _iter_stream_call(fn, **kwargs)
             return
 
-    # qwen clone — 녹음 wav가 있으면 CUDA graph 스트림, 없으면 저장된 prompt.
+    # qwen clone — 저장된 prompt를 먼저 써야 IRIS profile의 x-vector/ICL 특성이 유지된다.
     use_profile = service._should_use_profile(req.voice_prompt_hash)
     ref_audio, ref_text = ("", "")
     prepared = None
@@ -273,29 +404,53 @@ def iter_pcm_chunks(service: TTSService, req: StreamSynthRequest) -> Iterator[tu
         prepared = service._mm.get_prepared_voice(req.voice_prompt_hash)
 
     fast = _load_fast_model(service, req.tts_model_name)
+    fast_reason = ""
     if fast is not None:
         stream_fn = getattr(fast, "generate_voice_clone_streaming", None)
-        gen_fn = getattr(fast, "generate_voice_clone", None)
-        call = stream_fn or gen_fn
-        if call is not None and (ref_audio or prepared is not None):
-            kwargs: dict[str, Any] = {"text": text, "language": TTS_LANGUAGE, "chunk_size": 8}
-            if ref_audio:
+        if not callable(stream_fn):
+            fast_reason = "generate_voice_clone_streaming() is unavailable"
+            LOGGER.error("FAST STREAM ERROR: %s", fast_reason)
+        elif prepared is None and not ref_audio:
+            fast_reason = "no prepared voice clone prompt or reference audio"
+            LOGGER.error("FAST STREAM ERROR: %s", fast_reason)
+        else:
+            kwargs: dict[str, Any] = {
+                "text": text,
+                "language": TTS_LANGUAGE,
+                "chunk_size": int(CONFIG.tts_stream_chunk_size),
+            }
+            if prepared is not None and prepared.voice_clone_prompt is not None:
+                kwargs["voice_clone_prompt"] = prepared.voice_clone_prompt
+            else:
                 kwargs["ref_audio"] = ref_audio
                 kwargs["ref_text"] = ref_text
-            elif prepared is not None:
-                kwargs["voice_clone_prompt"] = prepared.voice_clone_prompt
+            emitted = False
             try:
-                yield from _iter_stream_call(call, **kwargs)
-                return
-            except TypeError:
-                kwargs.pop("chunk_size", None)
-                try:
-                    yield from _iter_stream_call(call, **kwargs)
+                _warm_fast_model(fast, req.tts_model_name)
+                LOGGER.info(
+                    "FAST STREAM ACTIVE: model=%s chunk_size=%s",
+                    req.tts_model_name,
+                    kwargs["chunk_size"],
+                )
+                for pcm, sr in _iter_fast_voice_clone_stream(stream_fn, **kwargs):
+                    emitted = True
+                    yield pcm, sr
+                if emitted:
                     return
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                fast_reason = "stream completed without PCM"
+                LOGGER.warning("FAST STREAM ERROR: %s", fast_reason)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("FAST STREAM ERROR: %s", exc)
+                if emitted:
+                    raise RuntimeError(
+                        "Faster Qwen stream failed after PCM; stopping to avoid duplicate speech"
+                    ) from exc
+                fast_reason = str(exc)
+    else:
+        fast_reason = "Faster Qwen model is unavailable"
+
+    if fast_reason:
+        LOGGER.warning("SLOW FALLBACK ACTIVE: %s", fast_reason)
 
     if prepared is None or prepared.voice_clone_prompt is None:
         raise RuntimeError("voice clone prompt가 없습니다. 기준 음성을 다시 확정하세요.")

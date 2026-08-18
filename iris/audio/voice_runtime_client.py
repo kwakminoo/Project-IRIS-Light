@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass(frozen=True)
@@ -50,11 +50,11 @@ class VoiceRuntimeClient:
         except Exception as e:
             raise VoiceRuntimeError(f"Voice runtime request failed: {e}") from e
 
-    def _get_json(self, path: str) -> dict[str, Any]:
+    def _get_json(self, path: str, *, timeout: float | None = None) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
         req = urllib.request.Request(url, method="GET")
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout or self._timeout) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
                 return json.loads(body) if body.strip() else {}
         except urllib.error.HTTPError as e:
@@ -63,8 +63,8 @@ class VoiceRuntimeClient:
         except Exception as e:
             raise VoiceRuntimeError(f"Voice runtime request failed: {e}") from e
 
-    def health(self) -> VoiceRuntimeHealth:
-        res = self._get_json("/health")
+    def health(self, *, timeout: float | None = None) -> VoiceRuntimeHealth:
+        res = self._get_json("/health", timeout=timeout)
         return VoiceRuntimeHealth(
             status=str(res.get("status") or "unknown"),
             pid=int(res.get("pid") or 0),
@@ -184,6 +184,18 @@ class VoiceRuntimeClient:
         # 기본 60초 타임아웃으로는 정상 생성도 실패로 잡힌다.
         return self._post_json("/v1/audio/speech", payload, timeout=max(self._timeout, 600.0))
 
+    def warmup(
+        self,
+        *,
+        tts_model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        wait: bool = False,
+    ) -> dict[str, Any]:
+        return self._post_json(
+            "/v1/audio/warmup",
+            {"tts_model_name": tts_model_name, "wait": bool(wait)},
+            timeout=max(self._timeout, 600.0) if wait else self._timeout,
+        )
+
     def iter_tts_speech_stream(
         self,
         *,
@@ -197,6 +209,8 @@ class VoiceRuntimeClient:
         gpt_sovits_url: str = "http://127.0.0.1:9880",
         voice_data_dir: str = "",
         tone_routing: bool = True,
+        cancel_event: Any | None = None,
+        response_callback: Callable[[Any | None], None] | None = None,
     ):
         payload = {
             "text": text,
@@ -223,19 +237,29 @@ class VoiceRuntimeClient:
         )
         try:
             with urllib.request.urlopen(req, timeout=max(self._timeout, 600.0)) as resp:
-                for raw in resp:
-                    line = raw.decode("utf-8", errors="replace").strip()
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        raise VoiceRuntimeError(f"TTS stream JSON 오류: {line[:120]}") from exc
-                    if not isinstance(event, dict):
-                        continue
-                    if event.get("type") == "error":
-                        raise VoiceRuntimeError(str(event.get("message") or "TTS stream error"))
-                    yield event
+                if response_callback is not None:
+                    response_callback(resp)
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                try:
+                    for raw in resp:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return
+                        line = raw.decode("utf-8", errors="replace").strip()
+                        if not line:
+                            continue
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            raise VoiceRuntimeError(f"TTS stream JSON 오류: {line[:120]}") from exc
+                        if not isinstance(event, dict):
+                            continue
+                        if event.get("type") == "error":
+                            raise VoiceRuntimeError(str(event.get("message") or "TTS stream error"))
+                        yield event
+                finally:
+                    if response_callback is not None:
+                        response_callback(None)
         except VoiceRuntimeError:
             raise
         except urllib.error.HTTPError as e:

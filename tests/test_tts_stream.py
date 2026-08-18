@@ -5,6 +5,7 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from iris.audio.pcm_stream import (
+    DEFAULT_START_MS,
     encode_event,
     parse_event_line,
     should_open_speakers,
@@ -20,10 +21,14 @@ from services.voice_runtime.tts_stream import (
 
 class PcmBufferTests(TestCase):
     def test_waits_for_start_ms(self) -> None:
-        need = start_bytes(24000, 320)
-        self.assertEqual(need, int(24000 * 2 * 0.32))
-        self.assertFalse(should_open_speakers(need - 2, 24000, stream_ended=False))
-        self.assertTrue(should_open_speakers(need, 24000, stream_ended=False))
+        need = start_bytes(24000, DEFAULT_START_MS)
+        self.assertEqual(need, int(24000 * 2 * (DEFAULT_START_MS / 1000.0)))
+        self.assertFalse(
+            should_open_speakers(need - 2, 24000, stream_ended=False, start_ms=DEFAULT_START_MS)
+        )
+        self.assertTrue(
+            should_open_speakers(need, 24000, stream_ended=False, start_ms=DEFAULT_START_MS)
+        )
 
     def test_opens_early_when_stream_ends(self) -> None:
         self.assertTrue(should_open_speakers(20, 24000, stream_ended=True))

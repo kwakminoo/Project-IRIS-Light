@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,7 @@ class VoiceModelManager:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._tts_load_lock = threading.RLock()
         self._stt_models: dict[str, Any] = {}
         self._tts_models: dict[str, Any] = {}
         self._prepared_voices: dict[str, PreparedVoiceClone] = {}
@@ -40,6 +41,16 @@ class VoiceModelManager:
     def set_tts(self, key: str, model: Any) -> None:
         with self._lock:
             self._tts_models[key] = model
+
+    def get_or_load_tts(self, key: str, loader: Callable[[], Any]) -> Any:
+        """동일 모델의 동시 로드를 막고 프로세스 수명 동안 한 번만 캐시한다."""
+        with self._tts_load_lock:
+            cached = self.get_tts(key)
+            if cached is not None:
+                return cached
+            model = loader()
+            self.set_tts(key, model)
+            return model
 
     def get_prepared_voice(self, voice_prompt_hash: str) -> PreparedVoiceClone | None:
         with self._lock:

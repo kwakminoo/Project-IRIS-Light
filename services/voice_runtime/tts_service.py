@@ -261,36 +261,34 @@ class TTSService:
 
     def _ensure_tts_model(self, model_name: str) -> Any:
         key = self._get_tts_model_key(model_name)
-        existing = self._mm.get_tts(key)
-        if existing is not None:
-            return existing
 
-        try:
-            from qwen_tts import Qwen3TTSModel  # type: ignore
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(
-                "qwen-tts가 설치되지 않았습니다. "
-                "scripts/setup_voice_runtime 으로 .venv-voice를 구성하세요."
-            ) from exc
+        def _load() -> Any:
+            try:
+                from qwen_tts import Qwen3TTSModel  # type: ignore
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    "qwen-tts가 설치되지 않았습니다. "
+                    "scripts/setup_voice_runtime 으로 .venv-voice를 구성하세요."
+                ) from exc
 
-        # fp16은 CUDA device-side assert로 죽는다. GPU에서는 bf16 고정.
-        load_kwargs: dict[str, Any] = {}
-        try:
-            import torch
+            # fp16은 CUDA device-side assert로 죽는다. GPU에서는 bf16 고정.
+            load_kwargs: dict[str, Any] = {}
+            try:
+                import torch
 
-            if torch.cuda.is_available():
-                load_kwargs = {"device_map": "cuda:0", "dtype": torch.bfloat16}
-            else:
-                load_kwargs = {"device_map": "cpu", "dtype": torch.float32}
-        except Exception:  # noqa: BLE001
-            load_kwargs = {}
+                if torch.cuda.is_available():
+                    load_kwargs = {"device_map": "cuda:0", "dtype": torch.bfloat16}
+                else:
+                    load_kwargs = {"device_map": "cpu", "dtype": torch.float32}
+            except Exception:  # noqa: BLE001
+                load_kwargs = {}
 
-        try:
-            model = Qwen3TTSModel.from_pretrained(model_name, **load_kwargs)
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"TTS 모델 로딩 실패 ({model_name}): {exc}") from exc
-        self._mm.set_tts(key, model)
-        return model
+            try:
+                return Qwen3TTSModel.from_pretrained(model_name, **load_kwargs)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"TTS 모델 로딩 실패 ({model_name}): {exc}") from exc
+
+        return self._mm.get_or_load_tts(key, _load)
 
     def _voice_prompt_hash(self, ref_audio_path: str, ref_text: str) -> str:
         mode = "xvec" if TTS_X_VECTOR_ONLY_MODE else "icl"

@@ -20,9 +20,10 @@ $Pip = Join-Path $VenvPath "Scripts/pip.exe"
 & $Pip install -r "services/voice_runtime/requirements-voice.txt"
 
 if ($Full) {
-    Write-Host "Installing full voice models (CUDA torch, qwen-tts)..."
+    Write-Host "Installing full voice models (CUDA torch, qwen-tts, Faster Qwen streaming)..."
     & $Pip install torch --index-url https://download.pytorch.org/whl/cu128
     & $Pip install qwen-tts
+    & $Pip install -r "services/voice_runtime/requirements-voice-full.txt"
 }
 
 Write-Host "voice runtime ready:" $Py

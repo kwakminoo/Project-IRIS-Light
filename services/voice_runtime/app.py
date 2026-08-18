@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import threading
@@ -17,11 +18,19 @@ from .config import CONFIG
 from .model_manager import VoiceModelManager
 from .stt_service import STTService
 from .tts_service import TTSService, clear_generated_audio_cache
-from .tts_stream import StreamSynthRequest, faster_qwen_available, iter_pcm_events
+from .tts_stream import (
+    DEFAULT_TTS_MODEL,
+    StreamSynthRequest,
+    fast_backend_diagnostics,
+    iter_pcm_events,
+    schedule_faster_qwen_warmup,
+    warmup_faster_qwen,
+)
 from .voice_dataset import analyze_folder, load_manifest, recommend_reference_samples
 
 
 app = FastAPI(title="Iris Light Voice Runtime")
+LOGGER = logging.getLogger(__name__)
 model_manager = VoiceModelManager()
 stt_service = STTService(model_manager)
 tts_service = TTSService(model_manager)
@@ -35,6 +44,10 @@ class HealthResponse(BaseModel):
     pid: int
     mock_mode: bool
     faster_qwen: bool = False
+    fast_model_loaded: bool = False
+    fast_model_warmed: bool = False
+    fast_model_warming: bool = False
+    stream_backend: str = "qwen_tts_fallback"
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -43,7 +56,43 @@ def health() -> Any:
         status="ok",
         pid=os.getpid(),
         mock_mode=CONFIG.mock_mode,
-        faster_qwen=faster_qwen_available(),
+        **fast_backend_diagnostics(tts_service),
+    )
+
+
+class TTSWarmupRequest(BaseModel):
+    tts_model_name: str = DEFAULT_TTS_MODEL
+    # False면 runtime daemon thread가 로드/CUDA graph capture를 수행한다.
+    wait: bool = False
+
+
+class TTSWarmupResponse(BaseModel):
+    accepted: bool
+    scheduled: bool = False
+    faster_qwen: bool = False
+    fast_model_loaded: bool = False
+    fast_model_warmed: bool = False
+    fast_model_warming: bool = False
+    stream_backend: str = "qwen_tts_fallback"
+
+
+@app.post("/v1/audio/warmup", response_model=TTSWarmupResponse)
+def tts_warmup(req: TTSWarmupRequest) -> Any:
+    status = fast_backend_diagnostics(tts_service, req.tts_model_name)
+    if CONFIG.mock_mode or not status["faster_qwen"]:
+        LOGGER.warning("SLOW FALLBACK ACTIVE: Faster Qwen warmup skipped (mock mode or package unavailable)")
+        return TTSWarmupResponse(accepted=False, **status)
+    if req.wait:
+        try:
+            status = warmup_faster_qwen(tts_service, req.tts_model_name)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return TTSWarmupResponse(accepted=True, **status)
+    scheduled = schedule_faster_qwen_warmup(tts_service, req.tts_model_name)
+    return TTSWarmupResponse(
+        accepted=True,
+        scheduled=scheduled,
+        **fast_backend_diagnostics(tts_service, req.tts_model_name),
     )
 
 
@@ -89,7 +138,7 @@ def transcribe(req: TranscribeRequest) -> Any:
 class VoicePrepareRequest(BaseModel):
     ref_audio_path: str
     ref_text: str
-    tts_model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+    tts_model_name: str = DEFAULT_TTS_MODEL
     voice_prompt_hash: str | None = None
 
 
@@ -115,7 +164,7 @@ class SpeechRequest(BaseModel):
     text: str
     # 비우면 커밋된 보이스 프로필을 쓰고 톤은 텍스트에서 추론한다.
     voice_prompt_hash: str = ""
-    tts_model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+    tts_model_name: str = DEFAULT_TTS_MODEL
     tone: str | None = None
     engine: str = "qwen"
     custom_speaker: str = "iris"
