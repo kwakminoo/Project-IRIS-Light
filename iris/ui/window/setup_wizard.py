@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QTextCursor
 from PyQt6.QtWidgets import (
     QDialog,
@@ -56,6 +56,8 @@ _STREAM_STEPS = {
     "emulator",
 }
 
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
 
 class _NeedsUserCard(QFrame):
     done_clicked = pyqtSignal(str)  # pasted value (optional)
@@ -89,6 +91,31 @@ class _NeedsUserCard(QFrame):
         self._install_btn.clicked.connect(self.install_clicked.emit)
         self._install_btn.hide()
         row.addWidget(self._install_btn)
+        # 설치 시작 시 _install_btn 자리를 대신 차지하는 로딩 표시 — 버튼이 그냥
+        # 사라지지 않고 "지금 여기서 설치 중"임을 보여준다.
+        self._loading_btn = QPushButton()
+        self._loading_btn.setObjectName("SetupInstallLoadingBtn")
+        self._loading_btn.setEnabled(False)
+        self._loading_btn.setStyleSheet(
+            f"""
+            QPushButton#SetupInstallLoadingBtn {{
+                color: {TOKENS.neon_cyan};
+                border: 1px solid {TOKENS.neon_cyan};
+                border-radius: {TOKENS.radius_sm}px;
+                padding: 4px 10px;
+                background-color: transparent;
+            }}
+            QPushButton#SetupInstallLoadingBtn:disabled {{
+                color: {TOKENS.neon_cyan};
+            }}
+            """
+        )
+        self._loading_btn.hide()
+        row.addWidget(self._loading_btn)
+        self._spin_idx = 0
+        self._spin_timer = QTimer(self)
+        self._spin_timer.setInterval(90)
+        self._spin_timer.timeout.connect(self._tick_spin)
         row.addStretch(1)
         self._later_btn = QPushButton("나중에")
         self._later_btn.clicked.connect(self.later_clicked.emit)
@@ -169,6 +196,10 @@ class _NeedsUserCard(QFrame):
         self._install_btn.hide()
         self._later_btn.hide()
         self._done_btn.hide()
+        self._spin_idx = 0
+        self._loading_btn.setText(f"{_SPINNER_FRAMES[0]}  설치 중…")
+        self._loading_btn.show()
+        self._spin_timer.start()
         if reset or not self._bar.isVisible():
             self._bar.setRange(0, 0)
             self._bar.setValue(0)
@@ -177,6 +208,10 @@ class _NeedsUserCard(QFrame):
         self._bar.show()
         self._term.show()
         self.setVisible(True)
+
+    def _tick_spin(self) -> None:
+        self._spin_idx = (self._spin_idx + 1) % len(_SPINNER_FRAMES)
+        self._loading_btn.setText(f"{_SPINNER_FRAMES[self._spin_idx]}  설치 중…")
 
     def set_install_chunk(self, text: str, percent: int | None, replace: bool) -> None:
         if not self._bar.isVisible():
@@ -201,6 +236,8 @@ class _NeedsUserCard(QFrame):
             bar.setValue(bar.maximum())
 
     def end_install(self) -> None:
+        self._spin_timer.stop()
+        self._loading_btn.hide()
         self._bar.hide()
         self._term.hide()
 

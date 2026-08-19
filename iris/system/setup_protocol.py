@@ -80,11 +80,20 @@ def is_setup_preview() -> bool:
     return is_setup_demo() or is_setup_dry_run()
 
 
-def setup_state_path() -> Path:
+def setup_state_path(
+    *, simulate: bool | None = None, dry_run: bool | None = None
+) -> Path:
+    """simulate/dry_run 을 명시하면 그 값을 쓰고, 아니면 환경변수로 판단한다.
+
+    SetupProtocol 인스턴스는 항상 자신의 self.simulate/self.dry_run 을 명시적으로
+    넘겨서, 생성 시점 인자와 무관하게 실제 setup_state.json 을 건드리지 않게 한다.
+    """
+    demo = is_setup_demo() if simulate is None else bool(simulate)
+    dry = is_setup_dry_run() if dry_run is None else bool(dry_run)
     # 미리보기는 별도 파일 — 실제 setup_state.json 을 건드리지 않음
-    if is_setup_demo():
+    if demo:
         name = "setup_state_demo.json"
-    elif is_setup_dry_run():
+    elif dry:
         name = "setup_state_dryrun.json"
     else:
         name = "setup_state.json"
@@ -165,6 +174,23 @@ StreamFn = Callable[[str, int | None, bool], None]
 
 _PERCENT_RE = re.compile(r"(?<!\d)(\d{1,3}(?:\.\d+)?)\s*%")
 _ANSI_RE = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")
+_SECRET_KV_RE = re.compile(
+    r"(?i)\b((?:api[_-]?(?:server[_-]?)?key|access[_-]?token|token|secret|password)s?)"
+    r"\s*[:=]\s*([^\s,;\"']+)"
+)
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9\-_.=]+")
+
+
+def redact_secrets(text: str) -> str:
+    """스트림/상태 파일에 API 키 등 시크릿 값이 그대로 남지 않도록 마스킹한다."""
+    if not text:
+        return text
+    out = _BEARER_RE.sub("Bearer ***", text)
+    out = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}=***", out)
+    live_key = (os.environ.get("IRIS_HERMES_API_KEY") or "").strip()
+    if len(live_key) >= 8 and live_key in out:
+        out = out.replace(live_key, "***")
+    return out
 
 
 def parse_install_percent(text: str) -> int | None:
@@ -215,8 +241,10 @@ def _default_state() -> dict[str, Any]:
     }
 
 
-def load_setup_state() -> dict[str, Any]:
-    path = setup_state_path()
+def load_setup_state(
+    *, simulate: bool | None = None, dry_run: bool | None = None
+) -> dict[str, Any]:
+    path = setup_state_path(simulate=simulate, dry_run=dry_run)
     if not path.is_file():
         return _default_state()
     try:
@@ -234,8 +262,10 @@ def load_setup_state() -> dict[str, Any]:
     return base
 
 
-def save_setup_state(state: dict[str, Any]) -> None:
-    path = setup_state_path()
+def save_setup_state(
+    state: dict[str, Any], *, simulate: bool | None = None, dry_run: bool | None = None
+) -> None:
+    path = setup_state_path(simulate=simulate, dry_run=dry_run)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -251,25 +281,42 @@ def mark_core_ready_if_healthy(
     ollama_base_url: str = "http://127.0.0.1:11434/v1",
     hermes_base_url: str = "http://127.0.0.1:8642/v1",
     hermes_command: str = "hermes",
+    min_model: str = "",
 ) -> bool:
-    """위저드 생략 여부.
+    """위저드 생략 여부 — 실행 파일 존재가 아니라 실제 헬스체크로 판단한다.
 
-    - core_ready면 True
-    - Ollama·Hermes 실행 파일이 있으면 기존 설치로 보고 core_ready 기록 후 True
-      (gateway는 이후 HermesHealthWorker ensure에 맡김)
-    - 없으면 False → 위저드
+    - core_ready였더라도 매번 빠른 헬스체크(Ollama 응답·모델·Hermes gateway)를
+      수행한다. 실패하면 core_ready를 해제하고 False를 반환해 위저드/복구로 보낸다.
+      (MCP stdio 핸드셰이크는 느려서 여기선 생략 — core_smoke 단계에서 검증)
+    - 아직 core_ready가 아니면, 실행 파일이 있을 때만 같은 헬스체크를 시도하고
+      통과해야 core_ready로 기록한다.
+    - 헬스체크 자체가 실패(연결 거부 등)하면 항상 False.
     """
-    del ollama_base_url, hermes_base_url  # 시그니처 호환 유지
+    proto = SetupProtocol(
+        ollama_base_url=ollama_base_url,
+        hermes_base_url=hermes_base_url,
+        hermes_command=hermes_command,
+        min_model=min_model,
+        simulate=False,
+        dry_run=False,
+    )
     if is_core_ready():
-        return True
-    if ollama_executable() and hermes_executable(hermes_command):
-        state = load_setup_state()
-        state["core_ready"] = True
-        state["completed_at"] = state.get("completed_at") or _utc_now()
-        state["last_error"] = ""
-        save_setup_state(state)
-        return True
-    return False
+        ok, _detail = proto.verify_core_quick()
+        if ok:
+            return True
+        reset_core_ready()
+        return False
+    if not (ollama_executable() and hermes_executable(hermes_command)):
+        return False
+    ok, _detail = proto.verify_core_quick()
+    if not ok:
+        return False
+    state = load_setup_state()
+    state["core_ready"] = True
+    state["completed_at"] = state.get("completed_at") or _utc_now()
+    state["last_error"] = ""
+    save_setup_state(state)
+    return True
 
 
 def reset_core_ready() -> None:
@@ -317,6 +364,21 @@ def _upsert_dotenv(path: Path, updates: dict[str, str]) -> None:
         if key not in seen:
             out.append(f"{key}={val}")
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def _ollama_provider_model(existing: dict[str, Any], min_model: str) -> dict[str, Any]:
+    """Hermes config.yaml model 섹션을 Ollama 설정으로 명확히 덮어쓴다.
+
+    setdefault를 쓰면 예전 provider(openai 등)의 base_url/model이 그대로 남는다 —
+    항상 명시적으로 대입해 stale 값이 남지 않게 한다.
+    """
+    model = dict(existing) if isinstance(existing, dict) else {}
+    model["provider"] = "ollama"
+    model["base_url"] = "http://127.0.0.1:11434/v1"
+    if min_model:
+        model["default"] = min_model
+        model["model"] = min_model
+    return model
 
 
 def _winget_exe() -> str | None:
@@ -370,7 +432,7 @@ class SetupProtocol:
         self.min_model = (min_model or default_min_model()).strip() or DEFAULT_MIN_MODEL
         self.simulate = is_setup_demo() if simulate is None else bool(simulate)
         self.dry_run = is_setup_dry_run() if dry_run is None else bool(dry_run)
-        self._state = load_setup_state()
+        self._state = self._load_state()
         self._sim_user_done: set[str] = set()
         self._on_stream: StreamFn | None = None
         self._abort = False
@@ -389,9 +451,23 @@ class SetupProtocol:
         if proc is not None:
             _kill_proc_tree(proc)
 
+    def _state_path(self) -> Path:
+        return setup_state_path(simulate=self.simulate, dry_run=self.dry_run)
+
+    def _load_state(self) -> dict[str, Any]:
+        return load_setup_state(simulate=self.simulate, dry_run=self.dry_run)
+
+    def _save_state(self) -> None:
+        save_setup_state(self._state, simulate=self.simulate, dry_run=self.dry_run)
+
+    def _abort_message(self, on_user: UserActionFn | None) -> str:
+        if on_user is None:
+            return "사용자 입력 콜백이 없어 진행할 수 없습니다 (needs_user)"
+        return "사용자가 중단함"
+
     def _emit_stream(self, text: str, percent: int | None, *, replace: bool = False) -> None:
         if self._on_stream and (text or percent is not None):
-            self._on_stream(text, percent, replace)
+            self._on_stream(redact_secrets(text) if text else text, percent, replace)
 
     def _run_streamed(
         self,
@@ -468,10 +544,12 @@ class SetupProtocol:
                     text = _decode_frame(frame)
                     if not text:
                         continue
+                    text = redact_secrets(text)
                     collected.append(text)
                     self._emit_stream(text, parse_install_percent(text), replace=replace)
             leftover = _decode_frame(buf)
             if leftover:
+                leftover = redact_secrets(leftover)
                 collected.append(leftover)
                 self._emit_stream(leftover, parse_install_percent(leftover), replace=False)
             try:
@@ -510,6 +588,7 @@ class SetupProtocol:
         }
 
     def _record_step(self, step_id: str, status: str, message: str = "") -> SetupStepResult:
+        message = redact_secrets(message)
         steps = self._state.setdefault("steps", {})
         steps[step_id] = {
             "status": status,
@@ -518,7 +597,7 @@ class SetupProtocol:
         }
         if status == "failed":
             self._state["last_error"] = message
-        save_setup_state(self._state)
+        self._save_state()
         return SetupStepResult(
             step_id=step_id,
             status=status,
@@ -535,21 +614,40 @@ class SetupProtocol:
         on_user: UserActionFn | None,
         result: SetupStepResult,
     ) -> str:
+        # 콜백이 없으면 "done"으로 밀어붙이지 않는다 — 아무 것도 바뀌지 않았는데
+        # done으로 재검증하면 needs_user가 계속 반복되며 무한 루프에 빠진다.
+        # 콜백 없이는 사용자 확인을 받을 방법이 없으므로 안전하게 중단한다.
         if on_user is None:
-            return "done"
+            return "abort"
         return (on_user(result) or "done").strip().lower() or "done"
 
-    def verify_core(self) -> tuple[bool, str]:
+    def verify_core_quick(self) -> tuple[bool, str]:
+        """빠른 헬스체크 — Ollama 응답·min_model 존재·Hermes gateway만 본다.
+
+        MCP stdio 핸드셰이크(최대 수십 초, 프로세스 스폰)는 느리므로 뺀다.
+        앱 시작 시 core_ready 여부를 판단할 때처럼 자주 호출되는 경로에서 쓴다.
+        """
         if self.simulate or self.dry_run:
-            return True, "Ollama·Hermes·MCP 정상"
+            return True, "Ollama·Hermes 정상 (quick)"
         if not is_ollama_running(self.ollama_base_url):
             return False, "Ollama가 응답하지 않습니다"
-        models = _list_ollama_model_names(self.ollama_base_url)
-        if not models:
+        names = _list_ollama_model_names(self.ollama_base_url)
+        if not _model_present(names, self.min_model):
+            if self.min_model:
+                return False, f"모델 {self.min_model}이(가) 설치되어 있지 않습니다"
             return False, "Ollama 모델이 없습니다"
         key = resolve_hermes_api_key()
         if not is_hermes_gateway_running(self.hermes_base_url, api_key=key):
             return False, "Hermes gateway /health 실패"
+        return True, "Ollama·Hermes 정상"
+
+    def verify_core(self) -> tuple[bool, str]:
+        """전체 검증 — quick 헬스체크 + MCP stdio 핸드셰이크까지."""
+        if self.simulate or self.dry_run:
+            return True, "Ollama·Hermes·MCP 정상"
+        ok, detail = self.verify_core_quick()
+        if not ok:
+            return False, detail
         mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self.hermes_command)
         if not mcp_ok:
             return False, f"MCP 검증 실패: {mcp_detail}"
@@ -591,20 +689,34 @@ class SetupProtocol:
                     self._emit(on_progress, result)
                     choice = self._wait_user(on_user, result)
                     if choice == "abort":
-                        self._record_step(step_id, "failed", "사용자가 중단함")
+                        self._record_step(step_id, "failed", self._abort_message(on_user))
                         return False
                     if choice == "install":
-                        self._emit(
-                            on_progress,
-                            self._record_step(step_id, "installing", "설치 실행 중…"),
-                        )
-                        installed = self._dispatch_install(step_id)
-                        self._emit(on_progress, installed)
-                        if installed.status == "done":
+                        advance = False
+                        while True:
+                            self._emit(
+                                on_progress,
+                                self._record_step(step_id, "installing", "설치 실행 중…"),
+                            )
+                            installed = self._dispatch_install(step_id)
+                            self._emit(on_progress, installed)
+                            if installed.status == "done":
+                                advance = True
+                                break
+                            if installed.status == "failed":
+                                return False
+                            # installed.status == "needs_user" — 설치 결과 카드에 대해
+                            # 다시 사용자 응답을 기다린다 (재검증으로 그냥 넘어가지 않는다)
+                            inner_choice = self._wait_user(on_user, installed)
+                            if inner_choice == "abort":
+                                self._record_step(step_id, "failed", self._abort_message(on_user))
+                                return False
+                            if inner_choice == "install":
+                                continue
+                            # "done" 등 — 사용자가 수동으로 해결했다고 응답 → 재검증
                             break
-                        if installed.status == "failed":
-                            return False
-                        # needs_user 재표시 등 → 루프 계속
+                        if advance:
+                            break
                         continue
                     # done: 재검증(수동 설치 후)
                     continue
@@ -617,7 +729,7 @@ class SetupProtocol:
         self._state["core_ready"] = True
         self._state["completed_at"] = _utc_now()
         self._state["last_error"] = ""
-        save_setup_state(self._state)
+        self._save_state()
         return True
 
     def _run_core_simulated(
@@ -661,7 +773,7 @@ class SetupProtocol:
                     self._emit(on_progress, result)
                     choice = self._wait_user(on_user, result)
                     if choice == "abort":
-                        self._record_step(step_id, "failed", "사용자가 중단함")
+                        self._record_step(step_id, "failed", self._abort_message(on_user))
                         return False
                     if choice == "install":
                         # 데모: 설치 버튼만 눌러도 다음 단계로
@@ -688,7 +800,7 @@ class SetupProtocol:
         self._state["core_ready"] = True
         self._state["completed_at"] = _utc_now()
         self._state["last_error"] = ""
-        save_setup_state(self._state)
+        self._save_state()
         return True
 
     def _run_core_dry_run(
@@ -742,7 +854,7 @@ class SetupProtocol:
                     self._emit(on_progress, result)
                     choice = self._wait_user(on_user, result)
                     if choice == "abort":
-                        self._record_step(step_id, "failed", "사용자가 중단함")
+                        self._record_step(step_id, "failed", self._abort_message(on_user))
                         return False
                     if choice == "install":
                         self._emit(
@@ -774,7 +886,7 @@ class SetupProtocol:
         self._state["core_ready"] = True
         self._state["completed_at"] = _utc_now()
         self._state["last_error"] = ""
-        save_setup_state(self._state)
+        self._save_state()
         return True
 
     def run_optional(
@@ -818,19 +930,39 @@ class SetupProtocol:
                 if choice == "abort":
                     return False
                 if choice == "install":
-                    self._emit(
-                        on_progress,
-                        SetupStepResult(
-                            which, "installing", "설치 실행 중…", label=result.label or which
-                        ),
-                    )
-                    installed = self._dispatch_install(which)
-                    self._emit(on_progress, installed)
-                    self._save_optional(which, installed)
-                    if installed.status == "done":
-                        return True
-                    if installed.status == "failed":
-                        return False
+                    while True:
+                        self._emit(
+                            on_progress,
+                            SetupStepResult(
+                                which, "installing", "설치 실행 중…", label=result.label or which
+                            ),
+                        )
+                        installed = self._dispatch_install(which)
+                        self._emit(on_progress, installed)
+                        self._save_optional(which, installed)
+                        if installed.status == "done":
+                            return True
+                        if installed.status == "failed":
+                            return False
+                        # installed.status == "needs_user" — 설치 결과 카드에 대해
+                        # 다시 사용자 응답을 기다린다 (재검증으로 그냥 넘어가지 않는다)
+                        inner_choice = self._wait_user(on_user, installed)
+                        if inner_choice == "skip":
+                            skipped = SetupStepResult(
+                                step_id=which,
+                                status="skipped",
+                                message="나중에 설정",
+                                label=installed.label or which,
+                            )
+                            self._emit(on_progress, skipped)
+                            self._save_optional(which, skipped)
+                            return True
+                        if inner_choice == "abort":
+                            return False
+                        if inner_choice == "install":
+                            continue
+                        # "done" 등 — 사용자가 수동으로 해결했다고 응답 → 재검증
+                        break
                     continue
                 continue
             return result.status in ("done", "skipped")
@@ -1034,18 +1166,18 @@ class SetupProtocol:
         opt = self._state.setdefault("optional", {})
         opt[which] = {
             "status": result.status,
-            "message": result.message,
+            "message": redact_secrets(result.message),
             "updated_at": _utc_now(),
         }
-        save_setup_state(self._state)
+        self._save_state()
 
     # ---- Core steps ----
 
     def _step_state_init(self) -> SetupStepResult:
         d = iris_state_dir()
         d.mkdir(parents=True, exist_ok=True)
-        if not setup_state_path().is_file():
-            save_setup_state(self._state)
+        if not self._state_path().is_file():
+            self._save_state()
         return self._record_step("state_init", "done", f"준비됨: {d}")
 
     def _step_mcp_venv(self) -> SetupStepResult:
@@ -1128,8 +1260,9 @@ class SetupProtocol:
                             "Ollama.Ollama",
                             "--accept-package-agreements",
                             "--accept-source-agreements",
+                            "--silent",
                         ],
-                        timeout=600,
+                        timeout=2700,
                         hidden=False,
                     )
                 except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1179,13 +1312,10 @@ class SetupProtocol:
         if not ensure_ollama_running(self.ollama_base_url, wait_sec=20.0):
             return self._record_step("ollama_model", "failed", "Ollama가 꺼져 있어 모델을 받을 수 없습니다")
         names = _list_ollama_model_names(self.ollama_base_url)
-        if names:
-            # 이미 하나라도 있으면 통과 (기본 모델 없으면 pull)
-            want = self.min_model
-            if any(want == n or n.startswith(want.split(":")[0]) for n in names):
-                return self._record_step("ollama_model", "done", f"모델 준비됨 ({len(names)}개)")
-            if names and not want:
-                return self._record_step("ollama_model", "done", f"모델 {len(names)}개 확인")
+        if names and _model_present(names, self.min_model):
+            if self.min_model:
+                return self._record_step("ollama_model", "done", f"{self.min_model} 준비됨")
+            return self._record_step("ollama_model", "done", f"모델 {len(names)}개 확인")
 
         model = self.min_model
         self._record_step("ollama_model", "installing", f"{model} 받는 중…")
@@ -1380,15 +1510,10 @@ class SetupProtocol:
             except OSError as exc:
                 return self._record_step("hermes_provider", "failed", f"config 읽기 실패: {exc}")
         model = data.get("model")
-        if not isinstance(model, dict):
-            model = {}
         # Ollama OpenAI-compat — ensure_hermes_provider_config가 ollama→custom 변환
-        model["provider"] = "ollama"
-        model.setdefault("base_url", "http://127.0.0.1:11434/v1")
-        if self.min_model:
-            model.setdefault("default", self.min_model)
-            model.setdefault("model", self.min_model)
-        data["model"] = model
+        # setdefault가 아니라 명시적으로 덮어써서, 예전 provider의 잘못된
+        # base_url/model이 남아 있지 않게 한다.
+        data["model"] = _ollama_provider_model(model if isinstance(model, dict) else {}, self.min_model)
         try:
             if path.is_file() and not path.with_name("config.yaml.bak-iris-setup").is_file():
                 shutil.copy2(path, path.with_name("config.yaml.bak-iris-setup"))
@@ -1560,8 +1685,16 @@ class SetupProtocol:
                     if ok2:
                         try:
                             ensure_avd()
-                        except Exception:  # noqa: BLE001
-                            pass
+                        except Exception as exc:  # noqa: BLE001
+                            return SetupStepResult(
+                                step_id="emulator",
+                                status="needs_user",
+                                message=f"AVD 생성 실패: {exc}",
+                                action_url=ANDROID_STUDIO_URL,
+                                action_hint="Studio에서 SDK·AVD를 만든 뒤 「완료했어요」.",
+                                label="Android 에뮬레이터",
+                                can_install=True,
+                            )
                         return SetupStepResult(
                             "emulator",
                             "done",
@@ -1636,6 +1769,18 @@ class SetupProtocol:
             action_hint="브라우저에서 로그인 후 「완료했어요」 또는 「나중에」.",
             label="Ollama 클라우드",
         )
+
+
+def _model_present(names: list[str], want: str) -> bool:
+    """want가 names에 정확히 존재하는지 확인 (startswith 접두 오탐 방지).
+
+    want에 태그가 없으면 want 자체와 want:latest 만 인정한다 — 다른 태그를 단
+    동명 모델(예: gemma4:e2b)을 잘못 '준비됨'으로 판단하지 않는다.
+    """
+    if not want:
+        return bool(names)
+    want_full = want if ":" in want else f"{want}:latest"
+    return want in names or want_full in names
 
 
 def _list_ollama_model_names(base_url: str) -> list[str]:
@@ -1720,6 +1865,153 @@ def _self_check() -> None:
         ver = proto._run_streamed([winget, "--version"], timeout=20, hidden=True)
         assert ver.returncode == 0, ver.stdout
         assert (ver.stdout or "").strip()
+
+    # --- 1) on_user=None 이면 needs_user에서 무한 반복 대신 즉시 abort ---
+    assert (
+        proto._wait_user(None, SetupStepResult("state_init", "needs_user")) == "abort"
+    )
+    assert proto._wait_user(lambda r: "install", SetupStepResult("x", "needs_user")) == "install"
+
+    # --- 2) simulate/dry_run은 실제 setup_state.json과 완전히 분리된 파일을 쓴다 ---
+    real_path = setup_state_path(simulate=False, dry_run=False)
+    demo_path = setup_state_path(simulate=True, dry_run=False)
+    dryrun_path = setup_state_path(simulate=False, dry_run=True)
+    assert real_path != demo_path and real_path != dryrun_path and demo_path != dryrun_path
+    real_before = real_path.read_text(encoding="utf-8") if real_path.is_file() else None
+    proto_demo = SetupProtocol(simulate=True, dry_run=False)
+    proto_demo._state["_probe"] = "demo"
+    proto_demo._save_state()
+    assert demo_path.is_file()
+    assert json.loads(demo_path.read_text(encoding="utf-8")).get("_probe") == "demo"
+    real_after = real_path.read_text(encoding="utf-8") if real_path.is_file() else None
+    assert real_before == real_after, "simulate 저장이 실제 setup_state.json을 건드림"
+    demo_path.unlink(missing_ok=True)
+    proto_dry = SetupProtocol(simulate=False, dry_run=True)
+    proto_dry._state["_probe"] = "dryrun"
+    proto_dry._save_state()
+    assert dryrun_path.is_file()
+    real_after2 = real_path.read_text(encoding="utf-8") if real_path.is_file() else None
+    assert real_before == real_after2, "dry_run 저장이 실제 setup_state.json을 건드림"
+    dryrun_path.unlink(missing_ok=True)
+
+    # --- 3/9) mark_core_ready_if_healthy·verify_core_quick은 실행 파일 존재가 아니라
+    #          실제 네트워크 헬스체크로 판단한다 (죽은 포트면 core_ready였어도 False) ---
+    dead_proto = SetupProtocol(
+        ollama_base_url="http://127.0.0.1:1/v1",
+        hermes_base_url="http://127.0.0.1:2/v1",
+        simulate=False,
+        dry_run=False,
+    )
+    ok_quick, detail_quick = dead_proto.verify_core_quick()
+    assert ok_quick is False and detail_quick, detail_quick
+
+    # --- 5/6) 모델 존재 확인은 startswith 접두 오탐이 아니라 정확히 일치해야 한다 ---
+    assert _model_present(["gemma4:e2b", "llama3:8b"], "gemma4:e2b") is True
+    assert _model_present(["gemma4-vision:e2b"], "gemma4:e2b") is False
+    assert _model_present(["gemma4:e2b"], "gemma4:latest") is False
+    assert _model_present(["gemma4:latest"], "gemma4") is True
+    assert _model_present([], "gemma4:e2b") is False
+    assert _model_present(["anything:latest"], "") is True
+
+    # --- 7) Hermes provider 설정은 예전 provider의 base_url/model을 남기지 않고
+    #        명시적으로 Ollama 값으로 덮어쓴다 ---
+    stale = {
+        "provider": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o",
+        "default": "gpt-4o",
+        "api_key": "sk-old-should-be-untouched",
+    }
+    fixed = _ollama_provider_model(stale, "gemma4:e2b")
+    assert fixed["provider"] == "ollama"
+    assert fixed["base_url"] == "http://127.0.0.1:11434/v1"
+    assert fixed["model"] == "gemma4:e2b"
+    assert fixed["default"] == "gemma4:e2b"
+    assert fixed["api_key"] == "sk-old-should-be-untouched"  # 무관한 키는 유지
+
+    # --- 4) 자동 설치 후 다시 needs_user가 나오면, 그 결과에 대해 사용자 응답을
+    #        기다려야 한다 (재검증으로 조용히 건너뛰면 안 됨) ---
+    proto_flow = SetupProtocol(simulate=False, dry_run=False)
+    proto_flow._save_state = lambda: None  # 실제 setup_state.json 미변경
+
+    def _fake_state_init() -> SetupStepResult:
+        return SetupStepResult(
+            "state_init", "needs_user", "최초 설치 필요", can_install=True
+        )
+
+    dispatch_calls = {"n": 0}
+
+    def _fake_dispatch(step_id: str) -> SetupStepResult:
+        dispatch_calls["n"] += 1
+        return SetupStepResult(step_id, "needs_user", "설치했지만 여전히 확인 필요")
+
+    seen_messages: list[str] = []
+
+    def _fake_on_user(result: SetupStepResult) -> str:
+        seen_messages.append(result.message)
+        if len(seen_messages) == 1:
+            return "install"
+        return "abort"
+
+    proto_flow._step_state_init = _fake_state_init  # type: ignore[method-assign]
+    proto_flow._dispatch_install = _fake_dispatch  # type: ignore[method-assign]
+    ok_flow = proto_flow.run_core(on_user=_fake_on_user)
+    assert ok_flow is False
+    assert dispatch_calls["n"] == 1, "설치 재시도 없이 abort했으면 dispatch는 한 번만 불려야 함"
+    assert seen_messages == ["최초 설치 필요", "설치했지만 여전히 확인 필요"], seen_messages
+
+    # --- 8) AVD 생성 실패는 무시되지 않고 needs_user로 보고돼야 한다 ---
+    if sys.platform == "win32":
+        import iris.system.android_emulator as android_emulator_mod
+
+        orig_winget_exe = globals()["_winget_exe"]
+        orig_is_avail = android_emulator_mod.is_emulator_available
+        orig_ensure_avd = android_emulator_mod.ensure_avd
+        avail_calls = {"n": 0}
+
+        def _fake_is_avail():
+            avail_calls["n"] += 1
+            # 최초엔 없다고 보고해 winget 설치 경로를 타게 하고,
+            # winget "설치" 후에는 있다고 보고해 AVD 생성 단계로 넘어가게 한다.
+            return (False, "no emulator") if avail_calls["n"] == 1 else (True, "studio found")
+
+        def _fake_ensure_avd():
+            raise RuntimeError("avd 생성 실패(시뮬레이션)")
+
+        def _fake_run_streamed(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        emu_proto = SetupProtocol(simulate=False, dry_run=False)
+        emu_proto._run_streamed = _fake_run_streamed  # type: ignore[method-assign]
+        try:
+            globals()["_winget_exe"] = lambda: "C:\\fake\\winget.exe"
+            android_emulator_mod.is_emulator_available = _fake_is_avail
+            android_emulator_mod.ensure_avd = _fake_ensure_avd
+            emu_result = emu_proto._install_emulator()
+        finally:
+            globals()["_winget_exe"] = orig_winget_exe
+            android_emulator_mod.is_emulator_available = orig_is_avail
+            android_emulator_mod.ensure_avd = orig_ensure_avd
+        assert emu_result.status == "needs_user", emu_result
+        assert "AVD" in emu_result.message, emu_result.message
+
+    # --- 10) 스트림/상태 메시지에 시크릿 값이 그대로 남지 않는다 ---
+    assert redact_secrets("") == ""
+    assert "abcDEF123456" not in redact_secrets("API_SERVER_KEY=abcDEF123456789")
+    assert "***" in redact_secrets("API_SERVER_KEY=abcDEF123456789")
+    assert "supersecrettoken" not in redact_secrets("Authorization: Bearer supersecrettoken")
+    prev_env_key = os.environ.get("IRIS_HERMES_API_KEY")
+    os.environ["IRIS_HERMES_API_KEY"] = "live-secret-value-1234567890"
+    try:
+        assert "live-secret-value-1234567890" not in redact_secrets(
+            "some output live-secret-value-1234567890 embedded"
+        )
+    finally:
+        if prev_env_key is None:
+            os.environ.pop("IRIS_HERMES_API_KEY", None)
+        else:
+            os.environ["IRIS_HERMES_API_KEY"] = prev_env_key
+
     d = iris_state_dir()
     assert d.is_dir()
     print("setup_protocol ok", d, "core_ready=", is_core_ready())
