@@ -89,7 +89,39 @@ def normalize_tts_text(text: str, pronunciation_map: dict[str, str] | None = Non
     return t
 
 
-def split_tts_sentences(text: str, *, max_chars: int = 110, min_chars: int = 16) -> list[str]:
+# 첫 청크는 한 문장(짧게), 이후는 큰 덩어리로 합성해 갭 횟수를 줄인다.
+TTS_FIRST_SENTENCE_MAX_CHARS = 120
+TTS_LATER_CHUNK_MAX_CHARS = 600
+TTS_CHUNK_MIN_CHARS = 16
+# 예전 이름 — 테스트/호출부가 max_chars 기본값으로 쓴다.
+TTS_CHUNK_MAX_CHARS = TTS_LATER_CHUNK_MAX_CHARS
+TTS_FIRST_CHUNK_MAX_CHARS = TTS_FIRST_SENTENCE_MAX_CHARS
+
+
+def _hard_split_overlong(sentence: str, max_chars: int) -> list[str]:
+    if len(sentence) <= max_chars:
+        return [sentence]
+    parts = [p.strip() for p in re.split(r"(?<=[,，;；])\s+", sentence) if p.strip()]
+    if len(parts) == 1:
+        parts = [sentence[i : i + max_chars].strip() for i in range(0, len(sentence), max_chars)]
+    out: list[str] = []
+    for part in parts:
+        if len(part) <= max_chars:
+            out.append(part)
+        else:
+            out.extend(
+                part[i : i + max_chars].strip() for i in range(0, len(part), max_chars)
+            )
+    return [p for p in out if p]
+
+
+def split_tts_sentences(
+    text: str,
+    *,
+    max_chars: int = TTS_LATER_CHUNK_MAX_CHARS,
+    min_chars: int = TTS_CHUNK_MIN_CHARS,
+    first_max_chars: int | None = None,
+) -> list[str]:
     base = normalize_tts_text(text)
     if not base:
         return []
@@ -102,20 +134,40 @@ def split_tts_sentences(text: str, *, max_chars: int = 110, min_chars: int = 16)
     if not primary:
         primary = [base]
 
+    # first_max_chars=None → 첫 문장만 단독 청크. 값을 주면 그 길이까지 패킹.
+    first_only = first_max_chars is None
+    first_limit = (
+        min(TTS_FIRST_SENTENCE_MAX_CHARS, int(max_chars))
+        if first_only
+        else min(int(first_max_chars), int(max_chars))
+    )
     chunks: list[str] = []
+    buf = ""
+    limit = first_limit
+    first_emitted = False
     for sentence in primary:
-        if len(sentence) <= max_chars:
-            chunks.append(sentence)
-            continue
-        parts = [p.strip() for p in re.split(r"(?<=[,，;；])\s+", sentence) if p.strip()]
-        if len(parts) == 1:
-            parts = [sentence[i : i + max_chars].strip() for i in range(0, len(sentence), max_chars)]
-        for part in parts:
-            if len(part) <= max_chars:
-                chunks.append(part)
+        cap = first_limit if (first_only and not first_emitted) else max_chars
+        for piece in _hard_split_overlong(sentence, cap):
+            if first_only and not first_emitted:
+                chunks.append(piece)
+                first_emitted = True
+                buf = ""
+                limit = max_chars
+                continue
+            if not buf:
+                buf = piece
+            elif len(buf) + 1 + len(piece) <= limit:
+                buf = f"{buf} {piece}"
             else:
-                for i in range(0, len(part), max_chars):
-                    chunks.append(part[i : i + max_chars].strip())
+                chunks.append(buf)
+                buf = piece
+                limit = max_chars
+            if len(buf) >= limit:
+                chunks.append(buf)
+                buf = ""
+                limit = max_chars
+    if buf:
+        chunks.append(buf)
 
     merged: list[str] = []
     for part in chunks:

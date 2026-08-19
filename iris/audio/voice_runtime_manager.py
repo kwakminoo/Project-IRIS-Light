@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,11 @@ class VoiceRuntimeStatus:
     running: bool
     mock_mode: bool
     pid: int
+
+
+def _cancelled(cancel_event: object | None) -> bool:
+    check = getattr(cancel_event, "is_set", None)
+    return bool(check()) if callable(check) else False
 
 
 class VoiceRuntimeProcessManager:
@@ -32,17 +38,21 @@ class VoiceRuntimeProcessManager:
         self._proc: subprocess.Popen | None = None
         self._base_url = base_url.rstrip("/")
         self._stderr_path: Path | None = None
+        self._lifecycle_lock = threading.RLock()
 
     def set_base_url(self, base_url: str) -> None:
+        # Settings changes must not wait behind a model startup loop.  String
+        # replacement is atomic here; a cancelled bootstrap will observe the
+        # new URL on its next health probe.
         self._base_url = base_url.rstrip("/")
         self._client.set_base_url(self._base_url)
 
     def _venv_python(self) -> Path:
         return self._venv_path / "Scripts" / "python.exe"
 
-    def is_running(self) -> bool:
+    def is_running(self, *, timeout_sec: float = 1.0) -> bool:
         try:
-            h = self._client.health()
+            h = self._client.health(timeout=max(0.1, float(timeout_sec)))
             return h.status == "ok"
         except Exception:
             return False
@@ -56,15 +66,39 @@ class VoiceRuntimeProcessManager:
             return ""
         return raw[-limit:].strip()
 
-    def ensure_started(self, *, mock_mode: bool = False, timeout_sec: float = 120.0) -> VoiceRuntimeStatus:
-        if self.is_running():
-            h = self._client.health()
+    def ensure_started(
+        self,
+        *,
+        mock_mode: bool = False,
+        timeout_sec: float = 120.0,
+        cancel_event: object | None = None,
+    ) -> VoiceRuntimeStatus:
+        with self._lifecycle_lock:
+            return self._ensure_started(
+                mock_mode=mock_mode,
+                timeout_sec=timeout_sec,
+                cancel_event=cancel_event,
+            )
+
+    def _ensure_started(
+        self,
+        *,
+        mock_mode: bool = False,
+        timeout_sec: float = 120.0,
+        cancel_event: object | None = None,
+    ) -> VoiceRuntimeStatus:
+        if _cancelled(cancel_event):
+            raise VoiceRuntimeError("Voice runtime startup cancelled")
+        if self.is_running(timeout_sec=1.0):
+            h = self._client.health(timeout=1.0)
             if bool(h.mock_mode) == bool(mock_mode):
                 return VoiceRuntimeStatus(running=True, mock_mode=h.mock_mode, pid=h.pid)
             # mock↔실모델 전환은 프로세스 환경변수라 재기동이 필요하다
             self.shutdown(timeout_sec=min(10.0, timeout_sec))
             deadline = time.monotonic() + 8.0
-            while time.monotonic() < deadline and self.is_running():
+            while time.monotonic() < deadline and self.is_running(timeout_sec=1.0):
+                if _cancelled(cancel_event):
+                    raise VoiceRuntimeError("Voice runtime startup cancelled")
                 time.sleep(0.3)
 
         py = self._venv_python()
@@ -107,6 +141,11 @@ class VoiceRuntimeProcessManager:
         deadline = time.monotonic() + float(timeout_sec)
         last_err: Optional[str] = None
         while time.monotonic() < deadline:
+            if _cancelled(cancel_event):
+                if self._proc is not None and self._proc.poll() is None:
+                    self._proc.terminate()
+                self._proc = None
+                raise VoiceRuntimeError("Voice runtime startup cancelled")
             if self._proc.poll() is not None:
                 detail = self._read_stderr_tail()
                 hint = detail or "requirements-voice.txt / setup_voice_runtime 설치를 확인하세요."
@@ -118,7 +157,7 @@ class VoiceRuntimeProcessManager:
                     )
                 raise VoiceRuntimeError(f"Voice runtime process exited early. {hint}")
             try:
-                h = self._client.health()
+                h = self._client.health(timeout=1.0)
                 return VoiceRuntimeStatus(running=True, mock_mode=h.mock_mode, pid=h.pid)
             except Exception as e:
                 last_err = str(e)
@@ -131,6 +170,10 @@ class VoiceRuntimeProcessManager:
         )
 
     def shutdown(self, *, timeout_sec: float = 10.0) -> None:
+        with self._lifecycle_lock:
+            self._shutdown(timeout_sec=timeout_sec)
+
+    def _shutdown(self, *, timeout_sec: float = 10.0) -> None:
         try:
             self._client.shutdown()
         except Exception:

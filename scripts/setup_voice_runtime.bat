@@ -10,8 +10,10 @@ if not exist ".venv-voice" (
 ".venv-voice\Scripts\pip.exe" install -r "services\voice_runtime\requirements-voice.txt"
 
 if /I "%~1"=="-Full" (
-  echo Installing full voice models ^(torch, qwen-tts^)...
-  ".venv-voice\Scripts\pip.exe" install torch qwen-tts
+  echo Installing full voice models ^(torch, qwen-tts, Faster Qwen streaming^)...
+  ".venv-voice\Scripts\pip.exe" install torch --index-url https://download.pytorch.org/whl/cu128
+  ".venv-voice\Scripts\pip.exe" install qwen-tts
+  ".venv-voice\Scripts\pip.exe" install -r "services\voice_runtime\requirements-voice-full.txt"
 )
 
 echo voice runtime ready: .venv-voice\Scripts\python.exe

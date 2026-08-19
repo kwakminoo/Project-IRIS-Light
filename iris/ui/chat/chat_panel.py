@@ -55,6 +55,7 @@ from iris.ui.chat.chat_display import (
     TYPING_CHARS_PER_TICK,
     TYPING_INTERVAL_MS,
     TYPING_SPEECH_MAX_CHARS_PER_TICK,
+    TYPING_SPEECH_MIN_CHARS_PER_SEC,
     chat_body_to_html,
     effective_typing_duration_ms,
     extend_typing_timeline_ms,
@@ -829,6 +830,9 @@ class ChatPanel(QWidget):
         self._typing_body_start: int | None = None
         self._typing_render_markdown = False
         self._typing_anchor_y: int | None = None
+        # ponytail: speech_sync=True인데도 TTS 재생 시작 타이밍까지 타이핑이 자동으로 시작되면
+        # "TTS 완성 후 텍스트 표시" 요구사항이 깨진다.
+        self._typing_wait_for_tts_completion = False
         self._user_listening_active = False
         self._tts_texts: dict[str, str] = {}
         self._tts_seq = 0
@@ -1365,7 +1369,13 @@ class ChatPanel(QWidget):
         self._append_trailing_blank_line()
         self._scroll_log_to_bottom()
 
-    def begin_stream_message(self, who: str, *, speech_sync: bool = True) -> None:
+    def begin_stream_message(
+        self,
+        who: str,
+        *,
+        speech_sync: bool = True,
+        wait_for_tts_completion: bool = False,
+    ) -> None:
         """LLM 스트리밍 — speech_sync면 TTS와 동기 타이핑, 아니면 청크 즉시 표시."""
         self.finish_typing()
         self._stream_active = True
@@ -1381,6 +1391,7 @@ class ChatPanel(QWidget):
         self._typing_speech_sync = speech_sync
         self._typing_speech_duration_ms = None
         self._typing_speech_start = None
+        self._typing_wait_for_tts_completion = bool(speech_sync and wait_for_tts_completion)
         self._typing_timer.stop()
         self._begin_typing_anchor()
 
@@ -1450,21 +1461,31 @@ class ChatPanel(QWidget):
         spoken_len: int | None = None,
     ) -> None:
         """TTS 재생 길이에 맞춰 대기 중인 본문 타이핑을 시작한다."""
+        if self._typing_timer.isActive():
+            return
         if not self._typing_text or not self._typing_speech_sync:
             return
         text_len = visible_len if visible_len is not None else len(self._typing_text)
         if spoken_len is not None and spoken_len > 0:
             scaled = scale_typing_duration_ms(duration_ms, text_len, spoken_len)
         else:
+            # ponytail: TTS와 동일 속도로 맞추면 "TTS가 들리기 전에 텍스트가 따라오는"
+            # 체감이 약해진다. 요청대로 약간 더 빠르게 진행한다.
             scaled = float(duration_ms)
+        # ponytail: 더 빠른 타이핑을 강제하되, 최소 글자/초 상한은 함께 보정한다.
+        typing_speed_up_factor = 0.85
+        min_chars_per_sec = TYPING_SPEECH_MIN_CHARS_PER_SEC * 1.25
+        scaled *= float(typing_speed_up_factor)
         self._typing_speech_duration_ms = effective_typing_duration_ms(
             len(self._typing_text),
             scaled,
+            min_chars_per_sec=min_chars_per_sec,
         )
         self._typing_speech_start = None
         self._typing_timer.setInterval(TYPING_INTERVAL_MS)
         if not self._typing_timer.isActive():
             self._typing_timer.start()
+        self._typing_wait_for_tts_completion = False
 
     def extend_typing_for_speech_segment(
         self,
@@ -1487,10 +1508,14 @@ class ChatPanel(QWidget):
             )
             return
         elapsed_ms = (time.monotonic() - self._typing_speech_start) * 1000.0
+        typing_speed_up_factor = 0.85
+        min_chars_per_sec = TYPING_SPEECH_MIN_CHARS_PER_SEC * 1.25
+        scaled *= float(typing_speed_up_factor)
         self._typing_speech_duration_ms = extend_typing_timeline_ms(
             elapsed_ms,
             remaining,
             scaled,
+            min_chars_per_sec=min_chars_per_sec,
         )
 
     def on_speech_typing_finished(self, *, flush: bool = True) -> None:
@@ -1512,6 +1537,7 @@ class ChatPanel(QWidget):
         self._typing_text = ""
         self._typing_index = 0
         self._typing_speech_sync = False
+        self._typing_wait_for_tts_completion = False
         self._typing_speech_duration_ms = None
         self._typing_speech_start = None
         self._typing_body_start = None
@@ -1565,6 +1591,8 @@ class ChatPanel(QWidget):
 
     def _ensure_buffered_typing_fallback(self) -> None:
         """TTS가 시작되지 않은 스트림 — 일반 타이핑으로 폴백."""
+        if self._typing_wait_for_tts_completion:
+            return
         if (
             not self._typing_text
             or not self._typing_speech_sync
@@ -1575,6 +1603,13 @@ class ChatPanel(QWidget):
         self._typing_speech_sync = False
         self._typing_timer.setInterval(TYPING_INTERVAL_MS)
         self._typing_timer.start()
+
+    def fallback_typing_if_waiting_for_tts(self) -> None:
+        """TTS 시작/합성이 실패한 경우만 타이핑 대기를 해제하고 폴백 시작."""
+        if not self._typing_wait_for_tts_completion:
+            return
+        self._typing_wait_for_tts_completion = False
+        self._ensure_buffered_typing_fallback()
 
     def _replace_typing_body(self) -> None:
         """타이핑 본문 영역을 현재 인덱스까지의 평문으로 갱신."""

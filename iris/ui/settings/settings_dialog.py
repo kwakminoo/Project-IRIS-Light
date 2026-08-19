@@ -32,10 +32,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from iris.audio.pcm_player import PcmPlayer
 from iris.audio.recorder import AudioRecorder
 from iris.audio.voice_runtime_client import VoiceRuntimeClient, VoiceRuntimeError
 from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
-from iris.audio.workers import TTSSynthesisWorker, VoiceAnalyzeWorker
+from iris.audio.workers import TTSRuntimeBootstrapWorker, TTSStreamWorker, VoiceAnalyzeWorker
 from iris.config.settings import Settings
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.storage.database import Database
@@ -164,8 +165,13 @@ class SettingsDialog(QDialog):
         )
         self._voice_recommendations: list[dict] = []
         self._analyze_worker: VoiceAnalyzeWorker | None = None
-        self._settings_tts_worker: TTSSynthesisWorker | None = None
-        self._preview_player = QSoundEffect(self)
+        self._settings_tts_worker: TTSStreamWorker | None = None
+        self._settings_tts_cancelled_workers: list[TTSStreamWorker] = []
+        self._settings_tts_bootstrap_worker: TTSRuntimeBootstrapWorker | None = None
+        self._settings_tts_cancelled_bootstrap_workers: list[TTSRuntimeBootstrapWorker] = []
+        self._settings_tts_job_id = 0
+        self._preview_player = PcmPlayer(self)
+        self._ref_preview_player = QSoundEffect(self)
         self._mic_monitor = AudioRecorder(self)
         self._mic_monitor.level_changed.connect(self._on_mic_monitor_level)
         self._mic_monitor.failed.connect(self._on_mic_monitor_failed)
@@ -888,6 +894,26 @@ class SettingsDialog(QDialog):
             "질문·브리핑·경고·숫자 낭독 등 문장 유형을 보고 톤을 고릅니다. "
             "끄면 항상 담담한 기본 톤을 씁니다."
         )
+        self._voice_ai_voice_fx = QCheckBox("AI 비서 음향 효과 (에코·메탈릭)")
+        self._voice_ai_voice_fx.setChecked(self._voice_prefs.tts_ai_voice_fx_enabled)
+        self._voice_ai_voice_fx.setToolTip(
+            "원본 IRIS 보이스 클론은 유지하고, 재생 단계에만 절제된 에코와 메탈릭 질감을 더합니다."
+        )
+        self._voice_ai_voice_fx_intensity = QComboBox()
+        for label, value in (
+            ("절제됨", 0.35),
+            ("표준", 0.55),
+            ("강하게 (권장)", 0.75),
+        ):
+            self._voice_ai_voice_fx_intensity.addItem(label, value)
+        fx_idx = min(
+            range(self._voice_ai_voice_fx_intensity.count()),
+            key=lambda i: abs(
+                float(self._voice_ai_voice_fx_intensity.itemData(i))
+                - self._voice_prefs.tts_ai_voice_fx_intensity
+            ),
+        )
+        self._voice_ai_voice_fx_intensity.setCurrentIndex(fx_idx)
         self._voice_profile_status = QLabel(self._voice_profile_summary())
         self._voice_profile_status.setWordWrap(True)
 
@@ -899,6 +925,21 @@ class SettingsDialog(QDialog):
             self._voice_tts_model.setEditText(default_tts)
         else:
             self._voice_tts_model.setCurrentText(default_tts)
+
+        self._voice_tts_engine = QComboBox()
+        for engine, label in (
+            ("qwen", "Qwen 스트림 (CUDA graph)"),
+            ("qwen_custom", "Qwen 파인튜닝 (custom voice)"),
+            ("gpt_sovits", "GPT-SoVITS"),
+        ):
+            self._voice_tts_engine.addItem(label, engine)
+        engine_idx = self._voice_tts_engine.findData(self._voice_prefs.tts_engine or "qwen")
+        self._voice_tts_engine.setCurrentIndex(engine_idx if engine_idx >= 0 else 0)
+
+        self._voice_custom_model = QLineEdit(self._voice_prefs.tts_custom_model_path)
+        self._voice_custom_model.setPlaceholderText("SFT/LoRA 체크포인트 경로")
+        self._voice_custom_speaker = QLineEdit(self._voice_prefs.tts_custom_speaker or "iris")
+        self._voice_sovits_url = QLineEdit(self._voice_prefs.gpt_sovits_url or "http://127.0.0.1:9880")
 
         self._voice_ref_audio = QLineEdit(self._voice_prefs.tts_reference_audio)
         self._voice_ref_text = QTextEdit()
@@ -935,9 +976,15 @@ class SettingsDialog(QDialog):
         form.addRow(make_form_label(""), self._voice_runtime_mock)
         form.addRow(make_form_label(""), self._voice_tts_on)
         form.addRow(make_form_label("TTS 모드"), self._voice_tts_mode)
+        form.addRow(make_form_label("TTS 엔진"), self._voice_tts_engine)
         form.addRow(make_form_label("TTS 모델"), self._voice_tts_model)
+        form.addRow(make_form_label("커스텀 체크포인트"), self._voice_custom_model)
+        form.addRow(make_form_label("커스텀 스피커"), self._voice_custom_speaker)
+        form.addRow(make_form_label("GPT-SoVITS URL"), self._voice_sovits_url)
         form.addRow(make_form_label(""), self._voice_use_profile)
         form.addRow(make_form_label(""), self._voice_tone_routing)
+        form.addRow(make_form_label(""), self._voice_ai_voice_fx)
+        form.addRow(make_form_label("효과 강도"), self._voice_ai_voice_fx_intensity)
         form.addRow(make_form_label("보이스 프로필"), self._voice_profile_status)
         form.addRow(make_form_label("녹음 폴더"), folder_row)
         form.addRow(make_form_label("선택된 참고 음성"), pick_row)
@@ -1035,6 +1082,14 @@ class SettingsDialog(QDialog):
             tts_volume=self._voice_prefs.tts_volume,
             tts_use_voice_profile=self._voice_use_profile.isChecked(),
             tts_tone_routing=self._voice_tone_routing.isChecked(),
+            tts_ai_voice_fx_enabled=self._voice_ai_voice_fx.isChecked(),
+            tts_ai_voice_fx_intensity=float(
+                self._voice_ai_voice_fx_intensity.currentData() or 0.75
+            ),
+            tts_engine=str(self._voice_tts_engine.currentData() or "qwen"),
+            tts_custom_speaker=self._voice_custom_speaker.text().strip() or "iris",
+            tts_custom_model_path=self._voice_custom_model.text().strip(),
+            gpt_sovits_url=self._voice_sovits_url.text().strip() or "http://127.0.0.1:9880",
             voice_runtime_url=self._voice_runtime_url.text().strip() or "http://127.0.0.1:18765",
             voice_runtime_mock=self._voice_runtime_mock.isChecked(),
             voice_data_dir=self._voice_data_dir.text().strip() or default_voice_data_dir(),
@@ -1158,10 +1213,10 @@ class SettingsDialog(QDialog):
         if not Path(path).is_file():
             QMessageBox.warning(self, "미리듣기", f"파일이 없습니다:\n{path}")
             return
-        self._preview_player.stop()
-        self._preview_player.setSource(QUrl.fromLocalFile(path))
-        self._preview_player.setVolume(1.0)
-        self._preview_player.play()
+        self._ref_preview_player.stop()
+        self._ref_preview_player.setSource(QUrl.fromLocalFile(path))
+        self._ref_preview_player.setVolume(1.0)
+        self._ref_preview_player.play()
 
     def _select_recommendation(self) -> None:
         item = self._selected_recommendation()
@@ -1197,48 +1252,180 @@ class SettingsDialog(QDialog):
         if not text:
             QMessageBox.information(self, "테스트 음성", "테스트 문장을 입력하세요.")
             return
-        if not self._ensure_settings_voice_runtime():
+        if not prefs.tts_use_voice_profile and (
+            not prefs.tts_reference_audio
+            or not prefs.tts_reference_text
+            or not Path(prefs.tts_reference_audio).is_file()
+        ):
+            QMessageBox.warning(self, "테스트 음성", "유효한 기준 음성/대본을 먼저 확정하세요.")
             return
-        try:
-            voice_hash = settings_service.ensure_voice_hash_for_test(prefs.voice_runtime_url, prefs)
-            self._voice_prefs.tts_voice_prompt_hash = voice_hash
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(self, "테스트 음성", str(exc))
+        self._stop_voice_playback(announce=False)
+        job_id = self._settings_tts_job_id
+        self._voice_runtime.set_base_url(prefs.voice_runtime_url)
+        self._voice_status.setText("TTS runtime 준비 중…")
+        engine = (prefs.tts_engine or "qwen").strip().lower()
+        bootstrap = TTSRuntimeBootstrapWorker(
+            runtime=self._voice_runtime,
+            runtime_url=prefs.voice_runtime_url,
+            model_name=prefs.tts_model,
+            mock_mode=prefs.voice_runtime_mock,
+            warmup=engine in {"qwen", "qwen_custom"},
+            parent=self,
+        )
+        self._settings_tts_bootstrap_worker = bootstrap
+        bootstrap.finished_ok.connect(
+            lambda result, p=prefs, t=text, j=job_id: self._on_settings_tts_runtime_ready(
+                result, p, t, j
+            )
+        )
+        bootstrap.failed.connect(
+            lambda err, j=job_id: self._on_settings_tts_runtime_failed(err, j)
+        )
+        bootstrap.finished.connect(
+            lambda w=bootstrap: self._release_settings_tts_bootstrap_worker(w)
+        )
+        bootstrap.finished.connect(bootstrap.deleteLater)
+        bootstrap.start()
+
+    def _on_settings_tts_runtime_ready(
+        self,
+        result: object,
+        prefs: VoicePreferences,
+        text: str,
+        job_id: int,
+    ) -> None:
+        if job_id != self._settings_tts_job_id:
             return
+        self._settings_tts_bootstrap_worker = None
+        payload = result if isinstance(result, dict) else {}
+        if not payload.get("running"):
+            self._on_settings_tts_runtime_failed("Voice runtime을 시작하지 못했습니다.", job_id)
+            return
+        self._preview_player.set_voice_effect(
+            enabled=prefs.tts_ai_voice_fx_enabled,
+            intensity=prefs.tts_ai_voice_fx_intensity,
+        )
         self._voice_status.setText("테스트 음성 생성 중…")
-        worker = TTSSynthesisWorker(
+        worker = TTSStreamWorker(
             runtime_url=prefs.voice_runtime_url,
             text=text,
-            voice_prompt_hash=self._voice_prefs.tts_voice_prompt_hash,
-            model_name=prefs.tts_model,
+            payload={
+                "voice_prompt_hash": self._voice_prefs.tts_voice_prompt_hash if not prefs.tts_use_voice_profile else "",
+                "tts_model_name": prefs.tts_model,
+                "engine": prefs.tts_engine,
+                "custom_speaker": prefs.tts_custom_speaker,
+                "custom_model_path": prefs.tts_custom_model_path,
+                "gpt_sovits_url": prefs.gpt_sovits_url,
+                "voice_data_dir": prefs.voice_data_dir,
+                "tone_routing": prefs.tts_tone_routing,
+                **(
+                    {
+                        "_prepare_ref_audio": prefs.tts_reference_audio,
+                        "_prepare_ref_text": prefs.tts_reference_text,
+                    }
+                    if not prefs.tts_use_voice_profile and not self._voice_prefs.tts_voice_prompt_hash
+                    else {}
+                ),
+            },
             parent=self,
         )
         self._settings_tts_worker = worker
-        worker.finished_ok.connect(self._on_settings_tts_ok)
-        worker.failed.connect(self._on_settings_tts_failed)
+        worker.prepared.connect(
+            lambda voice_hash, j=job_id: self._on_settings_tts_voice_prepared(voice_hash, j)
+        )
+        worker.started_fmt.connect(
+            lambda sample_rate, j=job_id: self._on_settings_tts_format(sample_rate, j)
+        )
+        worker.chunk.connect(lambda pcm, j=job_id: self._on_settings_tts_chunk(pcm, j))
+        worker.finished_ok.connect(lambda j=job_id: self._on_settings_tts_ok(j))
+        worker.failed.connect(lambda err, j=job_id: self._on_settings_tts_failed(err, j))
+        worker.finished.connect(lambda w=worker: self._release_settings_tts_worker(w))
+        worker.finished.connect(worker.deleteLater)
         worker.start()
 
-    def _on_settings_tts_ok(self, payload: object) -> None:
-        self._settings_tts_worker = None
-        data = payload if isinstance(payload, dict) else {}
-        path = str(data.get("audio_path") or "")
-        if not path or not Path(path).is_file():
-            self._voice_status.setText("테스트 음성 경로가 비어 있습니다.")
+    def _on_settings_tts_runtime_failed(self, err: str, job_id: int) -> None:
+        if job_id != self._settings_tts_job_id:
             return
-        self._preview_player.stop()
-        self._preview_player.setSource(QUrl.fromLocalFile(path))
-        self._preview_player.setVolume(1.0)
-        self._preview_player.play()
-        self._voice_status.setText(f"테스트 재생: {path}")
+        self._stop_voice_playback(announce=False)
+        self._voice_status.setText(f"TTS runtime 실패: {err}")
+        QMessageBox.warning(self, "테스트 음성", err)
 
-    def _on_settings_tts_failed(self, err: str) -> None:
+    def _on_settings_tts_voice_prepared(self, voice_hash: str, job_id: int) -> None:
+        if job_id != self._settings_tts_job_id:
+            return
+        if not voice_hash:
+            self._on_settings_tts_failed("TTS voice prompt 준비에 실패했습니다.", job_id)
+            return
+        self._voice_prefs.tts_voice_prompt_hash = voice_hash
+
+    def _on_settings_tts_format(self, sample_rate: int, job_id: int) -> None:
+        if job_id == self._settings_tts_job_id:
+            self._preview_player.set_format(sample_rate)
+
+    def _on_settings_tts_chunk(self, pcm: bytes, job_id: int) -> None:
+        if job_id == self._settings_tts_job_id:
+            self._preview_player.feed(pcm)
+
+    def _on_settings_tts_ok(self, job_id: int) -> None:
+        if job_id != self._settings_tts_job_id:
+            return
         self._settings_tts_worker = None
+        self._preview_player.flush_start()
+        self._preview_player.end_session()
+        self._voice_status.setText("테스트 재생 중")
+
+    def _on_settings_tts_failed(self, err: str, job_id: int) -> None:
+        if job_id != self._settings_tts_job_id:
+            return
+        self._stop_voice_playback(announce=False)
         self._voice_status.setText(f"테스트 실패: {err}")
         QMessageBox.warning(self, "테스트 음성", err)
 
-    def _stop_voice_playback(self) -> None:
+    def _release_settings_tts_worker(self, worker: TTSStreamWorker) -> None:
+        try:
+            self._settings_tts_cancelled_workers.remove(worker)
+        except ValueError:
+            pass
+
+    def _release_settings_tts_bootstrap_worker(
+        self, worker: TTSRuntimeBootstrapWorker
+    ) -> None:
+        try:
+            self._settings_tts_cancelled_bootstrap_workers.remove(worker)
+        except ValueError:
+            pass
+
+    def _stop_voice_playback(self, *, announce: bool = True, wait: bool = False) -> bool:
+        self._settings_tts_job_id += 1
+        worker, self._settings_tts_worker = self._settings_tts_worker, None
+        bootstrap, self._settings_tts_bootstrap_worker = self._settings_tts_bootstrap_worker, None
+        workers = [w for w in [worker, *self._settings_tts_cancelled_workers] if w is not None]
+        bootstraps = [
+            w
+            for w in [bootstrap, *self._settings_tts_cancelled_bootstrap_workers]
+            if w is not None
+        ]
+        for active in workers:
+            if active.isRunning():
+                active.request_cancel()
+                if active not in self._settings_tts_cancelled_workers:
+                    self._settings_tts_cancelled_workers.append(active)
+        for active in bootstraps:
+            if active.isRunning():
+                active.request_cancel()
+                if active not in self._settings_tts_cancelled_bootstrap_workers:
+                    self._settings_tts_cancelled_bootstrap_workers.append(active)
+        if wait:
+            for active in workers:
+                if active.isRunning():
+                    active.wait(1500)
+            for active in bootstraps:
+                if active.isRunning():
+                    active.wait(1500)
         self._preview_player.stop()
-        self._voice_status.setText("재생 중지")
+        if announce:
+            self._voice_status.setText("재생 중지")
+        return all(not active.isRunning() for active in [*workers, *bootstraps])
 
     def _clear_voice_cache(self) -> None:
         if not self._ensure_settings_voice_runtime():
@@ -1780,12 +1967,26 @@ class SettingsDialog(QDialog):
         if self._aloha_runtime_busy():
             self._aloha_runtime_status.setText("Runtime 설치가 끝난 뒤 설정을 닫아주세요.")
             return
+        if not self._stop_voice_playback(announce=False, wait=True):
+            self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
+            return
         self._stop_mic_monitor()
         super().reject()
+
+    def accept(self) -> None:
+        if not self._stop_voice_playback(announce=False, wait=True):
+            self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
+            return
+        self._stop_mic_monitor()
+        super().accept()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._aloha_runtime_busy():
             self._aloha_runtime_status.setText("Runtime 설치가 끝난 뒤 설정을 닫아주세요.")
+            event.ignore()
+            return
+        if not self._stop_voice_playback(announce=False, wait=True):
+            self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
             event.ignore()
             return
         self._stop_mic_monitor()

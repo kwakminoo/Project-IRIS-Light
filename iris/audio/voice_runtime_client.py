@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass(frozen=True)
@@ -50,11 +50,11 @@ class VoiceRuntimeClient:
         except Exception as e:
             raise VoiceRuntimeError(f"Voice runtime request failed: {e}") from e
 
-    def _get_json(self, path: str) -> dict[str, Any]:
+    def _get_json(self, path: str, *, timeout: float | None = None) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
         req = urllib.request.Request(url, method="GET")
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout or self._timeout) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
                 return json.loads(body) if body.strip() else {}
         except urllib.error.HTTPError as e:
@@ -63,8 +63,8 @@ class VoiceRuntimeClient:
         except Exception as e:
             raise VoiceRuntimeError(f"Voice runtime request failed: {e}") from e
 
-    def health(self) -> VoiceRuntimeHealth:
-        res = self._get_json("/health")
+    def health(self, *, timeout: float | None = None) -> VoiceRuntimeHealth:
+        res = self._get_json("/health", timeout=timeout)
         return VoiceRuntimeHealth(
             status=str(res.get("status") or "unknown"),
             pid=int(res.get("pid") or 0),
@@ -183,3 +183,87 @@ class VoiceRuntimeClient:
         # 이 노트북 기준 한 문장 생성에 1분 이상 걸린다(RTF 10배 안팎).
         # 기본 60초 타임아웃으로는 정상 생성도 실패로 잡힌다.
         return self._post_json("/v1/audio/speech", payload, timeout=max(self._timeout, 600.0))
+
+    def warmup(
+        self,
+        *,
+        tts_model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        wait: bool = False,
+    ) -> dict[str, Any]:
+        return self._post_json(
+            "/v1/audio/warmup",
+            {"tts_model_name": tts_model_name, "wait": bool(wait)},
+            timeout=max(self._timeout, 600.0) if wait else self._timeout,
+        )
+
+    def iter_tts_speech_stream(
+        self,
+        *,
+        text: str,
+        voice_prompt_hash: str = "",
+        tts_model_name: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        tone: str | None = None,
+        engine: str = "qwen",
+        custom_speaker: str = "iris",
+        custom_model_path: str = "",
+        gpt_sovits_url: str = "http://127.0.0.1:9880",
+        voice_data_dir: str = "",
+        tone_routing: bool = True,
+        cancel_event: Any | None = None,
+        response_callback: Callable[[Any | None], None] | None = None,
+    ):
+        payload = {
+            "text": text,
+            "voice_prompt_hash": voice_prompt_hash,
+            "tts_model_name": tts_model_name,
+            "tone": tone,
+            "engine": engine,
+            "custom_speaker": custom_speaker,
+            "custom_model_path": custom_model_path,
+            "gpt_sovits_url": gpt_sovits_url,
+            "voice_data_dir": voice_data_dir,
+            "tone_routing": bool(tone_routing),
+        }
+        url = f"{self._base_url}/v1/audio/speech/stream"
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method="POST",
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Accept": "application/x-ndjson",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=max(self._timeout, 600.0)) as resp:
+                if response_callback is not None:
+                    response_callback(resp)
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                try:
+                    for raw in resp:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return
+                        line = raw.decode("utf-8", errors="replace").strip()
+                        if not line:
+                            continue
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            raise VoiceRuntimeError(f"TTS stream JSON 오류: {line[:120]}") from exc
+                        if not isinstance(event, dict):
+                            continue
+                        if event.get("type") == "error":
+                            raise VoiceRuntimeError(str(event.get("message") or "TTS stream error"))
+                        yield event
+                finally:
+                    if response_callback is not None:
+                        response_callback(None)
+        except VoiceRuntimeError:
+            raise
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+            raise VoiceRuntimeError(f"Voice runtime HTTP {e.code}: {raw[:400]}") from e
+        except Exception as e:
+            raise VoiceRuntimeError(f"Voice runtime stream failed: {e}") from e

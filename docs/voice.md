@@ -63,7 +63,7 @@ FastAPI 런타임은 **`127.0.0.1:18765`에만** 바인딩됩니다.
 ### 다시 빌드하기
 
 ```powershell
-.\.venv-voice\Scripts\python.exe scripts\build_voice_profile.py "2차 아이리스 녹음 A-B" "2차 아이리스 녹음 C-H"
+.\.venv-voice\Scripts\python.exe scripts\build_voice_profile.py "아이리스 녹음"
 ```
 
 전사는 faster-whisper가, 임베딩은 Qwen3-TTS speaker encoder가 맡는다.
@@ -102,9 +102,9 @@ $env:VOICE_RUNTIME_MOCK=0
 
 ## 녹음 폴더 분석
 
-기본 폴더(존재 시 프로젝트 내 동명 폴더로 폴백):
+기본 폴더(존재 시 사용, 예전 `1차 아이리스 녹음` 이름은 폴백):
 
-`c:\Users\kwakm\Desktop\1차 아이리스 녹음`
+`<프로젝트>/아이리스 녹음`
 
 ```powershell
 # 메타만 (전사 생략)
