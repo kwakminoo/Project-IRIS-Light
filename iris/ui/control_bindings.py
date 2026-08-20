@@ -1698,6 +1698,41 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         risk="low",
     )
 
+    def learning_start(_a: dict[str, Any]) -> dict[str, Any]:
+        mgr = getattr(window, "_learning", None)
+        if mgr is None:
+            return err_result("learning.start", "learning manager unavailable")
+        from iris.learning.models import LearningState
+        if mgr.state != LearningState.IDLE:
+            return err_result("learning.start", f"cannot start: state={mgr.state.value}")
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, window._start_learning_session)
+        return ok_result("learning.start", {"message": "학습 세션 시작 중…"})
+
+    def learning_stop(_a: dict[str, Any]) -> dict[str, Any]:
+        mgr = getattr(window, "_learning", None)
+        if mgr is None:
+            return err_result("learning.stop", "learning manager unavailable")
+        from iris.learning.models import LearningState
+        if mgr.state != LearningState.RECORDING:
+            return err_result("learning.stop", f"cannot stop: state={mgr.state.value}")
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, window._stop_learning_session)
+        return ok_result("learning.stop", {"message": "학습 녹화 종료 중…"})
+
+    reg.register(
+        "learning.start",
+        learning_start,
+        summary="Start demonstration recording session",
+        risk="medium",
+    )
+    reg.register(
+        "learning.stop",
+        learning_stop,
+        summary="Stop recording and process learned workflow",
+        risk="medium",
+    )
+
     # --- UI dialogs ---
     def ui_settings(_a: dict[str, Any]) -> dict[str, Any]:
         window._open_settings_dialog()

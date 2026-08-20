@@ -897,6 +897,10 @@ class ChatPanel(QWidget):
             self._input.setText(extra)
         self._input.setFocus()
 
+    def submit_input(self) -> None:
+        """입력창 텍스트를 그대로 전송 (STT 자동전송용)."""
+        self._emit_send()
+
     def register_tts_message(self, text: str) -> str:
         """답변별 TTS용 메시지 id 등록."""
         body = (text or "").strip()
@@ -949,8 +953,7 @@ class ChatPanel(QWidget):
         )
 
     def set_mic_recording(self, recording: bool) -> None:
-        # 마이크 버튼은 DragTab(우측 상단)로 이동 — ChatPanel은 no-op 유지
-        _ = recording
+        self._waveform.set_listening(recording)
 
     def set_models(
         self,
@@ -1264,29 +1267,14 @@ class ChatPanel(QWidget):
         self._waveform.set_threshold_rms(speech_rms)
 
     def begin_user_listening(self) -> None:
-        """발화 시작 — 플레이스홀더로 즉시 피드백."""
-        self.finish_typing()
-        self._typing_anchor_y = None
-        self._remove_user_listening_line()
-        self._log.append("<b>나</b>: <i style='color:#94a3b8'>…</i>")
+        """듣기 상태는 하단 파형만 쓰고 채팅 로그는 건드리지 않는다."""
         self._user_listening_active = True
-        self._scroll_log_to_bottom(deferred=True)
 
     def set_user_listening_status(self, status: str) -> None:
-        """STT 진행 등 상태 문구 갱신."""
-        if not self._user_listening_active:
-            self.begin_user_listening()
-        self._typing_anchor_y = None
-        self._remove_user_listening_line()
-        safe = html.escape(status)
-        self._log.append(f"<b>나</b>: <i style='color:#94a3b8'>{safe}</i>")
+        del status
         self._user_listening_active = True
-        self._scroll_log_to_bottom(deferred=True)
 
     def cancel_user_listening(self) -> None:
-        """인식 취소·게이트 거부 시 플레이스홀더 제거."""
-        if self._user_listening_active:
-            self._remove_user_listening_line()
         self._user_listening_active = False
 
     def complete_user_message_typed(self, text: str) -> None:
@@ -1545,23 +1533,6 @@ class ChatPanel(QWidget):
         if had_body:
             self._append_trailing_blank_line()
         self._scroll_log_to_bottom()
-
-    def _remove_user_listening_line(self) -> None:
-        """마지막 '나: …' 플레이스홀더 블록 제거."""
-        plain = self._log.toPlainText()
-        if not plain.strip():
-            return
-        lines = plain.split("\n")
-        while lines and not lines[-1].strip():
-            lines.pop()
-        if lines and lines[-1].startswith("나:"):
-            lines.pop()
-        self._log.setPlainText("\n".join(lines))
-        if lines:
-            cursor = self._log.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            self._log.setTextCursor(cursor)
-            self._scroll_log_to_bottom()
 
     def _append_typing_buffer(self, chunk: str) -> None:
         """타이핑 버퍼만 확장 — 스트리밍 중 화면에는 아직 표시하지 않음."""

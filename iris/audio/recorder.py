@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import io
-import math
+import time
 import wave
 from collections import deque
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QIODevice, QObject, QTimer, pyqtSignal
-from PyQt6.QtMultimedia import QAudioFormat, QAudioSource, QMediaDevices
+from PyQt6.QtMultimedia import QAudio, QAudioFormat, QAudioSource, QMediaDevices
 
+from iris.audio.aec import EchoSource, NlmsAec
 from iris.audio.mic_level import rms_to_display_level
+from iris.audio.pcm_convert import (
+    CANONICAL_RATE,
+    rms_int16,
+    to_canonical_pcm,
+)
+from iris.audio.silero_vad import SileroVad
 from iris.audio.speech_gate import SpeechGate
 
 
@@ -20,6 +27,17 @@ class RecordingResult:
     duration_sec: float
     sample_rate: int
     channels: int
+    speech_start_ts: float = 0.0
+    speech_end_ts: float = 0.0
+    utterance_ready_ts: float = 0.0
+
+
+_FORMAT_MAP = {
+    QAudioFormat.SampleFormat.Int16: "int16",
+    QAudioFormat.SampleFormat.Float: "float32",
+    QAudioFormat.SampleFormat.Int32: "int32",
+    QAudioFormat.SampleFormat.UInt8: "uint8",
+}
 
 
 class AudioRecorder(QObject):
@@ -30,6 +48,7 @@ class AudioRecorder(QObject):
     recording_stopped = pyqtSignal(object)  # RecordingResult
     recording_cancelled = pyqtSignal()
     utterance_ready = pyqtSignal(object)  # RecordingResult (continuous)
+    speech_started = pyqtSignal()
     failed = pyqtSignal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -42,13 +61,25 @@ class AudioRecorder(QObject):
         self._chunks = bytearray()
         self._recording = False
         self._mode = "off"  # off | oneshot | continuous | monitor
-        self._sample_rate = 16000
-        self._channels = 1
+        self._native_rate = CANONICAL_RATE
+        self._native_channels = 1
+        self._native_format = "int16"
         self._rms_peak = 0.0
-        self._gate = SpeechGate()
+        # ponytail: 너무 짧은 단어/호흡만 말해도 start만 찍히고 drop되는 케이스 완화
+        self._gate = SpeechGate(min_speech_frames=3)
+        self._vad: SileroVad | None = None
         self._utterance = bytearray()
-        self._preroll: deque[bytes] = deque(maxlen=12)  # ~600ms
+        self._preroll: deque[bytes] = deque()
+        self._preroll_bytes = 0
+        self._preroll_limit = int(0.3 * CANONICAL_RATE * 2)  # 300ms
         self._capture_paused = False
+        self._speech_start_ts = 0.0
+        self._max_utterance_bytes = int(12 * CANONICAL_RATE * 2)
+        self._echo_source: EchoSource | None = None
+        self._aec = NlmsAec()
+        self._aec_enabled = False
+        self._echo_delay_ms = 180
+        self._aec_holdoff_until = 0.0
 
     @staticmethod
     def list_input_devices() -> list[tuple[str, str]]:
@@ -70,24 +101,60 @@ class AudioRecorder(QObject):
     def is_recording(self) -> bool:
         return self._recording
 
+    def is_hardware_open(self) -> bool:
+        return self._audio_source is not None and self._recording
+
     def is_continuous(self) -> bool:
         return self._mode == "continuous" and self._recording
 
     def is_monitoring(self) -> bool:
         return self._mode == "monitor" and self._recording
 
+    def _reset_vad(self) -> None:
+        if self._vad is not None:
+            self._vad.reset()
+
     def set_speech_rms(self, rms: float) -> None:
         self._gate.set_speech_rms(rms)
 
+    def set_echo_source(self, source: EchoSource | None) -> None:
+        self._echo_source = source
+
+    def is_capture_paused(self) -> bool:
+        return self._capture_paused
+
     def set_capture_paused(self, paused: bool) -> None:
-        """TTS/STT 중 발화 수집만 잠시 멈춤 (레벨 표시는 유지)."""
+        """TTS 중 발화 검출만 멈춤. 장치는 열고 레벨은 유지. preroll에 쌓지 않는다."""
         self._capture_paused = bool(paused)
-        if paused:
+        self._gate.reset()
+        self._reset_vad()
+        self._utterance = bytearray()
+        self._clear_preroll()
+
+    def set_echo_cancel(self, on: bool, *, delay_ms: int = 180) -> None:
+        """TTS far-end가 있으면 AEC+barge-in, 없으면 기존처럼 검출만 멈춘다."""
+        self._echo_delay_ms = max(0, int(delay_ms))
+        if on:
+            if self._echo_source is None:
+                self.set_capture_paused(True)
+                self._aec_enabled = False
+                return
+            self._capture_paused = False
+            self._aec_enabled = True
+            self._aec.reset()
+            self._aec_holdoff_until = time.perf_counter() + 0.25
             self._gate.reset()
+            self._reset_vad()
             self._utterance = bytearray()
+            self._clear_preroll()
+            return
+        self._aec_enabled = False
+        if self._capture_paused:
+            self.set_capture_paused(False)
 
     def start_recording(self, *, device_id: str = "", sample_rate: int = 16000, channels: int = 1) -> None:
-        self._start(mode="oneshot", device_id=device_id, sample_rate=sample_rate, channels=channels)
+        del sample_rate, channels
+        self._start(mode="oneshot", device_id=device_id)
 
     def start_continuous(
         self,
@@ -97,15 +164,21 @@ class AudioRecorder(QObject):
         sample_rate: int = 16000,
         channels: int = 1,
     ) -> None:
+        del sample_rate, channels
         self._gate.set_speech_rms(speech_rms)
         self._gate.reset()
+        if self._vad is None:
+            self._vad = SileroVad()
+        else:
+            self._vad.reset()
         self._utterance = bytearray()
-        self._preroll.clear()
+        self._clear_preroll()
         self._capture_paused = False
-        self._start(mode="continuous", device_id=device_id, sample_rate=sample_rate, channels=channels)
+        self._start(mode="continuous", device_id=device_id)
 
     def start_monitor(self, *, device_id: str = "", sample_rate: int = 16000, channels: int = 1) -> None:
-        self._start(mode="monitor", device_id=device_id, sample_rate=sample_rate, channels=channels)
+        del sample_rate, channels
+        self._start(mode="monitor", device_id=device_id)
 
     def stop_recording(self) -> None:
         if not self._recording:
@@ -118,8 +191,8 @@ class AudioRecorder(QObject):
                 wav_bytes=self._build_wav_bytes(bytes(self._chunks)),
                 rms_peak=self._rms_peak,
                 duration_sec=self._duration_sec(len(self._chunks)),
-                sample_rate=self._sample_rate,
-                channels=self._channels,
+                sample_rate=CANONICAL_RATE,
+                channels=1,
             )
             self.recording_stopped.emit(result)
         elif mode == "continuous" and self._utterance:
@@ -131,7 +204,9 @@ class AudioRecorder(QObject):
         self._close_device()
         self._chunks = bytearray()
         self._utterance = bytearray()
+        self._clear_preroll()
         self._gate.reset()
+        self._reset_vad()
         self.recording_cancelled.emit()
 
     def stop_monitor(self) -> None:
@@ -141,19 +216,20 @@ class AudioRecorder(QObject):
         self._close_device()
         self._chunks = bytearray()
 
-    def _start(self, *, mode: str, device_id: str, sample_rate: int, channels: int) -> None:
+    def _start(self, *, mode: str, device_id: str) -> None:
         if self._recording:
             return
         self._chunks = bytearray()
-        self._sample_rate = sample_rate
-        self._channels = channels
+        self._native_rate = CANONICAL_RATE
+        self._native_channels = 1
+        self._native_format = "int16"
         self._rms_peak = 0.0
         self._mode = mode
 
-        fmt = QAudioFormat()
-        fmt.setSampleRate(sample_rate)
-        fmt.setChannelCount(channels)
-        fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+        wanted = QAudioFormat()
+        wanted.setSampleRate(CANONICAL_RATE)
+        wanted.setChannelCount(1)
+        wanted.setSampleFormat(QAudioFormat.SampleFormat.Int16)
 
         device = QMediaDevices.defaultAudioInput()
         for dev in QMediaDevices.audioInputs():
@@ -165,11 +241,14 @@ class AudioRecorder(QObject):
                 device = dev
                 break
 
-        if not device.isFormatSupported(fmt):
-            # ponytail: 먼저 가장 단순한 16k mono int16을 시도하고, 안 되면 preferred 포맷으로 폴백
+        fmt = wanted
+        if not device.isFormatSupported(wanted):
+            # ponytail: native 포맷으로 열고 폴링에서 16k mono int16으로 변환
             fmt = device.preferredFormat()
-            self._sample_rate = fmt.sampleRate()
-            self._channels = fmt.channelCount()
+
+        self._native_rate = max(1, int(fmt.sampleRate() or CANONICAL_RATE))
+        self._native_channels = max(1, int(fmt.channelCount() or 1))
+        self._native_format = _FORMAT_MAP.get(fmt.sampleFormat(), "int16")
 
         try:
             source = QAudioSource(device, fmt, self)
@@ -182,6 +261,15 @@ class AudioRecorder(QObject):
             self._mode = "off"
             self.failed.emit("마이크 장치를 열 수 없습니다.")
             return
+        try:
+            err = source.error()
+            if err != QAudio.Error.NoError:
+                source.stop()
+                self._mode = "off"
+                self.failed.emit(f"마이크 장치를 열 수 없습니다 ({err}).")
+                return
+        except Exception:
+            pass
 
         self._audio_source = source
         self._device = qdevice
@@ -197,6 +285,9 @@ class AudioRecorder(QObject):
         self._mode = "off"
         self._audio_source = None
         self._device = None
+        self._capture_paused = False
+        self._aec_enabled = False
+        self._aec.reset()
 
     def _poll_audio(self) -> None:
         if self._device is None:
@@ -207,79 +298,112 @@ class AudioRecorder(QObject):
         raw = self._device.read(available)
         if not raw:
             return
-        data = bytes(raw)
-        level = self._compute_rms_level(data)
-        self._rms_peak = max(self._rms_peak, level)
-        self.level_changed.emit(rms_to_display_level(level))
+        pcm = to_canonical_pcm(
+            bytes(raw),
+            sample_rate=self._native_rate,
+            channels=self._native_channels,
+            sample_format=self._native_format,
+        )
+        if not pcm:
+            return
+        raw_level = rms_int16(pcm)
+        self.level_changed.emit(rms_to_display_level(raw_level))
+        level = raw_level
+        if not (self._aec_enabled and self._echo_source is not None):
+            self._rms_peak = max(self._rms_peak, raw_level)
 
         if self._mode == "monitor":
             return
         if self._mode == "oneshot":
-            self._chunks.extend(data)
+            self._chunks.extend(pcm)
             return
         if self._mode != "continuous":
             return
 
         if self._capture_paused:
-            self._preroll.append(data)
             return
 
-        event = self._gate.feed(level)
+        if self._aec_enabled and self._echo_source is not None:
+            far = self._echo_source.farend_canonical(len(pcm), self._echo_delay_ms)
+            pcm = self._aec.process_int16(pcm, far)
+            level = rms_int16(pcm)
+            self._rms_peak = max(self._rms_peak, level)
+            if time.perf_counter() < self._aec_holdoff_until:
+                self._push_preroll(pcm)
+                return
+
+        vad_prob = (
+            self._vad.speech_prob(pcm) if self._vad is not None and self._vad.available else None
+        )
+        event = self._gate.feed(level, vad_prob)
         if not self._gate.speaking and event != "start":
-            self._preroll.append(data)
+            self._push_preroll(pcm)
             return
         if event == "start":
             self._utterance = bytearray()
             for pre in self._preroll:
                 self._utterance.extend(pre)
-            self._preroll.clear()
-            self._utterance.extend(data)
+            self._clear_preroll()
+            self._utterance.extend(pcm)
             self._rms_peak = level
+            self._speech_start_ts = time.perf_counter()
+            self.speech_started.emit()
             return
-        self._utterance.extend(data)
+        if event == "drop":
+            self._utterance = bytearray()
+            self._clear_preroll()
+            return
+        self._utterance.extend(pcm)
+        if len(self._utterance) >= self._max_utterance_bytes:
+            self._emit_utterance()
+            return
         if event == "end":
             self._emit_utterance()
+
+    def _push_preroll(self, data: bytes) -> None:
+        self._preroll.append(data)
+        self._preroll_bytes += len(data)
+        while self._preroll_bytes > self._preroll_limit and self._preroll:
+            dropped = self._preroll.popleft()
+            self._preroll_bytes -= len(dropped)
+
+    def _clear_preroll(self) -> None:
+        self._preroll.clear()
+        self._preroll_bytes = 0
 
     def _emit_utterance(self) -> None:
         pcm = bytes(self._utterance)
         self._utterance = bytearray()
-        self._gate.reset()
+        speech_end = time.perf_counter()
+        self._gate.clear_speech()
+        self._reset_vad()
         if not pcm:
             return
+        now = time.perf_counter()
         result = RecordingResult(
             wav_bytes=self._build_wav_bytes(pcm),
             rms_peak=self._rms_peak,
             duration_sec=self._duration_sec(len(pcm)),
-            sample_rate=self._sample_rate,
-            channels=self._channels,
+            sample_rate=CANONICAL_RATE,
+            channels=1,
+            speech_start_ts=self._speech_start_ts or now,
+            speech_end_ts=speech_end,
+            utterance_ready_ts=now,
         )
         self._rms_peak = 0.0
+        self._speech_start_ts = 0.0
         self.utterance_ready.emit(result)
-
-    def _compute_rms_level(self, data: bytes) -> float:
-        if not data:
-            return 0.0
-        import array
-
-        arr = array.array("h")
-        usable = len(data) - (len(data) % 2)
-        arr.frombytes(data[:usable])
-        if not arr:
-            return 0.0
-        rms = math.sqrt(sum((v / 32768.0) ** 2 for v in arr) / len(arr))
-        return float(rms)
 
     def _build_wav_bytes(self, pcm_bytes: bytes) -> bytes:
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
-            wf.setnchannels(self._channels)
+            wf.setnchannels(1)
             wf.setsampwidth(2)
-            wf.setframerate(self._sample_rate)
+            wf.setframerate(CANONICAL_RATE)
             wf.writeframes(pcm_bytes)
         return buf.getvalue()
 
     def _duration_sec(self, nbytes: int | None = None) -> float:
-        sample_width = 2
         n = len(self._chunks) if nbytes is None else nbytes
-        frames = n / float(max(1, self._channels * sample_width))
-        return frames / float(max(1, self._sample_rate))
+        frames = n / 2.0
+        return frames / float(CANONICAL_RATE)

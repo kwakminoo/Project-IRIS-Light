@@ -49,6 +49,7 @@ class VoicePreferences:
     stt_language: str = "ko"  # "ko" | "auto"
     stt_device_id: str = ""
     stt_speech_rms: float = 0.02  # 연속 청취 발화 임계 RMS
+    stt_echo_tail_ms: int = 180
 
     tts_enabled: bool = False
     tts_mode: str = "off"  # off | manual | auto
@@ -114,6 +115,10 @@ def load_voice_preferences(db: Database) -> VoicePreferences:
     prefs.stt_speech_rms = _to_float(data.get("stt_speech_rms"), prefs.stt_speech_rms)
     if prefs.stt_speech_rms <= 0:
         prefs.stt_speech_rms = 0.02
+    try:
+        prefs.stt_echo_tail_ms = max(0, int(data.get("stt_echo_tail_ms", prefs.stt_echo_tail_ms)))
+    except (TypeError, ValueError):
+        prefs.stt_echo_tail_ms = 180
     prefs.tts_enabled = _to_bool(data.get("tts_enabled"), prefs.tts_enabled)
     prefs.tts_mode = str(data.get("tts_mode", prefs.tts_mode) or prefs.tts_mode)
     prefs.tts_model = str(data.get("tts_model", prefs.tts_model) or prefs.tts_model)

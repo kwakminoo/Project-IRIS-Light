@@ -211,8 +211,8 @@ def build_cyberspace_qss() -> str:
             border-color: {t.accent_border};
         }}
         QPushButton#WinCtrlMic:checked {{
-            background-color: rgba(127, 29, 29, 0.92);
-            border-color: rgba(248, 113, 113, 0.55);
+            background-color: rgba(8, 51, 68, 0.92);
+            border-color: rgba(34, 211, 238, 0.55);
         }}
         QLabel#DragTitle {{
             font-weight: 400;

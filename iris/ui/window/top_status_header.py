@@ -155,6 +155,8 @@ class TopStatusHeader:
         kind = "ready"
         if "error" in lower or "fail" in lower:
             kind = "error"
+        elif "off" in lower:
+            kind = "unavailable"
         elif "busy" in lower or "speak" in lower:
             kind = "processing"
         self._tts_chip.set_value(text.upper(), dot_kind=kind)

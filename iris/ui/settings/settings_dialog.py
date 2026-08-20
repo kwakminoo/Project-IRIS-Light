@@ -33,6 +33,8 @@ from PyQt6.QtWidgets import (
 )
 
 from iris.audio.pcm_player import PcmPlayer
+from iris.audio.mic_state import MicState
+from iris.audio.microphone_controller import MicrophoneController
 from iris.audio.recorder import AudioRecorder
 from iris.audio.voice_runtime_client import VoiceRuntimeClient, VoiceRuntimeError
 from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
@@ -139,7 +141,14 @@ class LightSettingsSelection:
 class SettingsDialog(QDialog):
     """연결 설정 + 이메일 계정 + IDE Companion."""
 
-    def __init__(self, settings: Settings, db: Database | None = None, parent=None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        db: Database | None = None,
+        parent=None,
+        *,
+        microphone: MicrophoneController | None = None,
+    ) -> None:
         super().__init__(parent)
         configure_hud_dialog(
             self,
@@ -172,9 +181,11 @@ class SettingsDialog(QDialog):
         self._settings_tts_job_id = 0
         self._preview_player = PcmPlayer(self)
         self._ref_preview_player = QSoundEffect(self)
-        self._mic_monitor = AudioRecorder(self)
-        self._mic_monitor.level_changed.connect(self._on_mic_monitor_level)
-        self._mic_monitor.failed.connect(self._on_mic_monitor_failed)
+        self._microphone = microphone
+        if self._microphone is not None:
+            self._microphone.level_changed.connect(self._on_mic_monitor_level)
+            self._microphone.state_changed.connect(self._on_shared_mic_state)
+            self._microphone.error.connect(self._on_mic_monitor_failed)
         self._verify_worker: EmailVerifyWorker | None = None
         self._api_providers: list[ApiProvider] = (
             load_api_providers(db) if db is not None else []
@@ -1029,7 +1040,7 @@ class SettingsDialog(QDialog):
         self._voice_status.setWordWrap(True)
         lay.addWidget(self._voice_status)
         self._refresh_voice_recommendations_from_runtime(silent=True)
-        QTimer.singleShot(0, self._restart_mic_monitor)
+        QTimer.singleShot(0, self._sync_mic_meter)
         return box
 
     def _selected_mic_device_id(self) -> str:
@@ -1039,10 +1050,11 @@ class SettingsDialog(QDialog):
         return str(item.data(Qt.ItemDataRole.UserRole) or "")
 
     def _on_mic_device_changed(self, _row: int) -> None:
-        self._restart_mic_monitor()
+        self._sync_mic_meter()
+        if self._microphone is not None:
+            self._microphone.set_device(self._selected_mic_device_id())
 
-    def _restart_mic_monitor(self) -> None:
-        self._mic_monitor.stop_monitor()
+    def _sync_mic_meter(self) -> None:
         device_id = self._selected_mic_device_id()
         label = "기본 장치"
         item = self._voice_stt_device.currentItem()
@@ -1051,16 +1063,26 @@ class SettingsDialog(QDialog):
         self._voice_connected_mic.setText(
             f"선택된 마이크: {label}  |  시스템 기본: {AudioRecorder.default_input_label()}"
         )
-        self._mic_monitor.start_monitor(device_id=device_id, sample_rate=16000, channels=1)
+        del device_id
+        if self._microphone is None or not self._microphone.state.is_listening_ui():
+            self._mic_threshold_bar.set_inactive()
+
+    def _on_shared_mic_state(self, state: object) -> None:
+        mic_state = state if isinstance(state, MicState) else MicState.OFF
+        if not mic_state.is_listening_ui():
+            self._mic_threshold_bar.set_inactive()
 
     def _on_mic_monitor_level(self, level: float) -> None:
+        if self._microphone is not None and not self._microphone.state.is_listening_ui():
+            self._mic_threshold_bar.set_inactive()
+            return
         self._mic_threshold_bar.set_level(level)
 
     def _on_mic_monitor_failed(self, err: str) -> None:
-        self._mic_threshold_bar.set_status(f"마이크 모니터 오류: {err}")
+        self._mic_threshold_bar.set_status(f"마이크 오류: {err}")
 
     def _stop_mic_monitor(self) -> None:
-        self._mic_monitor.stop_monitor()
+        return
 
     def _current_voice_prefs_from_ui(self) -> VoicePreferences:
         stt_model = self._voice_stt_model.currentData()
@@ -1073,6 +1095,7 @@ class SettingsDialog(QDialog):
             stt_language=str(stt_lang or "ko"),
             stt_device_id=str(device_id or ""),
             stt_speech_rms=self._mic_threshold_bar.speech_rms(),
+            stt_echo_tail_ms=self._voice_prefs.stt_echo_tail_ms,
             tts_enabled=self._voice_tts_on.isChecked(),
             tts_mode=str(tts_mode or "off"),
             tts_model=self._voice_tts_model.currentText().strip() or "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
@@ -1971,6 +1994,8 @@ class SettingsDialog(QDialog):
             self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
             return
         self._stop_mic_monitor()
+        if self._microphone is not None:
+            self._microphone.set_device(self._voice_prefs.stt_device_id)
         super().reject()
 
     def accept(self) -> None:

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import tempfile
 from threading import Event, Lock
-from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -31,12 +29,9 @@ class STTTranscriptionWorker(QThread):
 
     def run(self) -> None:
         client = VoiceRuntimeClient(base_url=self._runtime_url)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
-            temp_path = Path(f.name)
-            f.write(self._wav_bytes)
         try:
-            res = client.transcribe_wav_file(
-                temp_path,
+            res = client.transcribe_wav_bytes(
+                self._wav_bytes,
                 model_name=self._model_name,
                 language=self._language,
                 vad_filter=True,
@@ -46,11 +41,23 @@ class STTTranscriptionWorker(QThread):
             self.finished_ok.emit(res)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
-        finally:
-            try:
-                temp_path.unlink()
-            except Exception:
-                pass
+
+
+class STTWarmupWorker(QThread):
+    finished_ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, *, runtime_url: str, model_name: str, parent=None) -> None:
+        super().__init__(parent)
+        self._runtime_url = runtime_url
+        self._model_name = model_name
+
+    def run(self) -> None:
+        client = VoiceRuntimeClient(base_url=self._runtime_url)
+        try:
+            self.finished_ok.emit(client.stt_warmup(model_name=self._model_name, wait=False))
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
 
 
 class TTSSynthesisWorker(QThread):

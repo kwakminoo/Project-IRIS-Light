@@ -68,12 +68,12 @@ class MicThresholdBar(QWidget):
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(2)
-        col.addWidget(QLabel("임계치"))
+        col.addWidget(QLabel("덜 민감"))
         self._slider = QSlider(Qt.Orientation.Vertical)
         self._slider.setMinimum(1)
         self._slider.setMaximum(100)
         self._slider.setFixedHeight(96)
-        self._slider.setToolTip("이 기준치 이상일 때만 음성으로 인식합니다")
+        self._slider.setToolTip("위로 갈수록 덜 민감, 아래로 갈수록 더 민감합니다")
         display = speech_rms_to_display_level(speech_rms)
         self._slider.setValue(max(1, min(100, int(round(display * 100)))))
         self._slider.valueChanged.connect(self._on_slider)
@@ -81,6 +81,7 @@ class MicThresholdBar(QWidget):
         self._thresh_label = QLabel("")
         self._thresh_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         col.addWidget(self._thresh_label)
+        col.addWidget(QLabel("더 민감"))
         lay.addLayout(col)
 
         right = QVBoxLayout()
@@ -113,8 +114,12 @@ class MicThresholdBar(QWidget):
         self.gauge.set_level(level)
         over = level >= (self._slider.value() / 100.0)
         self._level_label.setText(
-            f"입력 레벨 {level:.0%} — {'인식 구간' if over else '대기 (임계치 미만)'}"
+            f"입력 레벨 {level:.0%} — {'인식 구간' if over else '대기 (민감도 미만)'}"
         )
+
+    def set_inactive(self) -> None:
+        self.gauge.set_level(0.0)
+        self._level_label.setText("마이크가 꺼져 있습니다")
 
     def set_status(self, text: str) -> None:
         self._level_label.setText(text)
