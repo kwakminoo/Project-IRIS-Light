@@ -1,0 +1,13 @@
+{
+  "trajectory": [
+    {
+      "step_idx": 1,
+      "caption": {
+        "observation": "Session recorded",
+        "think": "No discrete UI actions detected",
+        "action": "No-op",
+        "expectation": "Review raw session"
+      }
+    }
+  ]
+}

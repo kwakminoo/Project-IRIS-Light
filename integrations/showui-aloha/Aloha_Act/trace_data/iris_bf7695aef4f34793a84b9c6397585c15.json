@@ -1,0 +1,13 @@
+{
+  "trajectory": [
+    {
+      "step_idx": 1,
+      "caption": {
+        "observation": "The application window is open on the screen.",
+        "think": "Click on the target element at (1327, 150) to trigger the desired action.",
+        "action": "click @(1327.0,150.0)",
+        "expectation": "The application responds to the click event."
+      }
+    }
+  ]
+}

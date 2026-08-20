@@ -1,0 +1,76 @@
+{
+  "trajectory": [
+    {
+      "step_idx": 1,
+      "caption": {
+        "observation": "The user is in the Chrome browser.",
+        "think": "I need to start by interacting with the browser.",
+        "action": "click @(650.0,936.0)",
+        "expectation": "The target element in Chrome is clicked."
+      }
+    },
+    {
+      "step_idx": 2,
+      "caption": {
+        "observation": "The user switches to File Explorer.",
+        "think": "I need to locate a file or folder in the explorer.",
+        "action": "click @(1241.0,1051.0)",
+        "expectation": "The desired item in explorer.exe is selected."
+      }
+    },
+    {
+      "step_idx": 3,
+      "caption": {
+        "observation": "The Snipping Tool is opened.",
+        "think": "I need to take a screenshot of a specific area.",
+        "action": "click @(705.0,55.0)",
+        "expectation": "The capture mode is activated in Snipping Tool."
+      }
+    },
+    {
+      "step_idx": 4,
+      "caption": {
+        "observation": "The user is selecting the screen area.",
+        "think": "I will drag to define the capture region.",
+        "action": "drag @(1372.0,882.0)",
+        "expectation": "A portion of the screen is selected for cropping."
+      }
+    },
+    {
+      "step_idx": 5,
+      "caption": {
+        "observation": "The screenshot is captured and saved.",
+        "think": "I will use the Alt key and click to finalize or save the snippet.",
+        "action": "key_down @(None,None) key=ALT_L; click @(1707.0,552.0)",
+        "expectation": "The screenshot is saved to the clipboard or a file."
+      }
+    },
+    {
+      "step_idx": 6,
+      "caption": {
+        "observation": "The user returns to Chrome.",
+        "think": "I need to upload or paste the image into the browser.",
+        "action": "click @(648.0,822.0); click @(876.0,901.0)",
+        "expectation": "The image is processed or uploaded in Chrome."
+      }
+    },
+    {
+      "step_idx": 7,
+      "caption": {
+        "observation": "The user switches to KakaoTalk.",
+        "think": "I need to send the information/image to a contact.",
+        "action": "click @(1677.0,949.0)",
+        "expectation": "The chat window in KakaoTalk is active."
+      }
+    },
+    {
+      "step_idx": 8,
+      "caption": {
+        "observation": "The user is typing a message in KakaoTalk.",
+        "think": "I will type the message 'DLEK E' to the recipient.",
+        "action": "key_down @(None,None) key=D; key_down @(None,None) key=L; key_down @(None,None) key=SHIFT; key_down @(None,None) key=E; key_down @(None,None) key=K; key_down @(None,None) key=SPACE; key_down @(None,None) key=E",
+        "expectation": "The text is entered into the chat input field."
+      }
+    }
+  ]
+}
