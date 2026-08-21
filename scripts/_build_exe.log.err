@@ -1,0 +1,229 @@
+210 INFO: PyInstaller: 6.22.2, contrib hooks: 2026.6
+210 INFO: Python: 3.12.10
+237 INFO: Platform: Windows-11-10.0.26200-SP0
+237 INFO: Python environment: c:\Users\serin\Github\Project-IRIS-Light\.venv
+248 INFO: Removing temporary files and cleaning cache in C:\Users\serin\AppData\Local\pyinstaller
+3036 WARNING: collect_data_files - skipping data collection for module 'PyQt6.QtWebEngineWidgets' as it is not a package.
+3103 WARNING: collect_dynamic_libs - skipping library collection for module 'PyQt6.QtWebEngineWidgets' as it is not a package.
+3704 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\serin\\Github\\Project-IRIS-Light',
+ 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Python312\\python312.zip',
+ 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Python312\\DLLs',
+ 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Python312\\Lib',
+ 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Python312',
+ 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv',
+ 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages',
+ 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\win32',
+ 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\win32\\lib',
+ 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\pythonwin',
+ 'C:\\Users\\serin\\Github\\Project-IRIS-Light']
+4210 INFO: Appending 'binaries' from .spec
+4210 INFO: Appending 'datas' from .spec
+4338 INFO: checking Analysis
+4338 INFO: Building Analysis because Analysis-00.toc is non existent
+4338 INFO: Looking for Python shared library...
+4338 INFO: Using Python shared library: C:\Users\serin\AppData\Local\Programs\Python\Python312\python312.dll
+4338 INFO: Running Analysis Analysis-00.toc
+4338 INFO: Target bytecode optimization level: 0
+4338 INFO: Initializing module dependency graph...
+4349 INFO: Initializing module graph hook caches...
+4403 INFO: Analyzing modules for base_library.zip ...
+5875 INFO: Processing standard module hook 'hook-encodings.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+8043 INFO: Processing standard module hook 'hook-math.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+8353 INFO: Processing standard module hook 'hook-pickle.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10798 INFO: Processing standard module hook 'hook-heapq.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13833 INFO: Caching module dependency graph...
+13915 INFO: Analyzing C:\Users\serin\Github\Project-IRIS-Light\IRIS_launcher.py
+13992 INFO: Processing standard module hook 'hook-PyQt6.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14938 INFO: Processing standard module hook 'hook-PyQt6.QtGui.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+26184 INFO: Processing standard module hook 'hook-PyQt6.QtCore.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+31409 INFO: Processing standard module hook 'hook-PyQt6.QtWidgets.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+34729 INFO: Processing standard module hook 'hook-platform.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+34877 INFO: Processing standard module hook 'hook-_ctypes.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+35045 INFO: Processing standard module hook 'hook-numpy.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+36246 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+36246 INFO: SetuptoolsInfo: initializing cached setuptools info...
+37308 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+37768 INFO: Processing standard module hook 'hook-xml.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+40538 INFO: Processing standard module hook 'hook-sysconfig.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+40933 INFO: Processing standard module hook 'hook-webbrowser.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+44687 INFO: Processing standard module hook 'hook-difflib.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+45682 INFO: Processing standard module hook 'hook-psutil.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+47461 INFO: Processing standard module hook 'hook-comtypes.client.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+48567 INFO: Processing standard module hook 'hook-sqlite3.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+49012 INFO: Processing standard module hook 'hook-cv2.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+50386 INFO: Processing standard module hook 'hook-pynput.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+50799 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+50910 INFO: Processing standard module hook 'hook-PIL.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+51084 INFO: Processing standard module hook 'hook-PIL.Image.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+51733 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+52115 INFO: Processing standard module hook 'hook-PIL.ImageFilter.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+52958 INFO: Processing standard module hook 'hook-PyQt6.QtMultimedia.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+56473 INFO: Processing standard module hook 'hook-PyQt6.QtNetwork.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+60767 INFO: Processing standard module hook 'hook-markdown.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+61211 INFO: Processing pre-safe-import-module hook 'hook-importlib_metadata.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+61211 INFO: Setuptools: 'importlib_metadata' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.importlib_metadata'!
+61227 INFO: Processing standard module hook 'hook-setuptools.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+61243 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+61261 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+61261 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+61275 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+61275 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+61465 INFO: Processing standard module hook 'hook-_osx_support.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+61497 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+61772 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+61772 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+61783 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+61783 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
+62455 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+62455 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+63000 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+63000 INFO: Setuptools: 'wheel' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.wheel'!
+63060 INFO: Processing standard module hook 'hook-setuptools._vendor.importlib_metadata.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+63086 INFO: Processing pre-safe-import-module hook 'hook-zipp.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+63086 INFO: Setuptools: 'zipp' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.zipp'!
+65429 INFO: Processing standard module hook 'hook-PyQt6.QtSvg.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+66830 INFO: Processing standard module hook 'hook-PyQt6.QtWebEngineWidgets.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+68180 INFO: Processing standard module hook 'hook-PyQt6.QtPrintSupport.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+69380 INFO: Processing standard module hook 'hook-PyQt6.QtWebChannel.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+70312 INFO: Processing standard module hook 'hook-PyQt6.QtWebEngineCore.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+74644 INFO: Analyzing hidden import 'PyQt6.QAxContainer'
+74665 INFO: Processing standard module hook 'hook-PyQt6.QAxContainer.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+75196 INFO: Analyzing hidden import 'PyQt6.QtBluetooth'
+75275 INFO: Processing standard module hook 'hook-PyQt6.QtBluetooth.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+75605 INFO: Analyzing hidden import 'PyQt6.QtDBus'
+75654 INFO: Processing standard module hook 'hook-PyQt6.QtDBus.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+76180 INFO: Analyzing hidden import 'PyQt6.QtDesigner'
+76219 INFO: Processing standard module hook 'hook-PyQt6.QtDesigner.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+77036 WARNING: QtLibraryInfo(PyQt6): could not find translations with base name 'designer'! These translations will not be collected.
+77048 INFO: Analyzing hidden import 'PyQt6.QtHelp'
+77074 INFO: Processing standard module hook 'hook-PyQt6.QtHelp.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+77734 INFO: Analyzing hidden import 'PyQt6.QtMultimediaWidgets'
+77765 INFO: Processing standard module hook 'hook-PyQt6.QtMultimediaWidgets.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+78289 INFO: Analyzing hidden import 'PyQt6.QtNfc'
+78305 INFO: Processing standard module hook 'hook-PyQt6.QtNfc.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+78780 INFO: Analyzing hidden import 'PyQt6.QtOpenGL'
+79033 INFO: Processing standard module hook 'hook-PyQt6.QtOpenGL.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+79824 INFO: Analyzing hidden import 'PyQt6.QtOpenGLWidgets'
+79856 INFO: Processing standard module hook 'hook-PyQt6.QtOpenGLWidgets.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+80443 INFO: Analyzing hidden import 'PyQt6.QtPdf'
+80481 INFO: Processing standard module hook 'hook-PyQt6.QtPdf.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+81195 INFO: Analyzing hidden import 'PyQt6.QtPdfWidgets'
+81219 INFO: Processing standard module hook 'hook-PyQt6.QtPdfWidgets.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+81742 INFO: Analyzing hidden import 'PyQt6.QtPositioning'
+81789 INFO: Processing standard module hook 'hook-PyQt6.QtPositioning.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+83040 INFO: Analyzing hidden import 'PyQt6.QtQml'
+83114 INFO: Processing standard module hook 'hook-PyQt6.QtQml.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+110193 INFO: Analyzing hidden import 'PyQt6.QtQuick'
+110342 INFO: Processing standard module hook 'hook-PyQt6.QtQuick.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+112015 INFO: Analyzing hidden import 'PyQt6.QtQuick3D'
+112043 INFO: Processing standard module hook 'hook-PyQt6.QtQuick3D.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+113398 INFO: Analyzing hidden import 'PyQt6.QtQuickWidgets'
+113430 INFO: Processing standard module hook 'hook-PyQt6.QtQuickWidgets.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+114564 INFO: Analyzing hidden import 'PyQt6.QtRemoteObjects'
+114604 INFO: Processing standard module hook 'hook-PyQt6.QtRemoteObjects.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+115553 INFO: Analyzing hidden import 'PyQt6.QtSensors'
+115652 INFO: Processing standard module hook 'hook-PyQt6.QtSensors.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+117622 INFO: Analyzing hidden import 'PyQt6.QtSerialPort'
+117672 INFO: Processing standard module hook 'hook-PyQt6.QtSerialPort.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+118801 INFO: Analyzing hidden import 'PyQt6.QtSpatialAudio'
+118833 INFO: Processing standard module hook 'hook-PyQt6.QtSpatialAudio.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+119846 INFO: Analyzing hidden import 'PyQt6.QtSql'
+119924 INFO: Processing standard module hook 'hook-PyQt6.QtSql.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+123089 INFO: Analyzing hidden import 'PyQt6.QtStateMachine'
+123144 INFO: Processing standard module hook 'hook-PyQt6.QtStateMachine.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+123640 INFO: Analyzing hidden import 'PyQt6.QtSvgWidgets'
+123678 INFO: Processing standard module hook 'hook-PyQt6.QtSvgWidgets.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+124683 INFO: Analyzing hidden import 'PyQt6.QtTest'
+124749 INFO: Processing standard module hook 'hook-PyQt6.QtTest.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+125765 INFO: Analyzing hidden import 'PyQt6.QtTextToSpeech'
+125825 INFO: Processing standard module hook 'hook-PyQt6.QtTextToSpeech.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+127894 INFO: Analyzing hidden import 'PyQt6.QtWebEngineQuick'
+127928 INFO: Processing standard module hook 'hook-PyQt6.QtWebEngineQuick.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+129067 INFO: Analyzing hidden import 'PyQt6.QtWebSockets'
+129126 INFO: Processing standard module hook 'hook-PyQt6.QtWebSockets.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+129960 INFO: Analyzing hidden import 'PyQt6.QtXml'
+130024 INFO: Processing standard module hook 'hook-PyQt6.QtXml.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+131002 INFO: Analyzing hidden import 'PyQt6.lupdate'
+131094 INFO: Processing standard module hook 'hook-PyQt6.uic.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+132194 INFO: Analyzing hidden import 'PyQt6.lupdate.pylupdate'
+132214 INFO: Analyzing hidden import 'PyQt6.uic.pyuic'
+132240 INFO: Processing module hooks (post-graph stage)...
+135596 INFO: Processing standard module hook 'hook-PIL.SpiderImagePlugin.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+136696 INFO: Performing binary vs. data reclassification (3710 entries)
+209711 INFO: Looking for ctypes DLLs
+210044 INFO: Analyzing run-time hooks ...
+210118 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+210127 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+210131 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+210141 INFO: Including run-time hook 'pyi_rth_pyqt6.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+210149 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+210159 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+210167 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+210464 INFO: Creating base_library.zip...
+210527 INFO: Looking for dynamic libraries
+212464 INFO: Extra DLL search directories (AddDllDirectory): ['c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\bin', 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\numpy.libs', 'C:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\cv2\\../../x64/vc17/bin']
+212464 INFO: Extra DLL search directories (PATH): ['C:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\cv2\\../../x64/vc17/bin', 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\bin']
+222511 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\geometryloaders\\defaultgeometryloader.dll'.
+222513 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\geometryloaders\\defaultgeometryloader.dll'.
+222515 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\geometryloaders\\gltfgeometryloader.dll'.
+222517 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\geometryloaders\\gltfgeometryloader.dll'.
+222580 WARNING: Library not found: could not resolve 'Qt6QmlCompiler.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\qmllint\\qdslintplugin.dll'.
+222585 WARNING: Library not found: could not resolve 'Qt6QmlCompiler.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\qmllint\\quicklintplugin.dll'.
+222588 WARNING: Library not found: could not resolve 'Qt6QmlCompiler.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\qmlls\\qmllsquickplugin.dll'.
+222592 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\renderers\\openglrenderer.dll'.
+222593 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\renderers\\openglrenderer.dll'.
+222596 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\renderers\\rhirenderer.dll'.
+222597 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\renderers\\rhirenderer.dll'.
+222599 WARNING: Library not found: could not resolve 'Qt63DExtras.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\assimpsceneimport.dll'.
+222600 WARNING: Library not found: could not resolve 'Qt63DAnimation.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\assimpsceneimport.dll'.
+222604 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\assimpsceneimport.dll'.
+222604 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\assimpsceneimport.dll'.
+222606 WARNING: Library not found: could not resolve 'Qt63DExtras.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneexport.dll'.
+222608 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneexport.dll'.
+222608 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneexport.dll'.
+222610 WARNING: Library not found: could not resolve 'Qt63DExtras.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneimport.dll'.
+222612 WARNING: Library not found: could not resolve 'Qt63DRender.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneimport.dll'.
+222612 WARNING: Library not found: could not resolve 'Qt63DCore.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sceneparsers\\gltfsceneimport.dll'.
+222614 WARNING: Library not found: could not resolve 'Qt6Scxml.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\scxmldatamodel\\qscxmlecmascriptdatamodel.dll'.
+222625 WARNING: Library not found: could not resolve 'fbclient.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sqldrivers\\qsqlibase.dll'.
+222632 WARNING: Library not found: could not resolve 'MIMAPI64.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sqldrivers\\qsqlmimer.dll'.
+222636 WARNING: Library not found: could not resolve 'OCI.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sqldrivers\\qsqloci.dll'.
+222640 WARNING: Library not found: could not resolve 'LIBPQ.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\sqldrivers\\qsqlpsql.dll'.
+222658 WARNING: Library not found: could not resolve 'Qt6WebView.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\webview\\qtwebview_webengine.dll'.
+222660 WARNING: Library not found: could not resolve 'Qt6WebView.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\webview\\qtwebview_webview2.dll'.
+222667 WARNING: Library not found: could not resolve 'Qt6QmlCore.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtCore\\qtqmlcoreplugin.dll'.
+222673 WARNING: Library not found: could not resolve 'Qt6QmlNetwork.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtNetwork\\qmlnetworkplugin.dll'.
+222679 WARNING: Library not found: could not resolve 'Qt6QmlXmlListModel.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQml\\XmlListModel\\qmlxmllistmodelplugin.dll'.
+222691 WARNING: Library not found: could not resolve 'Qt6Quick3DParticleEffects.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick3D\\ParticleEffects\\qtquick3dparticleeffectsplugin.dll'.
+222706 WARNING: Library not found: could not resolve 'Qt6QuickControls2FluentWinUI3StyleImpl.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Controls\\FluentWinUI3\\impl\\qtquickcontrols2fluentwinui3styleimplplugin.dll'.
+222710 WARNING: Library not found: could not resolve 'Qt6QuickControls2FluentWinUI3StyleImpl.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Controls\\FluentWinUI3\\qtquickcontrols2fluentwinui3styleplugin.dll'.
+222728 WARNING: Library not found: could not resolve 'Qt6QuickControls2WindowsStyleImpl.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Controls\\Windows\\impl\\qtquickcontrols2windowsstyleimplplugin.dll'.
+222744 WARNING: Library not found: could not resolve 'Qt6QmlLocalStorage.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\LocalStorage\\qmllocalstorageplugin.dll'.
+222754 WARNING: Library not found: could not resolve 'Qt63DQuickScene2D.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Scene2D\\qtquickscene2dplugin.dll'.
+222756 WARNING: Library not found: could not resolve 'Qt63DQuickScene3D.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Scene3D\\qtquickscene3dplugin.dll'.
+222758 WARNING: Library not found: could not resolve 'Qt6QuickShapesDesignHelpers.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\Shapes\\DesignHelpers\\qtquickshapesdesignhelpersplugin.dll'.
+222765 WARNING: Library not found: could not resolve 'Qt6QuickVectorImageHelpers.dll', dependency of 'c:\\Users\\serin\\Github\\Project-IRIS-Light\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\qml\\QtQuick\\VectorImage\\Helpers\\qquickvectorimagehelpersplugin.dll'.
+223262 INFO: Warnings written to C:\Users\serin\Github\Project-IRIS-Light\build\IRIS\warn-IRIS.txt
+223527 INFO: Graph cross-reference written to C:\Users\serin\Github\Project-IRIS-Light\build\IRIS\xref-IRIS.html
+224073 INFO: checking PYZ
+224077 INFO: Building PYZ because PYZ-00.toc is non existent
+224077 INFO: Building PYZ (ZlibArchive) C:\Users\serin\Github\Project-IRIS-Light\build\IRIS\PYZ-00.pyz
+225925 INFO: Building PYZ (ZlibArchive) C:\Users\serin\Github\Project-IRIS-Light\build\IRIS\PYZ-00.pyz completed successfully.
+226290 INFO: checking PKG
+226299 INFO: Building PKG because PKG-00.toc is non existent
+226299 INFO: Building PKG (CArchive) IRIS.pkg
+375666 INFO: Building PKG (CArchive) IRIS.pkg completed successfully.
+375800 INFO: Bootloader c:\Users\serin\Github\Project-IRIS-Light\.venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+375800 INFO: checking EXE
+375802 INFO: Building EXE because EXE-00.toc is non existent
+375802 INFO: Building EXE from EXE-00.toc
+375804 INFO: Copying bootloader EXE to C:\Users\serin\Github\Project-IRIS-Light\dist\IRIS.exe
+375978 INFO: Copying icon to EXE
+376056 INFO: Copying version information to EXE
+376104 INFO: Copying 0 resources to EXE
+376104 INFO: Embedding manifest in EXE
+376184 INFO: Appending PKG archive to EXE
+376492 INFO: Fixing EXE headers
+378299 INFO: Building EXE from EXE-00.toc completed successfully.
+378410 INFO: Build complete! The results are available in: C:\Users\serin\Github\Project-IRIS-Light\dist
