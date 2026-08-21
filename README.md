@@ -119,8 +119,8 @@ chmod +x run.sh
 ### 첫 실행
 
 1. 앱이 **시작 위저드**를 띄웁니다.
-2. Core 단계: Ollama 설치·기동 → 최소 모델 pull → Hermes 설치 → API/provider 연결 → gateway 기동.
-3. Optional(클라우드 로그인, 에뮬레이터 등)은 스킵 가능합니다.
+2. Core 단계: Ollama 공식 설치·기동 → 최소 모델 pull → Hermes 설치 → API/provider 연결 → gateway 기동.
+3. Optional(STT 음성·Full TTS·업무학습 Aloha·에뮬레이터·Node/mobile-mcp·클라우드 로그인 등)은 「설치」또는 「나중에」.
 4. HUD 채팅에서 바로 자연어 요청을 보내면, Hermes/Ollama가 응답·도구 실행을 스트리밍합니다.
 
 > 데모만 보려면: `IRIS_SETUP_DEMO=1` (실제 설치 없음)  

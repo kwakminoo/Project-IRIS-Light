@@ -50,9 +50,17 @@ SCHEMA_VERSION = 1
 DEFAULT_MIN_MODEL = "gemma4:e2b"
 
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download/windows"
+OLLAMA_INSTALL_PS1 = "https://ollama.com/install.ps1"
 HERMES_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.ps1"
 ANDROID_STUDIO_URL = "https://developer.android.com/studio"
 OLLAMA_SIGNIN_URL = "https://ollama.com/signin"
+NODE_DOWNLOAD_URL = "https://nodejs.org/en/download"
+
+# 설치기: 출력 없으면 idle_timeout, 절대 상한 hard_timeout
+_INSTALL_IDLE_SEC = 600.0
+_INSTALL_HARD_SEC = 3600.0
+_HERMES_IDLE_SEC = 900.0
+_HERMES_HARD_SEC = 3600.0
 
 
 def is_setup_demo() -> bool:
@@ -134,12 +142,25 @@ CORE_STEP_LABELS: dict[str, str] = {
 
 OPTIONAL_IDS: tuple[str, ...] = (
     "voice",
+    "voice_full",
+    "learning",
     "emulator",
     "mobile_mcp",
     "external_api",
     "mail",
     "ollama_cloud",
 )
+
+OPTIONAL_LABELS: dict[str, str] = {
+    "voice": "음성 런타임 (STT)",
+    "voice_full": "음성 Full TTS",
+    "learning": "업무 학습 (Aloha)",
+    "emulator": "Android 에뮬레이터",
+    "mobile_mcp": "mobile-mcp (Node)",
+    "external_api": "외부 API",
+    "mail": "메일",
+    "ollama_cloud": "Ollama 클라우드",
+}
 
 
 @dataclass
@@ -230,7 +251,12 @@ def load_setup_state() -> dict[str, Any]:
     if not isinstance(base.get("steps"), dict):
         base["steps"] = {}
     if not isinstance(base.get("optional"), dict):
-        base["optional"] = _default_state()["optional"]
+        base["optional"] = {}
+    # 새 optional 키가 추가돼도 기존 state와 병합
+    opt = base["optional"]
+    for key in OPTIONAL_IDS:
+        if key not in opt or not isinstance(opt.get(key), dict):
+            opt[key] = {"status": "pending", "message": "", "updated_at": ""}
     return base
 
 
@@ -400,8 +426,14 @@ class SetupProtocol:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
+        hard_timeout: float | None = None,
         hidden: bool = True,
     ) -> subprocess.CompletedProcess[str]:
+        """stdout 스트리밍.
+
+        timeout: 마지막 출력 이후 유휴 초(진행 로그가 있으면 연장).
+        hard_timeout: 벽시계 절대 상한. None이면 timeout만 사용(구형 호환).
+        """
         kwargs: dict[str, Any] = {
             "stdout": subprocess.PIPE,
             "stderr": subprocess.STDOUT,
@@ -420,8 +452,16 @@ class SetupProtocol:
         collected: list[str] = []
         buf = b""
         started = time.monotonic()
+        last_activity = started
         out_q: queue.Queue[bytes | None] = queue.Queue()
         idle_after_exit = 0
+        # hard만 주고 idle 안 주면 hard를 idle처럼 쓰지 않음 — 구호출은 timeout=벽시계
+        idle_limit = timeout
+        hard_limit = hard_timeout
+        if hard_limit is None and idle_limit is not None:
+            # 이전 API: timeout = 절대 상한
+            hard_limit = idle_limit
+            idle_limit = None
 
         def _reader() -> None:
             try:
@@ -443,7 +483,12 @@ class SetupProtocol:
                 if self._abort:
                     _kill_proc_tree(proc)
                     break
-                if timeout is not None and (time.monotonic() - started) > timeout:
+                now = time.monotonic()
+                if hard_limit is not None and (now - started) > hard_limit:
+                    timed_out = True
+                    _kill_proc_tree(proc)
+                    break
+                if idle_limit is not None and (now - last_activity) > idle_limit:
                     timed_out = True
                     _kill_proc_tree(proc)
                     break
@@ -459,6 +504,7 @@ class SetupProtocol:
                 if piece is None:
                     break
                 idle_after_exit = 0
+                last_activity = time.monotonic()
                 buf += piece
                 while True:
                     split = _split_off_frame(buf)
@@ -483,7 +529,7 @@ class SetupProtocol:
             self._active_proc = None
         code = proc.returncode if proc.returncode is not None else 1
         if timed_out:
-            raise subprocess.TimeoutExpired(cmd, timeout or 0)
+            raise subprocess.TimeoutExpired(cmd, hard_limit or idle_limit or 0)
         return subprocess.CompletedProcess(cmd, code, "\n".join(collected), "")
 
     def last_error(self) -> str:
@@ -700,7 +746,7 @@ class SetupProtocol:
         # 미설치 상황을 가정해 NeedsUser+설치 버튼을 보여 줄 단계
         need_install = {
             "ollama_install": (
-                "Ollama가 없습니다. 「설치」를 누르면 winget으로 설치합니다.",
+                "Ollama가 없습니다. 「설치」를 누르면 공식 설치 스크립트를 실행합니다.",
                 OLLAMA_DOWNLOAD_URL,
                 "UAC가 뜨면 허용하세요. 수동 설치 시 「열기」 후 「완료했어요」.",
             ),
@@ -754,7 +800,7 @@ class SetupProtocol:
                         done = self._record_step(
                             step_id,
                             "done",
-                            "winget으로 Ollama 설치됨"
+                            "공식 스크립트로 Ollama 설치됨"
                             if step_id == "ollama_install"
                             else "Hermes 설치됨",
                         )
@@ -790,6 +836,8 @@ class SetupProtocol:
             return self._run_optional_dry_run(which, on_progress, on_user)
         dispatch = {
             "voice": self._opt_voice,
+            "voice_full": self._opt_voice_full,
+            "learning": self._opt_learning,
             "emulator": self._opt_emulator,
             "mobile_mcp": self._opt_mobile_mcp,
             "external_api": self._opt_external_api,
@@ -842,12 +890,14 @@ class SetupProtocol:
         on_user: UserActionFn | None,
     ) -> bool:
         labels = {
-            "voice": "음성 런타임",
-            "emulator": "Android 에뮬레이터",
-            "mobile_mcp": "mobile-mcp",
-            "external_api": "외부 API",
-            "mail": "메일",
-            "ollama_cloud": "Ollama 클라우드",
+            "voice": OPTIONAL_LABELS["voice"],
+            "voice_full": OPTIONAL_LABELS["voice_full"],
+            "learning": OPTIONAL_LABELS["learning"],
+            "emulator": OPTIONAL_LABELS["emulator"],
+            "mobile_mcp": OPTIONAL_LABELS["mobile_mcp"],
+            "external_api": OPTIONAL_LABELS["external_api"],
+            "mail": OPTIONAL_LABELS["mail"],
+            "ollama_cloud": OPTIONAL_LABELS["ollama_cloud"],
         }
         label = labels.get(which, which)
         time.sleep(0.35)
@@ -860,7 +910,8 @@ class SetupProtocol:
             ),
             action_hint="「설치」/「완료했어요」/「나중에」로 진행 (데모).",
             label=label,
-            can_install=which in ("emulator", "voice"),
+            can_install=which
+            in ("emulator", "voice", "voice_full", "learning", "mobile_mcp"),
         )
         self._emit(on_progress, result)
         self._save_optional(which, result)
@@ -892,42 +943,56 @@ class SetupProtocol:
         specs: dict[str, tuple[str, str, str, str, bool]] = {
             # label, message, url, hint, can_install
             "voice": (
-                "음성 런타임",
-                "음성 런타임을 준비합니다 (mock).",
+                OPTIONAL_LABELS["voice"],
+                "STT용 음성 런타임(.venv-voice)이 없습니다. 「설치」또는 「나중에」.",
                 "",
-                "「완료했어요」로 다음, 「나중에」로 건너뛰기.",
-                False,
+                "mock+STT(faster-whisper). Full TTS는 다음 단계에서.",
+                True,
+            ),
+            "voice_full": (
+                OPTIONAL_LABELS["voice_full"],
+                "실 TTS(CUDA torch·qwen-tts)는 용량이 큽니다. 「설치」또는 「나중에」.",
+                "",
+                "GPU/디스크 여유 확인 후 「설치」.",
+                True,
+            ),
+            "learning": (
+                OPTIONAL_LABELS["learning"],
+                "업무 학습(Aloha Act) 런타임이 없습니다. 「설치」또는 「나중에」.",
+                "",
+                "별도 venv(~/.iris-light/runtimes/aloha). PySide6 포함.",
+                True,
             ),
             "emulator": (
-                "Android 에뮬레이터",
+                OPTIONAL_LABELS["emulator"],
                 "emulator 없음. 「설치」를 누르면 Android Studio(winget) 설치를 시도합니다.",
                 ANDROID_STUDIO_URL,
                 "용량이 큽니다. 「나중에」 가능.",
                 True,
             ),
             "mobile_mcp": (
-                "mobile-mcp",
-                "Node/npx 확인 — 있으면 Hermes MCP에 등록됩니다.",
-                "",
-                "「완료했어요」 또는 「나중에」.",
-                False,
+                OPTIONAL_LABELS["mobile_mcp"],
+                "Node/npx가 없습니다. 「설치」로 Node LTS(winget)를 시도합니다.",
+                NODE_DOWNLOAD_URL,
+                "이미 Node가 있으면 「완료했어요」.",
+                True,
             ),
             "external_api": (
-                "외부 API",
+                OPTIONAL_LABELS["external_api"],
                 "외부 API 키는 설정에서 직접 추가합니다.",
                 "",
                 "설정 → API 항목. 「나중에」로 건너뛸 수 있습니다.",
                 False,
             ),
             "mail": (
-                "메일",
+                OPTIONAL_LABELS["mail"],
                 "메일 계정은 설정에서 추가합니다.",
                 "",
                 "설정 → 이메일. 「나중에」로 건너뛸 수 있습니다.",
                 False,
             ),
             "ollama_cloud": (
-                "Ollama 클라우드",
+                OPTIONAL_LABELS["ollama_cloud"],
                 "Ollama 클라우드 모델은 로그인 후 사용할 수 있습니다.",
                 OLLAMA_SIGNIN_URL,
                 "브라우저에서 로그인 후 「완료했어요」 또는 「나중에」.",
@@ -938,23 +1003,6 @@ class SetupProtocol:
             which,
             (which, which, "", "「나중에」 가능.", False),
         )
-        if which == "voice":
-            time.sleep(0.4)
-            done = SetupStepResult(
-                which, "done", "mock 음성 런타임 준비됨 (Full TTS는 -Full)", label=label
-            )
-            self._emit(on_progress, done)
-            self._save_optional(which, done)
-            return True
-        if which == "mobile_mcp":
-            time.sleep(0.3)
-            done = SetupStepResult(
-                which, "done", "Node 확인됨 (Hermes MCP에 등록됨)", label=label
-            )
-            self._emit(on_progress, done)
-            self._save_optional(which, done)
-            return True
-
         result = SetupStepResult(
             step_id=which,
             status="needs_user",
@@ -976,15 +1024,20 @@ class SetupProtocol:
             self._emit(on_progress, skipped)
             self._save_optional(which, skipped)
             return True
-        if choice == "install" and which == "emulator":
+        if choice == "install":
             self._emit(
                 on_progress,
                 SetupStepResult(which, "installing", "설치 실행 중…", label=label),
             )
-            time.sleep(1.0)
-            done = SetupStepResult(
-                which, "done", "실행 가능 (AVD IrisLight_Pixel)", label=label
-            )
+            time.sleep(0.9)
+            done_msg = {
+                "voice": "STT 음성 런타임 준비됨",
+                "voice_full": "Full TTS 준비됨 (CUDA·qwen)",
+                "learning": "Aloha runtime ready",
+                "emulator": "실행 가능 (AVD IrisLight_Pixel)",
+                "mobile_mcp": "Node 확인됨 (Hermes MCP에 등록됨)",
+            }.get(which, f"{label} 확인됨")
+            done = SetupStepResult(which, "done", done_msg, label=label)
             self._emit(on_progress, done)
             self._save_optional(which, done)
             return True
@@ -996,7 +1049,7 @@ class SetupProtocol:
     def _dispatch_install(self, step_id: str) -> SetupStepResult:
         """NeedsUser 「설치」 — 이미 있으면 검증만, 없으면 설치 실행."""
         if self.simulate:
-            label = CORE_STEP_LABELS.get(step_id, step_id)
+            label = CORE_STEP_LABELS.get(step_id, OPTIONAL_LABELS.get(step_id, step_id))
             return SetupStepResult(
                 step_id=step_id,
                 status="done",
@@ -1006,28 +1059,39 @@ class SetupProtocol:
         if self.dry_run:
             time.sleep(0.8)
             if step_id == "ollama_install":
-                return self._record_step("ollama_install", "done", "winget으로 Ollama 설치됨")
+                return self._record_step(
+                    "ollama_install", "done", "공식 스크립트로 Ollama 설치됨"
+                )
             if step_id == "hermes_install":
                 return self._record_step("hermes_install", "done", "Hermes 설치됨")
-            if step_id == "emulator":
-                return SetupStepResult(
-                    "emulator",
-                    "done",
-                    "실행 가능 (AVD IrisLight_Pixel)",
-                    label="Android 에뮬레이터",
-                )
-            return SetupStepResult(step_id, "done", "완료")
+            label = OPTIONAL_LABELS.get(step_id, step_id)
+            done_msg = {
+                "emulator": "실행 가능 (AVD IrisLight_Pixel)",
+                "voice": "STT 음성 런타임 준비됨",
+                "voice_full": "Full TTS 준비됨 (CUDA·qwen)",
+                "learning": "Aloha runtime ready",
+                "mobile_mcp": "Node 확인됨 (Hermes MCP에 등록됨)",
+            }.get(step_id, "완료")
+            return SetupStepResult(step_id, "done", done_msg, label=label)
         if step_id == "ollama_install":
             return self._install_ollama()
         if step_id == "hermes_install":
             return self._install_hermes()
         if step_id == "emulator":
             return self._install_emulator()
+        if step_id == "voice":
+            return self._install_voice(full=False)
+        if step_id == "voice_full":
+            return self._install_voice(full=True)
+        if step_id == "learning":
+            return self._install_learning()
+        if step_id == "mobile_mcp":
+            return self._install_node()
         return SetupStepResult(
             step_id=step_id,
             status="failed",
             message="이 단계는 자동 설치를 지원하지 않습니다",
-            label=CORE_STEP_LABELS.get(step_id, step_id),
+            label=CORE_STEP_LABELS.get(step_id, OPTIONAL_LABELS.get(step_id, step_id)),
         )
 
     def _save_optional(self, which: str, result: SetupStepResult) -> None:
@@ -1104,75 +1168,166 @@ class SetupProtocol:
         return SetupStepResult(
             step_id="ollama_install",
             status="needs_user",
-            message="Ollama가 없습니다. 「설치」를 누르면 winget으로 설치합니다.",
+            message="Ollama가 없습니다. 「설치」를 누르면 공식 설치 스크립트를 실행합니다.",
             action_url=OLLAMA_DOWNLOAD_URL,
             action_hint="UAC가 뜨면 허용하세요. 수동 설치 시 「열기」 후 「완료했어요」.",
             label=CORE_STEP_LABELS["ollama_install"],
             can_install=True,
         )
 
-    def _install_ollama(self) -> SetupStepResult:
-        if ollama_executable() and ensure_ollama_running(self.ollama_base_url, wait_sec=15.0):
-            return self._record_step("ollama_install", "done", "Ollama 이미 사용 가능")
-        if sys.platform == "win32":
-            winget = _winget_exe()
-            if winget:
-                self._emit_stream(f"winget 설치 시작: {winget}", None, replace=False)
-                try:
-                    proc = self._run_streamed(
-                        [
-                            winget,
-                            "install",
-                            "-e",
-                            "--id",
-                            "Ollama.Ollama",
-                            "--accept-package-agreements",
-                            "--accept-source-agreements",
-                        ],
-                        timeout=600,
-                        hidden=False,
-                    )
-                except (OSError, subprocess.TimeoutExpired) as exc:
-                    return SetupStepResult(
-                        step_id="ollama_install",
-                        status="needs_user",
-                        message=f"winget 설치 실패: {exc}. 「열기」로 수동 설치하세요.",
-                        action_url=OLLAMA_DOWNLOAD_URL,
-                        action_hint="설치 후 「완료했어요」를 누르세요.",
-                        label=CORE_STEP_LABELS["ollama_install"],
-                        can_install=True,
-                    )
-                if proc.returncode == 0:
-                    time.sleep(2)
-                    if ollama_executable() and ensure_ollama_running(self.ollama_base_url, wait_sec=25.0):
-                        return self._record_step("ollama_install", "done", "winget으로 Ollama 설치됨")
-                    return SetupStepResult(
-                        step_id="ollama_install",
-                        status="needs_user",
-                        message="설치는 됐지만 PATH에 없습니다. Iris를 재시작한 뒤 「완료했어요」.",
-                        action_url="",
-                        action_hint="재시작 후 「완료했어요」를 누르세요.",
-                        label=CORE_STEP_LABELS["ollama_install"],
-                        can_install=False,
-                    )
-                err = (proc.stderr or proc.stdout or "")[:160]
-                return SetupStepResult(
-                    step_id="ollama_install",
-                    status="needs_user",
-                    message=f"winget 실패. 「열기」로 수동 설치하세요. {err}",
-                    action_url=OLLAMA_DOWNLOAD_URL,
-                    action_hint="설치 후 「완료했어요」.",
-                    label=CORE_STEP_LABELS["ollama_install"],
-                    can_install=True,
-                )
+    def _ollama_ready(self, *, wait_sec: float = 15.0) -> bool:
+        return bool(
+            ollama_executable()
+            and ensure_ollama_running(self.ollama_base_url, wait_sec=wait_sec)
+        )
+
+    def _needs_user_install_check(
+        self,
+        step_id: str,
+        *,
+        message: str,
+        action_url: str = "",
+        action_hint: str = "설치가 끝났다면 「완료했어요」로 재확인하세요.",
+        can_install: bool = True,
+    ) -> SetupStepResult:
         return SetupStepResult(
-            step_id="ollama_install",
+            step_id=step_id,
             status="needs_user",
-            message="winget이 없습니다. 「열기」로 Ollama 설치 프로그램을 받아 주세요.",
+            message=message,
+            action_url=action_url,
+            action_hint=action_hint,
+            label=CORE_STEP_LABELS.get(step_id, OPTIONAL_LABELS.get(step_id, step_id)),
+            can_install=can_install,
+        )
+
+    def _install_ollama(self) -> SetupStepResult:
+        if self._ollama_ready(wait_sec=15.0):
+            return self._record_step("ollama_install", "done", "Ollama 이미 사용 가능")
+        if sys.platform != "win32":
+            return self._needs_user_install_check(
+                "ollama_install",
+                message="Windows 외에서는 「열기」로 Ollama를 설치해 주세요.",
+                action_url=OLLAMA_DOWNLOAD_URL,
+                can_install=False,
+            )
+
+        # 1) 공식 install.ps1 (로그 스트리밍 → UI)
+        official = self._try_ollama_official_ps1()
+        if official is not None:
+            return official
+        # 2) winget 폴백
+        winget_result = self._try_ollama_winget()
+        if winget_result is not None:
+            return winget_result
+
+        return self._needs_user_install_check(
+            "ollama_install",
+            message="자동 설치를 끝내지 못했습니다. 「열기」로 수동 설치 후 「완료했어요」.",
             action_url=OLLAMA_DOWNLOAD_URL,
-            action_hint="설치 후 「완료했어요」.",
-            label=CORE_STEP_LABELS["ollama_install"],
-            can_install=False,
+            can_install=True,
+        )
+
+    def _try_ollama_official_ps1(self) -> SetupStepResult | None:
+        """성공/재확인 NeedsUser면 Result, 다음 폴백이면 None."""
+        self._emit_stream(f"공식 설치: irm {OLLAMA_INSTALL_PS1} | iex", None, replace=False)
+        ps = (
+            "& ([scriptblock]::Create((irm '"
+            + OLLAMA_INSTALL_PS1
+            + "')))"
+        )
+        try:
+            proc = self._run_streamed(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    ps,
+                ],
+                timeout=_INSTALL_IDLE_SEC,
+                hard_timeout=_INSTALL_HARD_SEC,
+                hidden=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            if self._ollama_ready(wait_sec=20.0):
+                return self._record_step(
+                    "ollama_install", "done", "시간 초과 후 Ollama 사용 가능 확인"
+                )
+            return self._needs_user_install_check(
+                "ollama_install",
+                message=(
+                    f"설치 확인 시간이 지났습니다 ({exc}). "
+                    "이미 설치됐을 수 있습니다. 「완료했어요」로 재확인하거나 다시 「설치」."
+                ),
+                action_url=OLLAMA_DOWNLOAD_URL,
+                can_install=True,
+            )
+        time.sleep(2)
+        if self._ollama_ready(wait_sec=25.0):
+            return self._record_step("ollama_install", "done", "공식 스크립트로 Ollama 설치됨")
+        if proc.returncode == 0:
+            return self._needs_user_install_check(
+                "ollama_install",
+                message="설치는 된 것 같지만 PATH에 없습니다. Iris를 재시작한 뒤 「완료했어요」.",
+                action_url="",
+                can_install=False,
+            )
+        # 폴백 시도
+        err = (proc.stdout or "")[-120:]
+        self._emit_stream(f"공식 스크립트 실패, winget 시도… {err}", None, replace=False)
+        return None
+
+    def _try_ollama_winget(self) -> SetupStepResult | None:
+        winget = _winget_exe()
+        if not winget:
+            return None
+        self._emit_stream(f"winget 폴백: {winget}", None, replace=False)
+        try:
+            proc = self._run_streamed(
+                [
+                    winget,
+                    "install",
+                    "-e",
+                    "--id",
+                    "Ollama.Ollama",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
+                timeout=_INSTALL_IDLE_SEC,
+                hard_timeout=_INSTALL_HARD_SEC,
+                hidden=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            if self._ollama_ready(wait_sec=20.0):
+                return self._record_step(
+                    "ollama_install", "done", "시간 초과 후 Ollama 사용 가능 확인"
+                )
+            return self._needs_user_install_check(
+                "ollama_install",
+                message=(
+                    f"winget 확인 시간이 지났습니다 ({exc}). "
+                    "설치됐을 수 있습니다. 「완료했어요」로 재확인하세요."
+                ),
+                action_url=OLLAMA_DOWNLOAD_URL,
+                can_install=True,
+            )
+        time.sleep(2)
+        if self._ollama_ready(wait_sec=25.0):
+            return self._record_step("ollama_install", "done", "winget으로 Ollama 설치됨")
+        if proc.returncode == 0:
+            return self._needs_user_install_check(
+                "ollama_install",
+                message="설치는 됐지만 PATH에 없습니다. Iris를 재시작한 뒤 「완료했어요」.",
+                action_url="",
+                can_install=False,
+            )
+        err = (proc.stdout or "")[-160:]
+        return self._needs_user_install_check(
+            "ollama_install",
+            message=f"자동 설치 실패. 「열기」로 수동 설치하세요. {err}",
+            action_url=OLLAMA_DOWNLOAD_URL,
+            can_install=True,
         )
 
     def _step_ollama_model(self) -> SetupStepResult:
@@ -1289,7 +1444,7 @@ class SetupProtocol:
             + HERMES_INSTALL_URL
             + "'))) -SkipSetup -NonInteractive"
         )
-        self._emit_stream("Hermes 설치 스크립트 실행 중…", None, replace=False)
+        self._emit_stream("Hermes 공식 설치 스크립트 실행 중…", None, replace=False)
         try:
             proc = self._run_streamed(
                 [
@@ -1300,39 +1455,38 @@ class SetupProtocol:
                     "-Command",
                     ps,
                 ],
-                timeout=1800,
+                timeout=_HERMES_IDLE_SEC,
+                hard_timeout=_HERMES_HARD_SEC,
                 hidden=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return SetupStepResult(
-                step_id="hermes_install",
-                status="needs_user",
-                message=f"설치 실패: {exc}. 「열기」로 수동 시도하세요.",
+            if hermes_executable(self.hermes_command):
+                return self._record_step(
+                    "hermes_install", "done", "시간 초과 후 Hermes 사용 가능 확인"
+                )
+            return self._needs_user_install_check(
+                "hermes_install",
+                message=(
+                    f"설치 확인 시간이 지났습니다 ({exc}). "
+                    "이미 설치됐을 수 있습니다. Iris 재시작 후 「완료했어요」."
+                ),
                 action_url=HERMES_INSTALL_URL,
-                action_hint="설치 후 Iris 재시작 → 「완료했어요」.",
-                label=CORE_STEP_LABELS["hermes_install"],
                 can_install=True,
             )
         if hermes_executable(self.hermes_command):
             return self._record_step("hermes_install", "done", "Hermes 설치됨")
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "")[:180]
-            return SetupStepResult(
-                step_id="hermes_install",
-                status="needs_user",
+            return self._needs_user_install_check(
+                "hermes_install",
                 message=f"설치가 끝나지 않았습니다. {err}",
                 action_url=HERMES_INSTALL_URL,
-                action_hint="수동 설치 후 Iris 재시작 → 「완료했어요」.",
-                label=CORE_STEP_LABELS["hermes_install"],
                 can_install=True,
             )
-        return SetupStepResult(
-            step_id="hermes_install",
-            status="needs_user",
+        return self._needs_user_install_check(
+            "hermes_install",
             message="설치는 됐지만 PATH에 없습니다. Iris를 재시작한 뒤 「완료했어요」.",
             action_url="",
-            action_hint="재시작 후 「완료했어요」.",
-            label=CORE_STEP_LABELS["hermes_install"],
             can_install=False,
         )
 
@@ -1445,35 +1599,229 @@ class SetupProtocol:
 
     # ---- Optional ----
 
+    def _voice_venv_python(self) -> Path | None:
+        root = project_root() / ".venv-voice"
+        win = root / "Scripts" / "python.exe"
+        unix = root / "bin" / "python"
+        if win.is_file():
+            return win
+        if unix.is_file():
+            return unix
+        return None
+
+    def _voice_stt_ready(self) -> bool:
+        py = self._voice_venv_python()
+        if py is None:
+            return False
+        try:
+            proc = subprocess.run(
+                [
+                    str(py),
+                    "-c",
+                    "import importlib.util, sys; "
+                    "mods=('fastapi','faster_whisper'); "
+                    "missing=[m for m in mods if importlib.util.find_spec(m) is None]; "
+                    "sys.exit(1 if missing else 0)",
+                ],
+                capture_output=True,
+                timeout=40,
+                check=False,
+            )
+            return proc.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    def _voice_full_ready(self) -> bool:
+        py = self._voice_venv_python()
+        if py is None:
+            return False
+        try:
+            proc = subprocess.run(
+                [
+                    str(py),
+                    "-c",
+                    "import importlib.util, sys; "
+                    "ok = importlib.util.find_spec('qwen_tts') is not None "
+                    "or importlib.util.find_spec('faster_qwen3_tts') is not None; "
+                    "sys.exit(0 if ok else 1)",
+                ],
+                capture_output=True,
+                timeout=40,
+                check=False,
+            )
+            return proc.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
     def _opt_voice(self) -> SetupStepResult:
+        label = OPTIONAL_LABELS["voice"]
+        if self._voice_stt_ready():
+            return SetupStepResult(
+                "voice", "done", "STT 음성 런타임 준비됨", label=label
+            )
+        return SetupStepResult(
+            step_id="voice",
+            status="needs_user",
+            message=(
+                "STT용 음성 런타임(.venv-voice)이 없습니다. "
+                "「설치」로 mock+STT를 준비하거나 「나중에」."
+            ),
+            action_url="",
+            action_hint="faster-whisper 포함. Full TTS(CUDA)는 다음 선택 단계.",
+            label=label,
+            can_install=True,
+        )
+
+    def _opt_voice_full(self) -> SetupStepResult:
+        label = OPTIONAL_LABELS["voice_full"]
+        if self._voice_full_ready():
+            return SetupStepResult(
+                "voice_full", "done", "Full TTS 준비됨", label=label
+            )
+        if not self._voice_venv_python():
+            return SetupStepResult(
+                step_id="voice_full",
+                status="needs_user",
+                message="먼저 STT 음성 런타임을 설치하세요. 없으면 「나중에」 후 설정에서 설치.",
+                action_url="",
+                action_hint="이전 단계 「음성 런타임 (STT)」를 먼저 설치하는 것을 권장합니다.",
+                label=label,
+                can_install=True,
+            )
+        return SetupStepResult(
+            step_id="voice_full",
+            status="needs_user",
+            message=(
+                "실 TTS(CUDA torch·qwen-tts)는 수 GB가 필요합니다. "
+                "「설치」또는 「나중에」."
+            ),
+            action_url="",
+            action_hint="NVIDIA GPU 권장. setup_voice_runtime.ps1 -Full 실행.",
+            label=label,
+            can_install=True,
+        )
+
+    def _install_voice(self, *, full: bool) -> SetupStepResult:
+        step_id = "voice_full" if full else "voice"
+        label = OPTIONAL_LABELS[step_id]
+        if full and self._voice_full_ready():
+            return SetupStepResult(step_id, "done", "Full TTS 이미 준비됨", label=label)
+        if not full and self._voice_stt_ready():
+            return SetupStepResult(step_id, "done", "STT 음성 런타임 이미 준비됨", label=label)
+
         script = project_root() / "scripts" / "setup_voice_runtime.ps1"
         if not script.is_file():
             return SetupStepResult(
-                "voice", "skipped", "setup_voice_runtime.ps1 없음", label="음성 런타임"
+                step_id, "failed", "setup_voice_runtime.ps1 없음", label=label
             )
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+        ]
+        if full:
+            cmd.append("-Full")
+        self._emit_stream(
+            f"{'Full TTS' if full else 'STT'} 음성 런타임 설치 중…",
+            None,
+            replace=False,
+        )
         try:
             proc = self._run_streamed(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    str(script),
-                ],
+                cmd,
                 cwd=str(project_root()),
-                timeout=900,
+                timeout=_INSTALL_IDLE_SEC,
+                hard_timeout=_INSTALL_HARD_SEC if full else 1800.0,
+                hidden=True,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return SetupStepResult("voice", "failed", str(exc)[:200], label="음성 런타임")
+            if full and self._voice_full_ready():
+                return SetupStepResult(
+                    step_id, "done", "시간 초과 후 Full TTS 확인됨", label=label
+                )
+            if not full and self._voice_stt_ready():
+                return SetupStepResult(
+                    step_id, "done", "시간 초과 후 STT 런타임 확인됨", label=label
+                )
+            return self._needs_user_install_check(
+                step_id,
+                message=f"설치 확인 시간이 지났습니다 ({exc}). 「완료했어요」로 재확인.",
+                can_install=True,
+            )
         if proc.returncode != 0:
-            err = (proc.stderr or proc.stdout or "")[:180]
-            return SetupStepResult("voice", "failed", err, label="음성 런타임")
+            err = (proc.stderr or proc.stdout or "")[-180:]
+            return SetupStepResult(step_id, "failed", err, label=label)
+        if full:
+            if self._voice_full_ready():
+                return SetupStepResult(
+                    step_id, "done", "Full TTS 준비됨 (CUDA·qwen)", label=label
+                )
+            return self._needs_user_install_check(
+                step_id,
+                message="스크립트는 끝났지만 Full TTS 패키지를 확인하지 못했습니다.",
+                can_install=True,
+            )
+        if self._voice_stt_ready():
+            return SetupStepResult(
+                step_id, "done", "STT 음성 런타임 준비됨", label=label
+            )
+        return self._needs_user_install_check(
+            step_id,
+            message="스크립트는 끝났지만 .venv-voice를 확인하지 못했습니다.",
+            can_install=True,
+        )
+
+    def _opt_learning(self) -> SetupStepResult:
+        label = OPTIONAL_LABELS["learning"]
+        from iris.learning.aloha_runtime import runtime_status
+
+        st = runtime_status()
+        if st.get("ok"):
+            return SetupStepResult(
+                "learning", "done", f"Aloha runtime ready ({st.get('detail')})", label=label
+            )
         return SetupStepResult(
-            "voice",
-            "done",
-            "mock 음성 런타임 준비됨 (Full TTS는 -Full)",
-            label="음성 런타임",
+            step_id="learning",
+            status="needs_user",
+            message=(
+                "업무 학습(Aloha Act) 런타임이 없습니다. "
+                "「설치」로 별도 venv를 만들거나 「나중에」."
+            ),
+            action_url="",
+            action_hint="~/.iris-light/runtimes/aloha — PySide6·flask 등. Iris venv와 분리.",
+            label=label,
+            can_install=True,
+        )
+
+    def _install_learning(self) -> SetupStepResult:
+        label = OPTIONAL_LABELS["learning"]
+        from iris.learning.aloha_runtime import bootstrap_runtime, runtime_status
+
+        st = runtime_status()
+        if st.get("ok"):
+            return SetupStepResult(
+                "learning", "done", "Aloha runtime 이미 준비됨", label=label
+            )
+        self._emit_stream("Aloha Act runtime 설치 중…", None, replace=False)
+        try:
+            st = bootstrap_runtime(
+                progress=lambda msg: self._emit_stream(str(msg), None, replace=False)
+            )
+        except Exception as exc:  # noqa: BLE001
+            return SetupStepResult(
+                "learning", "failed", str(exc)[:240], label=label
+            )
+        if st.get("ok"):
+            return SetupStepResult(
+                "learning", "done", "Aloha runtime ready", label=label
+            )
+        return self._needs_user_install_check(
+            "learning",
+            message=f"설치 후 검증 실패: {st.get('detail')}",
+            can_install=True,
         )
 
     def _opt_emulator(self) -> SetupStepResult:
@@ -1542,14 +1890,27 @@ class SetupProtocol:
                             "--accept-package-agreements",
                             "--accept-source-agreements",
                         ],
-                        timeout=3600,
+                        timeout=_INSTALL_IDLE_SEC,
+                        hard_timeout=_INSTALL_HARD_SEC,
                         hidden=False,
                     )
                 except (OSError, subprocess.TimeoutExpired) as exc:
+                    ok2, detail2 = is_emulator_available()
+                    if ok2:
+                        try:
+                            ensure_avd()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return SetupStepResult(
+                            "emulator",
+                            "done",
+                            detail2 or "시간 초과 후 에뮬레이터 확인됨",
+                            label="Android 에뮬레이터",
+                        )
                     return SetupStepResult(
                         step_id="emulator",
                         status="needs_user",
-                        message=f"Android Studio 설치 실패: {exc}",
+                        message=f"Android Studio 설치 확인 시간이 지났습니다: {exc}",
                         action_url=ANDROID_STUDIO_URL,
                         action_hint="「열기」로 수동 설치 후 SDK·AVD를 준비하세요.",
                         label="Android 에뮬레이터",
@@ -1592,19 +1953,83 @@ class SetupProtocol:
         )
 
     def _opt_mobile_mcp(self) -> SetupStepResult:
-        if not (shutil.which("npx") or shutil.which("node")):
+        label = OPTIONAL_LABELS["mobile_mcp"]
+        if shutil.which("npx") or shutil.which("node"):
             return SetupStepResult(
                 "mobile_mcp",
-                "skipped",
-                "Node/npx 없음 — 건너뜀",
-                label="mobile-mcp",
+                "done",
+                "Node 확인됨 (Hermes MCP에 등록됨)",
+                label=label,
             )
-        # sync가 config에 넣어 둠 — 여기서는 가용성만
         return SetupStepResult(
+            step_id="mobile_mcp",
+            status="needs_user",
+            message="Node/npx가 없습니다. 「설치」로 Node LTS(winget)를 시도하거나 「나중에」.",
+            action_url=NODE_DOWNLOAD_URL,
+            action_hint="모바일 MCP용. 수동이면 「열기」 후 「완료했어요」.",
+            label=label,
+            can_install=sys.platform == "win32" and _winget_available(),
+        )
+
+    def _install_node(self) -> SetupStepResult:
+        label = OPTIONAL_LABELS["mobile_mcp"]
+        if shutil.which("npx") or shutil.which("node"):
+            return SetupStepResult(
+                "mobile_mcp", "done", "Node 이미 사용 가능", label=label
+            )
+        if sys.platform != "win32" or not _winget_available():
+            return self._needs_user_install_check(
+                "mobile_mcp",
+                message="winget이 없습니다. 「열기」로 Node.js를 설치하세요.",
+                action_url=NODE_DOWNLOAD_URL,
+                can_install=False,
+            )
+        winget = _winget_exe()
+        assert winget is not None
+        self._emit_stream("winget으로 Node.js LTS 설치 중…", None, replace=False)
+        try:
+            proc = self._run_streamed(
+                [
+                    winget,
+                    "install",
+                    "-e",
+                    "--id",
+                    "OpenJS.NodeJS.LTS",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
+                timeout=_INSTALL_IDLE_SEC,
+                hard_timeout=_INSTALL_HARD_SEC,
+                hidden=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            if shutil.which("npx") or shutil.which("node"):
+                return SetupStepResult(
+                    "mobile_mcp", "done", "시간 초과 후 Node 확인됨", label=label
+                )
+            return self._needs_user_install_check(
+                "mobile_mcp",
+                message=f"Node 설치 확인 시간이 지났습니다 ({exc}).",
+                action_url=NODE_DOWNLOAD_URL,
+                can_install=True,
+            )
+        if shutil.which("npx") or shutil.which("node"):
+            return SetupStepResult(
+                "mobile_mcp", "done", "Node 설치됨 (Hermes MCP에 등록됨)", label=label
+            )
+        if proc.returncode == 0:
+            return self._needs_user_install_check(
+                "mobile_mcp",
+                message="설치는 됐지만 PATH에 없습니다. Iris 재시작 후 「완료했어요」.",
+                action_url="",
+                can_install=False,
+            )
+        err = (proc.stdout or "")[-160:]
+        return self._needs_user_install_check(
             "mobile_mcp",
-            "done",
-            "Node 확인됨 (Hermes MCP에 등록됨)",
-            label="mobile-mcp",
+            message=f"Node 설치 실패. 「열기」로 수동 설치하세요. {err}",
+            action_url=NODE_DOWNLOAD_URL,
+            can_install=True,
         )
 
     def _opt_external_api(self) -> SetupStepResult:
@@ -1614,7 +2039,7 @@ class SetupProtocol:
             message="외부 API 키는 설정에서 직접 추가합니다.",
             action_url="",
             action_hint="설정 → API 항목에서 키를 붙여넣으세요. 「나중에」로 건너뛸 수 있습니다.",
-            label="외부 API",
+            label=OPTIONAL_LABELS["external_api"],
         )
 
     def _opt_mail(self) -> SetupStepResult:
@@ -1624,7 +2049,7 @@ class SetupProtocol:
             message="메일 계정은 설정에서 추가합니다.",
             action_url="",
             action_hint="설정 → 이메일. 「나중에」로 건너뛸 수 있습니다.",
-            label="메일",
+            label=OPTIONAL_LABELS["mail"],
         )
 
     def _opt_ollama_cloud(self) -> SetupStepResult:
@@ -1634,7 +2059,7 @@ class SetupProtocol:
             message="Ollama 클라우드 모델은 로그인 후 사용할 수 있습니다.",
             action_url=OLLAMA_SIGNIN_URL,
             action_hint="브라우저에서 로그인 후 「완료했어요」 또는 「나중에」.",
-            label="Ollama 클라우드",
+            label=OPTIONAL_LABELS["ollama_cloud"],
         )
 
 
@@ -1662,6 +2087,7 @@ def _self_check() -> None:
     assert "mcp_venv" in CORE_STEP_IDS
     # 키 마스킹: 메시지에 raw key 넣지 않는지 상수만 검사
     assert "token_urlsafe" not in DEFAULT_MIN_MODEL
+    assert "voice_full" in OPTIONAL_IDS and "learning" in OPTIONAL_IDS
     assert parse_install_percent("Downloading  67%") == 67
     assert parse_install_percent("no percent here") is None
     assert parse_install_percent("150%") is None

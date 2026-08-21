@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from iris.system.setup_protocol import (
     CORE_STEP_IDS,
+    OPTIONAL_IDS,
     SetupProtocol,
     SetupStepResult,
     default_min_model,
@@ -16,11 +17,15 @@ from iris.system.setup_protocol import (
 
 def main() -> None:
     assert len(CORE_STEP_IDS) == 10
+    assert "voice_full" in OPTIONAL_IDS
+    assert "learning" in OPTIONAL_IDS
     assert default_min_model()
     r = SetupStepResult("state_init", "pending")
     assert r.label
     st = load_setup_state()
     assert "core_ready" in st
+    assert "voice_full" in st.get("optional", {})
+    assert "learning" in st.get("optional", {})
     proto = SetupProtocol()
     snap = proto.detect()
     assert "ollama_exe" in snap
