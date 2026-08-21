@@ -381,6 +381,18 @@ def _ollama_provider_model(existing: dict[str, Any], min_model: str) -> dict[str
     return model
 
 
+def _voice_full_installed(voice_venv: Path) -> bool:
+    """torch + Qwen TTS 계열 실제 합성 패키지가 .venv-voice 에 실제로 깔렸는지 확인.
+
+    setup_voice_runtime.ps1 -Full 의 returncode만 믿지 않고 site-packages를 직접 본다
+    (winget/pip류 설치들과 같은 이유 — 종료 코드가 0이어도 실제로 안 깔렸을 수 있다).
+    """
+    site = voice_venv / "Lib" / "site-packages"
+    if not (site / "torch" / "__init__.py").is_file():
+        return False
+    return any((site / name).exists() for name in ("faster_qwen3_tts", "qwen_tts"))
+
+
 def _winget_exe() -> str | None:
     found = shutil.which("winget")
     if found:
@@ -1025,10 +1037,11 @@ class SetupProtocol:
             # label, message, url, hint, can_install
             "voice": (
                 "음성 런타임",
-                "음성 런타임을 준비합니다 (mock).",
+                "음성 인식(STT)은 준비됐습니다. 실제 목소리로 말하는 TTS까지 설치할까요? "
+                "torch(CUDA)+Qwen TTS 모델 다운로드로 수 GB — 회선에 따라 1시간 이상 걸릴 수 있습니다.",
                 "",
-                "「완료했어요」로 다음, 「나중에」로 건너뛰기.",
-                False,
+                "「설치」하면 실제 TTS까지 깝니다. 「나중에」를 누르면 텍스트만 처리(TTS 무음)됩니다.",
+                True,
             ),
             "emulator": (
                 "Android 에뮬레이터",
@@ -1070,14 +1083,6 @@ class SetupProtocol:
             which,
             (which, which, "", "「나중에」 가능.", False),
         )
-        if which == "voice":
-            time.sleep(0.4)
-            done = SetupStepResult(
-                which, "done", "mock 음성 런타임 준비됨 (Full TTS는 -Full)", label=label
-            )
-            self._emit(on_progress, done)
-            self._save_optional(which, done)
-            return True
         if which == "mobile_mcp":
             time.sleep(0.3)
             done = SetupStepResult(
@@ -1120,6 +1125,18 @@ class SetupProtocol:
             self._emit(on_progress, done)
             self._save_optional(which, done)
             return True
+        if choice == "install" and which == "voice":
+            self._emit(
+                on_progress,
+                SetupStepResult(which, "installing", "실제 TTS 설치 중… (dry-run)", label=label),
+            )
+            time.sleep(1.0)
+            done = SetupStepResult(
+                which, "done", "실제 음성 합성(Qwen TTS) 준비됨 (dry-run)", label=label
+            )
+            self._emit(on_progress, done)
+            self._save_optional(which, done)
+            return True
         done = SetupStepResult(which, "done", f"{label} 확인됨", label=label)
         self._emit(on_progress, done)
         self._save_optional(which, done)
@@ -1148,6 +1165,13 @@ class SetupProtocol:
                     "실행 가능 (AVD IrisLight_Pixel)",
                     label="Android 에뮬레이터",
                 )
+            if step_id == "voice":
+                return SetupStepResult(
+                    "voice",
+                    "done",
+                    "실제 음성 합성(Qwen TTS) 준비됨 (dry-run)",
+                    label="음성 런타임",
+                )
             return SetupStepResult(step_id, "done", "완료")
         if step_id == "ollama_install":
             return self._install_ollama()
@@ -1155,6 +1179,8 @@ class SetupProtocol:
             return self._install_hermes()
         if step_id == "emulator":
             return self._install_emulator()
+        if step_id == "voice":
+            return self._install_voice_full()
         return SetupStepResult(
             step_id=step_id,
             status="failed",
@@ -1570,11 +1596,18 @@ class SetupProtocol:
 
     # ---- Optional ----
 
+    def _voice_venv(self) -> Path:
+        return project_root() / ".venv-voice"
+
     def _opt_voice(self) -> SetupStepResult:
         script = project_root() / "scripts" / "setup_voice_runtime.ps1"
         if not script.is_file():
             return SetupStepResult(
                 "voice", "skipped", "setup_voice_runtime.ps1 없음", label="음성 런타임"
+            )
+        if _voice_full_installed(self._voice_venv()):
+            return SetupStepResult(
+                "voice", "done", "실제 음성 합성(Qwen TTS) 준비됨", label="음성 런타임"
             )
         try:
             proc = self._run_streamed(
@@ -1594,11 +1627,71 @@ class SetupProtocol:
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "")[:180]
             return SetupStepResult("voice", "failed", err, label="음성 런타임")
+        # STT/mock까지는 항상 준비됨 — 실제 목소리(TTS)가 나오려면 -Full 설치가 더 필요.
+        # 예전엔 여기서 바로 "done" 처리해 사용자가 실제 TTS 설치 여부를 몰랐다.
+        gpu_hint = "" if shutil.which("nvidia-smi") else " (이 컴퓨터에 NVIDIA GPU가 안 보입니다 — CPU로는 느릴 수 있어요)"
         return SetupStepResult(
-            "voice",
-            "done",
-            "mock 음성 런타임 준비됨 (Full TTS는 -Full)",
+            step_id="voice",
+            status="needs_user",
+            message=(
+                "음성 인식(STT)은 준비됐습니다. 실제 목소리로 말하는 TTS까지 설치할까요? "
+                f"torch(CUDA)+Qwen TTS 모델 다운로드로 수 GB — 회선에 따라 1시간 이상 걸릴 수 있습니다.{gpu_hint}"
+            ),
+            action_hint="「설치」하면 실제 TTS까지 깝니다. 「나중에」를 누르면 지금처럼 텍스트만 처리(TTS 무음)됩니다.",
             label="음성 런타임",
+            can_install=True,
+        )
+
+    def _install_voice_full(self) -> SetupStepResult:
+        script = project_root() / "scripts" / "setup_voice_runtime.ps1"
+        if not script.is_file():
+            return SetupStepResult("voice", "failed", "setup_voice_runtime.ps1 없음", label="음성 런타임")
+        if _voice_full_installed(self._voice_venv()):
+            return SetupStepResult(
+                "voice", "done", "실제 음성 합성(Qwen TTS) 이미 준비됨", label="음성 런타임"
+            )
+        self._emit_stream(
+            "실제 TTS 설치 중… torch(CUDA)+Qwen TTS 다운로드 (수 GB — 회선에 따라 1시간 이상 걸릴 수 있습니다)",
+            None,
+            replace=False,
+        )
+        try:
+            proc = self._run_streamed(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script),
+                    "-Full",
+                ],
+                cwd=str(project_root()),
+                # torch(cu128) 휠만 2.7GB — 느린 회선(수백 KB/s)에서는 다운로드에만
+                # 1시간 가까이 걸릴 수 있어 3600s는 실제로 부족했다 (관측된 사례).
+                timeout=10800,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return SetupStepResult(
+                step_id="voice",
+                status="needs_user",
+                message=f"설치 실패: {exc}",
+                action_hint="네트워크 상태를 확인한 뒤 「설치」로 다시 시도하거나 「나중에」.",
+                label="음성 런타임",
+                can_install=True,
+            )
+        if proc.returncode != 0 or not _voice_full_installed(self._voice_venv()):
+            err = (proc.stderr or proc.stdout or "")[-200:]
+            return SetupStepResult(
+                step_id="voice",
+                status="needs_user",
+                message=f"설치가 끝나지 않았습니다: {err}",
+                action_hint="「설치」로 다시 시도하거나 「나중에」.",
+                label="음성 런타임",
+                can_install=True,
+            )
+        return SetupStepResult(
+            "voice", "done", "실제 음성 합성(Qwen TTS) 준비됨", label="음성 런타임"
         )
 
     def _opt_emulator(self) -> SetupStepResult:
@@ -2011,6 +2104,44 @@ def _self_check() -> None:
             os.environ.pop("IRIS_HERMES_API_KEY", None)
         else:
             os.environ["IRIS_HERMES_API_KEY"] = prev_env_key
+
+    # --- 음성 런타임: 실제 TTS(torch/qwen) 설치 여부는 returncode가 아니라
+    #     site-packages 실물로 판별해야 한다 ---
+    fake_voice_venv = iris_state_dir() / "_setup_voice_probe"
+    shutil.rmtree(fake_voice_venv, ignore_errors=True)
+    voice_site = fake_voice_venv / "Lib" / "site-packages"
+    voice_site.mkdir(parents=True, exist_ok=True)
+    assert _voice_full_installed(fake_voice_venv) is False
+    (voice_site / "torch").mkdir()
+    (voice_site / "torch" / "__init__.py").write_text("", encoding="utf-8")
+    assert _voice_full_installed(fake_voice_venv) is False, "torch만으론 실제 TTS 준비된 게 아님"
+    (voice_site / "faster_qwen3_tts").mkdir()
+    assert _voice_full_installed(fake_voice_venv) is True
+
+    # 아직 -Full 설치 전이면, 조용히 mock으로 "done" 처리하지 않고 사용자에게
+    # 실제 TTS 설치 여부를 물어봐야 한다 (예전엔 여기서 바로 done 처리했음)
+    shutil.rmtree(fake_voice_venv, ignore_errors=True)
+    (fake_voice_venv / "Lib" / "site-packages").mkdir(parents=True, exist_ok=True)
+    proto_voice = SetupProtocol(simulate=False, dry_run=False)
+    proto_voice._voice_venv = lambda: fake_voice_venv  # type: ignore[method-assign]
+    proto_voice._run_streamed = lambda cmd, **kwargs: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        cmd, 0, "", ""
+    )
+    voice_result = proto_voice._opt_voice()
+    assert voice_result.status == "needs_user", voice_result
+    assert voice_result.can_install is True
+    assert "TTS" in voice_result.message
+
+    # _dispatch_install("voice")가 예전처럼 "지원하지 않습니다"로 떨어지지 않고
+    # 실제 설치 경로(_install_voice_full)로 이어져야 한다
+    voice_site.mkdir(parents=True, exist_ok=True)
+    (voice_site / "torch").mkdir(exist_ok=True)
+    (voice_site / "torch" / "__init__.py").write_text("", encoding="utf-8")
+    (voice_site / "qwen_tts").mkdir(exist_ok=True)
+    dispatched = proto_voice._dispatch_install("voice")
+    assert dispatched.status == "done", dispatched
+    assert "지원하지 않습니다" not in dispatched.message
+    shutil.rmtree(fake_voice_venv, ignore_errors=True)
 
     d = iris_state_dir()
     assert d.is_dir()

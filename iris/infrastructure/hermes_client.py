@@ -169,15 +169,21 @@ class HermesClient:
         return False
 
     def _set_model_via_cli(self, model: str, provider: str, errors: list[str]) -> bool:
+        from iris.system.hermes_gateway import hermes_executable
+
+        exe = hermes_executable(self.command)
+        if not exe:
+            errors.append(f"Hermes CLI 실행 파일을 찾을 수 없습니다: {self.command}")
+            return False
         cmds = [
-            [self.command, "config", "set", "model.provider", provider],
-            [self.command, "config", "set", "model.default", model],
+            [exe, "config", "set", "model.provider", provider],
+            [exe, "config", "set", "model.default", model],
         ]
         # 로컬 Ollama 프록시 — cloud 모델도 :11434 경유
         if provider == "ollama":
             cmds.append(
                 [
-                    self.command,
+                    exe,
                     "config",
                     "set",
                     "model.base_url",
