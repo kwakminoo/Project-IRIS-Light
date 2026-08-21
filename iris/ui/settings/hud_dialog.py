@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from iris.ui.shared.theme_tokens import TOKENS
+from iris.ui.window.frameless_chrome import force_dark_titlebar
 
 
 def hud_dialog_qss() -> str:
@@ -170,6 +171,8 @@ def configure_hud_dialog(
     dialog.resize(default_w, default_h)
     dialog.setSizeGripEnabled(True)
     dialog.setStyleSheet(hud_dialog_qss())
+    # 네이티브 타이틀바가 OS 라이트모드/강조색에 끌려가지 않도록 앱 다크 테마로 고정
+    force_dark_titlebar(dialog)
 
 
 def make_title(text: str) -> QLabel:

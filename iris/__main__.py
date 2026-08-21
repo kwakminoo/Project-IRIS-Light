@@ -45,6 +45,7 @@ def main() -> None:
         APP_DISPLAY_NAME,
         apply_windows_app_id,
         load_app_icon,
+        load_bundled_fonts,
     )
     from iris.ui.window.main_window import MainWindow
 
@@ -58,7 +59,9 @@ def main() -> None:
     icon = load_app_icon()
     if not icon.isNull():
         app.setWindowIcon(icon)
-    app.setFont(QFont("Noto Sans KR", 10))
+    # 시스템에 폰트가 깔려있는지와 무관하게 항상 같은 모습이 되도록 번들 폰트를 등록
+    font_family = load_bundled_fonts()
+    app.setFont(QFont(font_family, 10))
     win = MainWindow()
     win.show()
     app.processEvents()

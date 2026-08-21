@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QTextCursor
+from PyQt6.QtGui import QColor, QDesktopServices, QPainter, QPen, QTextCursor
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -56,7 +56,39 @@ _STREAM_STEPS = {
     "emulator",
 }
 
-_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+# winget/UAC 승격이 멈추는 걸 막으려고 콘솔 창을 일부러 숨기지 않는 단계들
+# (setup_protocol.py의 _run_streamed(..., hidden=False) 호출부와 동일 목록).
+# 이 창은 출력이 전부 파이프로 Iris 로그에 새 나가서 화면엔 빈 채로 떠 있다 —
+# 사용자가 "멈췄다"고 오해하기 쉬워 안내 문구를 따로 보여준다.
+_VISIBLE_CONSOLE_STEPS = {"ollama_install", "hermes_install", "emulator"}
+
+
+class _SpinnerWidget(QWidget):
+    """직접 그리는 로딩 스피너 — 유니코드 브라유 문자는 PC마다 대체 글꼴이 달라
+    굵기·정렬이 어긋나 보였다. 벡터로 그리면 항상 동일하게 보인다."""
+
+    def __init__(self, parent: QWidget | None = None, *, size: int = 14) -> None:
+        super().__init__(parent)
+        self._size = size
+        self._angle = 0
+        self.setFixedSize(size, size)
+
+    def tick(self) -> None:
+        self._angle = (self._angle + 30) % 360
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: ARG002, N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(TOKENS.neon_cyan))
+        pen.setWidthF(1.8)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        m = 2
+        rect = self.rect().adjusted(m, m, -m, -m)
+        span = 270 * 16
+        p.drawArc(rect, -self._angle * 16, span)
+        p.end()
 
 
 class _NeedsUserCard(QFrame):
@@ -77,6 +109,15 @@ class _NeedsUserCard(QFrame):
         self._hint.setWordWrap(True)
         self._hint.setStyleSheet(f"color: {TOKENS.text_secondary};")
         lay.addWidget(self._hint)
+        self._console_hint = QLabel(
+            "설치 중 뜨는 검은 창은 내용이 비어 있는 게 정상입니다 — "
+            "진행 상황은 이 아래 로그에 표시됩니다."
+        )
+        self._console_hint.setWordWrap(True)
+        self._console_hint.setStyleSheet(f"color: {TOKENS.warning};")
+        self._console_hint.hide()
+        lay.addWidget(self._console_hint)
+        self._step_id = ""
         self._paste = QLineEdit()
         self._paste.setPlaceholderText("필요 시 키를 붙여넣기")
         self._paste.setEchoMode(QLineEdit.EchoMode.Password)
@@ -93,29 +134,30 @@ class _NeedsUserCard(QFrame):
         row.addWidget(self._install_btn)
         # 설치 시작 시 _install_btn 자리를 대신 차지하는 로딩 표시 — 버튼이 그냥
         # 사라지지 않고 "지금 여기서 설치 중"임을 보여준다.
-        self._loading_btn = QPushButton()
-        self._loading_btn.setObjectName("SetupInstallLoadingBtn")
-        self._loading_btn.setEnabled(False)
-        self._loading_btn.setStyleSheet(
+        self._loading_row = QWidget()
+        loading_lay = QHBoxLayout(self._loading_row)
+        loading_lay.setContentsMargins(10, 4, 10, 4)
+        loading_lay.setSpacing(6)
+        self._loading_row.setObjectName("SetupInstallLoadingBtn")
+        self._loading_row.setStyleSheet(
             f"""
-            QPushButton#SetupInstallLoadingBtn {{
-                color: {TOKENS.neon_cyan};
+            QWidget#SetupInstallLoadingBtn {{
                 border: 1px solid {TOKENS.neon_cyan};
                 border-radius: {TOKENS.radius_sm}px;
-                padding: 4px 10px;
                 background-color: transparent;
-            }}
-            QPushButton#SetupInstallLoadingBtn:disabled {{
-                color: {TOKENS.neon_cyan};
             }}
             """
         )
-        self._loading_btn.hide()
-        row.addWidget(self._loading_btn)
-        self._spin_idx = 0
+        self._spinner = _SpinnerWidget()
+        loading_lay.addWidget(self._spinner)
+        self._loading_label = QLabel("설치 중…")
+        self._loading_label.setStyleSheet(f"color: {TOKENS.neon_cyan}; border: none; background: transparent;")
+        loading_lay.addWidget(self._loading_label)
+        self._loading_row.hide()
+        row.addWidget(self._loading_row)
         self._spin_timer = QTimer(self)
         self._spin_timer.setInterval(90)
-        self._spin_timer.timeout.connect(self._tick_spin)
+        self._spin_timer.timeout.connect(self._spinner.tick)
         row.addStretch(1)
         self._later_btn = QPushButton("나중에")
         self._later_btn.clicked.connect(self.later_clicked.emit)
@@ -170,6 +212,7 @@ class _NeedsUserCard(QFrame):
 
     def bind(self, result: SetupStepResult, *, allow_skip: bool) -> None:
         self.end_install()
+        self._step_id = result.step_id
         self._why.setText(result.message or result.label)
         self._hint.setText(result.action_hint or "")
         self._hint.setVisible(bool(result.action_hint))
@@ -187,18 +230,19 @@ class _NeedsUserCard(QFrame):
     def is_installing(self) -> bool:
         return self._bar.isVisible()
 
-    def begin_install(self, why: str = "", *, reset: bool = True) -> None:
+    def begin_install(self, why: str = "", *, reset: bool = True, step_id: str = "") -> None:
         if why:
             self._why.setText(why)
+        if step_id:
+            self._step_id = step_id
         self._hint.hide()
+        self._console_hint.setVisible(self._step_id in _VISIBLE_CONSOLE_STEPS)
         self._paste.hide()
         self._open_btn.hide()
         self._install_btn.hide()
         self._later_btn.hide()
         self._done_btn.hide()
-        self._spin_idx = 0
-        self._loading_btn.setText(f"{_SPINNER_FRAMES[0]}  설치 중…")
-        self._loading_btn.show()
+        self._loading_row.show()
         self._spin_timer.start()
         if reset or not self._bar.isVisible():
             self._bar.setRange(0, 0)
@@ -208,10 +252,6 @@ class _NeedsUserCard(QFrame):
         self._bar.show()
         self._term.show()
         self.setVisible(True)
-
-    def _tick_spin(self) -> None:
-        self._spin_idx = (self._spin_idx + 1) % len(_SPINNER_FRAMES)
-        self._loading_btn.setText(f"{_SPINNER_FRAMES[self._spin_idx]}  설치 중…")
 
     def set_install_chunk(self, text: str, percent: int | None, replace: bool) -> None:
         if not self._bar.isVisible():
@@ -237,7 +277,8 @@ class _NeedsUserCard(QFrame):
 
     def end_install(self) -> None:
         self._spin_timer.stop()
-        self._loading_btn.hide()
+        self._loading_row.hide()
+        self._console_hint.hide()
         self._bar.hide()
         self._term.hide()
 
@@ -407,6 +448,7 @@ class SetupWizard(QDialog):
             self._card.begin_install(
                 result.message or result.label,
                 reset=not self._card.is_installing(),
+                step_id=result.step_id,
             )
         elif result.status in ("done", "failed", "skipped"):
             if self._card.is_installing():

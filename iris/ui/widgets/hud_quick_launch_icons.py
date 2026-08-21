@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 from iris.ui.shared.theme_tokens import TOKENS
 
@@ -25,12 +25,20 @@ def _fill(active: bool) -> QBrush:
 
 
 def _paint_ide(p: QPainter, active: bool) -> None:
-    """우상단 WinCtrl '</>' 과 같은 코드 브래킷 마크."""
-    color = QColor(TOKENS.neon_cyan if active else TOKENS.text_accent)
-    p.setPen(color)
-    font = QFont(TOKENS.font_mono.split(",")[0].strip('"'), 8, QFont.Weight.Bold)
-    p.setFont(font)
-    p.drawText(0, 0, HUD_ICON_PX, HUD_ICON_PX, int(Qt.AlignmentFlag.AlignCenter), "</>")
+    """우상단 WinCtrl '</>' 과 같은 코드 브래킷 마크 — 폰트 대신 직접 그려 PC마다 동일하게 보이게."""
+    pen = _stroke(active)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    left = QPainterPath()
+    left.moveTo(8, 5)
+    left.lineTo(3, 11)
+    left.lineTo(8, 17)
+    p.drawPath(left)
+    right = QPainterPath()
+    right.moveTo(14, 5)
+    right.lineTo(19, 11)
+    right.lineTo(14, 17)
+    p.drawPath(right)
 
 
 def _paint_email(p: QPainter, active: bool) -> None:

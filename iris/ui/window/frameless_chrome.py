@@ -5,8 +5,10 @@ from __future__ import annotations
 import sys
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QCursor, QMouseEvent
+from PyQt6.QtGui import QColor, QCursor, QMouseEvent
 from PyQt6.QtWidgets import QApplication, QWidget
+
+from iris.ui.shared.theme_tokens import TOKENS
 
 _RESIZE_MARGIN = 8
 
@@ -69,6 +71,43 @@ def suppress_native_window_border(window: QWidget) -> None:
             ctypes.byref(policy),
             ctypes.sizeof(policy),
         )
+    except (OSError, AttributeError):
+        pass
+
+
+def _colorref(hex_color: str) -> int:
+    """Qt hex(#RRGGBB) → Win32 COLORREF(0x00BBGGRR)."""
+    c = QColor(hex_color)
+    return (c.blue() << 16) | (c.green() << 8) | c.red()
+
+
+def force_dark_titlebar(window: QWidget) -> None:
+    """네이티브 타이틀바(설정/프로필/시작 프로토콜 등 QDialog용)를 앱 다크 테마로 고정.
+
+    프레임리스가 아닌 대화상자는 Windows가 타이틀바를 직접 그리므로, 사용자의
+    OS 라이트모드·강조색 설정에 따라 PC마다 맨 위쪽 색이 달라 보였다. 이 설정과
+    무관하게 항상 동일하게 보이도록 DWM에 다크모드 + 앱 색상을 강제한다.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        hwnd = int(window.winId())
+    except (AttributeError, TypeError, RuntimeError):
+        return
+    if hwnd == 0:
+        return
+    try:
+        import ctypes
+
+        dwm = ctypes.windll.dwmapi
+        use_dark = ctypes.c_int(1)
+        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE — 신/구 빌드 호환
+            dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(use_dark), ctypes.sizeof(use_dark))
+        # Win11 22000+ 전용 — 실패해도 위 다크모드 설정으로 대부분 충분히 일관됨
+        caption = ctypes.c_uint(_colorref(TOKENS.space_deep))
+        dwm.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(caption), ctypes.sizeof(caption))  # DWMWA_CAPTION_COLOR
+        text_color = ctypes.c_uint(_colorref(TOKENS.text_primary))
+        dwm.DwmSetWindowAttribute(hwnd, 36, ctypes.byref(text_color), ctypes.sizeof(text_color))  # DWMWA_TEXT_COLOR
     except (OSError, AttributeError):
         pass
 

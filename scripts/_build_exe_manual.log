@@ -1,0 +1,122 @@
+﻿powershell.exe : 
+At line:2 char:1
++ & powershell -ExecutionPolicy Bypass -File "scripts\build_iris_exe.ps ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[notice] A new release of pip is available: 25.0.1 -> 26.2.1
+[notice] To update, run: python.exe -m pip install --upgrade pip
+Building IRIS.exe ...
+236 INFO: PyInstaller: 6.22.2, contrib hooks: 2026.6
+236 INFO: Python: 3.12.10
+287 INFO: Platform: Windows-11-10.0.26200-SP0
+287 INFO: Python environment: C:\Users\serin\AppData\Local\Programs\Python\Python312
+294 INFO: Removing temporary files and cleaning cache in C:\Users\serin\AppData\Local\pyinstaller
+304 WARNING: collect_data_files - skipping data collection for module 'PyQt6' as it is not a package.
+304 WARNING: collect_dynamic_libs - skipping library collection for module 'PyQt6' as it is not a package.
+743 WARNING: collect_data_files - skipping data collection for module 'PyQt6.QtWebEngineWidgets' as it is not a package
+.
+832 WARNING: collect_dynamic_libs - skipping library collection for module 'PyQt6.QtWebEngineWidgets' as it is not a pa
+ckage.
+1069 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\serin\\Github\\Project-IRIS-Light',
+ 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Python312\\python312.zip',
+ 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Python312\\DLLs',
+ 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Python312\\Lib',
+ 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Python312',
+ 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages',
+ 'C:\\Users\\serin\\Github\\Project-IRIS-Light']
+1596 INFO: Appending 'datas' from .spec
+1600 INFO: checking Analysis
+1601 INFO: Building Analysis because Analysis-00.toc is non existent
+1601 INFO: Looking for Python shared library...
+1603 INFO: Using Python shared library: C:\Users\serin\AppData\Local\Programs\Python\Python312\python312.dll
+1603 INFO: Running Analysis Analysis-00.toc
+1603 INFO: Target bytecode optimization level: 0
+1603 INFO: Initializing module dependency graph...
+1604 INFO: Initializing module graph hook caches...
+1677 INFO: Analyzing modules for base_library.zip ...
+4547 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python
+\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+5364 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Pyt
+hon312\\Lib\\site-packages\\PyInstaller\\hooks'
+8254 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\P
+ython312\\Lib\\site-packages\\PyInstaller\\hooks'
+11270 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\P
+ython312\\Lib\\site-packages\\PyInstaller\\hooks'
+14386 INFO: Caching module dependency graph...
+14434 INFO: Analyzing C:\Users\serin\Github\Project-IRIS-Light\IRIS_launcher.py
+14584 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python
+\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+14789 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\
+\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+15526 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\
+\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+16073 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Pytho
+n\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+17080 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\serin\\AppData\\Local\\Prog
+rams\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+17344 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Pyt
+hon312\\Lib\\site-packages\\PyInstaller\\hooks'
+18558 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\serin\\AppData\\Local\\Pr
+ograms\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+18680 INFO: Processing standard module hook 'hook-webbrowser.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Pyth
+on\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+19664 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\
+\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+20304 INFO: Analyzing hidden import 'PyQt6.QtCore'
+20304 ERROR: Hidden import 'PyQt6.QtCore' not found
+20304 INFO: Analyzing hidden import 'PyQt6.QtGui'
+20304 ERROR: Hidden import 'PyQt6.QtGui' not found
+20304 INFO: Analyzing hidden import 'PyQt6.QtWidgets'
+20304 ERROR: Hidden import 'PyQt6.QtWidgets' not found
+20304 INFO: Analyzing hidden import 'PyQt6.QtWebEngineWidgets'
+20304 ERROR: Hidden import 'PyQt6.QtWebEngineWidgets' not found
+20304 INFO: Analyzing hidden import 'PyQt6.QtWebEngineCore'
+20304 ERROR: Hidden import 'PyQt6.QtWebEngineCore' not found
+20304 INFO: Analyzing hidden import 'PyQt6.sip'
+20304 ERROR: Hidden import 'PyQt6.sip' not found
+20304 INFO: Processing module hooks (post-graph stage)...
+20602 INFO: Performing binary vs. data reclassification (28 entries)
+20606 INFO: Looking for ctypes DLLs
+20647 INFO: Analyzing run-time hooks ...
+20650 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Pyth
+on312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+20653 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Python\\Pyth
+on312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+20655 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\serin\\AppData\\Local\\Programs\\Pyth
+on\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+20666 INFO: Creating base_library.zip...
+20692 INFO: Looking for dynamic libraries
+20984 INFO: Extra DLL search directories (AddDllDirectory): []
+20984 INFO: Extra DLL search directories (PATH): []
+21264 INFO: Warnings written to C:\Users\serin\Github\Project-IRIS-Light\build\IRIS\warn-IRIS.txt
+21313 INFO: Graph cross-reference written to C:\Users\serin\Github\Project-IRIS-Light\build\IRIS\xref-IRIS.html
+21345 INFO: checking PYZ
+21345 INFO: Building PYZ because PYZ-00.toc is non existent
+21345 INFO: Building PYZ (ZlibArchive) C:\Users\serin\Github\Project-IRIS-Light\build\IRIS\PYZ-00.pyz
+21854 INFO: Building PYZ (ZlibArchive) C:\Users\serin\Github\Project-IRIS-Light\build\IRIS\PYZ-00.pyz completed success
+fully.
+21879 INFO: checking PKG
+21879 INFO: Building PKG because PKG-00.toc is non existent
+21879 INFO: Building PKG (CArchive) IRIS.pkg
+26153 INFO: Building PKG (CArchive) IRIS.pkg completed successfully.
+26153 INFO: Bootloader C:\Users\serin\AppData\Local\Programs\Python\Python312\Lib\site-packages\PyInstaller\bootloader\
+Windows-64bit-intel\runw.exe
+26153 INFO: checking EXE
+26153 INFO: Building EXE because EXE-00.toc is non existent
+26153 INFO: Building EXE from EXE-00.toc
+26153 INFO: Copying bootloader EXE to C:\Users\serin\Github\Project-IRIS-Light\dist\IRIS.exe
+26360 INFO: Copying icon to EXE
+26444 INFO: Copying version information to EXE
+26534 INFO: Copying 0 resources to EXE
+26534 INFO: Embedding manifest in EXE
+26623 INFO: Appending PKG archive to EXE
+26748 INFO: Fixing EXE headers
+27261 INFO: Building EXE from EXE-00.toc completed successfully.
+27265 INFO: Build complete! The results are available in: C:\Users\serin\Github\Project-IRIS-Light\dist
+OK: C:\Users\serin\Github\Project-IRIS-Light\dist\IRIS.exe
+Shortcut: C:\Users\serin\Desktop\IRIS.lnk
+Shortcut: C:\Users\serin\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\IRIS.lnk
+Shortcut: C:\Users\serin\Github\Project-IRIS-Light\IRIS.lnk

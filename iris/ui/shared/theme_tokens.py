@@ -76,8 +76,9 @@ class ThemeTokens:
     animation_fast: int = 120
     animation_normal: int = 220
 
-    # 폰트
-    font_family: str = '"Segoe UI Variable", "Segoe UI", "Noto Sans KR", "Malgun Gothic"'
+    # 폰트 — Pretendard를 앱에 번들해 항상 최우선 사용(iris/assets/branding.py:load_bundled_fonts).
+    # 뒤의 이름들은 번들 등록이 실패했을 때만 쓰이는 시스템 폰트 폴백.
+    font_family: str = '"Pretendard", "Segoe UI Variable", "Segoe UI", "Malgun Gothic"'
     font_mono: str = '"Consolas", "Cascadia Mono", "Courier New"'
     font_size_title: str = "17px"
     font_size_heading: str = "12px"
