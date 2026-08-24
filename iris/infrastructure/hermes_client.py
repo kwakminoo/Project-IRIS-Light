@@ -115,7 +115,8 @@ class HermesClient:
 
         GET /v1/models 는 키가 틀리거나 없어도 200인 경우가 있어
         검사·Connected는 통과하고 보내기만 401이 난다.
-        빈 messages 는 인증 통과 시 보통 400/422, 실패 시 401.
+        메시지 필드를 빼면 인증 통과 시 보통 400/422로 바로 끝나고,
+        실패 시 401로 끝나도록(추론 호출 최소화) 만든다.
 
         Returns: 'ok' | 'unauthorized' | 'unreachable'
         """
@@ -124,7 +125,6 @@ class HermesClient:
         payload = json.dumps(
             {
                 "model": "hermes-agent",
-                "messages": [],
                 "stream": False,
                 "max_tokens": 1,
             }
@@ -136,7 +136,7 @@ class HermesClient:
             method="POST",
         )
         try:
-            with urlopen(req, timeout=8.0) as resp:
+            with urlopen(req, timeout=3.0) as resp:
                 resp.read(64)
             return "ok"
         except HTTPError as e:
