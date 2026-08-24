@@ -26,6 +26,10 @@ ENV/
 # Test / runtime artifacts
 .iris_light_test_tmp/
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
+tmp_*.db*
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
