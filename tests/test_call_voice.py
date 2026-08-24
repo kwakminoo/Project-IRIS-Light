@@ -22,7 +22,13 @@ from iris.runtime.voice_intents import (
     prompts_for,
     similarity,
 )
-from iris.system.phone_control import CallSnapshot, CallState, _parse_registry, _parse_telecom
+from iris.system.phone_control import (
+    CallSnapshot,
+    CallState,
+    _command_succeeded,
+    _parse_registry,
+    _parse_telecom,
+)
 
 # 전화가 울리는 중에 나올 수 있는, 통화 조작과 무관한 말들.
 # 되돌릴 수 없는 동작(받기/끊기)이 여기에 걸리면 안 된다.
@@ -185,6 +191,35 @@ class CallStateParsingTests(TestCase):
     def test_ringing_flag(self) -> None:
         self.assertTrue(CallSnapshot(state=CallState.RINGING).ringing)
         self.assertFalse(CallSnapshot(state=CallState.ACTIVE).ringing)
+
+
+class AdbCommandSuccessTests(TestCase):
+    """`cmd telecom` 은 구현이 없어도 종료 코드 0 을 준다.
+
+    Android 33 에뮬레이터에서 실측한 내용이다. accept-ringing-call 이 통째로
+    없는데도 rc=0 + "No shell command implementation." 만 나온다. 종료 코드만
+    믿으면 폴백이 영영 안 걸리고, 전화를 못 받았는데 받았다고 보고하게 된다.
+    """
+
+    def test_unimplemented_command_is_not_success(self) -> None:
+        self.assertFalse(_command_succeeded(0, "No shell command implementation.", ""))
+
+    def test_unimplemented_on_stderr_too(self) -> None:
+        self.assertFalse(_command_succeeded(0, "", "No shell command implementation."))
+
+    def test_unknown_command_is_not_success(self) -> None:
+        self.assertFalse(_command_succeeded(0, "Unknown command: foo", ""))
+        self.assertFalse(_command_succeeded(0, "usage: telecom [subcommand]", ""))
+
+    def test_case_insensitive(self) -> None:
+        self.assertFalse(_command_succeeded(0, "NO SHELL COMMAND IMPLEMENTATION", ""))
+
+    def test_silent_success_is_success(self) -> None:
+        """input keyevent 는 성공하면 아무것도 출력하지 않는다."""
+        self.assertTrue(_command_succeeded(0, "", ""))
+
+    def test_nonzero_exit_is_failure(self) -> None:
+        self.assertFalse(_command_succeeded(1, "", ""))
 
 
 class AnnouncementTests(TestCase):
