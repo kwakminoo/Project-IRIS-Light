@@ -43,6 +43,13 @@ class PcmPlayer(QObject):
         """모델의 음색은 그대로 두고 speaker PCM에만 AI 비서 질감을 더한다."""
         self._voice_effect.configure(enabled=enabled, intensity=intensity)
 
+    def set_voice_pitch(self, semitones: float) -> None:
+        """재생 톤(반음). 알림·전화 낭독은 여기에 부스트를 얹는다."""
+        self._voice_effect.set_pitch(semitones)
+
+    def voice_pitch(self) -> float:
+        return self._voice_effect.pitch_semitones
+
     def set_format(self, sample_rate: int) -> None:
         rate = int(sample_rate or DEFAULT_SAMPLE_RATE)
         if rate == self._sr:

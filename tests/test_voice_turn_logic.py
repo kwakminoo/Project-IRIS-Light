@@ -69,6 +69,10 @@ class VoiceTurnLogicTests(TestCase):
         self.h._is_self_echo_transcript = lambda text: MainWindow._is_self_echo_transcript(self.h, text)
         self.h._is_voice_stop_intent = lambda text: MainWindow._is_voice_stop_intent(self.h, text)
         self.h._voice_followup_open = lambda: MainWindow._voice_followup_open(self.h)
+        # 상황별 규칙 명령 단계. 스텁이 아니라 실제 구현을 붙여서, 평상시(IDLE)에는
+        # 일반 발화를 가로채지 않는다는 것까지 여기서 같이 지킨다.
+        self.h._voice_context = lambda: MainWindow._voice_context(self.h)
+        self.h._handle_voice_command = lambda text: MainWindow._handle_voice_command(self.h, text)
         self.ready: list[object] = []
         self.h._turn_dispatcher.turn_ready.connect(self.ready.append)
 

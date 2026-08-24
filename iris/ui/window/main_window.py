@@ -53,7 +53,15 @@ from iris.storage.api_providers import (
 )
 from iris.storage.email_accounts import EmailAccount, find_account, load_email_accounts
 from iris.monitoring.notification_policy import NotificationPolicy
+from iris.audio.alert_speech import (
+    AlertPriority,
+    AlertSpeaker,
+    call_announcement,
+    notification_announcement,
+)
+from iris.monitoring.call_monitor import CallMonitorService
 from iris.runtime import UserTurn, UserTurnDispatcher, UserTurnSource
+from iris.runtime.voice_intents import IntentContext, VoiceIntent, match_intent
 from iris.storage.database import Database
 from iris.storage.model_prefs import load_selected_model, save_selected_model
 from iris.storage.user_profile import load_user_profile, save_user_profile
@@ -307,6 +315,7 @@ class MainWindow(QMainWindow):
         self._stt_queue.dropped.connect(self._on_stt_job_dropped)
         self._pcm_player = PcmPlayer(self)
         self._pcm_player.set_volume(self._voice_prefs.tts_volume)
+        self._pcm_player.set_voice_pitch(self._voice_prefs.tts_pitch_semitones)
         self._pcm_player.set_voice_effect(
             enabled=self._voice_prefs.tts_ai_voice_fx_enabled,
             intensity=self._voice_prefs.tts_ai_voice_fx_intensity,
@@ -498,6 +507,27 @@ class MainWindow(QMainWindow):
         self._pinned_monitor.report.connect(self._on_pinned_report)
         self._pinned_monitor.start()
 
+        # 알림·전화 낭독 — 채팅 TTS와 분리된 저지연 경로
+        self._alert_speaker = AlertSpeaker(
+            self,
+            runtime_url_provider=lambda: self._voice_prefs.voice_runtime_url,
+            payload_provider=self._tts_stream_payload,
+            volume_provider=lambda: self._voice_prefs.tts_volume,
+        )
+        self._alert_speaker.failed.connect(
+            lambda err: self._live_activity.append_instant_line(f"ALERT 낭독 실패: {err}")
+        )
+        self._apply_alert_voice_prefs()
+
+        # 수신 전화 감시 (adb). 에뮬레이터가 없으면 스스로 물러선다.
+        self._call_monitor = CallMonitorService(
+            self, enabled=not self._test_mode and self._voice_prefs.call_speech_enabled
+        )
+        self._call_monitor.ringing_started.connect(self._on_call_ringing)
+        self._call_monitor.call_answered.connect(self._on_call_answered)
+        self._call_monitor.call_ended.connect(self._on_call_ended)
+        self._call_monitor.start()
+
         self._notif_policy = NotificationPolicy(self._db)
         self._notes = NotificationPanel(policy=self._notif_policy)
         self._notes.setMinimumHeight(120)
@@ -508,6 +538,10 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setCollapsible(0, False)
+
+        self._voice_hint = self._left_sidebar.utility.voice_hint
+        self._voice_hint.set_enabled_by_pref(self._voice_prefs.voice_hint_visible)
+        self._voice_hint.prompt_activated.connect(self._on_voice_hint_clicked)
 
         actions = self._left_sidebar.utility.actions
         actions.set_default_callback(self._show_assistant_workspace)
@@ -995,6 +1029,125 @@ class MainWindow(QMainWindow):
         if count:
             self._pinned_monitor.analyze_soon()
 
+    # ------------------------------------------------------------------
+    # 알림·전화 음성
+    # ------------------------------------------------------------------
+
+    def _apply_alert_voice_prefs(self) -> None:
+        """알림 낭독 톤 = 기본 재생 톤 + 알림 부스트."""
+        speaker = getattr(self, "_alert_speaker", None)
+        if speaker is None:
+            return
+        speaker.set_pitch(
+            self._voice_prefs.tts_pitch_semitones + self._voice_prefs.tts_alert_pitch_boost
+        )
+
+    def _voice_context(self) -> IntentContext:
+        """지금 어떤 상황별 명령이 유효한지."""
+        monitor = getattr(self, "_call_monitor", None)
+        if monitor is not None:
+            if monitor.is_ringing():
+                return IntentContext.CALL_RINGING
+            if monitor.is_in_call():
+                return IntentContext.CALL_ACTIVE
+        speaker = getattr(self, "_alert_speaker", None)
+        if speaker is not None and speaker.last_text:
+            return IntentContext.ALERT_PENDING
+        return IntentContext.IDLE
+
+    def _refresh_voice_hint(self, caption: str = "") -> None:
+        hint = getattr(self, "_voice_hint", None)
+        if hint is None:
+            return
+        hint.set_enabled_by_pref(self._voice_prefs.voice_hint_visible)
+        hint.set_context(self._voice_context(), caption=caption)
+
+    def _speak_alert(self, text: str, *, priority: int = AlertPriority.NOTICE) -> None:
+        if not self._voice_prefs.alert_speech_enabled or not self._voice_prefs.tts_enabled:
+            return
+        speaker = getattr(self, "_alert_speaker", None)
+        if speaker is None:
+            return
+        self._apply_alert_voice_prefs()
+        speaker.speak(text, priority=priority)
+
+    def _on_call_ringing(self, display_name: str, number: str) -> None:
+        self._live_activity.append_instant_line(f"CALL ringing — {display_name}")
+        self._refresh_voice_hint(caption=f"수신 전화 · {display_name}")
+        if self._voice_prefs.call_speech_enabled:
+            self._speak_alert(
+                call_announcement(display_name, number=number),
+                priority=AlertPriority.CALL,
+            )
+
+    def _on_call_answered(self) -> None:
+        self._refresh_voice_hint(caption="통화 중")
+        speaker = getattr(self, "_alert_speaker", None)
+        if speaker is not None:
+            speaker.stop()  # 통화가 연결되면 안내를 계속 떠들면 안 된다
+
+    def _on_call_ended(self) -> None:
+        self._refresh_voice_hint()
+        speaker = getattr(self, "_alert_speaker", None)
+        if speaker is not None:
+            speaker.stop()
+
+    def _on_voice_hint_clicked(self, intent_value: str) -> None:
+        """말하기 어려운 사용자를 위한 대체 경로 — 문장을 누르면 같은 동작."""
+        try:
+            intent = VoiceIntent(intent_value)
+        except ValueError:
+            return
+        self._run_voice_intent(intent, source="click")
+
+    def _handle_voice_command(self, text: str) -> bool:
+        """STT 결과가 상황별 규칙 명령이면 여기서 끝낸다. True면 모델로 안 보낸다."""
+        if not self._voice_prefs.voice_command_rules_enabled:
+            return False
+        match = match_intent(text, context=self._voice_context())
+        if match is None:
+            return False
+        self._live_activity.append_instant_line(
+            f"VOICE intent={match.intent.value} rule={match.rule} conf={match.confidence}"
+        )
+        return self._run_voice_intent(match.intent, source="voice")
+
+    def _run_voice_intent(self, intent: VoiceIntent, *, source: str) -> bool:
+        monitor = getattr(self, "_call_monitor", None)
+        speaker = getattr(self, "_alert_speaker", None)
+
+        if intent in (VoiceIntent.ANSWER_CALL, VoiceIntent.REJECT_CALL, VoiceIntent.HANG_UP):
+            if monitor is None:
+                return False
+            if speaker is not None:
+                speaker.stop()  # 통화 조작 중에 안내가 겹치면 안 된다
+            if intent is VoiceIntent.ANSWER_CALL:
+                ok, message = monitor.answer()
+            else:
+                ok, message = monitor.reject()
+            self._live_activity.append_instant_line(f"CALL {intent.value}({source}) {message}")
+            if not ok:
+                self._speak_alert(message, priority=AlertPriority.CALL)
+            self._refresh_voice_hint()
+            return True
+
+        if intent is VoiceIntent.SILENCE_ALERT:
+            if speaker is not None:
+                speaker.stop()
+            if monitor is not None and monitor.is_ringing():
+                monitor.silence()
+            self._refresh_voice_hint()
+            return True
+
+        if intent in (VoiceIntent.READ_ALERT, VoiceIntent.REPEAT_ALERT):
+            if speaker is not None and speaker.last_text:
+                self._apply_alert_voice_prefs()
+                speaker.repeat()
+                return True
+            return False
+
+        return False
+
     def _on_pinned_report(self, title: str, category: str, headline: str, detail: str) -> None:
         """감시 중인 창의 상태가 주의 필요로 바뀐 순간 — 알림 패널에 띄운다."""
         suppressed = None
@@ -1013,6 +1166,8 @@ class MainWindow(QMainWindow):
             focus_hint=title,
             event_id=0,
         )
+        self._speak_alert(notification_announcement(headline, title[:40]))
+        self._refresh_voice_hint()
         try:
             self._notif_policy.mark_shown(0, category)
             self._notif_policy.log_notification(0, 0, category, title, detail or headline)
@@ -1794,6 +1949,9 @@ class MainWindow(QMainWindow):
     def _submit_voice_turn(self, text: str, *, session_id: int) -> None:
         body = (text or "").strip()
         if not body:
+            return
+        # 규칙 기반 상황 명령이 모델보다 먼저다. 전화벨은 LLM 왕복을 기다려 주지 않는다.
+        if self._handle_voice_command(body):
             return
         if self._should_dedupe_voice_text(body, session_id):
             self._live_activity.append_instant_line("VOICE duplicate_stt_ignored")
@@ -4044,6 +4202,8 @@ class MainWindow(QMainWindow):
                 self._stop_mic_listen()
             else:
                 self._request_stt_warmup()
+            self._pcm_player.set_voice_pitch(self._voice_prefs.tts_pitch_semitones)
+            self._apply_alert_voice_prefs()
             self._pcm_player.set_voice_effect(
                 enabled=self._voice_prefs.tts_ai_voice_fx_enabled,
                 intensity=self._voice_prefs.tts_ai_voice_fx_intensity,
@@ -4111,6 +4271,11 @@ class MainWindow(QMainWindow):
         try:
             stop_control_surface(self)
             self._pinned_monitor.stop()
+            try:
+                self._call_monitor.stop()
+                self._alert_speaker.stop()
+            except Exception:
+                pass
             try:
                 self._learning.interrupt_on_shutdown()
             except Exception:

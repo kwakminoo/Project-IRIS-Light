@@ -138,6 +138,20 @@ class LightSettingsSelection:
     learning_prefs: LearningPreferences
 
 
+def _nearest_index(combo, value: float) -> int:
+    """콤보에서 저장된 수치와 가장 가까운 항목. 임의 값이 들어와도 UI가 깨지지 않는다."""
+    try:
+        target = float(value)
+    except (TypeError, ValueError):
+        target = 0.0
+    if combo.count() == 0:
+        return 0
+    return min(
+        range(combo.count()),
+        key=lambda i: abs(float(combo.itemData(i) or 0.0) - target),
+    )
+
+
 class SettingsDialog(QDialog):
     """연결 설정 + 이메일 계정 + IDE Companion."""
 
@@ -934,6 +948,55 @@ class SettingsDialog(QDialog):
             ),
         )
         self._voice_ai_voice_fx_intensity.setCurrentIndex(fx_idx)
+        self._voice_pitch = QComboBox()
+        for label, value in (
+            ("원래대로", 0.0),
+            ("살짝 높게", 1.5),
+            ("높게", 3.0),
+            ("많이 높게", 4.5),
+        ):
+            self._voice_pitch.addItem(label, value)
+        self._voice_pitch.setCurrentIndex(
+            _nearest_index(self._voice_pitch, self._voice_prefs.tts_pitch_semitones)
+        )
+        self._voice_pitch.setToolTip(
+            "재생 단계에서만 톤을 올립니다. 보이스 프로필(음색)은 바뀌지 않으므로"
+            " 다시 빌드할 필요가 없습니다."
+        )
+
+        self._voice_alert_pitch = QComboBox()
+        for label, value in (
+            ("없음", 0.0),
+            ("조금", 1.0),
+            ("보통", 2.0),
+            ("많이", 3.5),
+        ):
+            self._voice_alert_pitch.addItem(label, value)
+        self._voice_alert_pitch.setCurrentIndex(
+            _nearest_index(self._voice_alert_pitch, self._voice_prefs.tts_alert_pitch_boost)
+        )
+        self._voice_alert_pitch.setToolTip(
+            "알림·전화를 읽을 때 기본 톤 위에 더 얹는 값입니다. 평소 말투와 구분됩니다."
+        )
+
+        self._voice_alert_speech = QCheckBox("알림을 음성으로 읽어 주기")
+        self._voice_alert_speech.setChecked(self._voice_prefs.alert_speech_enabled)
+        self._voice_call_speech = QCheckBox("전화가 오면 음성으로 알려 주기 (Android/adb)")
+        self._voice_call_speech.setChecked(self._voice_prefs.call_speech_enabled)
+        self._voice_call_speech.setToolTip(
+            "연결된 Android 기기의 수신 전화를 감지해 발신자를 읽어 줍니다."
+        )
+        self._voice_command_rules = QCheckBox('상황별 음성 명령 ("전화 받아줘")')
+        self._voice_command_rules.setChecked(self._voice_prefs.voice_command_rules_enabled)
+        self._voice_command_rules.setToolTip(
+            "전화가 울리는 동안 이 문장들은 모델을 거치지 않고 즉시 처리됩니다."
+        )
+        self._voice_hint_visible = QCheckBox("사이드바에 상황별 문장 힌트 표시")
+        self._voice_hint_visible.setChecked(self._voice_prefs.voice_hint_visible)
+        self._voice_hint_visible.setToolTip(
+            "지금 말하면 되는 문장을 회색으로 보여 줍니다. 눌러도 같은 동작을 합니다."
+        )
+
         self._voice_profile_status = QLabel(self._voice_profile_summary())
         self._voice_profile_status.setWordWrap(True)
 
@@ -1009,6 +1072,12 @@ class SettingsDialog(QDialog):
         form.addRow(make_form_label(""), self._voice_tone_routing)
         form.addRow(make_form_label(""), self._voice_ai_voice_fx)
         form.addRow(make_form_label("효과 강도"), self._voice_ai_voice_fx_intensity)
+        form.addRow(make_form_label("목소리 톤"), self._voice_pitch)
+        form.addRow(make_form_label("알림 톤 추가"), self._voice_alert_pitch)
+        form.addRow(make_form_label(""), self._voice_alert_speech)
+        form.addRow(make_form_label(""), self._voice_call_speech)
+        form.addRow(make_form_label(""), self._voice_command_rules)
+        form.addRow(make_form_label(""), self._voice_hint_visible)
         form.addRow(make_form_label("보이스 프로필"), self._voice_profile_status)
         form.addRow(make_form_label("녹음 폴더"), folder_row)
         form.addRow(make_form_label("선택된 참고 음성"), pick_row)
@@ -1130,6 +1199,12 @@ class SettingsDialog(QDialog):
             tts_ai_voice_fx_intensity=float(
                 self._voice_ai_voice_fx_intensity.currentData() or 0.75
             ),
+            tts_pitch_semitones=float(self._voice_pitch.currentData() or 0.0),
+            tts_alert_pitch_boost=float(self._voice_alert_pitch.currentData() or 0.0),
+            alert_speech_enabled=self._voice_alert_speech.isChecked(),
+            call_speech_enabled=self._voice_call_speech.isChecked(),
+            voice_command_rules_enabled=self._voice_command_rules.isChecked(),
+            voice_hint_visible=self._voice_hint_visible.isChecked(),
             tts_engine=str(self._voice_tts_engine.currentData() or "qwen"),
             tts_custom_speaker=self._voice_custom_speaker.text().strip() or "iris",
             tts_custom_model_path=self._voice_custom_model.text().strip(),
@@ -1345,6 +1420,7 @@ class SettingsDialog(QDialog):
         if not payload.get("running"):
             self._on_settings_tts_runtime_failed("Voice runtime을 시작하지 못했습니다.", job_id)
             return
+        self._preview_player.set_voice_pitch(prefs.tts_pitch_semitones)
         self._preview_player.set_voice_effect(
             enabled=prefs.tts_ai_voice_fx_enabled,
             intensity=prefs.tts_ai_voice_fx_intensity,

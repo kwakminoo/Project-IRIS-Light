@@ -6,12 +6,15 @@ from array import array
 import sys
 
 from iris.audio.pcm_stream import DEFAULT_SAMPLE_RATE
+from iris.audio.pitch_shift import PitchShifter
 
 
 class VoiceAssistantEffect:
-    """Int16 mono PCM에 짧은 echo와 아주 약한 metallic comb을 더한다.
+    """Int16 mono PCM의 톤을 올리고 짧은 echo와 아주 약한 metallic comb을 더한다.
 
     합성 모델의 reference/prompt는 건드리지 않고, 스트리밍 PCM 뒤에서만 작동한다.
+    피치는 echo보다 **먼저** 적용한다 — 반대로 하면 잔향까지 같이 올라가
+    금속성이 두 배로 들린다.
     """
 
     _ECHO_MS = 82
@@ -25,7 +28,16 @@ class VoiceAssistantEffect:
         self._metallic_delay: array[int] = array("h")
         self._echo_index = 0
         self._metallic_index = 0
+        self._pitch = PitchShifter(self._sample_rate, 0.0)
         self._rebuild_delays()
+
+    def set_pitch(self, semitones: float) -> None:
+        """보이스 프로필은 그대로 두고 재생 톤만 올린다(반음 단위)."""
+        self._pitch.set_semitones(semitones)
+
+    @property
+    def pitch_semitones(self) -> float:
+        return self._pitch.semitones
 
     def configure(self, *, enabled: bool, intensity: float) -> None:
         value = max(0.0, min(1.0, float(intensity)))
@@ -40,10 +52,12 @@ class VoiceAssistantEffect:
         if rate == self._sample_rate:
             return
         self._sample_rate = rate
+        self._pitch.set_sample_rate(rate)
         self._rebuild_delays()
         self.reset()
 
     def reset(self) -> None:
+        self._pitch.reset()
         self._echo_index = 0
         self._metallic_index = 0
         if self._echo_delay:
@@ -53,7 +67,13 @@ class VoiceAssistantEffect:
 
     def process(self, pcm: bytes) -> bytes:
         """원본 길이/형식을 유지하면서 현재 PCM 조각을 처리한다."""
-        if not pcm or not self._enabled or self._intensity <= 0.0:
+        if not pcm:
+            return pcm
+
+        # 피치는 AI 음향 효과와 독립이다. 효과를 꺼도 톤은 올라가야 한다.
+        pcm = self._pitch.process(pcm)
+
+        if not self._enabled or self._intensity <= 0.0:
             return pcm
 
         aligned = len(pcm) & ~1
