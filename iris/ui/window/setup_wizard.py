@@ -51,6 +51,7 @@ _STREAM_STEPS = {
     "mcp_venv",
     "ollama_install",
     "ollama_model",
+    "ollama_cloud",
     "hermes_install",
     "voice",
     "voice_full",
@@ -150,7 +151,9 @@ class _NeedsUserCard(QFrame):
         self._hint.setText(result.action_hint or "")
         self._hint.setVisible(bool(result.action_hint))
         self._url = (result.action_url or "").strip()
+        self._open_btn.setText(result.login_label if result.can_login else "열기")
         self._open_btn.setVisible(bool(self._url))
+        self._install_btn.setText(result.install_label or "설치")
         self._install_btn.setVisible(bool(result.can_install))
         # 키 붙여넣기는 external_api 등 hint에 '붙여넣'이 있을 때만
         need_paste = "붙여넣" in (result.action_hint or "") or "키" in (result.action_hint or "")

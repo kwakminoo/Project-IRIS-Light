@@ -8,9 +8,27 @@ from unittest.mock import patch
 from iris.system.setup_protocol import (
     DEFAULT_MIN_MODEL,
     SetupProtocol,
+    format_inference_report,
     has_usable_inference_backend,
     local_inference_models,
 )
+
+
+class FormatInferenceReportTests(TestCase):
+    def test_recommends_login_when_signed_in_without_local(self) -> None:
+        text = format_inference_report(
+            local_models=[], cloud_signed_in=True, min_model="gemma4:e2b"
+        )
+        self.assertIn("권장", text)
+        self.assertIn("로그인: 됨", text)
+        self.assertIn("없음", text)
+
+    def test_tells_user_to_login_or_install_when_neither(self) -> None:
+        text = format_inference_report(
+            local_models=[], cloud_signed_in=False, min_model="gemma4:e2b"
+        )
+        self.assertIn("안 됨", text)
+        self.assertIn("최소 모델 설치", text)
 
 
 class LocalVsCloudModelTests(TestCase):
@@ -78,6 +96,7 @@ class VerifyCoreChatReadyTests(TestCase):
         ok, detail = self._proto().verify_core()
         self.assertTrue(ok)
         self.assertIn("클라우드", detail)
+        self.assertIn("권장", detail)
 
     @patch("iris.system.setup_protocol.verify_iris_mcp_tools", return_value=(True, "ok"))
     @patch(
@@ -100,19 +119,25 @@ class VerifyCoreChatReadyTests(TestCase):
 class OllamaModelStepTests(TestCase):
     @patch("iris.system.setup_protocol.save_setup_state")
     @patch("iris.system.setup_protocol.SetupProtocol._persist_iris_model")
-    @patch("iris.system.setup_protocol.SetupProtocol._pull_ollama_model", return_value=None)
+    @patch("iris.system.setup_protocol.SetupProtocol._pull_ollama_model")
     @patch("iris.system.setup_protocol.ollama_cloud_signed_in", return_value=False)
     @patch("iris.system.setup_protocol.ensure_ollama_running", return_value=True)
-    @patch("iris.system.setup_protocol._list_ollama_model_names")
-    def test_pulls_local_min_when_only_cloud_stubs(
-        self, list_names, _ensure, _signed, pull, persist, _save
+    @patch(
+        "iris.system.setup_protocol._list_ollama_model_names",
+        return_value=["gemma4:31b-cloud"],
+    )
+    def test_asks_login_or_min_model_when_only_cloud_stubs(
+        self, _list, _ensure, _signed, pull, persist, _save
     ) -> None:
-        list_names.side_effect = [["gemma4:31b-cloud"], ["gemma4:e2b"]]
         proto = SetupProtocol(min_model="gemma4:e2b", simulate=False, dry_run=False)
         result = proto._step_ollama_model()
-        pull.assert_called_once()
-        self.assertEqual(result.status, "done")
-        persist.assert_called()
+        pull.assert_not_called()
+        persist.assert_not_called()
+        self.assertEqual(result.status, "needs_user")
+        self.assertTrue(result.can_login)
+        self.assertTrue(result.can_install)
+        self.assertEqual(result.install_label, "최소 모델 설치")
+        self.assertEqual(result.login_label, "로그인")
 
     @patch("iris.system.setup_protocol.save_setup_state")
     @patch("iris.system.setup_protocol.SetupProtocol._persist_iris_model")
@@ -123,12 +148,46 @@ class OllamaModelStepTests(TestCase):
         "iris.system.setup_protocol._list_ollama_model_names",
         return_value=["gemma4:31b-cloud"],
     )
-    def test_skips_download_when_cloud_signed_in(
+    def test_recommends_login_when_signed_in_without_local(
         self, _list, _ensure, _signed, pull, persist, _save
     ) -> None:
         proto = SetupProtocol(min_model="gemma4:e2b", simulate=False, dry_run=False)
-        result = proto._step_ollama_model()
+        first = proto._step_ollama_model()
         pull.assert_not_called()
-        self.assertEqual(result.status, "done")
-        self.assertIn("클라우드", result.message)
+        self.assertEqual(first.status, "needs_user")
+        self.assertIn("권장", first.message)
+        self.assertTrue(first.can_install)
+        self.assertFalse(first.can_login)
+        second = proto._step_ollama_model()
+        pull.assert_not_called()
+        self.assertEqual(second.status, "done")
+        self.assertIn("클라우드", second.message)
         persist.assert_called()
+
+    @patch("iris.system.setup_protocol.save_setup_state")
+    @patch("iris.system.setup_protocol.SetupProtocol._persist_iris_model")
+    @patch("iris.system.setup_protocol.SetupProtocol._pull_ollama_model", return_value=None)
+    @patch("iris.system.setup_protocol.ensure_ollama_running", return_value=True)
+    @patch("iris.system.setup_protocol._list_ollama_model_names")
+    def test_install_min_model_pulls_when_requested(
+        self, list_names, _ensure, pull, persist, _save
+    ) -> None:
+        list_names.side_effect = [["gemma4:31b-cloud"], ["gemma4:e2b"]]
+        proto = SetupProtocol(min_model="gemma4:e2b", simulate=False, dry_run=False)
+        result = proto._install_min_local_model("ollama_model")
+        pull.assert_called_once()
+        self.assertEqual(result.status, "done")
+        persist.assert_called()
+
+    @patch("iris.system.setup_protocol.ollama_cloud_signed_in", return_value=False)
+    @patch("iris.system.setup_protocol._list_ollama_model_names", return_value=[])
+    def test_opt_cloud_card_has_login_and_min_model_buttons(
+        self, _list, _signed
+    ) -> None:
+        proto = SetupProtocol(simulate=False, dry_run=False)
+        card = proto._opt_ollama_cloud()
+        self.assertEqual(card.status, "needs_user")
+        self.assertTrue(card.can_login)
+        self.assertTrue(card.can_install)
+        self.assertEqual(card.install_label, "최소 모델 설치")
+        self.assertEqual(card.login_label, "로그인")

@@ -1648,6 +1648,7 @@ class SettingsDialog(QDialog):
         lay.addWidget(
             make_hint(
                 "Ollama · Hermes · iris-control MCP 등 Core 환경을 설치하거나 상태를 검사합니다. "
+                "검사는 최소 로컬 모델과 Ollama 클라우드 로그인을 함께 확인합니다. "
                 "미설치면 「시작 프로토콜 가동」, 이미 준비됐으면 「검사」가 표시됩니다."
             )
         )
@@ -1767,18 +1768,22 @@ class SettingsDialog(QDialog):
         self._setup_primary_btn.setEnabled(True)
         self._refresh_setup_protocol_ui()
         text = (detail or "").strip() or ("정상" if ok else "실패")
+        recommend_login = "권장:" in text and "로그인" in text
         if ok:
-            self._setup_status.setText(f"검사 결과: OK — {text}")
-            QMessageBox.information(self, "시작 프로토콜 검사", f"Core 정상\n{text}")
-        else:
-            self._setup_status.setText(f"검사 결과: 실패 — {text}")
-            QMessageBox.warning(
-                self,
-                "시작 프로토콜 검사",
-                f"Core 검사 실패\n{text}\n\n"
-                "「다시 설정」으로 시작 프로토콜을 다시 돌릴 수 있습니다.",
-            )
-            self._setup_repair_btn.show()
+            self._setup_status.setText(f"검사 결과: OK — {text.splitlines()[0]}")
+            title = "시작 프로토콜 검사"
+            if recommend_login:
+                title = "시작 프로토콜 검사 — 로그인 권장"
+            QMessageBox.information(self, title, text)
+            return
+        self._setup_status.setText(f"검사 결과: 실패 — {text.splitlines()[0]}")
+        QMessageBox.warning(
+            self,
+            "시작 프로토콜 검사",
+            f"{text}\n\n"
+            "「다시 설정」에서 Ollama 「로그인」또는 「최소 모델 설치」를 할 수 있습니다.",
+        )
+        self._setup_repair_btn.show()
 
     def _load_sync_status_text(self) -> str:
         return settings_service.load_hermes_sync_status_text()
