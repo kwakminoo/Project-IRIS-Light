@@ -48,6 +48,8 @@ SCHEMA_VERSION = 1
 
 # 기본 최소 모델 — IRIS_SETUP_MODEL / IRIS_OLLAMA_MODEL 로 덮어쓰기
 DEFAULT_MIN_MODEL = "gemma4:e2b"
+# 클라우드 로그인 시 로컬 가중치 없이 쓰는 기본 모델
+DEFAULT_CLOUD_MODEL = "gemma4:e2b-cloud"
 
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download/windows"
 OLLAMA_INSTALL_PS1 = "https://ollama.com/install.ps1"
@@ -131,7 +133,7 @@ CORE_STEP_LABELS: dict[str, str] = {
     "state_init": "Iris 상태 디렉터리 준비",
     "mcp_venv": "MCP용 Python 가상환경",
     "ollama_install": "Ollama 설치·기동",
-    "ollama_model": "최소 모델 받기",
+    "ollama_model": "추론 모델 준비",
     "hermes_install": "Hermes 설치",
     "hermes_env": "Hermes API 키·서버 설정",
     "hermes_provider": "Hermes ↔ Ollama 연결",
@@ -313,6 +315,39 @@ def default_min_model() -> str:
         or os.environ.get("IRIS_OLLAMA_MODEL", "").strip()
         or DEFAULT_MIN_MODEL
     )
+
+
+def default_cloud_model() -> str:
+    return os.environ.get("IRIS_SETUP_CLOUD_MODEL", "").strip() or DEFAULT_CLOUD_MODEL
+
+
+def is_cloud_runtime_name(name: str) -> bool:
+    from iris.infrastructure.ollama_client import OllamaModelInfo
+
+    n = (name or "").strip()
+    return bool(n) and OllamaModelInfo(name=n).is_cloud
+
+
+def local_inference_models(names: list[str]) -> list[str]:
+    """로컬 가중치 모델만. 클라우드 스텁(gemma4:31b-cloud 등)은 제외."""
+    return [n for n in names if str(n).strip() and not is_cloud_runtime_name(str(n))]
+
+
+def has_usable_inference_backend(names: list[str], *, cloud_signed_in: bool) -> bool:
+    """채팅이 실제로 돌 수 있는지 — 로컬 모델 또는 클라우드 로그인."""
+    if local_inference_models(names):
+        return True
+    return bool(cloud_signed_in)
+
+
+def ollama_cloud_signed_in() -> bool:
+    """로컬 Ollama 데몬이 ollama.com 에 로그인되어 있으면 True."""
+    try:
+        from iris.infrastructure.ollama_usage import ollama_cloud_signed_in as _signed
+
+        return bool(_signed())
+    except Exception:
+        return False
 
 
 def _iris_env_path() -> Path:
@@ -543,16 +578,20 @@ class SetupProtocol:
         venv_py = repo / ".venv" / "Scripts" / "python.exe"
         if not venv_py.is_file():
             venv_py = repo / ".venv" / "bin" / "python"
+        ollama_up = is_ollama_running(self.ollama_base_url)
+        names = _list_ollama_model_names(self.ollama_base_url) if ollama_up else []
+        local = local_inference_models(names)
         return {
             "core_ready": bool(self._state.get("core_ready")),
             "state_dir": str(iris_state_dir()),
             "ollama_exe": exe_o,
-            "ollama_running": is_ollama_running(self.ollama_base_url),
+            "ollama_running": ollama_up,
             "hermes_exe": exe_h,
             "hermes_running": is_hermes_gateway_running(self.hermes_base_url),
             "venv_ok": venv_py.is_file(),
             "min_model": self.min_model,
             "api_key_set": bool(resolve_hermes_api_key()),
+            "local_model_count": len(local),
         }
 
     def _record_step(self, step_id: str, status: str, message: str = "") -> SetupStepResult:
@@ -591,15 +630,32 @@ class SetupProtocol:
         if not is_ollama_running(self.ollama_base_url):
             return False, "Ollama가 응답하지 않습니다"
         models = _list_ollama_model_names(self.ollama_base_url)
-        if not models:
-            return False, "Ollama 모델이 없습니다"
+        cloud_ok = ollama_cloud_signed_in()
+        if not has_usable_inference_backend(models, cloud_signed_in=cloud_ok):
+            return False, (
+                "로컬 모델이 없고 Ollama 클라우드에 로그인되어 있지 않습니다. "
+                "「다시 설정」이 최소 로컬 모델을 받습니다."
+            )
         key = resolve_hermes_api_key()
         if not is_hermes_gateway_running(self.hermes_base_url, api_key=key):
             return False, "Hermes gateway /health 실패"
+        from iris.infrastructure.hermes_client import HermesClient
+
+        auth = HermesClient(self.hermes_base_url, api_key=key).probe_chat_auth()
+        if auth == "unauthorized":
+            return False, (
+                "Hermes 채팅 401 Unauthorized. "
+                "API 키가 게이트웨이와 다르거나, 클라우드 모델인데 미로그인입니다. "
+                "「다시 설정」으로 키를 맞추고 로컬 최소 모델을 받습니다."
+            )
+        if auth == "unreachable":
+            return False, "Hermes 채팅 엔드포인트에 연결할 수 없습니다"
         mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self.hermes_command)
         if not mcp_ok:
             return False, f"MCP 검증 실패: {mcp_detail}"
-        return True, "Ollama·Hermes·MCP 정상"
+        if local_inference_models(models):
+            return True, "Ollama·Hermes·MCP 정상 (로컬 모델)"
+        return True, "Ollama·Hermes·MCP 정상 (클라우드 로그인)"
 
     def run_core(
         self,
@@ -1330,30 +1386,76 @@ class SetupProtocol:
             can_install=True,
         )
 
+    def _local_min_model(self) -> str:
+        if is_cloud_runtime_name(self.min_model):
+            return DEFAULT_MIN_MODEL
+        return (self.min_model or DEFAULT_MIN_MODEL).strip() or DEFAULT_MIN_MODEL
+
+    def _cloud_min_model(self) -> str:
+        if is_cloud_runtime_name(self.min_model):
+            return self.min_model
+        return default_cloud_model()
+
+    def _persist_iris_model(self, model: str) -> None:
+        model = (model or "").strip()
+        if not model:
+            return
+        _upsert_dotenv(_iris_env_path(), {"IRIS_OLLAMA_MODEL": model})
+        os.environ["IRIS_OLLAMA_MODEL"] = model
+
+    def _mark_optional_cloud_done(self, message: str) -> None:
+        opt = self._state.setdefault("optional", {})
+        opt["ollama_cloud"] = {
+            "status": "done",
+            "message": message,
+            "updated_at": _utc_now(),
+        }
+        save_setup_state(self._state)
+
     def _step_ollama_model(self) -> SetupStepResult:
         if not ensure_ollama_running(self.ollama_base_url, wait_sec=20.0):
             return self._record_step("ollama_model", "failed", "Ollama가 꺼져 있어 모델을 받을 수 없습니다")
         names = _list_ollama_model_names(self.ollama_base_url)
-        if names:
-            # 이미 하나라도 있으면 통과 (기본 모델 없으면 pull)
-            want = self.min_model
-            if any(want == n or n.startswith(want.split(":")[0]) for n in names):
-                return self._record_step("ollama_model", "done", f"모델 준비됨 ({len(names)}개)")
-            if names and not want:
-                return self._record_step("ollama_model", "done", f"모델 {len(names)}개 확인")
+        local = local_inference_models(names)
+        cloud_ok = ollama_cloud_signed_in()
 
-        model = self.min_model
+        # 클라우드 로그인이 있으면 로컬 가중치를 받지 않고 클라우드만 쓴다.
+        if cloud_ok and not local:
+            chosen = self._cloud_min_model()
+            self.min_model = chosen
+            self._persist_iris_model(chosen)
+            self._mark_optional_cloud_done("로그인 확인됨 — 로컬 다운로드 생략")
+            return self._record_step(
+                "ollama_model",
+                "done",
+                f"클라우드 로그인됨 — {chosen} (로컬 다운로드 생략)",
+            )
+
+        if local:
+            want = self._local_min_model()
+            chosen = want if any(
+                n == want or n.startswith(want.split(":")[0] + ":") for n in local
+            ) else local[0]
+            self.min_model = chosen
+            self._persist_iris_model(chosen)
+            return self._record_step("ollama_model", "done", f"로컬 모델 준비됨 ({chosen})")
+
+        # 미로그인 + 로컬 없음 → 최소 로컬 모델 pull (클라우드 스텁은 통과로 치지 않음)
+        model = self._local_min_model()
+        self.min_model = model
         self._record_step("ollama_model", "installing", f"{model} 받는 중…")
         pulled = self._pull_ollama_model(model)
         if pulled is not None:
             return pulled
         names = _list_ollama_model_names(self.ollama_base_url)
-        if not names:
-            return self._record_step("ollama_model", "failed", "pull 후에도 모델 목록이 비어 있습니다")
-        # 설정에 모델 비어 있으면 기록
-        if not os.environ.get("IRIS_OLLAMA_MODEL", "").strip():
-            _upsert_dotenv(_iris_env_path(), {"IRIS_OLLAMA_MODEL": model})
-            os.environ["IRIS_OLLAMA_MODEL"] = model
+        local = local_inference_models(names)
+        if not local:
+            return self._record_step(
+                "ollama_model",
+                "failed",
+                "로컬 모델이 없습니다. pull 실패이거나 클라우드 스텁만 있습니다.",
+            )
+        self._persist_iris_model(model)
         return self._record_step("ollama_model", "done", f"{model} 준비됨")
 
     def _pull_ollama_model(self, model: str) -> SetupStepResult | None:
@@ -1540,8 +1642,9 @@ class SetupProtocol:
         model["provider"] = "ollama"
         model.setdefault("base_url", "http://127.0.0.1:11434/v1")
         if self.min_model:
-            model.setdefault("default", self.min_model)
-            model.setdefault("model", self.min_model)
+            # setdefault 금지 — 이전 클라우드 기본값이 남아 채팅 401이 반복됨
+            model["default"] = self.min_model
+            model["model"] = self.min_model
         data["model"] = model
         try:
             if path.is_file() and not path.with_name("config.yaml.bak-iris-setup").is_file():
@@ -1593,6 +1696,26 @@ class SetupProtocol:
     def _step_core_smoke(self) -> SetupStepResult:
         self._record_step("core_smoke", "verifying", "연결 검증 중…")
         ok, detail = self.verify_core()
+        if not ok and "401" in (detail or ""):
+            self._emit_stream("채팅 401 — API 키 재동기화 후 gateway 재기동…", None, replace=False)
+            self._step_hermes_env()
+            self._step_hermes_gateway()
+            ok, detail = self.verify_core()
+        if (
+            not ok
+            and is_ollama_running(self.ollama_base_url)
+            and not local_inference_models(_list_ollama_model_names(self.ollama_base_url))
+        ):
+            model = self._local_min_model()
+            self.min_model = model
+            self._emit_stream(f"사용 가능한 로컬 모델이 없습니다. {model} 받는 중…", None, replace=False)
+            pulled = self._pull_ollama_model(model)
+            if pulled is None:
+                self._persist_iris_model(model)
+                self._step_hermes_provider()
+                ok, detail = self.verify_core()
+            elif pulled.status == "failed":
+                return self._record_step("core_smoke", "failed", pulled.message or detail)
         if not ok:
             return self._record_step("core_smoke", "failed", detail)
         return self._record_step("core_smoke", "done", detail)
@@ -2053,10 +2176,20 @@ class SetupProtocol:
         )
 
     def _opt_ollama_cloud(self) -> SetupStepResult:
+        if ollama_cloud_signed_in():
+            return SetupStepResult(
+                "ollama_cloud",
+                "done",
+                "Ollama 클라우드 로그인됨",
+                label=OPTIONAL_LABELS["ollama_cloud"],
+            )
         return SetupStepResult(
             step_id="ollama_cloud",
             status="needs_user",
-            message="Ollama 클라우드 모델은 로그인 후 사용할 수 있습니다.",
+            message=(
+                "Ollama 클라우드 모델은 로그인 후 로컬 다운로드 없이 사용할 수 있습니다. "
+                "로그인하지 않으면 Core 단계에서 최소 로컬 모델을 받습니다."
+            ),
             action_url=OLLAMA_SIGNIN_URL,
             action_hint="브라우저에서 로그인 후 「완료했어요」 또는 「나중에」.",
             label=OPTIONAL_LABELS["ollama_cloud"],
@@ -2087,6 +2220,10 @@ def _self_check() -> None:
     assert "mcp_venv" in CORE_STEP_IDS
     # 키 마스킹: 메시지에 raw key 넣지 않는지 상수만 검사
     assert "token_urlsafe" not in DEFAULT_MIN_MODEL
+    assert local_inference_models(["gemma4:31b-cloud", "gemma4:e2b"]) == ["gemma4:e2b"]
+    assert not has_usable_inference_backend(["gemma4:31b-cloud"], cloud_signed_in=False)
+    assert has_usable_inference_backend(["gemma4:31b-cloud"], cloud_signed_in=True)
+    assert has_usable_inference_backend(["gemma4:e2b"], cloud_signed_in=False)
     assert "voice_full" in OPTIONAL_IDS and "learning" in OPTIONAL_IDS
     assert parse_install_percent("Downloading  67%") == 67
     assert parse_install_percent("no percent here") is None

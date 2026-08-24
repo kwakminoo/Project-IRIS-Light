@@ -8,8 +8,10 @@ from iris.system.setup_protocol import (
     SetupProtocol,
     SetupStepResult,
     default_min_model,
+    has_usable_inference_backend,
     iris_state_dir,
     load_setup_state,
+    local_inference_models,
     parse_install_percent,
     setup_state_path,
 )
@@ -29,6 +31,9 @@ def main() -> None:
     proto = SetupProtocol()
     snap = proto.detect()
     assert "ollama_exe" in snap
+    assert "local_model_count" in snap
+    assert local_inference_models(["llama3.2:latest", "gemma4:31b-cloud"]) == ["llama3.2:latest"]
+    assert not has_usable_inference_backend(["minimax-m3:cloud"], cloud_signed_in=False)
     d = iris_state_dir()
     assert d.is_dir()
     assert parse_install_percent("  ████  42%") == 42

@@ -1702,6 +1702,7 @@ class SettingsDialog(QDialog):
         bits = [
             f"Ollama {'OK' if snap.get('ollama_exe') else '없음'}"
             + (" · 실행 중" if snap.get("ollama_running") else ""),
+            f"로컬 모델 {int(snap.get('local_model_count') or 0)}개",
             f"Hermes {'OK' if snap.get('hermes_exe') else '없음'}"
             + (" · Connected" if snap.get("hermes_running") else ""),
             f"venv {'OK' if snap.get('venv_ok') else '없음'}",

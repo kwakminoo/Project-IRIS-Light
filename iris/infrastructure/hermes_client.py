@@ -99,7 +99,7 @@ class HermesClient:
         return self._health_ping_ok()
 
     def gateway_ready(self) -> bool:
-        """/health + /v1/models — 채팅과 동일한 Bearer 인증까지 확인."""
+        """/health + /v1/models — 프로세스·키 존재. 채팅 401은 probe_chat_auth()."""
         if not self._health_ping_ok():
             return False
         if not self.api_key:
@@ -109,6 +109,46 @@ class HermesClient:
             return True
         except Exception:
             return False
+
+    def probe_chat_auth(self) -> str:
+        """채팅과 같은 POST /v1/chat/completions 로 Bearer를 검사.
+
+        GET /v1/models 는 키가 틀리거나 없어도 200인 경우가 있어
+        검사·Connected는 통과하고 보내기만 401이 난다.
+        빈 messages 는 인증 통과 시 보통 400/422, 실패 시 401.
+
+        Returns: 'ok' | 'unauthorized' | 'unreachable'
+        """
+        if not self.api_key:
+            return "unauthorized"
+        payload = json.dumps(
+            {
+                "model": "hermes-agent",
+                "messages": [],
+                "stream": False,
+                "max_tokens": 1,
+            }
+        ).encode("utf-8")
+        req = Request(
+            f"{self.base_url}/chat/completions",
+            data=payload,
+            headers=self._headers(json_body=True),
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=8.0) as resp:
+                resp.read(64)
+            return "ok"
+        except HTTPError as e:
+            try:
+                e.read()
+            except Exception:
+                pass
+            if e.code == 401:
+                return "unauthorized"
+            return "ok"
+        except (URLError, TimeoutError, OSError):
+            return "unreachable"
 
     def list_models(self) -> list[str]:
         try:
@@ -291,12 +331,11 @@ class HermesClient:
         except HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:400]
             if e.code == 401:
-                hint = (
-                    "Hermes API 키가 맞지 않습니다. "
-                    "설정 → Hermes API Key가 "
-                    r"%LOCALAPPDATA%\hermes\.env 의 API_SERVER_KEY 와 같아야 합니다."
-                )
-                raise RuntimeError(f"Hermes HTTP 401: {detail or hint}") from e
+                raise RuntimeError(
+                    "Hermes HTTP 401 Unauthorized. "
+                    "시작 프로토콜 「다시 설정」으로 API 키를 맞추고, "
+                    "로컬 최소 모델을 받거나 Ollama 클라우드 로그인을 확인하세요."
+                ) from e
             raise RuntimeError(f"Hermes HTTP {e.code}: {detail or e.reason}") from e
         except URLError as e:
             raise RuntimeError(f"Hermes 연결 실패: {e.reason}") from e
@@ -340,4 +379,7 @@ if __name__ == "__main__":
     resolved = resolve_hermes_api_key("")
     client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
     assert client.api_key == resolved
+    empty = HermesClient("http://127.0.0.1:1/v1", api_key="")
+    if not empty.api_key:
+        assert empty.probe_chat_auth() == "unauthorized"
     print("hermes_client self-check ok")
