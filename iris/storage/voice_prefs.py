@@ -50,6 +50,10 @@ class VoicePreferences:
     stt_device_id: str = ""
     stt_speech_rms: float = 0.02  # 연속 청취 발화 임계 RMS
     stt_echo_tail_ms: int = 180
+    voice_barge_in_enabled: bool = True
+    voice_wake_word_enabled: bool = False
+    voice_wake_words: str = "아이리스,Iris"
+    voice_followup_window_sec: int = 20
 
     tts_enabled: bool = False
     tts_mode: str = "off"  # off | manual | auto
@@ -119,6 +123,20 @@ def load_voice_preferences(db: Database) -> VoicePreferences:
         prefs.stt_echo_tail_ms = max(0, int(data.get("stt_echo_tail_ms", prefs.stt_echo_tail_ms)))
     except (TypeError, ValueError):
         prefs.stt_echo_tail_ms = 180
+    prefs.voice_barge_in_enabled = _to_bool(
+        data.get("voice_barge_in_enabled"), prefs.voice_barge_in_enabled
+    )
+    prefs.voice_wake_word_enabled = _to_bool(
+        data.get("voice_wake_word_enabled"), prefs.voice_wake_word_enabled
+    )
+    prefs.voice_wake_words = str(data.get("voice_wake_words", prefs.voice_wake_words) or "아이리스,Iris")
+    try:
+        prefs.voice_followup_window_sec = max(
+            1,
+            int(data.get("voice_followup_window_sec", prefs.voice_followup_window_sec)),
+        )
+    except (TypeError, ValueError):
+        prefs.voice_followup_window_sec = 20
     prefs.tts_enabled = _to_bool(data.get("tts_enabled"), prefs.tts_enabled)
     prefs.tts_mode = str(data.get("tts_mode", prefs.tts_mode) or prefs.tts_mode)
     prefs.tts_model = str(data.get("tts_model", prefs.tts_model) or prefs.tts_model)

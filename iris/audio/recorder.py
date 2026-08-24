@@ -48,6 +48,7 @@ class AudioRecorder(QObject):
     recording_stopped = pyqtSignal(object)  # RecordingResult
     recording_cancelled = pyqtSignal()
     utterance_ready = pyqtSignal(object)  # RecordingResult (continuous)
+    utterance_dropped = pyqtSignal(str)
     speech_started = pyqtSignal()
     failed = pyqtSignal(str)
 
@@ -65,8 +66,8 @@ class AudioRecorder(QObject):
         self._native_channels = 1
         self._native_format = "int16"
         self._rms_peak = 0.0
-        # ponytail: 너무 짧은 단어/호흡만 말해도 start만 찍히고 drop되는 케이스 완화
-        self._gate = SpeechGate(min_speech_frames=3)
+        # ponytail: JARVIS 연속 청취 — 짧은 지시도 살리고 침묵 300ms면 turn 종료
+        self._gate = SpeechGate(min_speech_frames=2, end_frames=6)
         self._vad: SileroVad | None = None
         self._utterance = bytearray()
         self._preroll: deque[bytes] = deque()
@@ -336,9 +337,6 @@ class AudioRecorder(QObject):
             self._vad.speech_prob(pcm) if self._vad is not None and self._vad.available else None
         )
         event = self._gate.feed(level, vad_prob)
-        if not self._gate.speaking and event != "start":
-            self._push_preroll(pcm)
-            return
         if event == "start":
             self._utterance = bytearray()
             for pre in self._preroll:
@@ -352,13 +350,17 @@ class AudioRecorder(QObject):
         if event == "drop":
             self._utterance = bytearray()
             self._clear_preroll()
+            self.utterance_dropped.emit("too_short")
             return
-        self._utterance.extend(pcm)
-        if len(self._utterance) >= self._max_utterance_bytes:
-            self._emit_utterance()
+        if self._gate.speaking or event == "end":
+            self._utterance.extend(pcm)
+            if len(self._utterance) >= self._max_utterance_bytes:
+                self._emit_utterance()
+                return
+            if event == "end":
+                self._emit_utterance()
             return
-        if event == "end":
-            self._emit_utterance()
+        self._push_preroll(pcm)
 
     def _push_preroll(self, data: bytes) -> None:
         self._preroll.append(data)

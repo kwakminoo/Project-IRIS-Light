@@ -21,6 +21,7 @@ class FakeRecorder(QObject):
     recording_stopped = pyqtSignal(object)
     recording_cancelled = pyqtSignal()
     utterance_ready = pyqtSignal(object)
+    utterance_dropped = pyqtSignal(str)
     speech_started = pyqtSignal()
     failed = pyqtSignal(str)
 

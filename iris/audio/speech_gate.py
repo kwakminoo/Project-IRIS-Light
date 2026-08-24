@@ -57,7 +57,10 @@ class SpeechGate:
         threshold = self.adaptive_threshold()
         # RMS pre-gate: 아주 작은 소음은 VAD도 안 태운 것과 동일하게 침묵
         rms_hot = rms >= threshold
-        if vad_prob is None:
+        if self.speaking:
+            # ponytail: 발화 중엔 RMS로 유지만 — Silero가 끊기면 utterance_ready가 영원히 안 뜬다
+            is_speech = rms_hot
+        elif vad_prob is None:
             is_speech = rms_hot
         else:
             is_speech = rms_hot and float(vad_prob) >= self.vad_speech_prob

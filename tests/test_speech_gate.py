@@ -50,3 +50,13 @@ class SpeechGateTests(TestCase):
         self.assertEqual(gate.feed(0.05, vad_prob=0.9), "")
         self.assertEqual(gate.feed(0.05, vad_prob=0.9), "start")
         self.assertTrue(gate.speaking)
+
+    def test_speaking_holds_on_rms_when_vad_rejects(self) -> None:
+        gate = SpeechGate(speech_rms=0.02, start_frames=2, end_frames=2, min_speech_frames=2)
+        self.assertEqual(gate.feed(0.05, vad_prob=0.9), "")
+        self.assertEqual(gate.feed(0.05, vad_prob=0.9), "start")
+        self.assertEqual(gate.feed(0.05, vad_prob=0.05), "")
+        self.assertEqual(gate.feed(0.05, vad_prob=0.05), "")
+        self.assertEqual(gate.feed(0.001, vad_prob=0.05), "")
+        self.assertEqual(gate.feed(0.001, vad_prob=0.05), "end")
+        self.assertFalse(gate.speaking)

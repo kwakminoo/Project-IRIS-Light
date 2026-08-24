@@ -831,7 +831,7 @@ class SettingsDialog(QDialog):
         lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
             make_hint(
-                "STT는 녹음 후 입력창에 전사 결과만 넣고 자동 전송하지 않습니다. "
+                "STT는 녹음 후 대화 turn으로 바로 전달되고 입력창 초안은 건드리지 않습니다. "
                 "TTS는 기본적으로 IRIS 보이스 프로필을 씁니다 — 기준 음성 파일을 고르지 않아도 됩니다. "
                 "프로필을 끄면 아래 기준 음성/대본을 확정한 뒤에만 동작합니다. "
                 "실제 목소리는 커밋된 IRIS 보이스 프로필(2차 녹음본) + Qwen TTS입니다. "
@@ -878,6 +878,15 @@ class SettingsDialog(QDialog):
         self._voice_stt_device.currentRowChanged.connect(self._on_mic_device_changed)
 
         self._mic_threshold_bar = MicThresholdBar(speech_rms=self._voice_prefs.stt_speech_rms)
+        self._voice_barge_in = QCheckBox("응답 중 끼어들기 허용")
+        self._voice_barge_in.setChecked(self._voice_prefs.voice_barge_in_enabled)
+        self._voice_wake_word_on = QCheckBox("Wake Word 사용")
+        self._voice_wake_word_on.setChecked(self._voice_prefs.voice_wake_word_enabled)
+        self._voice_wake_words = QLineEdit(self._voice_prefs.voice_wake_words or "아이리스,Iris")
+        self._voice_followup_window = QLineEdit(
+            str(max(1, int(self._voice_prefs.voice_followup_window_sec or 20)))
+        )
+        self._voice_followup_window.setPlaceholderText("20")
 
         self._voice_runtime_url = QLineEdit(self._voice_prefs.voice_runtime_url)
         self._voice_runtime_mock = QCheckBox("개발용 mock (무음 WAV — Qwen TTS 사용 안 함)")
@@ -983,6 +992,10 @@ class SettingsDialog(QDialog):
         form.addRow(make_form_label(""), self._voice_stt_on)
         form.addRow(make_form_label("STT 모델"), self._voice_stt_model)
         form.addRow(make_form_label("STT 언어"), self._voice_stt_lang)
+        form.addRow(make_form_label(""), self._voice_barge_in)
+        form.addRow(make_form_label(""), self._voice_wake_word_on)
+        form.addRow(make_form_label("Wake Words"), self._voice_wake_words)
+        form.addRow(make_form_label("Follow-up 창(초)"), self._voice_followup_window)
         form.addRow(make_form_label("Runtime URL"), self._voice_runtime_url)
         form.addRow(make_form_label(""), self._voice_runtime_mock)
         form.addRow(make_form_label(""), self._voice_tts_on)
@@ -1089,6 +1102,10 @@ class SettingsDialog(QDialog):
         stt_lang = self._voice_stt_lang.currentData()
         device_id = self._selected_mic_device_id()
         tts_mode = self._voice_tts_mode.currentData()
+        try:
+            followup_window_sec = max(1, int(self._voice_followup_window.text().strip() or "20"))
+        except (TypeError, ValueError):
+            followup_window_sec = 20
         return VoicePreferences(
             stt_enabled=self._voice_stt_on.isChecked(),
             stt_model=str(stt_model or "small"),
@@ -1096,6 +1113,10 @@ class SettingsDialog(QDialog):
             stt_device_id=str(device_id or ""),
             stt_speech_rms=self._mic_threshold_bar.speech_rms(),
             stt_echo_tail_ms=self._voice_prefs.stt_echo_tail_ms,
+            voice_barge_in_enabled=self._voice_barge_in.isChecked(),
+            voice_wake_word_enabled=self._voice_wake_word_on.isChecked(),
+            voice_wake_words=self._voice_wake_words.text().strip() or "아이리스,Iris",
+            voice_followup_window_sec=followup_window_sec,
             tts_enabled=self._voice_tts_on.isChecked(),
             tts_mode=str(tts_mode or "off"),
             tts_model=self._voice_tts_model.currentText().strip() or "Qwen/Qwen3-TTS-12Hz-0.6B-Base",

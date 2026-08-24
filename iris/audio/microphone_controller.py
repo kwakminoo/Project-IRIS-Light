@@ -13,6 +13,7 @@ class MicrophoneController(QObject):
     level_changed = pyqtSignal(float)
     speech_started = pyqtSignal()
     utterance_ready = pyqtSignal(object)  # RecordingResult
+    utterance_dropped = pyqtSignal(str)
     error = pyqtSignal(str)
 
     def __init__(
@@ -38,6 +39,7 @@ class MicrophoneController(QObject):
         self._recorder.recording_started.connect(self._on_started)
         self._recorder.recording_cancelled.connect(self._on_cancelled)
         self._recorder.utterance_ready.connect(self._on_utterance)
+        self._recorder.utterance_dropped.connect(self.utterance_dropped.emit)
         self._recorder.speech_started.connect(self._on_speech)
         self._recorder.failed.connect(self._on_failed)
 
@@ -162,7 +164,7 @@ class MicrophoneController(QObject):
     def _on_utterance(self, result: RecordingResult) -> None:
         if self._state == MicState.SPEECH:
             self._set_state(MicState.LISTENING)
-        if self._state in (MicState.LISTENING, MicState.SPEECH):
+        if self._state in (MicState.LISTENING, MicState.SPEECH, MicState.SUSPENDED):
             self.utterance_ready.emit(result)
 
     def _on_failed(self, err: str) -> None:

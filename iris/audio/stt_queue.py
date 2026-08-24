@@ -28,6 +28,7 @@ class SttJobQueue(QObject):
     finished_ok = pyqtSignal(object, int)  # payload, session_id
     failed = pyqtSignal(str, int)
     perf = pyqtSignal(str)
+    dropped = pyqtSignal(int, str)  # session_id, reason
 
     def __init__(
         self,
@@ -52,7 +53,8 @@ class SttJobQueue(QObject):
         job = SttJob(result=result, session_id=session_id)
         self._pending.append(job)
         while len(self._pending) > MAX_PENDING:
-            self._pending.popleft()
+            dropped = self._pending.popleft()
+            self.dropped.emit(dropped.session_id, "stt_queue_overflow")
         self._kick()
 
     def clear_pending(self) -> None:
@@ -60,6 +62,9 @@ class SttJobQueue(QObject):
 
     def is_busy(self) -> bool:
         return self._worker is not None and self._worker.isRunning()
+
+    def pending_count(self) -> int:
+        return len(self._pending)
 
     def _kick(self) -> None:
         if self.is_busy() or not self._pending:
