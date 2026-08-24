@@ -263,7 +263,13 @@ class UnifiedMonitorPanel(QWidget):
         self._render(snaps, monitors)
 
     def _load_monitor_meta(self) -> dict[str, _MonitorMeta]:
-        """DB에서 모니터링 대상 메타 로드 — 제목(소문자)으로 키."""
+        """DB에서 모니터링 대상 메타 로드 — 제목(소문자)으로 키.
+
+        status/last_event/last_checked_at 는 구버전 DB에 없을 수 있다.
+        Database._migrate_targets() 가 채워 주지만, 마이그레이션 전에 열린
+        연결이나 외부에서 만든 DB도 있을 수 있어 컬럼 유무를 먼저 확인한다.
+        (예전에는 여기서 KeyError 가 나고 `except: continue` 에 먹혀
+        모니터링 상태가 한 번도 표시되지 않았다.)"""
         out: dict[str, _MonitorMeta] = {}
         if not self._db:
             return out
@@ -273,16 +279,19 @@ class UnifiedMonitorPanel(QWidget):
             return out
         for row in rows:
             try:
-                title = str(row["title"] or "").strip().lower()
-                if not title:
-                    continue
-                out[title] = _MonitorMeta(
-                    status=str(row["status"] or "UNKNOWN"),
-                    last_event=str(row["last_event"] or "-"),
-                    last_checked_at=str(row["last_checked_at"] or "-"),
-                )
+                columns = set(row.keys())
             except Exception:
                 continue
+            title = str(_row_value(row, columns, "title", "")).strip().lower()
+            if not title:
+                continue
+            out[title] = _MonitorMeta(
+                status=str(_row_value(row, columns, "status", "") or "UNKNOWN"),
+                last_event=str(_row_value(row, columns, "last_event", "") or "-"),
+                last_checked_at=str(
+                    _row_value(row, columns, "last_checked_at", "") or "-"
+                ),
+            )
         return out
 
     # ------------------------------------------------------------------
@@ -313,6 +322,11 @@ class UnifiedMonitorPanel(QWidget):
             for snap in snaps:
                 meta = _match_monitor(snap.info.title, monitors)
                 pin = self._pins.get(snap.info.title) if self._pins else None
+                if pin is not None and pin.last_checked_at:
+                    # 이번 세션에서 분석된 창은 위의 AI 감시 위젯이 같은 내용을
+                    # 더 자세히 보여 준다. DB 스냅샷은 재시작 직후처럼 아직
+                    # 분석 결과가 없을 때만 쓴다.
+                    meta = None
                 card = _make_card(
                     snap,
                     meta,
@@ -410,6 +424,14 @@ def _capture_all_windows(sig: _CaptureSignals) -> None:
     except RuntimeError:
         # 패널이 닫힌 뒤 _CaptureSignals C++ 객체가 삭제된 경우
         pass
+
+
+def _row_value(row, columns: set[str], key: str, default: str = "") -> object:
+    """sqlite3.Row 에서 없는 컬럼을 KeyError 없이 읽는다."""
+    if key not in columns:
+        return default
+    value = row[key]
+    return default if value is None else value
 
 
 def _match_monitor(title: str, monitors: dict[str, _MonitorMeta]) -> Optional[_MonitorMeta]:

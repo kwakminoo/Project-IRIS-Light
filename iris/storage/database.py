@@ -53,10 +53,16 @@ class Database:
                 title TEXT NOT NULL DEFAULT '',
                 focus_hint TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                handle TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'UNKNOWN',
+                last_event TEXT NOT NULL DEFAULT '',
+                last_checked_at TEXT NOT NULL DEFAULT ''
             )
             """
         )
+        self._ensure_target_title_index()
+        self._migrate_targets()
         self._execute(
             """
             CREATE TABLE IF NOT EXISTS notification_prefs (
@@ -96,6 +102,188 @@ class Database:
             "INSERT INTO user_preferences(key, value) VALUES(?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
+        )
+        self._commit()
+
+    def _ensure_target_title_index(self) -> None:
+        """upsert_target 의 ON CONFLICT(title) 이 걸릴 유니크 인덱스.
+
+        구버전 DB에 중복 제목이 남아 있으면 인덱스 생성이 실패할 수 있는데,
+        그 경우에도 앱은 떠야 하므로 중복을 정리한 뒤 한 번 더 시도한다."""
+        try:
+            self._execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_title ON targets(title)"
+            )
+            return
+        except sqlite3.Error:
+            pass
+        try:
+            # 같은 제목이 여러 건이면 가장 최근 것만 남긴다
+            self._execute(
+                "DELETE FROM targets WHERE id NOT IN "
+                "(SELECT MAX(id) FROM targets GROUP BY title)"
+            )
+            self._execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_title ON targets(title)"
+            )
+            self._commit()
+        except sqlite3.Error:
+            # 인덱스 없이도 조회는 되므로 앱 기동을 막지 않는다.
+            # upsert_target 이 ON CONFLICT 실패를 스스로 처리한다.
+            pass
+
+    def _migrate_targets(self) -> None:
+        """구버전 DB 보정.
+
+        targets 는 원래 status/last_event/last_checked_at 없이 만들어졌는데
+        UI(unified_monitor_panel)와 도메인 모델(MonitoredTarget)은 이 컬럼들이
+        있다고 가정한다. 이미 만들어진 ~/.iris-light/iris_light.db 는
+        CREATE TABLE IF NOT EXISTS 로는 갱신되지 않으므로 여기서 채운다."""
+        try:
+            existing = {
+                str(row["name"])
+                for row in self._execute("PRAGMA table_info(targets)").fetchall()
+            }
+        except sqlite3.Error:
+            return
+        if not existing:
+            return
+        added = False
+        for column, ddl in (
+            ("handle", "ALTER TABLE targets ADD COLUMN handle TEXT NOT NULL DEFAULT ''"),
+            ("status", "ALTER TABLE targets ADD COLUMN status TEXT NOT NULL DEFAULT 'UNKNOWN'"),
+            ("last_event", "ALTER TABLE targets ADD COLUMN last_event TEXT NOT NULL DEFAULT ''"),
+            (
+                "last_checked_at",
+                "ALTER TABLE targets ADD COLUMN last_checked_at TEXT NOT NULL DEFAULT ''",
+            ),
+        ):
+            if column in existing:
+                continue
+            try:
+                self._execute(ddl)
+                added = True
+            except sqlite3.Error:
+                # 다른 프로세스가 먼저 추가했을 수 있다 — 다음 조회에서 확인된다
+                pass
+        if added:
+            self._commit()
+
+    def upsert_target(
+        self,
+        title: str,
+        *,
+        kind: str = "desktop_window",
+        focus_hint: str = "",
+        handle: str = "",
+        enabled: bool = True,
+    ) -> Optional[int]:
+        """모니터링 대상 등록/재활성화. 제목이 키다.
+
+        hwnd 는 앱을 다시 켜면 달라지므로 PinStore 와 같은 기준(제목)을 쓴다."""
+        name = (title or "").strip()
+        if not name:
+            return None
+        try:
+            self._insert_target_on_conflict(name, kind, focus_hint, handle, enabled)
+        except sqlite3.OperationalError:
+            # 유니크 인덱스가 없는 DB — ON CONFLICT 대상이 없어 실패한다.
+            # 수동 upsert 로 폴백.
+            self._upsert_target_fallback(name, kind, focus_hint, handle, enabled)
+        self._commit()
+        row = self._execute("SELECT id FROM targets WHERE title = ?", (name,)).fetchone()
+        return int(row["id"]) if row else None
+
+    def _insert_target_on_conflict(
+        self, name: str, kind: str, focus_hint: str, handle: str, enabled: bool
+    ) -> None:
+        self._execute(
+            """
+            INSERT INTO targets(kind, title, focus_hint, enabled, created_at, handle)
+            VALUES(?, ?, ?, ?, ?, ?)
+            ON CONFLICT(title) DO UPDATE SET
+                kind = excluded.kind,
+                enabled = excluded.enabled,
+                handle = excluded.handle,
+                focus_hint = CASE
+                    WHEN excluded.focus_hint != '' THEN excluded.focus_hint
+                    ELSE targets.focus_hint
+                END
+            """,
+            (
+                kind,
+                name,
+                focus_hint,
+                1 if enabled else 0,
+                datetime.now().isoformat(timespec="seconds"),
+                handle,
+            ),
+        )
+
+    def _upsert_target_fallback(
+        self, name: str, kind: str, focus_hint: str, handle: str, enabled: bool
+    ) -> None:
+        cur = self._execute(
+            "UPDATE targets SET kind = ?, enabled = ?, handle = ? WHERE title = ?",
+            (kind, 1 if enabled else 0, handle, name),
+        )
+        if cur.rowcount:
+            if focus_hint:
+                self._execute(
+                    "UPDATE targets SET focus_hint = ? WHERE title = ?",
+                    (focus_hint, name),
+                )
+            return
+        self._execute(
+            """
+            INSERT INTO targets(kind, title, focus_hint, enabled, created_at, handle)
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (
+                kind,
+                name,
+                focus_hint,
+                1 if enabled else 0,
+                datetime.now().isoformat(timespec="seconds"),
+                handle,
+            ),
+        )
+
+    def update_target_status(
+        self,
+        title: str,
+        *,
+        status: str,
+        last_event: str = "",
+        last_checked_at: str = "",
+    ) -> None:
+        """분석 결과 반영. 대상이 없으면 아무것도 하지 않는다."""
+        name = (title or "").strip()
+        if not name:
+            return
+        self._execute(
+            """
+            UPDATE targets
+               SET status = ?, last_event = ?, last_checked_at = ?
+             WHERE title = ?
+            """,
+            (
+                status or "UNKNOWN",
+                last_event,
+                last_checked_at or datetime.now().isoformat(timespec="seconds"),
+                name,
+            ),
+        )
+        self._commit()
+
+    def set_target_enabled_by_title(self, title: str, enabled: bool) -> None:
+        """감시 해제 시 행을 지우지 않고 비활성화 — 마지막 상태를 남겨 둔다."""
+        name = (title or "").strip()
+        if not name:
+            return
+        self._execute(
+            "UPDATE targets SET enabled = ? WHERE title = ?",
+            (1 if enabled else 0, name),
         )
         self._commit()
 

@@ -148,11 +148,14 @@ def _make_row(info: WindowInfo, on_focus, on_close) -> QFrame:
     x.setFixedSize(20, 20)
     x.setCursor(Qt.CursorShape.PointingHandCursor)
     x.setToolTip(f"창 닫기: {info.title}")
+    # padding: 0 필수 — 테마의 기본 QPushButton 규칙이 padding 6px 12px라서,
+    # 20×20 고정 크기 버튼에서는 글리프가 밀려나 아무것도 안 보인다.
     x.setStyleSheet(
         f"""
         QPushButton {{
             background: transparent;
             border: none;
+            padding: 0;
             color: {TOKENS.text_muted};
             font-size: 14px;
         }}
