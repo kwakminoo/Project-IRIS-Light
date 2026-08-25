@@ -7,13 +7,15 @@ import sys
 from typing import Any
 
 
-def no_window_kwargs() -> dict[str, Any]:
-    """subprocess.run/Popen용 — 모니터에 터미널이 안 뜨게."""
+def no_window_kwargs(*, extra_creationflags: int = 0) -> dict[str, Any]:
+    """subprocess.run/Popen용 — 모니터에 터미널이 안 뜨게.
+
+    extra_creationflags: CREATE_NEW_PROCESS_GROUP 등 CREATE_NO_WINDOW와 OR할 플래그.
+    """
     if sys.platform != "win32":
         return {}
-    kw: dict[str, Any] = {
-        "creationflags": int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
-    }
+    flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | int(extra_creationflags)
+    kw: dict[str, Any] = {"creationflags": flags}
     try:
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW

@@ -1,0 +1,20 @@
+---
+description: 코드 수정이 끝나면 dist/IRIS.exe를 항상 최신으로 재빌드·커밋한다 (앱 코드에 넣지 말 것)
+alwaysApply: true
+---
+
+# Rebuild IRIS.exe after every change
+
+사용자가 `dist/IRIS.exe` / `run.bat`으로 실행한다. 소스만 고치고 exe를 안 다시 만들면 **구버전으로 돌아간 것처럼** 보인다.
+
+## 필수
+- 앱 동작에 영향 있는 수정을 마치면 **같은 턴에서** `dist/IRIS.exe`를 재빌드하고 Git LFS로 커밋·푸시한다.
+- Iris Python 앱 안에 자동 빌드 로직을 넣지 않는다. 이 규칙은 에이전트 행동만 규정한다.
+
+## 방법
+- Windows: `python -m PyInstaller --noconfirm --clean IRIS.spec` (또는 `scripts/build_iris_exe.ps1`)
+- Linux 클라우드: `.github/workflows/build-iris-exe.yml`이 Windows에서 빌드·커밋한다. 푸시 후 CI 완료·`git pull`까지 확인.
+
+## 확인
+- `git log -1 --oneline -- dist/IRIS.exe`가 방금 기능 커밋 이후인지 본다.
+- 아니면 빌드가 끝난 것이 아니다.

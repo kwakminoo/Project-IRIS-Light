@@ -1,0 +1,83 @@
+# Windows에서 IRIS.exe(PyInstaller)를 빌드하고 dist/IRIS.exe를 같은 브랜치에 커밋한다.
+# Linux 클라우드 에이전트는 PE exe를 만들 수 없어서 이 워크플로에 위임한다.
+name: Build IRIS.exe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "cursor/**"
+    paths:
+      - "iris/**"
+      - "assets/**"
+      - "IRIS_launcher.py"
+      - "IRIS.spec"
+      - "requirements.txt"
+      - "scripts/build_iris_exe.ps1"
+      - ".github/workflows/build-iris-exe.yml"
+
+concurrency:
+  group: build-iris-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements.txt
+          python -m pip install "pyinstaller>=6.0"
+
+      - name: Build IRIS.exe
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "iris\assets\iris_icon.ico")) {
+            throw "iris/assets/iris_icon.ico 없음"
+          }
+          python -m PyInstaller --noconfirm --clean IRIS.spec
+          if (-not (Test-Path "dist\IRIS.exe")) {
+            throw "dist/IRIS.exe 생성 실패"
+          }
+          Get-Item "dist\IRIS.exe" | Format-List FullName, Length, LastWriteTime
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IRIS-exe
+          path: dist/IRIS.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Commit and push dist/IRIS.exe
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/IRIS.exe
+          if git diff --cached --quiet; then
+            echo "dist/IRIS.exe unchanged"
+            exit 0
+          fi
+          git commit -m "chore: rebuild dist/IRIS.exe from $(git rev-parse --short HEAD) [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

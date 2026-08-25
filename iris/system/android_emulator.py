@@ -96,6 +96,13 @@ def _has_existing_userdata() -> bool:
     return False
 
 
+def _no_window_kwargs(**extra: object) -> dict:
+    """Windows에서 adb/powershell/taskkill 호출 시 콘솔 창이 뜨지 않게."""
+    from iris.system.win_subprocess import no_window_kwargs
+
+    return no_window_kwargs(**extra)  # type: ignore[arg-type]
+
+
 def _running_emulator_serials() -> list[str]:
     adb = adb_exe()
     if not adb.is_file():
@@ -105,6 +112,7 @@ def _running_emulator_serials() -> list[str]:
             [str(adb), "devices"],
             text=True,
             timeout=10,
+            **_no_window_kwargs(),
         )
     except (subprocess.SubprocessError, OSError):
         return []
@@ -128,6 +136,7 @@ def _serial_avd_name(serial: str) -> str:
             [str(adb), "-s", serial, "emu", "avd", "name"],
             text=True,
             timeout=10,
+            **_no_window_kwargs(),
         )
     except (subprocess.SubprocessError, OSError):
         return ""
@@ -159,7 +168,13 @@ def _scan_processes() -> list[tuple[str, int, int, str]]:
     else:
         cmd = ["ps", "-ax", "-o", "pid=,ppid=,command="]
     try:
-        output = subprocess.check_output(cmd, text=True, timeout=15, errors="replace")
+        output = subprocess.check_output(
+            cmd,
+            text=True,
+            timeout=15,
+            errors="replace",
+            **_no_window_kwargs(),
+        )
     except (subprocess.SubprocessError, OSError):
         return []
 
@@ -477,6 +492,7 @@ def ensure_avd() -> str:
         env=_emulator_env(),
         check=True,
         timeout=180,
+        **_no_window_kwargs(),
     )
     _patch_avd_storage(cfg)
     return AVD_NAME
@@ -538,13 +554,24 @@ def launch_emulator(*, headless: bool = False) -> subprocess.Popen[bytes]:
             cmd.append("-no-window")
         _launch_log_handle.write(f"cmd: {' '.join(cmd)}\n")  # type: ignore[union-attr]
         _launch_log_handle.flush()  # type: ignore[union-attr]
-        proc = subprocess.Popen(
-            cmd,
-            env=_emulator_env(),
-            stdout=_launch_log_handle,
-            stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
-        )
+        # CREATE_NO_WINDOW: 콘솔 플래시 방지. CREATE_NEW_PROCESS_GROUP: 종료 시그널 격리.
+        # Android 에뮬 GUI 창은 GUI 서브시스템이라 CREATE_NO_WINDOW에 가려지지 않는다.
+        popen_kwargs: dict = {
+            "env": _emulator_env(),
+            "stdout": _launch_log_handle,
+            "stderr": subprocess.STDOUT,
+        }
+        if sys.platform == "win32":
+            popen_kwargs.update(
+                _no_window_kwargs(
+                    extra_creationflags=int(
+                        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    )
+                )
+            )
+        else:
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(cmd, **popen_kwargs)
         _launched_pids.add(proc.pid)
         _clear_launch_flag_later()
         return proc
@@ -597,8 +624,6 @@ def adb_run(
         cmd.extend(["-s", serial])
     cmd.extend(args)
     try:
-        from iris.system.win_subprocess import no_window_kwargs
-
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -608,7 +633,7 @@ def adb_run(
             errors="replace",
             timeout=timeout,
             env=_emulator_env(),
-            **no_window_kwargs(),
+            **_no_window_kwargs(),
         )
     except subprocess.TimeoutExpired as exc:
         raise AdbError(f"adb timeout ({timeout}s): {' '.join(args)}") from exc
@@ -724,6 +749,7 @@ def _force_kill_pid(pid: int) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=10,
+            **_no_window_kwargs(),
         )
         return True
     except (subprocess.SubprocessError, OSError):
@@ -766,6 +792,7 @@ def kill_emulator() -> bool:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
+                **_no_window_kwargs(),
             )
             killed = True
         except (subprocess.SubprocessError, OSError):
