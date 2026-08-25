@@ -191,11 +191,24 @@ copy .env.example .env
 ## 실행
 
 ```powershell
-# 권장: run.bat (dist\IRIS.exe 또는 venv pythonw)
+# 권장: 소스(.venv)로 최신 코드 실행 — 로컬 수정이 즉시 반영됩니다
 .\run.bat
 
 # 또는
 python -m iris
+```
+
+`run.bat`은 **`.venv`의 `python -m iris`를 기본**으로 씁니다.  
+`dist\IRIS.exe`는 예전 스냅샷일 수 있어, 더 이상 기본 경로가 아닙니다.
+
+- 패키지 EXE만 쓰려면: `set IRIS_USE_EXE=1` 후 `.\run.bat`
+- EXE를 더블클릭해도 저장소에 `.venv`가 있으면 **최신 소스로 자동 전환**합니다 (한 번 `scripts\build_iris_exe.ps1`로 새 EXE를 빌드한 뒤부터).
+- EXE 본체로만 돌리려면: `set IRIS_FORCE_FROZEN=1`
+
+바로가기(바탕화면/시작메뉴)도 소스 우선입니다.
+
+```powershell
+.\scripts\install_iris_shortcuts.ps1
 ```
 
 Linux/macOS:

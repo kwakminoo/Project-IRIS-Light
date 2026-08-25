@@ -75,9 +75,24 @@ def _find_iris_exe() -> Path | None:
 def iris_launch_command() -> tuple[str, str]:
     """(executable, parameters) for ShellExecute runas.
 
-    UAC 프로그램명은 실행 파일 기준이므로 IRIS.exe를 우선 사용한다.
-    없을 때만 pythonw -m iris (개발 폴백).
+    개발 중에는 .venv 소스를 우선해 최신 코드로 UAC 재실행한다.
+    IRIS_FORCE_FROZEN=1 이거나 venv가 없을 때만 dist\\IRIS.exe.
     """
+    import os
+
+    force_frozen = os.environ.get("IRIS_FORCE_FROZEN", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    root = _project_root()
+    if not force_frozen:
+        for name in ("pythonw.exe", "python.exe"):
+            py = root / ".venv" / "Scripts" / name
+            if py.is_file():
+                return str(py), "-m iris"
+
     iris_exe = _find_iris_exe()
     if iris_exe is not None:
         return str(iris_exe), ""
