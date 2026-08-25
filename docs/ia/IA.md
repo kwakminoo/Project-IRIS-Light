@@ -1,7 +1,7 @@
 # Iris Light — Information Architecture (IA)
 
 > Generated-at: 2026-07-22  
-> 관련 이미지: [iris-light-ia.png](./iris-light-ia.png) · [../assets/iris-light-ia.png](../assets/iris-light-ia.png)
+> 관련 이미지: [iris-system-architecture.png](./iris-system-architecture.png) · [iris-light-ia.png](./iris-light-ia.png)
 
 ## 1. 한 줄 정의
 
@@ -15,7 +15,17 @@
 | 도구·스킬은? | **Hermes** (`:8642` API Server) |
 | 외부 SERP/크롤? | Hermes 플러그인·스킬 → SerpApi / Exa / Firecrawl 등 |
 
-## 2. IA 다이어그램
+## 2. 시스템 구성 및 아키텍처
+
+![IRIS 시스템 구성 및 아키텍처](./iris-system-architecture.png)
+
+개조식 요약:
+
+- **시스템 구성**: 사용자 → IRIS HUD(PyQt6) → Runtime Gateway → Ollama(:11434) / Hermes(:8642) → SQLite · Voice Runtime · External APIs
+- **기술 스택·역할**: Presentation(UI) · Domain/App(세션) · Infrastructure(어댑터) · Model(Ollama) · Agent(Hermes) · Storage(SQLite) · Optional(Voice/Android/Aloha)
+- **핵심 데이터 흐름**: Chat Send → Hermes completions → Ollama 추론 → tools/skills → 스트림 UI (단순 채팅은 ModelPort 직행)
+
+## 3. IA 다이어그램
 
 ![Iris Light IA](./iris-light-ia.png)
 
@@ -57,7 +67,7 @@ flowchart TB
   SK --> SERP
 ```
 
-## 3. 레이어 설명
+## 4. 레이어 설명
 
 | 레이어 | 책임 | 소유 |
 |--------|------|------|
@@ -67,7 +77,7 @@ flowchart TB
 | **Agent Runtime** | tool-calling, 스킬, 웹 백엔드 | Hermes (외부) |
 | **External APIs** | SERP/크롤/검색 키 | Hermes `.env` |
 
-## 4. 사용자 요청 경로 (스타트 → 엔드)
+## 5. 사용자 요청 경로 (스타트 → 엔드)
 
 1. 사용자 → Iris Chat Send  
 2. Iris → `POST http://127.0.0.1:8642/v1/chat/completions` (Hermes)  
@@ -75,7 +85,7 @@ flowchart TB
 4. 필요 시 Hermes → `web_search` (SerpApi `engine=…`) / 스킬 / terminal  
 5. 스트림 → Iris Live Activity + 채팅 UI  
 
-## 5. 설정 파일 IA
+## 6. 설정 파일 IA
 
 | 파일 | 내용 |
 |------|------|
@@ -84,7 +94,7 @@ flowchart TB
 | `%LOCALAPPDATA%\hermes\config.yaml` | `web.search_backend: serpapi`, `model.provider: custom` |
 | `integrations/hermes-plugins/web/serpapi/` | 플러그인 소스(재설치용) |
 
-## 6. 관련 문서
+## 7. 관련 문서
 
 - [../domain.md](../domain.md) — 도메인·바운디드 컨텍스트  
 - [../api/API-명세서.md](../api/API-명세서.md) — API 엔드포인트 명세  
