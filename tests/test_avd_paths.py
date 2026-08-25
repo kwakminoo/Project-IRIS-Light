@@ -142,3 +142,26 @@ class GitHygieneTests(TestCase):
             "android-emulator/avd/*.ini",
         ):
             self.assertIn(pattern, body, f"{pattern} 가 .gitignore 에 없다")
+
+
+class EmulatorNoConsoleWindowTests(TestCase):
+    """기동/종료/스캔 시 Windows 콘솔 창이 뜨지 않도록 숨김 kwargs를 쓴다."""
+
+    def test_scan_processes_passes_no_window_kwargs(self) -> None:
+        with mock.patch.object(ae, "_no_window_kwargs", return_value={"creationflags": 0x08000000}):
+            with mock.patch("subprocess.check_output", return_value="") as check:
+                ae._scan_processes()
+        kwargs = check.call_args.kwargs
+        self.assertIn("creationflags", kwargs)
+
+    def test_force_kill_passes_no_window_kwargs(self) -> None:
+        with mock.patch.object(ae, "_no_window_kwargs", return_value={"creationflags": 0x08000000}):
+            with mock.patch("subprocess.run", return_value=mock.Mock()) as run:
+                self.assertTrue(ae._force_kill_pid(12345))
+        self.assertIn("creationflags", run.call_args.kwargs)
+
+    def test_helper_is_wired_for_launch_and_kill(self) -> None:
+        src = Path(ae.__file__).read_text(encoding="utf-8")
+        self.assertIn("_no_window_kwargs(", src)
+        self.assertIn("CREATE_NEW_PROCESS_GROUP", src)
+        self.assertGreaterEqual(src.count("**_no_window_kwargs()"), 5)

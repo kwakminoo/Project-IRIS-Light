@@ -145,6 +145,55 @@ class VoiceRuntimeShutdownTests(TestCase):
             shutdown.assert_called_once()
 
 
+class VoiceRuntimeVenvResolveTests(TestCase):
+    def test_venv_python_accepts_unix_bin(self) -> None:
+        from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            unix = root / ".venv-voice" / "bin" / "python"
+            unix.parent.mkdir(parents=True)
+            unix.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            unix.chmod(0o755)
+            mgr = VoiceRuntimeProcessManager(iris_root=root)
+            self.assertEqual(mgr._venv_python(), unix)
+
+    def test_venv_python_accepts_windows_scripts(self) -> None:
+        from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            win = root / ".venv-voice" / "Scripts" / "python.exe"
+            win.parent.mkdir(parents=True)
+            win.write_bytes(b"MZ")
+            mgr = VoiceRuntimeProcessManager(iris_root=root)
+            self.assertEqual(mgr._venv_python(), win)
+
+    def test_resolve_python_falls_back_to_host_for_mock(self) -> None:
+        from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
+        import sys
+
+        with tempfile.TemporaryDirectory() as td:
+            mgr = VoiceRuntimeProcessManager(iris_root=Path(td))
+            with patch.object(mgr, "_host_can_run_mock", return_value=True):
+                resolved = mgr._resolve_python(mock_mode=True)
+            self.assertEqual(resolved, Path(sys.executable))
+
+    def test_resolve_python_bootstraps_when_missing(self) -> None:
+        from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_py = root / "bootstrapped-python"
+            fake_py.write_text("x", encoding="utf-8")
+            mgr = VoiceRuntimeProcessManager(iris_root=root)
+            with patch.object(mgr, "_host_can_run_mock", return_value=False):
+                with patch.object(mgr, "_bootstrap_venv", return_value=fake_py) as boot:
+                    resolved = mgr._resolve_python(mock_mode=False)
+            boot.assert_called_once_with(include_stt=True)
+            self.assertEqual(resolved, fake_py)
+
+
 class ChatInsertInputTests(TestCase):
     def test_insert_appends_not_overwrite(self) -> None:
         from PyQt6.QtWidgets import QApplication
