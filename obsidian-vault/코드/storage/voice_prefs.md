@@ -6,7 +6,9 @@
 
 ## 주요 정의
 
+- `def _project_root`
 - `def default_voice_data_dir`
+- `def resolve_saved_voice_data_dir`
 - `class VoicePreferences`
 - `def _to_bool`
 - `def _to_float`

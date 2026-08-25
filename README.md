@@ -87,12 +87,15 @@ IRIS는 웹검색·셸·파일 IO를 자체 재구현하지 않습니다.
 | **시작 프로토콜**   | 첫 실행 시 Ollama·최소 모델·Hermes 설치/기동·provider·gateway·MCP 연동을 단계적으로 안내·자동화 |
 | **대화형 HUD**   | 모델 선택, 대화 이력, 사고/도구 로그, 실시간 스트리밍                                       |
 | **에이전트 실행**   | Hermes를 통한 파일·터미널·웹 등 도구 호출 (스킬·MCP 포함)                                |
-| **시스템 모니터**   | 창/리소스 인식, 알림 정책, Live Activity                                         |
+| **Control Surface** | Hermes→UI 역제어 (`:8765`) · iris-control 스킬·MCP                          |
+| **시스템 모니터**   | 창/리소스 인식, 알림 정책, Live Activity, (옵션) 전화/알림 낭독                          |
 | **이메일**       | 다중 계정 메일 워크스페이스                                                        |
+| **캘린더**       | 일정 워크스페이스 + 공휴일·에이전트 연동                                                 |
+| **IDE Companion** | IDE 타일 배치·바이브코딩 연동                                                    |
 | **Iris Wiki** | Obsidian vault 기반 프로젝트 문서 + `~/.iris-light/iris-wiki` 사용자 노트           |
-| **캘린더**       | 일정 워크스페이스 + 에이전트 연동                                                    |
 | **로컬 저장**     | 설정·프로필 등 SQLite (`~/.iris-light/`)                                     |
-| **선택 확장**     | 음성 런타임, 화면 학습(Aloha), Android 에뮬레이터·mobile-mcp 등                       |
+| **선택 확장**     | 음성 런타임(`:18765`), 화면 학습(Aloha), Android 에뮬레이터·mobile-mcp 등             |
+| **준비 중**      | Instagram / Discord / Kakao / Telegram 워크스페이스                         |
 
 
 ---
@@ -222,14 +225,17 @@ chmod +x run.sh
 
 ```text
 iris/                 # 앱 본체
-  ui/                 # PyQt6 HUD (채팅, 모니터, 위키, 메일, 설정…)
-  system/             # setup_protocol, ollama_server, hermes_gateway
-  infrastructure/     # Ollama/Hermes HTTP 클라이언트
+  ui/                 # PyQt6 HUD (채팅, 모니터, 위키, 메일, 캘린더, IDE, 설정…)
+  system/             # setup_protocol, ollama_server, hermes_gateway, control_surface
+  infrastructure/     # Ollama/Hermes/email/calendar HTTP 클라이언트
+  runtime/            # UserTurnDispatcher · voice intents
   knowledge/          # Iris Wiki · Obsidian vault
   storage/            # SQLite 설정·프로필·메일 계정 등
-  monitoring/         # 모니터·알림
-  learning/           # (선택) 화면 학습
-  audio/              # (선택) 음성
+  monitoring/         # 모니터·알림·콜
+  learning/           # (선택) 화면 학습 Aloha
+  audio/              # (선택) 음성 클라이언트 · VAD/AEC
+  mcp/                # iris-control stdio
+services/voice_runtime/  # (선택) FastAPI STT/TTS :18765
 integrations/         # Hermes 스킬·플러그인, Aloha 등
 docs/                 # 도메인·IA·API·음성 설계
 obsidian-vault/       # 프로젝트 지식 베이스 (Wiki docs 소스)
@@ -276,8 +282,10 @@ LICENSE.md            # 라이선스 근거·서드파티 인벤토리
 | 문서                                                                             | 설명                                 |
 | ------------------------------------------------------------------------------ | ---------------------------------- |
 | `[docs/domain.md](docs/domain.md)`                                             | 바운디드 컨텍스트·Runtime Gateway 설계       |
-| `[docs/ia/IA.md](docs/ia/IA.md)`                                               | 정보 구조·요청 경로                        |
+| `[docs/ia/IA.md](docs/ia/IA.md)`                                               | 정보 구조·요청 경로·아키텍처 다이어그램              |
 | `[docs/api/](docs/api/)`                                                       | API 관련 문서                          |
+| `[docs/voice.md](docs/voice.md)`                                               | 음성 STT/TTS · 보이스 프로필               |
+| `[docs/voice_architecture.md](docs/voice_architecture.md)`                     | 음성 런타임 경계·흐름                       |
 | `[integrations/hermes-skills/README.md](integrations/hermes-skills/README.md)` | Iris Control Surface (Hermes ↔ UI) |
 | `[LICENSE.md](LICENSE.md)`                                                     | 라이선스 근거 · 서드파티 인벤토리      |
 | `[docs/demo-video-script.md](docs/demo-video-script.md)`                       | 데모 영상 촬영 대본 · 업로드 절차     |

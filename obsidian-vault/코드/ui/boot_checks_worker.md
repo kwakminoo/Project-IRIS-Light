@@ -14,3 +14,4 @@
 - [[email_accounts]]
 - [[email_client]]
 - [[iris_wiki]]
+- [[skill_mcp_dialogs]]

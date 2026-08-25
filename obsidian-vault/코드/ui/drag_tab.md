@@ -9,8 +9,11 @@ Draggable top chrome with stable window controls.
 - `def _win_ctrl_button`
 - `def _heartbeat_path`
 - `def _waveform_mic_icon`
+- `def _learning_icon`
 - `class DragTab`
 
 ## 내부 의존성
 
+- [[mic_state]]
+- [[models]]
 - [[top_status_header]]

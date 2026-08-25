@@ -13,6 +13,9 @@
 - `def _list_via_macos_quartz`
 - `def list_macos_windows_for_pids`
 - `def is_macos_window_number_alive`
+- `def _alt_tab_api`
+- `def _is_cloaked`
+- `def _is_alt_tab_window`
 - `def _list_via_win32`
 - `def _list_via_pygetwindow`
 - `def find_windows_by_title_substring`

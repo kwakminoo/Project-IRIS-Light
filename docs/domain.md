@@ -1,19 +1,20 @@
 # Iris Light 도메인 설계
 
-> 기존 Iris 문서/오케스트레이터를 이식하지 않고, **클라우드·API·오픈소스 에이전트(Ollama + Hermes)** 중심으로 새로 설계한다.
-> Generated-at: 2026-07-20
+> 기존 Iris 오케스트레이터를 이식하지 않고, **클라우드·API·오픈소스 에이전트(Ollama + Hermes)** 중심으로 설계한다.  
+> Generated-at: 2026-08-25 · Status: 코드 반영 기준으로 갱신 (`0.1.0-light`)
 
 ---
 
 ## 1. 한 줄 정의
 
-**Iris Light**는 로컬에 도구·모델을 직접 내장하지 않고,  
-사용자가 앱 UI(대화)로 요청하면 **Ollama(모델)** + **Hermes Agent(도구·스킬)** 가 실행하는 **데스크톱 프론트엔드**다.
+**Iris Light(표시 이름 IRIS)** 는 로컬에 웹검색·셸·파일 IO를 재구현하지 않고,  
+사용자가 앱 UI로 요청하면 **Ollama(모델)** + **Hermes Agent(도구·스킬·MCP)** 가 실행하는 **데스크톱 HUD 프레임**이다.
 
-| Full Iris | Iris Light |
-|-----------|------------|
-| 로컬 STT/TTS, 자체 라우터, 자체 웹검색/컴퓨터유즈 | Ollama API + Hermes(또는 OpenCode) 도구 그대로 사용 |
-| 내부에서 명령 파이프라인 구현 | CLI/게이트웨이로 이미 있는 에이전트를 UI로 감쌈 |
+| 구분 | 내용 |
+|------|------|
+| IRIS가 하는 일 | 세션·권한·스트리밍 UI·시작 프로토콜·Control Surface·워크스페이스 |
+| IRIS가 안 하는 일 | 자체 NL→CLI 오케스트레이터, 웹검색/파일IO/셸 재구현 |
+| 선택 확장 | Voice STT/TTS, Android 에뮬레이터, Aloha 화면학습 |
 
 ---
 
@@ -21,62 +22,64 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     Iris Light App (UI)                      │
-│  Presentation: Orb / Chat / Sidebar / Monitor / Alerts / …   │
+│                     IRIS App (PyQt6 HUD)                     │
+│  Chat · Orb · Wiki · Email · Calendar · IDE · Monitor · …   │
 └───────────────┬─────────────────────────────┬───────────────┘
                 │ Session / Intent            │ Telemetry
                 ▼                             ▼
 ┌───────────────────────────┐   ┌─────────────────────────────┐
 │     Conversation          │   │     Workspace Awareness     │
-│  대화 세션·메시지·슬래시   │   │  창 목록·메트릭·알림·모니터 │
+│  세션·메시지·슬래시·음성턴 │   │  창·메트릭·알림·모니터·콜   │
 └─────────────┬─────────────┘   └─────────────────────────────┘
               │
               ▼
 ┌───────────────────────────┐
-│     Runtime Gateway       │  ← Iris가 “명령어를 직접 구현”하지 않음
-│  Ollama ↔ Hermes 브리지   │
+│     Runtime Gateway       │  ← 어댑터 (뇌 아님)
+│  ollama_client · hermes   │
+│  control_surface · setup  │
 └───────┬─────────┬─────────┘
         │         │
         ▼         ▼
 ┌───────────┐ ┌────────────────┐
 │  Model    │ │  Agent Runtime │
-│  Ollama   │ │  Hermes/OpenCode│
-│ (cloud/  │ │  skills/tools  │
-│  local)   │ │  이미 내장      │
+│  Ollama   │ │  Hermes        │
+│ :11434    │ │  :8642 skills  │
 └───────────┘ └────────────────┘
 ```
 
-### 2.1 Presentation (이미 이식)
-- 메인 HUD: 구체, 채팅, 파형, 러닝 윈도우, 아이콘 그리드, 프로필/설정, 모니터, 알림
-- **비포함**: 아이콘 상세 화면, STT/TTS, 자체 오케스트레이터
+### 2.1 Presentation
+- HUD: Orb, Chat, Live Activity, Sidebar, Monitor, Alerts, Settings
+- 워크스페이스(구현): Assistant · Email · Calendar · Iris Wiki · IDE Companion · Mobile(에뮬)
+- 준비 중: Instagram / Discord / Kakao / Telegram 아이콘(stub)
+- 음성 UI: 마이크·파형·TTS 재생·연속 발화(옵션)
 
 ### 2.2 Conversation
-- **Session**: 대화 스레드 ID, 히스토리, `/new`·`/model` 등 슬래시 커맨드 패스스루
-- **Message**: user / assistant / tool_trace(표시용)
-- **Turn**: 한 번의 사용자 요청 → 에이전트 응답(스트리밍)
+- **Session** / **Message** / **Turn** (텍스트 또는 음성 UserTurn)
+- 슬래시 커맨드(`/model` 등)는 Hermes로 패스스루
+- 음성: STT 결과 → `UserTurnDispatcher`로 채팅 턴 제출(설정에 따라)
 
-### 2.3 Runtime Gateway (핵심 도메인)
-Iris Light의 “뇌”가 아니라 **어댑터**.
+### 2.3 Runtime Gateway (핵심)
+| 포트/컴포넌트 | 역할 | 기본 |
+|---------------|------|------|
+| Ollama 클라이언트 | 모델 목록·단순 채팅·헬스 | `:11434` |
+| Hermes 클라이언트 | 에이전트 채팅·도구 스트림 | `:8642/v1` |
+| Control Surface | Hermes→Iris UI 역제어 HTTP | `:8765` |
+| Setup Protocol | 첫 실행 Ollama/Hermes/옵션 설치 | — |
+| Voice Runtime | STT/TTS (별도 `.venv-voice`) | `:18765` |
 
-| 포트 | 역할 |
-|------|------|
-| `ModelPort` | Ollama OpenAI-compatible `/v1/chat/completions` |
-| `AgentPort` | Hermes CLI / Gateway / ACP 중 하나로 NL 요청 전달 |
-| `SlashCommandPort` | `/model`, `/skills`, `/stop` 등을 Hermes에 그대로 전달 |
+### 2.4 Agent Runtime (외부 — 소유하지 않음)
+- Hermes: 파일·터미널·웹·스킬·MCP
+- 저장소 동봉 스킬: `integrations/hermes-skills/iris-control/*`
+- Hermes 로컬 스킬(iris-apis 등): `%LOCALAPPDATA%\hermes\skills\`
+- OpenCode 등 대체 AgentPort는 **미구현 옵션** (문서상 언급만)
 
-### 2.4 Agent Runtime (외부 시스템 — 소유하지 않음)
-- **Hermes**: 파일·터미널·웹·스킬(70+)·메모리 — *이미* tool-calling으로 NL → 도구 실행
-- **OpenCode 등**: 코딩 특화 시 동일하게 AgentPort 구현체로 교체 가능
-- Iris는 도구를 재구현하지 않고 **세션·권한·UI 피드백**만 담당
-
-### 2.5 Workspace Awareness (로컬 경량)
-- Running windows, CPU/GPU/Mem, 창 썸네일 모니터, 알림 정책
-- Full Iris의 “능동 에이전트 모니터”와 달리, **표시·알림 UI**가 1차 범위
-- 이후 Hermes 이벤트/로그를 알림에 매핑하는 확장 가능
+### 2.5 Workspace Awareness
+- 창/리소스 모니터, 알림 정책, Live Activity
+- 전화/알림 낭독(음성 옵션), pinned monitor
 
 ### 2.6 Identity & Preferences
-- 사용자 프로필(로컬 SQLite)
-- Ollama base URL / model, Hermes 경로·활성화
+- `~/.iris-light/iris_light.db` (SQLite)
+- Ollama/Hermes/Voice/Email/Calendar/Control prefs
 
 ---
 
@@ -84,10 +87,11 @@ Iris Light의 “뇌”가 아니라 **어댑터**.
 
 ```text
 UserProfile
-Settings { ollama_base_url, ollama_model, hermes_* }
+Settings { ollama_*, hermes_*, voice_prefs_v1, control_* }
 
 ConversationSession { id, created_at, model_ref }
 Message { role, content, created_at, tool_traces? }
+UserTurn { text, source: chat|voice, barge_in? }
 
 AgentRequest { session_id, text, mode: chat|agent }
 AgentEvent  { stream_token | tool_started | tool_finished | done | error }
@@ -96,79 +100,81 @@ WorkspaceSnapshot { windows[], metrics, monitor_thumbs[] }
 Alert { category, title, message, target_id, policy_decision }
 ```
 
-### 유스케이스 (초기)
+### 유스케이스 (현재)
 
-1. **SendMessage** — UI 텍스트 → Gateway → Hermes/Ollama → 스트림을 ChatPanel에 표시  
-2. **PassSlashCommand** — `/model …` 등을 Hermes에 전달 (Iris가 파싱·학습하지 않음)  
-3. **ShowWorkspace** — 창 목록·메트릭·모니터 갱신  
-4. **ManageAlert** — 스누즈/무시/대상 비활성  
-5. **UpdateSettings / Profile** — 로컬 저장
+1. **SendMessage** — Chat/Voice → Gateway → Hermes/Ollama → 스트림 UI  
+2. **PassSlashCommand** — `/model` 등 Hermes 패스스루  
+3. **ShowWorkspace** — Email / Calendar / Wiki / IDE / Mobile  
+4. **ManageAlert** — 스누즈/무시 + (옵션) 음성 낭독  
+5. **ControlFromHermes** — MCP/HTTP `:8765`로 UI·세션·바이브코딩 제어  
+6. **UpdateSettings / Profile** — 로컬 SQLite
 
 ---
 
-## 4. 런타임 연결 전략 (권장)
+## 4. 런타임 연결 전략
 
 ```
-[사용자 자연어]
+[사용자 자연어 / 음성]
        │
        ▼
-[Iris Chat UI] ──AgentPort──▶ [Hermes]
-                                  │
-                     tool calls + skills (내장)
-                                  │
-                     LLM calls ──▶ [Ollama :11434/v1]
-                                  │
-                     (cloud model도 Ollama가 프록시)
+[IRIS Chat UI] ──▶ [Hermes :8642]
+                       │
+          tool calls + iris-control MCP
+                       │
+          LLM ─────────▶ [Ollama :11434]
+                       │
+          (필요 시) External APIs / terminal / skills
 ```
 
-- **기본**: Hermes가 Ollama를 provider로 쓰는 구성 (`http://127.0.0.1:11434/v1`)
-- **단순 채팅만**: Agent 없이 ModelPort만 (도구 없는 대화)
-- **코딩/파일/웹검색**: 반드시 Hermes(또는 OpenCode) AgentPort — Iris가 명령어 매핑 테이블을 두지 않음
-
-### Iris가 추가로 해야 하는 것 / 안 하는 것
+- **기본**: Hermes가 Ollama를 provider로 사용
+- **단순 채팅/모델 목록**: Iris → Ollama 직행 가능
+- **역제어**: Hermes → Control Surface `:8765` / MCP stdio
 
 | 함 | 안 함 |
 |----|------|
-| 프로세스 spawn / gateway 연결 | 웹검색·파일IO·셸 자체 구현 |
-| 스트림·도구 진행 UI 표시 | NL→CLI 명령어 학습/파인튜닝 |
-| 설정·프로필·권한 확인 UX | Full Iris 오케스트레이터 이식 |
-| 슬래시 커맨드 패스스루 | 아이콘별 전용 화면(후속) |
+| spawn·gateway·스트림 UI·권한 UX | 웹검색·파일IO·셸 자체 구현 |
+| Control Surface · iris-control 스킬 | NL→CLI 파인튜닝 |
+| 시작 프로토콜·옵션 런타임 설치 | Full Iris 오케스트레이터 이식 |
 
 ---
 
-## 5. 레이어 제안 (코드 구조)
+## 5. 코드 구조 (실제)
 
 ```
 iris/
-  ui/                 # Presentation (현재 이식됨)
-  domain/
-    conversation/     # Session, Message, Turn 정책
-    workspace/        # Alert, Monitor 규칙 (UI 정책)
-    runtime/          # AgentRequest/Event 타입
-  application/        # SendMessage, PassSlash 유스케이스
-  infrastructure/
-    ollama_client/
-    hermes_bridge/    # CLI stdin/stdout 또는 gateway API
-  config / storage
+  ui/                 # Presentation · workspaces · workers · control_bindings
+  system/             # setup_protocol, ollama/hermes 기동, control_surface, emulator
+  infrastructure/     # ollama_client, hermes_client, email/calendar/…
+  runtime/            # UserTurnDispatcher, voice intents
+  audio/              # mic, STT/TTS 클라이언트, VAD/AEC, alert speech
+  learning/           # Aloha 화면학습
+  monitoring/         # monitor · call · notifications
+  knowledge/          # Iris Wiki · Obsidian · code_index
+  storage/            # SQLite prefs
+  mcp/                # iris-control stdio entry
+  config / core / assistant / automation / assets
+services/
+  voice_runtime/      # FastAPI STT/TTS (:18765)
+integrations/
+  hermes-skills/iris-control/
+  hermes-plugins/ · hermes-mcp/ · showui-aloha/
 ```
-
-현재 단계는 **ui + config/storage + workspace 표시**까지.  
-`application` / `hermes_bridge`는 다음 스프린트.
 
 ---
 
 ## 6. 비기능
 
-- **보안**: Hermes 도구는 호스트에 영향 → 확인 다이얼로그·샌드박스(Docker)는 Hermes 설정을 따름
-- **오프라인**: Ollama 로컬 모델 시 가능, 클라우드 모델·웹 스킬은 네트워크 필요
-- **데이터**: 프로필·알림 prefs는 `~/.iris-light/` — 대화 장기기억은 Hermes memory에 위임 가능
+- **보안**: Hermes 도구는 호스트에 영향 → 확인 다이얼로그·Hermes 설정 따름. Control Surface는 localhost.
+- **오프라인**: 로컬 Ollama 모델 시 가능. 클라우드 모델·웹 스킬은 네트워크 필요.
+- **데이터**: `~/.iris-light/` — 대화 장기기억은 Hermes memory에 위임 가능.
+- **음성**: 기본 prefs는 STT/TTS off. 실사용은 `.venv-voice` + mock 해제.
 
 ---
 
-## 7. 로드맵 (도메인 관점)
+## 7. 기능 상태 (도메인 관점)
 
-1. ~~메인 HUD UI 셸~~ (이번)
-2. Ollama ModelPort 연결 (채팅 에코 제거)
-3. Hermes AgentPort (NL 에이전트 턴)
-4. 슬래시 커맨드·툴 트레이스 UI
-5. 아이콘 상세 화면 / 메시징 게이트웨이(선택)
+| 상태 | 항목 |
+|------|------|
+| **완료** | HUD · Ollama/Hermes 게이트웨이 · Wiki · Email · Calendar · IDE Companion · Control/MCP · Setup Protocol · Monitor/알림 |
+| **선택 완료** | Voice(STT/TTS·프로필·연속발화·콜/알림 낭독) · Android 에뮬 · Aloha 학습 |
+| **계획** | 메신저 워크스페이스(Instagram/Discord/Kakao/Telegram) · 데모 YouTube · OpenCode AgentPort |

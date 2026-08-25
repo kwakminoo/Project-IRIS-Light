@@ -30,5 +30,7 @@ MainWindow ↔ Control Surface 액션 바인딩.
 - [[ide_input]]
 - [[ide_launcher]]
 - [[main_window]]
+- [[models]]
+- [[permission]]
 - [[project_ops]]
 - [[user_profile]]

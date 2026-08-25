@@ -1,6 +1,6 @@
 # Iris Light — API 명세서
 
-> Generated-at: 2026-07-22  
+> Generated-at: 2026-07-22 · Updated-at: 2026-08-25  
 > Scope: Iris Light가 **직접 호출**하거나 **Hermes 경유**로 사용하는 외부·내부 HTTP API  
 > Secrets: 키 값은 이 문서에 적지 않음. 위치만 명시.
 
@@ -23,8 +23,9 @@
 
 ```
 ┌──────────────────────────────┐
-│  Iris Light (PyQt6 UI)       │
-│  .env → IRIS_* 만            │
+│  IRIS (PyQt6 UI)             │
+│  .env → IRIS_* (연결·옵션)   │
+│  Control :8765 · Voice:18765 │
 └───────────┬──────────────────┘
             │ OpenAI-compat chat
             │ Authorization: Bearer IRIS_HERMES_API_KEY
@@ -35,7 +36,7 @@
 │  %LOCALAPPDATA%\hermes\.env  │
 └───────┬──────────┬───────────┘
         │          │
-        │ LLM      │ Tools / Skills
+        │ LLM      │ Tools / Skills / MCP iris-control
         ▼          ▼
    ┌─────────┐  ┌─────────────────────────────────────┐
    │ Ollama  │  │ Exa / Firecrawl / Naver / (Gemini)  │
@@ -57,20 +58,24 @@
 
 | 파일 | 역할 |
 |------|------|
-| `Project-IRIS-Light-main/.env` | Iris UI ↔ Hermes/Ollama **연결만** |
+| 저장소 루트 `.env` | Iris UI ↔ Hermes/Ollama 연결 + Control/Setup/캘린더 등 **옵션** |
 | `%LOCALAPPDATA%\hermes\.env` | 도구·프로바이더 **API 키** (Exa, Firecrawl, Google, Naver, API_SERVER_KEY …) |
 | `%LOCALAPPDATA%\hermes\config.yaml` | Hermes model provider, `web.search_backend` 등 |
 
-### Iris `.env` (연결)
+### Iris `.env` (연결·옵션)
 
 | 변수 | 예시 | 설명 |
 |------|------|------|
-| `IRIS_OLLAMA_BASE_URL` | `http://127.0.0.1:11434/v1` | Ollama OpenAI 호환 base |
-| `IRIS_OLLAMA_MODEL` | `gemma4:26b` | 기본/표시용 모델 힌트 |
+| `IRIS_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama base (`/v1` 유무 모두 허용, 클라이언트 정규화) |
+| `IRIS_OLLAMA_MODEL` | (비움) | 기본 모델 — 비우면 앱에서 선택 |
 | `IRIS_HERMES_ENABLED` | `1` | Hermes 백엔드 사용 |
-| `IRIS_HERMES_BASE_URL` | `http://127.0.0.1:8642/v1` | Hermes API base |
-| `IRIS_HERMES_API_KEY` | `change-me-local-dev` | Hermes `API_SERVER_KEY`와 동일 |
-| `IRIS_HERMES_COMMAND` | `hermes` | CLI 명령 |
+| `IRIS_HERMES_BASE_URL` | `http://127.0.0.1:8642` | Hermes API base |
+| `IRIS_HERMES_API_KEY` | (위저드 생성) | Hermes `API_SERVER_KEY`와 동일 |
+| `IRIS_HERMES_COMMAND` | (위저드) | CLI 명령 |
+| `IRIS_CONTROL_ENABLED` / `HOST` / `PORT` / `TOKEN` | `8765` | Control Surface |
+| `IRIS_DATA_GO_KR_SERVICE_KEY` | — | 공휴일(캘린더) |
+| `IRIS_SETUP_DEMO` / `DRY_RUN` | — | 시작 프로토콜 데모/드라이런 |
+| `VOICE_RUNTIME_MOCK` | `0`/`1` | 음성 런타임 mock (앱 prefs와 함께 봄) |
 
 ### Hermes `.env` (키)
 
@@ -116,7 +121,7 @@
 #### 관련 코드
 
 - `iris/infrastructure/hermes_client.py` — `health_ok`, `stream_chat`, `set_inference_model`
-- `iris/ui/hermes_workers.py` / `main_window.py` — UI 워커
+- `iris/ui/workers/hermes_workers.py` / `main_window.py` — UI 워커
 
 ---
 
@@ -418,6 +423,7 @@ MCP 도구: `iris_get_state`, `iris_get_catalog`, `iris_invoke`
 
 | 날짜 | 내용 |
 |------|------|
+| 2026-08-25 | 현황 동기화: env 표 확장, Control/Voice 포트, 워커 경로, 모델 예시 비움 |
 | 2026-07-22 | 초판. Hermes/Ollama/Exa/Firecrawl/Google/Naver + iris-apis 스킬 매핑 |
 | 2026-07-22 | SerpApi 플러그인·engine 카탈로그·IA 문서 추가 |
 | 2026-07-24 | Iris Control Surface + Hermes MCP iris-control + work-start 스킬 |
