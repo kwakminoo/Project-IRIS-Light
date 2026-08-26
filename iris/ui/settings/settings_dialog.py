@@ -1183,6 +1183,9 @@ class SettingsDialog(QDialog):
             stt_speech_rms=self._mic_threshold_bar.speech_rms(),
             stt_echo_tail_ms=self._voice_prefs.stt_echo_tail_ms,
             voice_barge_in_enabled=self._voice_barge_in.isChecked(),
+            mic_listen_preferred=bool(
+                getattr(self._voice_prefs, "mic_listen_preferred", False)
+            ),
             voice_wake_word_enabled=self._voice_wake_word_on.isChecked(),
             voice_wake_words=self._voice_wake_words.text().strip() or "아이리스,Iris",
             voice_followup_window_sec=followup_window_sec,

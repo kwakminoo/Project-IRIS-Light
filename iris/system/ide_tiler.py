@@ -28,7 +28,7 @@ def work_area_for(widget: QWidget) -> QRect:
     return screen.availableGeometry()
 
 
-def compute_tile_rects(work: QRect, *, ide_ratio: float = 0.7) -> TileRects:
+def compute_tile_rects(work: QRect, *, ide_ratio: float = 0.8) -> TileRects:
     ratio = min(0.95, max(0.5, float(ide_ratio)))
     ide_w = int(work.width() * ratio)
     iris_w = work.width() - ide_w
@@ -164,7 +164,7 @@ def tile_ide_and_iris(
     ide_hwnd: int,
     iris_window: QWidget,
     *,
-ide_ratio: float = 0.8,
+    ide_ratio: float = 0.8,
     ide_pid: int | None = None,
 ) -> tuple[bool, str]:
     """IDE 왼쪽 ~80%, Iris 오른쪽 나머지.

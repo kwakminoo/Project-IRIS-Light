@@ -1,47 +1,31 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller — IRIS.exe (아이콘: iris/assets/iris_icon.ico)
+# PyInstaller — IRIS.exe thin launcher only (stdlib + subprocess)
 
 from pathlib import Path
-
-from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 root = Path(SPECPATH)
 
-datas = [
-    (str(root / "assets"), "assets"),
-    (str(root / "iris" / "assets"), "iris/assets"),
+# 시스템 site-packages 오염 방지 — 런처는 stdlib만 필요
+_EXCLUDES = [
+    "numpy", "torch", "torchvision", "torchaudio", "cv2", "PIL", "Pillow",
+    "matplotlib", "scipy", "pandas", "sklearn", "onnxruntime", "numba",
+    "pynput", "comtypes", "PyQt6", "PySide6", "tkinter", "IPython",
+    "jupyter", "notebook", "llvmlite", "h5py", "sympy", "cryptography",
+    "win32com", "pythoncom", "pywintypes", "setuptools", "pkg_resources",
+    "iris",  # frozen에 앱 코드 넣지 않음 — .venv -m iris
 ]
-binaries = []
-hiddenimports = [
-    "PyQt6",
-    "PyQt6.QtCore",
-    "PyQt6.QtGui",
-    "PyQt6.QtWidgets",
-    "PyQt6.QtWebEngineWidgets",
-    "PyQt6.QtWebEngineCore",
-    "PyQt6.sip",
-]
-
-for pkg in ("PyQt6", "PyQt6.QtWebEngineWidgets"):
-    try:
-        d, b, h = collect_all(pkg)
-        datas += d
-        binaries += b
-        hiddenimports += h
-    except Exception:
-        pass
 
 a = Analysis(
     [str(root / "IRIS_launcher.py")],
     pathex=[str(root)],
-    binaries=binaries,
-    datas=datas,
-    hiddenimports=hiddenimports,
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=_EXCLUDES,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

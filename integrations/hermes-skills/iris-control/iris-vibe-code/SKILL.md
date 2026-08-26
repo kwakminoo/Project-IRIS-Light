@@ -18,12 +18,14 @@ description: >
    `args`: `{ project_root?, rel_path, content, open: true }`
    → Iris opens an empty tab, waits until the filename is visible in the IDE title, then streams small chunks into the file so the IDE file watcher shows the code growing. Do not set `typewriter:false` unless the user wants an instant dump.
 3. Optional speed: `chunk_delay_ms` and `chunk_chars`. `typewriter:false` / `stream:false` = write all at once after open.
-4. **Run in IDE terminal:**
-   `iris_invoke` → `project.run` with
-   `args`: `{ file: "rel/path.py" }` or `{ command: "python …" }`, `reveal_terminal: true`
-   - Full output appears in the **IDE integrated terminal** (Build Task / Ctrl+Shift+B).
-   - In Iris chat: only `summary` + short tails. Never open `.iris/last_run.log` as an editor tab. Never paste full logs into chat.
-5. Confirm from invoke result: `visible`, `typed`, `ide_terminal` (`ok` = terminal).
+4. **Run:**
+   - **Scripts (.py / .js / …):** `project.run` with `{ file: "…" }` or `{ command: "…" }`
+     → full output in **IDE integrated terminal**; chat gets short `summary` only.
+   - **Static web (.html / .htm):** `project.run` with `{ file: "index.html" }`
+     → opens the default **browser** (`file://…`). Set `open_browser:false` to skip.
+   - **Dev server** (`npm start`, `npx vite`, `python -m http.server`, …):
+     `project.run` with `{ command: "…" }` (optional `preview_url`) → terminal + browser localhost.
+5. Confirm from invoke result: `visible`, `typed`, `ide_terminal` / `browser`.
 
 ## Do not
 

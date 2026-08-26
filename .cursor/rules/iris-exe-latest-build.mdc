@@ -1,0 +1,35 @@
+---
+description: IRIS.exe는 항상 최신 소스로 실행·빌드 유지
+alwaysApply: true
+---
+
+# IRIS.exe = 최신 소스 런처 (필수)
+
+## 계약
+
+- `dist/IRIS.exe`는 **thin launcher**다. 클릭 시 `.venv\Scripts\pythonw.exe -m iris`로 **현재 워크스페이스 최신 소스**를 실행한다.
+- 바탕화면 / 프로젝트 `IRIS.lnk` / `run.bat`은 모두 `dist\IRIS.exe`를 가리킨다.
+- 아이콘은 `iris/assets/iris_icon.ico` (검은 배경 **투명**).
+
+## 에이전트 의무 (매 작업)
+
+IRIS 앱 동작에 영향을 주는 수정(`iris/**`, 런처, 아이콘, 스펙, 바로가기 스크립트)을 **마치거나 검증할 때**:
+
+1. 런처/아이콘/스펙이 바뀌었거나 `dist\IRIS.exe`가 없·오래되면  
+   `powershell -ExecutionPolicy Bypass -File scripts\build_iris_exe.ps1` 실행
+2. 소스만 바뀐 경우에도 **세션 끝에서** exe·바로가기가 `dist\IRIS.exe`를 가리키는지 한 번 확인. 깨져 있으면 빌드 스크립트 재실행.
+3. 사용자에게 “구버전 exe”를 쓰게 두지 말 것. frozen PyQt 풀번들로 되돌리지 말 것 (thin launcher 유지).
+
+## 금지
+
+- `IRIS_launcher.py`를 다시 `from iris.__main__ import main` frozen 번들 진입으로 되돌리기
+- 바로가기를 예전 날짜의 풀번들 exe나 임의 python 경로에만 고정해 두기
+- 아이콘 검정 불투명 배경 재도입
+
+## 한 줄 검증
+
+```powershell
+# 바로가기 대상이 dist\IRIS.exe 인지
+(New-Object -ComObject WScript.Shell).CreateShortcut("$env:USERPROFILE\Desktop\IRIS.lnk").TargetPath
+# 실행 후 프로세스 커맨드가 ...\.venv\Scripts\pythonw.exe -m iris 인지
+```

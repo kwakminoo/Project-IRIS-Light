@@ -18,7 +18,7 @@ description: >
    `iris_invoke` → `project.open_similar` with `args.query`
 3. Else if user said only "아이리스 라이트 작업 시작" / start Iris work (no other project name):
    `iris_invoke` → `project.open_similar` with `args.query` = `iris light`
-   (opens Project-IRIS-Light under configured parents)
+   (prefer **Project-IRIS-Light-main** under configured parents — not the old `IRIS` / Project---IRIS repo)
 4. Else if user gave an absolute path:
    `iris_invoke` → `ide.open_folder` with `args.path`
 5. Else if user only asked to open IDE / Companion (no folder):

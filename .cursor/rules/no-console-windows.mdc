@@ -1,0 +1,17 @@
+---
+description: Windows에서 subprocess 호출 시 콘솔/터미널 창이 뜨지 않게 한다
+globs: iris/system/**/*.py,iris/audio/**/*.py,iris/monitoring/**/*.py
+alwaysApply: false
+---
+
+# No visible console windows (Windows)
+
+- `adb`, `taskkill`, venv `python` 등 콘솔 서브시스템 실행은 반드시 `iris.system.win_subprocess.no_window_kwargs()`를 쓴다.
+- 에뮬 프로세스 목록은 **psutil**만 사용. PowerShell CIM / 숨김 없는 `tasklist`로 스캔하지 않는다 (콘솔 깜빡임).
+- CallMonitor 등 폴링 핫패스에서 프로세스 스캔 금지 — adb만, 없으면 바로 실패.
+- Android 에뮬레이터 **GUI** 기동:
+  - `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`만 사용.
+  - **`CREATE_NO_WINDOW` / `STARTUPINFO` / `SW_HIDE` 금지** — `UpdateLayeredWindowIndirect` 실패로 **검은 화면**이 된다 (실측).
+  - 뜨는 콘솔(`emulator.exe`, **`netsimd.exe`** 등)은 `ConsoleWindowClass`만 EnumWindows로 숨긴다 (Qt/에뮬 화면 창 제외).
+- `CREATE_NEW_CONSOLE` / 숨김 없는 `powershell` / 숨김 없는 `taskkill` 금지.
+- 막는 대상은 **터미널/콘솔 플래시**뿐이다. 에뮬레이터 화면 창은 보여야 한다.

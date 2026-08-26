@@ -105,6 +105,20 @@ def find_similar_projects(
                 score = max(score, 0.4 + 0.5 * overlap)
             if score >= min_score:
                 scored.append((score, child))
+    # Iris Light: Project-IRIS-Light-main 을 짧은 "iris light" 쿼리에서 최우선
+    if "iris" in q and "light" in q:
+        boosted: list[tuple[float, Path]] = []
+        for score, child in scored:
+            nn = _norm_name(child.name)
+            if nn.endswith("-main") and "iris" in nn and "light" in nn:
+                score = max(score, 0.98)
+            elif nn in {"iris", "project-iris"} or (
+                "iris" in nn and "light" not in nn and "hud" not in nn
+            ):
+                # 구 Project---IRIS / IRIS 폴더는 Light와 혼동 금지
+                score = min(score, 0.34)
+            boosted.append((score, child))
+        scored = boosted
     scored.sort(key=lambda x: (-x[0], x[1].name.lower()))
     # path 중복 제거
     seen: set[str] = set()
@@ -551,7 +565,78 @@ def build_run_command(
         return ["cmd", "/c", rel]
     if suffix in (".js", ".mjs"):
         return ["node", rel]
+    if suffix in (".html", ".htm"):
+        raise ValueError(f"use browser preview for static web file: {rel}")
     raise ValueError(f"unsupported file type for auto-run: {suffix or '(none)'}")
+
+
+def is_static_web_file(file: str) -> bool:
+    rel = (file or "").replace("\\", "/").lstrip("/")
+    return Path(rel).suffix.lower() in (".html", ".htm")
+
+
+def static_web_file_uri(project_root: str | Path, file: str) -> str:
+    """프로젝트 상대 HTML → file:// URI."""
+    root = Path(project_root).expanduser().resolve()
+    rel = (file or "").replace("\\", "/").lstrip("/")
+    path = (root / rel).resolve()
+    if root not in path.parents and path != root:
+        raise ValueError(f"file escapes project_root: {file}")
+    if not path.is_file():
+        raise FileNotFoundError(str(path))
+    return path.as_uri()
+
+
+def infer_dev_server_url(argv: list[str]) -> str | None:
+    """터미널 실행 argv에서 흔한 로컬 미리보기 URL 추론."""
+    if not argv:
+        return None
+    parts = [str(a) for a in argv]
+    joined = " ".join(parts).lower()
+    port: int | None = None
+    for i, p in enumerate(parts):
+        pl = p.lower()
+        if pl in ("--port", "-p", "--listen") and i + 1 < len(parts):
+            try:
+                port = int(parts[i + 1])
+            except ValueError:
+                pass
+        if pl.startswith("--port="):
+            try:
+                port = int(pl.split("=", 1)[1])
+            except ValueError:
+                pass
+        # python -m http.server 8080
+        if i > 0 and parts[i - 1].lower() == "http.server":
+            try:
+                port = int(p)
+            except ValueError:
+                pass
+    if "http.server" in joined:
+        return f"http://127.0.0.1:{port or 8000}"
+    if "vite" in joined:
+        return f"http://127.0.0.1:{port or 5173}"
+    if "next" in joined or "react-scripts" in joined:
+        return f"http://127.0.0.1:{port or 3000}"
+    if "npm" in joined and "start" in joined:
+        return f"http://127.0.0.1:{port or 3000}"
+    if "npx" in joined and "serve" in joined:
+        return f"http://127.0.0.1:{port or 3000}"
+    if "live-server" in joined:
+        return f"http://127.0.0.1:{port or 8080}"
+    return None
+
+
+def open_preview_in_browser(url: str) -> bool:
+    url = (url or "").strip()
+    if not url:
+        return False
+    try:
+        import webbrowser
+
+        return bool(webbrowser.open(url))
+    except Exception:
+        return False
 
 
 def run_project_command(

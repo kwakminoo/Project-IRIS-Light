@@ -6,11 +6,11 @@ import re
 
 from iris.system.hermes_iris_control_sync import hermes_home
 
-_MARKER = "<!-- iris-control-nudge-v7 -->"
-_BLOCK = """<!-- iris-control-nudge-v7 -->
+_MARKER = "<!-- iris-control-nudge-v8 -->"
+_BLOCK = """<!-- iris-control-nudge-v8 -->
 ## Iris Light UI control
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
-1. Prefer MCP tools `iris_get_state`, `iris_get_catalog`, `iris_invoke` (skills: iris-work-start, iris-work-end, iris-session-status, iris-vibe-code, iris-calendar).
+1. Prefer MCP tools `iris_get_state`, `iris_get_catalog`, `iris_invoke` (skills: iris-work-start, iris-work-end, iris-session-status, iris-vibe-code, iris-calendar, iris-wiki).
 2. "ide 켜줘" / open IDE only: `iris_invoke` → `ide.enter_companion`.
 3. Do NOT use terminal `cursor`/`code` alone — that skips Iris Companion tiling.
 4. Do NOT claim Iris has no IDE GUI — Iris launches the preferred IDE via control surface.
@@ -23,6 +23,7 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 11. After creating/writing code: `project.write_file` with `open=true` (default live write: empty tab → wait visible → stream chunks into the file). Use `typewriter:false` only for instant dump.
 12. On run requests: `project.run` — output in **IDE integrated terminal** (not a log file tab); only summarize in chat.
 13. Calendar / 일정: `workspace.open_calendar`, then `calendar.add_event` / `calendar.list_events` / `calendar.select_day` / `calendar.delete_event` (skill iris-calendar).
+14. Wiki / 위키에 저장: gather content first, then `wiki.write_user_note` with `title`+`content` (+`source_url`); never claim saved without ok result (skill iris-wiki). Open UI: `workspace.open_obsidian` / `wiki.open_note`.
 """
 
 
@@ -46,12 +47,13 @@ def ensure_memory_nudge() -> str:
         and "integrated terminal" in existing
         and "iris-vibe-code" in existing
         and "iris-calendar" in existing
+        and "wiki.write_user_note" in existing
     ):
         return "memory nudge already present"
     cleaned = _strip_old_nudge(existing) if "iris-control-nudge" in existing else existing
     text = cleaned.rstrip() + ("\n\n" if cleaned.strip() else "") + _BLOCK.strip() + "\n"
     path.write_text(text, encoding="utf-8")
-    return "memory nudge updated (v6)"
+    return "memory nudge updated (v8)"
 
 
 if __name__ == "__main__":

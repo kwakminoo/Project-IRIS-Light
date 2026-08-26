@@ -21,6 +21,7 @@ def main() -> int:
         emulator_status,
         input_text,
         launch_log_path,
+        prepare_emulator,
     )
 
     assert _escape_adb_input_text("hello world") == "hello%sworld"
@@ -32,6 +33,8 @@ def main() -> int:
     assert st["phase"] in ("stopped", "starting", "booting", "ready")
     assert "adb_ready" in st and "boot_completed" in st
     assert "keyboard_hint" in st
+    ok, detail = prepare_emulator()
+    assert isinstance(ok, bool) and isinstance(detail, str) and detail
     need = _MIN_FREE_BYTES_EXISTING if _has_existing_userdata() else _MIN_FREE_BYTES_FRESH
     assert need >= _MIN_FREE_BYTES_EXISTING
     cfg = avd_config_path()

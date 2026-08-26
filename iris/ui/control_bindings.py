@@ -354,7 +354,8 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         root = Path(path).expanduser()
         if not root.is_dir():
             return err_result("ide.open_folder", f"not a directory: {path}")
-        new_window = bool(args.get("new_window", False))
+        # 기본=새 창. False면 기존 Cursor(개발용 포함)를 가로채 타일함 — bac8f75 회귀 금지.
+        new_window = bool(args.get("new_window", True))
         err = window._open_ide_folder(str(root), new_window=new_window, source="chat")
         ok = not err and window._ui_mode == "ide_companion"
         _log(window, "ide.open_folder", ok)
@@ -438,7 +439,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                     "hint": "Call project.find_similar, ask user, then ide.open_folder with path",
                 },
             )
-        new_window = bool(args.get("new_window", False))
+        new_window = bool(args.get("new_window", True))
         err = window._open_ide_folder(best["path"], new_window=new_window, source="chat")
         ok = not err and window._ui_mode == "ide_companion"
         _log(window, "project.open_similar", ok)
@@ -480,7 +481,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         if open_ide:
             err = window._open_ide_folder(
                 created["path"],
-                new_window=bool(args.get("new_window", False)),
+                new_window=bool(args.get("new_window", True)),
                 source="chat",
             )
             result["open_error"] = err or None
@@ -697,8 +698,12 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         from iris.system.project_ops import (
             build_iris_terminal_command,
             build_run_command,
+            infer_dev_server_url,
             iris_run_log_path,
+            is_static_web_file,
+            open_preview_in_browser,
             result_from_terminal_log,
+            static_web_file_uri,
             summarize_run,
             upsert_iris_run_task,
             wait_for_run_log,
@@ -724,11 +729,41 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 "requested project_root does not match bound IDE workspace",
                 {"project_root": root_s, "bound_workspace_root": session.workspace_root},
             )
+
+        file_arg = str(args.get("file") or args.get("rel_path") or "").strip()
+        open_browser = bool(args.get("open_browser", True))
+        # 정적 HTML/HTM → 기본 브라우저로 미리보기 (IDE 터미널 불필요)
+        if not args.get("command") and is_static_web_file(file_arg):
+            try:
+                uri = static_web_file_uri(root_s, file_arg)
+            except Exception as exc:  # noqa: BLE001
+                return err_result("project.run", str(exc))
+            opened = open_preview_in_browser(uri) if open_browser else False
+            if open_browser and not opened:
+                return err_result("project.run", f"failed to open browser preview: {uri}")
+            payload = {
+                "ok": True,
+                "exit_code": 0,
+                "stdout": "",
+                "stderr": "",
+                "elapsed_sec": 0.0,
+                "argv": ["browser", uri],
+                "cwd": root_s,
+                "timed_out": False,
+                "via": "browser",
+                "preview_url": uri,
+                "browser": "ok" if opened else "skipped",
+                "summary": f"opened in browser · {Path(file_arg).name}",
+                "ide_terminal": "skipped",
+            }
+            window._live_activity.append_instant_line(f"미리보기: {uri}")
+            return ok_result("project.run", payload)
+
         timeout_sec = float(args.get("timeout_sec") or 60)
         try:
             argv = build_run_command(
                 command=args.get("command"),
-                file=str(args.get("file") or args.get("rel_path") or ""),
+                file=file_arg,
             )
         except Exception as exc:  # noqa: BLE001
             return err_result("project.run", str(exc))
@@ -801,15 +836,32 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         )
         ide_terminal = "ok"
 
+        preview_url = ""
+        browser_status = "skipped"
+        if open_browser:
+            preview_url = str(args.get("preview_url") or "").strip() or (
+                infer_dev_server_url(argv) or ""
+            )
+            if preview_url:
+                # 서버 기동 직후 짧게 대기 후 브라우저
+                time.sleep(1.2)
+                browser_status = "ok" if open_preview_in_browser(preview_url) else "failed"
+                if browser_status == "ok":
+                    window._live_activity.append_instant_line(f"미리보기: {preview_url}")
+
         summary_bits = summarize_run(result)
         if ide_terminal == "ok":
             summary_bits["summary"] += " · output in IDE terminal"
+        if browser_status == "ok" and preview_url:
+            summary_bits["summary"] += f" · browser {preview_url}"
 
         payload = {
             **result,
             **summary_bits,
             "ide_terminal": ide_terminal,
             "log_path": str(log_p) if log_p.is_file() else None,
+            "preview_url": preview_url or None,
+            "browser": browser_status,
             "tasks_path": tasks_path or None,
             "opened_log": False,
             "stdout_len": len(result.get("stdout") or ""),
@@ -853,7 +905,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     reg.register(
         "ide.open_folder",
         ide_open_folder,
-        summary="Open folder in the bound IDE session by default; new window only when requested",
+        summary="Open folder in IDE (new window by default) + Companion tile; set new_window=false to reuse bound session",
         risk="medium",
     )
     reg.register(
@@ -1959,6 +2011,47 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         _log(window, "wiki.reload", True)
         return ok_result("wiki.reload", {})
 
+    def wiki_write(args: dict[str, Any]) -> dict[str, Any]:
+        title = str(args.get("title") or "").strip()
+        content = str(args.get("content") or args.get("body") or "").strip()
+        source_url = str(args.get("source_url") or args.get("url") or "").strip()
+        rel_in = str(args.get("rel_path") or args.get("path") or "").strip() or None
+        open_note = bool(args.get("open", True))
+        if not title and rel_in:
+            stem = Path(rel_in.replace("\\", "/")).stem
+            title = stem or "untitled"
+        if not title:
+            return err_result("wiki.write_user_note", "title required")
+        if not content:
+            return err_result("wiki.write_user_note", "content required")
+        try:
+            path, rel = window._iris_wiki.write_inbox_note(
+                title,
+                content,
+                source_url=source_url,
+                rel_path=rel_in,
+            )
+        except ValueError as exc:
+            return err_result("wiki.write_user_note", str(exc))
+        except OSError as exc:
+            return err_result("wiki.write_user_note", str(exc))
+        wiki_rel = f"user/{rel}"
+        window._on_obsidian_icon()
+        window._obsidian_page.reload_graph()
+        window._left_sidebar.obsidian_detail.reload()
+        if open_note:
+            window._obsidian_page.show_note(wiki_rel)
+        _log(window, "wiki.write_user_note", True)
+        return ok_result(
+            "wiki.write_user_note",
+            {
+                "rel_path": wiki_rel,
+                "path": str(path),
+                "title": title,
+                "opened": open_note,
+            },
+        )
+
     reg.register("wiki.list_notes", wiki_list, summary="List Iris Wiki note paths")
     reg.register(
         "wiki.open_note",
@@ -1966,6 +2059,12 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         summary="Open Iris Wiki workspace and show note by rel_path",
     )
     reg.register("wiki.reload", wiki_reload, summary="Reload Iris Wiki graph/detail")
+    reg.register(
+        "wiki.write_user_note",
+        wiki_write,
+        summary="Save markdown to Iris Wiki user/ (default inbox/{slug}.md) and show it",
+        risk="medium",
+    )
 
     # --- chat / activity / notify ---
     def chat_set_model(args: dict[str, Any]) -> dict[str, Any]:

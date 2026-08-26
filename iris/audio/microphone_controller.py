@@ -111,14 +111,25 @@ class MicrophoneController(QObject):
     def set_echo_source(self, source: object | None) -> None:
         self._recorder.set_echo_source(source)  # type: ignore[arg-type]
 
-    def suppress_speech(self, on: bool, *, echo_tail_ms: int | None = None) -> None:
+    def suppress_speech(
+        self,
+        on: bool,
+        *,
+        echo_tail_ms: int | None = None,
+        allow_barge_in: bool = True,
+    ) -> None:
         if echo_tail_ms is not None:
             self._echo_tail_ms = max(0, int(echo_tail_ms))
         if on:
             self._echo_timer.stop()
             if not self._state.is_listening_ui() and self._state != MicState.STARTING:
                 return
-            self._recorder.set_echo_cancel(True, delay_ms=self._echo_tail_ms)
+            if allow_barge_in:
+                self._recorder.set_echo_cancel(True, delay_ms=self._echo_tail_ms)
+            else:
+                # 끼어들기 OFF — AEC 경로로 듣고 있지 말고 발화 검출만 완전 정지
+                self._recorder.set_echo_cancel(False, delay_ms=self._echo_tail_ms)
+                self._recorder.set_capture_paused(True)
             if self._recorder.is_capture_paused() and self._state.is_listening_ui():
                 self._set_state(MicState.SUSPENDED)
             return

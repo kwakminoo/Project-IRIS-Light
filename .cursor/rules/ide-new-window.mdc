@@ -1,0 +1,28 @@
+---
+description: IDE Companion는 빈 새 창 spawn 후 폴더 inject. one-shot/기존 Cursor 가로채기 금지.
+globs: iris/ui/control_bindings.py,iris/ui/window/main_window.py,iris/system/ide_launcher.py
+alwaysApply: true
+---
+
+# IDE Companion: 새 창 계약 (2c70c97 / 36577a6)
+
+## 완료본 흐름 (복구 기준)
+
+1. GUI exe `Cursor.exe --new-window` 로 **빈 새 창**만 spawn
+2. 새 hwnd 확보 (기존 hwnd exclude, Agents 제외, 대기 ~14s)
+3. 그 창에 `--reuse-window <folder>` 로 폴더 inject
+4. Companion 80:20 타일
+
+기준 커밋: `36577a6` (new-window fix) → `2c70c97` (vibe smoke까지 IDE 완료).
+
+## 계약
+
+- `ide.open_folder` / `project.open_similar` / `project.create_scaffold` 의 `new_window` **기본값 True**
+- `open_folder_in_ide(new_window=True)` 는 **빈 창만** (`--new-window` + folder one-shot 금지 — `596823e` 회귀)
+- `new_window=True`일 때 `_find_workspace_window`로 개발용 Cursor attach 금지
+
+## 금지
+
+- `args.get("new_window", False)` 기본값
+- `[exe, "--new-window", folder]` one-shot을 기본 경로로 쓰기
+- 3~4초만 기다리고 기존 창으로 fallback
