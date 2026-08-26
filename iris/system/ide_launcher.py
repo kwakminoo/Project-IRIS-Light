@@ -632,7 +632,8 @@ def open_folder_in_ide(
     """폴더를 IDE에서 연다. (pid, error).
 
     new_window=True (Cursor/VS Code):
-      GUI exe --new-window <folder> 한 방 (CLI --new-window 는 Agents에 흡수됨).
+      Windows: GUI exe --new-window 빈 창만 (폴더는 호출측 reuse inject).
+      Mac one-shot(--new-window <folder>)는 Windows에서 Agents/기존창 흡수 위험이 큼.
     reuse_window=True: CLI/exe 로 기존 창에 폴더 전달.
     """
     root = Path(_expand((folder or "").strip())).expanduser()
@@ -648,9 +649,9 @@ def open_folder_in_ide(
     supports_nw = ide_id in ("cursor", "vscode")
 
     if new_window and supports_nw:
-        # ponytail: GUI exe 경로만. CLI는 Agents에 흡수.
-        # 천장: 일부 빌드가 빈 창만 뜨면 호출측이 empty→inject 폴백.
-        return _popen_detached([exe, "--new-window", root_s], cwd=root_s)
+        # Windows(2c70c97): 빈 새 창만. 폴더는 호출측이 hwnd 확보 후 reuse inject.
+        # Mac one-shot(--new-window folder)는 Windows에서 Agents/기존창 흡수 회귀.
+        return _popen_detached([exe, "--new-window"])
 
     use_shell = False
     if cli and cli.lower().endswith((".cmd", ".bat")):

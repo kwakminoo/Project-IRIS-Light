@@ -99,6 +99,9 @@ _IMAGE_FILTER = (
     "All Files (*.*)"
 )
 _FILE_FILTER = "All Files (*.*)"
+_DEFAULT_INPUT_PLACEHOLDER = "Iris에게 메시지를 입력하세요…"
+# 입력창 placeholder — 푸른색 유지하되 흐릿하게
+_PLACEHOLDER_COLOR = QColor(56, 189, 248, 110)  # neon_blue @ ~43%
 
 
 def _paste_dir() -> Path:
@@ -338,6 +341,9 @@ class ChatLogTextEdit(QTextEdit):
             self.speaker_clicked.emit(anchor.removeprefix("iris-tts://"))
             event.accept()
             return
+        if anchor.startswith("iris-stt://"):
+            event.accept()
+            return
         if handle_chat_anchor_click(self, anchor):
             event.accept()
             return
@@ -422,7 +428,7 @@ class _ChatInputBar(QWidget):
 
         self.input = ChatComposerInput()
         self.input.setObjectName("ChatInput")
-        self.input.setPlaceholderText("Iris에게 메시지를 입력하세요…")
+        self.input.setPlaceholderText(_DEFAULT_INPUT_PLACEHOLDER)
         self.input.setStyleSheet(
             """
             QPlainTextEdit#ChatInput {
@@ -433,6 +439,9 @@ class _ChatInputBar(QWidget):
             }
             """
         )
+        _ph = self.input.palette()
+        _ph.setColor(QPalette.ColorRole.PlaceholderText, _PLACEHOLDER_COLOR)
+        self.input.setPalette(_ph)
         self.input.files_attached.connect(self._on_paths_attached)
 
         self.model_combo = _ModelCombo()
@@ -834,6 +843,7 @@ class ChatPanel(QWidget):
         # "TTS 완성 후 텍스트 표시" 요구사항이 깨진다.
         self._typing_wait_for_tts_completion = False
         self._user_listening_active = False
+        self._stt_pending = False
         self._tts_texts: dict[str, str] = {}
         self._tts_seq = 0
         self._last_tts_id = ""
@@ -874,10 +884,13 @@ class ChatPanel(QWidget):
         return self._waveform
 
     def current_model(self) -> str:
+        """런타임 모델 id. 상태 문구(빈 data)는 모델명이 아니다."""
         data = self._model_combo.currentData()
         if isinstance(data, str) and data.strip():
             return data.strip()
-        return self._model_combo.currentText().strip()
+        # ponytail: set_model_status가 라벨만 바꿀 때 text를 모델로 쓰면
+        # Hermes X-Hermes-Model 헤더가 latin-1로 터진다. data 없으면 미선택.
+        return ""
 
     def current_input_text(self) -> str:
         return self._input.text()
@@ -1053,12 +1066,16 @@ class ChatPanel(QWidget):
         self.model_changed.emit(self.current_model())
 
     def set_model_status(self, text: str) -> None:
-        """목록 로드 실패 등 상태 문구."""
+        """목록 로드 중/실패 상태 문구. 기존 런타임 id는 data에 유지."""
+        prev = ""
+        data = self._model_combo.currentData()
+        if isinstance(data, str) and data.strip():
+            prev = data.strip()
         self._model_guard_silent = True
         self._model_combo.blockSignals(True)
         self._model_combo.clear()
         self._picker_models = []
-        self._model_combo.addItem(text, "")
+        self._model_combo.addItem(text, prev)
         self._model_combo.blockSignals(False)
         self._model_guard_silent = False
         self._model_guard_prev_index = 0
@@ -1267,20 +1284,123 @@ class ChatPanel(QWidget):
         self._waveform.set_threshold_rms(speech_rms)
 
     def begin_user_listening(self) -> None:
-        """듣기 상태는 하단 파형만 쓰고 채팅 로그는 건드리지 않는다."""
+        """상시 듣기 시작 — 상태 문구는 set_user_listening_status로 갱신."""
         self._user_listening_active = True
 
     def set_user_listening_status(self, status: str) -> None:
-        del status
+        """입력창 placeholder에 음성 상태 문구 표시 (푸른·흐린 글씨)."""
         self._user_listening_active = True
+        text = (status or "").strip()
+        self._input.setPlaceholderText(text or _DEFAULT_INPUT_PLACEHOLDER)
+        pal = self._input.palette()
+        pal.setColor(QPalette.ColorRole.PlaceholderText, _PLACEHOLDER_COLOR)
+        self._input.setPalette(pal)
 
     def cancel_user_listening(self) -> None:
         self._user_listening_active = False
+        self._input.setPlaceholderText(_DEFAULT_INPUT_PLACEHOLDER)
+        pal = self._input.palette()
+        pal.setColor(QPalette.ColorRole.PlaceholderText, _PLACEHOLDER_COLOR)
+        self._input.setPalette(pal)
+
+    def begin_stt_pending(self) -> None:
+        """STT 대기 — 채팅에 You: ··· 플레이스홀더."""
+        if self._stt_pending:
+            return
+        self.finish_typing()
+        self._typing_anchor_y = None
+        cursor = self._begin_chat_message_cursor()
+        cursor.insertHtml(
+            f'<b>You</b>: <a href="iris-stt://pending" '
+            f'style="color:{TOKENS.text_muted};text-decoration:none;">···</a>'
+        )
+        self._log.setTextCursor(cursor)
+        self._append_trailing_blank_line()
+        self._stt_pending = True
+        self._scroll_log_to_bottom()
+
+    def complete_stt_pending(self, text: str) -> bool:
+        """플레이스홀더를 인식 텍스트로 교체. pending 없으면 False."""
+        body = normalize_chat_body("You", prepare_chat_text(text))
+        if not self._stt_pending:
+            return False
+        if not body:
+            self.cancel_stt_pending()
+            return True
+        import re
+
+        html_doc = self._log.toHtml()
+        needle = 'href="iris-stt://pending"'
+        if needle not in html_doc:
+            self._stt_pending = False
+            return False
+        body_html = chat_body_to_html(body)
+        # QTextEdit가 <a> 안을 <span>으로 감싸므로 non-greedy DOTALL 필요
+        updated = re.sub(
+            r'<a href="iris-stt://pending"[^>]*>.*?</a>',
+            body_html,
+            html_doc,
+            count=1,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if updated == html_doc:
+            self._stt_pending = False
+            self.append_message_instant("You", body)
+            return True
+        bar = self._log.verticalScrollBar()
+        pos = bar.value()
+        self._log.setHtml(updated)
+        bar.setValue(pos)
+        self._scroll_log_to_bottom()
+        self._stt_pending = False
+        self.cancel_user_listening()
+        return True
+
+    def cancel_stt_pending(self, *, notice: str = "") -> None:
+        """STT 실패/무시 — 플레이스홀더 제거."""
+        if not self._stt_pending:
+            if notice:
+                self.set_user_listening_status(notice)
+            return
+        import re
+
+        html_doc = self._log.toHtml()
+        needle = 'href="iris-stt://pending"'
+        if needle in html_doc:
+            # ponytail: DOTALL로 <p>…pending…</p>를 잡으면 문서 첫 <p>부터
+            # pending까지 통째로 지워 채팅이 증발한다. 앵커만 제거.
+            updated = re.sub(
+                r'<a href="iris-stt://pending"[^>]*>.*?</a>',
+                "",
+                html_doc,
+                count=1,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            if updated != html_doc:
+                updated = re.sub(
+                    r'<p[^>]*>\s*(?:<span[^>]*>)?(?:<[^>]+>)*You(?:</[^>]+>)*:\s*(?:</span>)?\s*</p>',
+                    "",
+                    updated,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+                bar = self._log.verticalScrollBar()
+                pos = bar.value()
+                self._log.setHtml(updated)
+                bar.setValue(pos)
+        self._stt_pending = False
+        if notice:
+            self.set_user_listening_status(notice)
 
     def complete_user_message_typed(self, text: str) -> None:
-        """음성 인식 완료 — 플레이스홀더 제거 후 본문 즉시 표시."""
+        """음성 인식 완료 — pending이면 교체, 없으면 즉시 추가."""
+        if self.complete_stt_pending(text):
+            return
         self.cancel_user_listening()
-        self.append_message_instant("나", text)
+        self.append_message_instant("You", text)
+
+    def has_stt_pending(self) -> bool:
+        return self._stt_pending
 
     @property
     def typing_buffer_text(self) -> str:

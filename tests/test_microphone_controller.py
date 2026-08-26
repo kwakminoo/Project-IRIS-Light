@@ -166,6 +166,14 @@ class MicrophoneControllerTests(TestCase):
         self.assertEqual(self.mic.state, MicState.SPEECH)
         self.assertEqual(started, [1])
 
+    def test_tts_suppress_without_barge_in_pauses_capture(self) -> None:
+        self.rec.set_echo_source(object())
+        self.mic.request_on(stt_enabled=True)
+        self.mic.suppress_speech(True, echo_tail_ms=0, allow_barge_in=False)
+        self.assertEqual(self.mic.state, MicState.SUSPENDED)
+        self.assertTrue(self.rec.paused)
+        self.assertFalse(self.rec.aec)
+
     def test_off_bumps_session_so_stale_results_drop(self) -> None:
         self.mic.request_on(stt_enabled=True)
         sid = self.mic.session_id

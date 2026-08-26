@@ -24,6 +24,23 @@ from iris.system.ide_launcher import (  # noqa: E402
 )
 
 
+def _check_control_bindings_new_window_default() -> None:
+    """회귀: control surface 기본 new_window 는 True (bac8f75 False 회귀 금지)."""
+    src = (ROOT / "iris" / "ui" / "control_bindings.py").read_text(encoding="utf-8")
+    assert src.count('args.get("new_window", True)') >= 3
+    bad = 'args.get("new_window", False)'
+    open_region = src[src.find("def ide_open_folder") : src.find("def project_list_parents")]
+    similar_region = src[
+        src.find("def project_open_similar") : src.find("def project_create_scaffold")
+    ]
+    scaffold_start = src.find("def project_create_scaffold")
+    scaffold_region = src[scaffold_start : scaffold_start + 2500]
+    assert bad not in open_region, "ide.open_folder must default new_window=True"
+    assert bad not in similar_region, "project.open_similar must default new_window=True"
+    assert bad not in scaffold_region, "project.create_scaffold must default new_window=True"
+    print("control_bindings new_window default ok")
+
+
 def _check_title_helpers() -> None:
     assert is_cursor_agents_title("Cursor Agents")
     assert is_cursor_agents_title("cursor agents")
@@ -77,7 +94,7 @@ def _check_live_new_window() -> None:
     assert hwnd is not None, "new window not found"
     assert int(hwnd) not in before, "reused old hwnd"
     assert not is_cursor_agents_title(title), f"got Agents: {title!r}"
-    # one-shot open_folder new_window는 폴더 인자 포함
+    # one-shot이 아님: 빈 새 창 spawn 후 inject 는 main_window 경로
     pid2, err2 = open_folder_in_ide(
         "cursor",
         str(ROOT),
@@ -85,6 +102,7 @@ def _check_live_new_window() -> None:
         reuse_window=False,
     )
     assert not err2, err2
+    # new_window=True 는 빈 창만 — folder 인자 없이 --new-window
     time.sleep(0.2)
     print(
         "live ok",
@@ -93,7 +111,7 @@ def _check_live_new_window() -> None:
             "launch_pid": pid,
             "hwnd": hwnd,
             "title": title,
-            "spawn_pid": pid2,
+            "empty_new_window_pid": pid2,
             "wait_pid": wait_pid,
         },
     )
@@ -114,6 +132,7 @@ def _check_companion_session_retention() -> None:
 
 
 def main() -> int:
+    _check_control_bindings_new_window_default()
     _check_title_helpers()
     _check_agents_never_chosen_as_new()
     _check_companion_session_retention()

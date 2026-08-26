@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from iris.knowledge.obsidian_vault import DEFAULT_VAULT_ROOT, ObsidianVault, VaultNote
@@ -10,12 +12,22 @@ from iris.knowledge.obsidian_vault import DEFAULT_VAULT_ROOT, ObsidianVault, Vau
 WIKI_NAME = "Iris Wiki"
 DOCS_PREFIX = "docs/"
 USER_PREFIX = "user/"
+INBOX_DIR = "inbox"
 
 
 def default_user_wiki_root() -> Path:
     base = Path.home() / ".iris-light" / "iris-wiki"
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def slugify_note_name(title: str, *, max_len: int = 64) -> str:
+    """제목 → 파일명 슬러그 (한글·영문·숫자·하이픈)."""
+    s = (title or "").strip().lower()
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[^\w\-가-힣]+", "", s, flags=re.UNICODE)
+    s = re.sub(r"-{2,}", "-", s).strip("-_") or "note"
+    return s[:max_len]
 
 
 @dataclass(frozen=True)
@@ -45,6 +57,7 @@ class IrisWiki:
         (self.user_root / "schedule").mkdir(parents=True, exist_ok=True)
         (self.user_root / "integrations").mkdir(parents=True, exist_ok=True)
         (self.user_root / "learning").mkdir(parents=True, exist_ok=True)
+        (self.user_root / INBOX_DIR).mkdir(parents=True, exist_ok=True)
 
     def list_notes(self) -> list[IrisWikiNote]:
         notes: list[IrisWikiNote] = []
@@ -93,14 +106,59 @@ class IrisWiki:
         return path.read_text(encoding="utf-8")
 
     def write_user_note(self, rel_path: str, content: str) -> Path:
-        rel_path = rel_path.lstrip("/")
+        rel_path = self._normalize_user_rel(rel_path)
         path = (self.user_root / rel_path).resolve()
         root = self.user_root.resolve()
-        if root not in path.parents:
+        if root not in path.parents and path != root:
             raise ValueError("invalid user wiki path")
+        if path.suffix.lower() != ".md":
+            path = path.with_suffix(".md")
+            rel_path = path.relative_to(root).as_posix()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return path
+
+    def write_inbox_note(
+        self,
+        title: str,
+        body: str,
+        *,
+        source_url: str = "",
+        rel_path: str | None = None,
+    ) -> tuple[Path, str]:
+        """사용자 wiki에 노트 저장. 반환: (절대경로, user/ 없는 rel)."""
+        title = (title or "").strip() or "untitled"
+        body = (body or "").strip()
+        if not body:
+            raise ValueError("content required")
+        if rel_path:
+            rel = self._normalize_user_rel(rel_path)
+        else:
+            rel = f"{INBOX_DIR}/{slugify_note_name(title)}.md"
+        if not rel.endswith(".md"):
+            rel = f"{rel}.md"
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = [f"# {title}", ""]
+        if source_url.strip():
+            lines.append(f"- source: {source_url.strip()}")
+            lines.append("")
+        lines.append(body)
+        lines.append("")
+        lines.append(f"> updated: {stamp}")
+        lines.append("")
+        path = self.write_user_note(rel, "\n".join(lines))
+        return path, path.relative_to(self.user_root).as_posix()
+
+    @staticmethod
+    def _normalize_user_rel(rel_path: str) -> str:
+        rel = (rel_path or "").strip().lstrip("/").replace("\\", "/")
+        if rel.startswith(USER_PREFIX):
+            rel = rel[len(USER_PREFIX) :]
+        if rel.startswith(DOCS_PREFIX) or rel == "docs" or ".." in rel.split("/"):
+            raise ValueError("user wiki only — docs/ and .. paths are not allowed")
+        if not rel or rel.endswith("/"):
+            raise ValueError("rel_path required")
+        return rel
 
     def sync_profile_markdown(self, profile: dict[str, str]) -> None:
         lines = [

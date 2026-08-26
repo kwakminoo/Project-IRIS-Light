@@ -50,13 +50,35 @@ def is_hermes_gateway_running(
     ).gateway_ready()
 
 
+def _hermes_agent_dir() -> Path:
+    return hermes_home() / "hermes-agent"
+
+
+def _hermes_venv_dir() -> Path:
+    return _hermes_agent_dir() / "venv"
+
+
+def _hermes_venv_python() -> Path | None:
+    """Hermes 전용 venv python — uv trampoline 오염 회피용."""
+    if sys.platform == "win32":
+        py = _hermes_venv_dir() / "Scripts" / "python.exe"
+    else:
+        py = _hermes_venv_dir() / "bin" / "python"
+    return py if py.is_file() else None
+
+
 def _gateway_argv() -> list[str]:
     # 신규 기동 — stop 후 start 경로를 쓰므로 --replace에 의존하지 않음
     return ["gateway", "run", "--quiet", "--accept-hooks"]
 
 
 def _gateway_child_env() -> dict[str, str]:
-    """Hermes gateway 자식 프로세스 환경 — .env + HERMES_HOME 필수."""
+    """Hermes gateway 자식 프로세스 환경 — .env + HERMES_HOME 필수.
+
+    Iris (.venv) VIRTUAL_ENV/PYTHONPATH 를 그대로 넘기면 uv hermes.exe 가
+    패키지 없는 base Python 으로 re-exec 되어
+    ``No module named 'pydantic_core._pydantic_core'`` 가 난다.
+    """
     env = os.environ.copy()
     home = hermes_home()
     env["HERMES_HOME"] = str(home)
@@ -65,15 +87,39 @@ def _gateway_child_env() -> dict[str, str]:
         # Iris 프로세스 값이 있어도 Hermes 전용 키는 파일 값을 쓴다
         env[key] = val
     env.setdefault("API_SERVER_ENABLED", "true")
+
+    venv = _hermes_venv_dir()
+    venv_py = _hermes_venv_python()
+    if venv.is_dir() and venv_py is not None:
+        env["VIRTUAL_ENV"] = str(venv)
+        scripts = str(venv / ("Scripts" if sys.platform == "win32" else "bin"))
+        path = env.get("PATH", "")
+        if scripts and not path.lower().startswith(scripts.lower()):
+            env["PATH"] = scripts + os.pathsep + path
+        for k in (
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "PYTHONEXECUTABLE",
+            "UV_PROJECT",
+            "UV_PROJECT_ENVIRONMENT",
+            "UV_PYTHON",
+            "UV_PYTHON_PREFERENCE",
+            "CONDA_PREFIX",
+            "CONDA_DEFAULT_ENV",
+        ):
+            env.pop(k, None)
     return env
 
 
 def _windows_hidden_cmd(hermes_exe: str) -> list[str]:
     """콘솔 창 없이 기동.
 
-    pythonw -c 보다 hermes.exe 직접 호출이 Windows에서 안정적이다
-    (자식 프로세스/락 소유권이 entrypoint와 일치).
+    venv python -m hermes_cli.main 우선 — hermes.exe(uv trampoline)만 쓰면
+    Iris VIRTUAL_ENV 오염 시 base Python 으로 re-exec 되어 pydantic_core 가 빠진다.
     """
+    venv_py = _hermes_venv_python()
+    if venv_py is not None:
+        return [str(venv_py), "-m", "hermes_cli.main", *_gateway_argv()]
     return [hermes_exe, *_gateway_argv()]
 
 
@@ -109,17 +155,25 @@ def _popen_hidden(
 def start_hermes_gateway(command: str = "hermes") -> bool:
     """`hermes gateway run`을 창 없이 백그라운드로 기동. 실행 파일이 없으면 False."""
     exe = hermes_executable(command)
-    if not exe:
+    if not exe and _hermes_venv_python() is None:
         return False
     env = _gateway_child_env()
-    cwd = str(hermes_home() / "hermes-agent")
+    cwd = str(_hermes_agent_dir())
     if not Path(cwd).is_dir():
         cwd = None
     try:
         if sys.platform == "win32":
-            _popen_hidden(_windows_hidden_cmd(exe), env=env, cwd=cwd)
+            _popen_hidden(_windows_hidden_cmd(exe or "hermes"), env=env, cwd=cwd)
         else:
-            _popen_hidden([exe, *_gateway_argv()], env=env, cwd=cwd)
+            venv_py = _hermes_venv_python()
+            if venv_py is not None:
+                _popen_hidden(
+                    [str(venv_py), "-m", "hermes_cli.main", *_gateway_argv()],
+                    env=env,
+                    cwd=cwd,
+                )
+            else:
+                _popen_hidden([exe or "hermes", *_gateway_argv()], env=env, cwd=cwd)
         return True
     except OSError:
         return False
@@ -460,10 +514,22 @@ def ensure_hermes_provider_config() -> None:
 if __name__ == "__main__":
     ensure_hermes_provider_config()
     assert is_hermes_gateway_running("http://127.0.0.1:1/v1") is False
+    # Iris VIRTUAL_ENV 오염 시에도 Hermes venv 로 고정되는지
+    os.environ["VIRTUAL_ENV"] = str(Path.cwd() / ".venv-fake-iris")
+    os.environ["PYTHONPATH"] = str(Path.cwd())
+    cleaned = _gateway_child_env()
+    venv_py = _hermes_venv_python()
+    if venv_py is not None:
+        assert cleaned.get("VIRTUAL_ENV") == str(_hermes_venv_dir())
+        assert "PYTHONPATH" not in cleaned
+        cmd = _windows_hidden_cmd(hermes_executable("hermes") or "hermes")
+        assert cmd[:3] == [str(venv_py), "-m", "hermes_cli.main"]
     exe = hermes_executable("hermes")
     print(
         "hermes_gateway ok - exe:",
         exe,
+        "venv_py:",
+        venv_py,
         "home:",
         hermes_home(),
         "key_set:",

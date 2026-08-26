@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import os
 import sys
 from pathlib import Path
 import time
@@ -66,12 +67,6 @@ from iris.storage.database import Database
 from iris.storage.model_prefs import load_selected_model, save_selected_model
 from iris.storage.user_profile import load_user_profile, save_user_profile
 from iris.storage.voice_prefs import VoicePreferences, load_voice_preferences, save_voice_preferences
-from iris.system.android_emulator import (
-    is_emulator_headless,
-    is_emulator_running,
-    launch_emulator,
-    restart_emulator_windowed,
-)
 from iris.system.api_quota_worker import ApiQuotaWorker
 from iris.system.ide_launcher import (
     get_ide_spec,
@@ -103,7 +98,7 @@ from iris.ui.window.frameless_chrome import FramelessShell, center_on_screen, su
 from iris.ui.sidebar.left_sidebar_panel import LeftSidebarPanel
 from iris.ui.monitor.live_activity_panel import LiveActivityPanel, UiActivityRelay
 from iris.ui.notification.notification_panel import NotificationPanel
-from iris.ui.workers.boot_checks_worker import BootChecksWorker
+from iris.ui.workers.boot_checks_worker import BootChecksWorker, EmulatorLaunchWorker
 from iris.ui.control_bindings import (
     mark_control_ready,
     start_control_surface,
@@ -224,6 +219,7 @@ class MainWindow(QMainWindow):
         self._calendar_busy = False
         self._boot_checks_worker: BootChecksWorker | None = None
         self._boot_checks_done = False
+        self._emu_launch_worker: EmulatorLaunchWorker | None = None
         self._learning_worker: LearningProcessWorker | None = None
         self._email_preloaded = False
         self._tts_queue: list[str] = []
@@ -256,6 +252,8 @@ class MainWindow(QMainWindow):
         self._ide_hwnd: int | None = None
         self._ide_pid: int | None = None
         self._ide_session = IdeSession()
+        # Iris가 new_window로 연 Companion 창만 종료 시 닫음 (부모 Cursor 보호)
+        self._ide_window_owned_by_iris = False
         self._ide_session_watch = QTimer(self)
         self._ide_session_watch.setInterval(2000)
         self._ide_session_watch.timeout.connect(self._refresh_ide_session_state)
@@ -301,6 +299,9 @@ class MainWindow(QMainWindow):
         self._stt_session = 0
         self._last_stt_skip_report_ts = 0.0
         self._last_stt_speech_started_ts = 0.0
+        self._stt_ux_slow_timer = QTimer(self)
+        self._stt_ux_slow_timer.setSingleShot(True)
+        self._stt_ux_slow_timer.timeout.connect(self._on_stt_ux_slow)
         self._mic = MicrophoneController(self)
         self._mic.state_changed.connect(self._on_mic_state)
         self._mic.level_changed.connect(self._on_recorder_level)
@@ -678,9 +679,14 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(900, self._schedule_tts_runtime_bootstrap)
 
     def _begin_boot_sequence(self) -> None:
-        """빈 창에서 UI 등장 연출 + 무료 모델 확인을 동시에 시작."""
+        """빈 창에서 UI 등장 연출 + 모델·에뮬 점검을 동시에 시작.
+
+        부팅 점검은 모델 목록을 기다리지 않는다 — Ollama 지연/실패 시에도
+        에뮬레이터 준비 알림이 떠야 한다.
+        """
         if self._intro is not None:
             self._intro.start()
+        self._start_boot_checks()
         self._refresh_models()
 
     def _ready_status_message(self) -> str:
@@ -699,6 +705,7 @@ class MainWindow(QMainWindow):
         mark_control_ready(self)
         self._chat.append_message("Iris", self._ready_status_message())
         QTimer.singleShot(200, self._seed_demo_alert)
+        QTimer.singleShot(500, self._maybe_restore_mic_listen)
 
     def _seed_demo_alert(self) -> None:
         self._notes.try_add_alert(
@@ -917,7 +924,8 @@ class MainWindow(QMainWindow):
         text = (message or "").strip()
         if not text:
             return
-        category = "ERROR_DETECTED" if "실패" in text else "NORMAL"
+        bad = ("실패" in text) or ("실행 불가" in text)
+        category = "ERROR_DETECTED" if bad else "NORMAL"
         self._notes.try_add_alert(
             target_id=0,
             category=category,
@@ -926,6 +934,8 @@ class MainWindow(QMainWindow):
             focus_hint="",
             event_id=0,
         )
+        # 알림 패널뿐 아니라 활동 로그에도 남겨 놓치지 않게 한다.
+        self._live_activity.append_instant_line(text)
 
     def _on_boot_inbox_ready(self, items: object) -> None:
         """부팅 점검 중 미리 불러온 받은편지함을 이메일 화면에 채워둔다."""
@@ -964,6 +974,7 @@ class MainWindow(QMainWindow):
         self._api_quota_worker.set_cloud_polling(self._is_cloud_model(model))
 
     @staticmethod
+
     def _is_cloud_model(model: str) -> bool:
         if is_api_runtime_model(model):
             return False
@@ -1224,7 +1235,11 @@ class MainWindow(QMainWindow):
         if self._try_local_ide_control(text):
             self._finish_current_turn(turn.id, open_followup=False)
             return
-        model = self._chat.current_model()
+        model = (
+            self._chat.current_model()
+            or (getattr(self, "_saved_model", None) or "").strip()
+            or (self._settings.ollama_model or "").strip()
+        )
         if not model:
             self._chat.append_message_instant(
                 "Iris",
@@ -1239,7 +1254,16 @@ class MainWindow(QMainWindow):
             )
             self._refresh_hermes_health()
 
-        self._chat.append_message_instant("You", text)
+        if turn.source == UserTurnSource.VOICE:
+            self._stop_stt_ux_timer()
+            completed = False
+            complete = getattr(self._chat, "complete_stt_pending", None)
+            if callable(complete):
+                completed = bool(complete(text))
+            if not completed:
+                self._chat.append_message_instant("You", text)
+        else:
+            self._chat.append_message_instant("You", text)
         self._history.append({"role": "user", "content": text})
         self._refresh_context_gauge()
         self._busy = True
@@ -1352,6 +1376,8 @@ class MainWindow(QMainWindow):
         """생성 중 turn을 안전하게 끊고 다음 turn이 진행되게 한다."""
         if not self._busy:
             if self._tts_active_play or self._tts_busy() or self._tts_queue:
+                # setHtml(speaker) 전에 타이핑 확정 — 커서 무효화로 로그가 날아가는 것 방지
+                self._chat.finish_typing()
                 self._stop_tts_playback()
                 self._sync_voice_conversation_state()
             return
@@ -1368,8 +1394,8 @@ class MainWindow(QMainWindow):
                 self._history.append({"role": "assistant", "content": partial})
                 self._last_assistant_text = partial
                 self._refresh_context_gauge()
-        else:
-            self._chat.finish_typing()
+        # speech_sync 스트림은 end 후에도 타이핑이 남을 수 있음 → setHtml 전 확정
+        self._chat.finish_typing()
         self._stop_tts_playback()
         self._tts_pump = None
         self._live_activity.append_instant_line(f"VOICE current_turn_cancel_requested reason={reason}")
@@ -1856,34 +1882,61 @@ class MainWindow(QMainWindow):
     def _sync_voice_conversation_state(self) -> None:
         if self._tts_active_play or self._tts_busy() or self._tts_queue:
             self._state.set_state(AppState.RESPONDING)
+            self._status_header.set_app_state(AppState.RESPONDING, label="TTS")
             if self._mic_listen_active:
                 self._chat.set_user_listening_status("IRIS가 말하고 있습니다")
             return
         if self._busy or self._turn_dispatcher.is_busy():
             self._state.set_state(AppState.PROCESSING)
+            self._status_header.set_app_state(AppState.PROCESSING, label="LLM")
             if self._mic_listen_active:
                 self._chat.set_user_listening_status("처리 중")
             return
         if self._stt_queue.is_busy() or self._stt_queue.pending_count():
             self._state.set_state(AppState.PROCESSING)
+            self._status_header.set_app_state(AppState.PROCESSING, label="STT")
             if self._mic_listen_active:
                 self._chat.set_user_listening_status("음성을 인식하고 있습니다")
             return
         if self._mic.state == MicState.SPEECH:
             self._state.set_state(AppState.LISTENING)
+            self._status_header.set_app_state(AppState.LISTENING, label="LISTEN")
             self._chat.set_user_listening_status("말씀하세요")
             return
         if self._mic_listen_active:
             self._state.set_state(AppState.LISTENING)
+            self._status_header.set_app_state(AppState.LISTENING, label="LISTEN")
             self._chat.set_user_listening_status("듣고 있습니다")
             return
         self._state.set_state(AppState.IDLE)
+        self._status_header.set_app_state(AppState.IDLE)
+
+    def _on_stt_ux_slow(self) -> None:
+        if not (self._stt_queue.is_busy() or self._stt_queue.pending_count()):
+            return
+        self._chat.set_user_listening_status("조금 더 걸리고 있습니다…")
+        self._live_activity.append_instant_line("VOICE stt_slow_hint")
+
+    def _start_stt_ux_timer(self) -> None:
+        self._stt_ux_slow_timer.start(3000)
+
+    def _stop_stt_ux_timer(self) -> None:
+        self._stt_ux_slow_timer.stop()
+
+    def _cancel_stt_pending_ux(self, *, notice: str = "") -> None:
+        self._stop_stt_ux_timer()
+        cancel = getattr(self._chat, "cancel_stt_pending", None)
+        if callable(cancel):
+            cancel(notice=notice)
 
     def _on_stt_job_dropped(self, session_id: int, reason: str) -> None:
         self._live_activity.append_instant_line(
             f"VOICE stt_job_dropped reason={reason} session={session_id}"
         )
+        self._cancel_stt_pending_ux()
         self._sync_voice_conversation_state()
+        if self._mic_listen_active:
+            self._chat.set_user_listening_status("인식이 취소되었습니다")
 
     def _split_voice_wake_words(self) -> list[str]:
         raw = (getattr(self._voice_prefs, "voice_wake_words", "") or "").strip()
@@ -1926,10 +1979,12 @@ class MainWindow(QMainWindow):
         return ""
 
     def _is_self_echo_transcript(self, text: str) -> bool:
-        if not self._tts_active_play:
-            return False
+        if not (self._tts_active_play or self._tts_busy() or self._tts_queue):
+            # TTS 직후 echo tail 구간도 자기 음성으로 본다
+            if not self._in_tts_echo_tail():
+                return False
         norm = self._normalize_voice_text(text)
-        if len(norm) < 10:
+        if len(norm) < 6:
             return False
         assistant_norm = self._normalize_voice_text(
             self._chat.typing_buffer_text or self._last_assistant_text
@@ -1938,6 +1993,33 @@ class MainWindow(QMainWindow):
             return False
         # ponytail: exact/containment match only, ceiling은 변형된 에코는 못 잡는다. 필요하면 음향 fingerprint로 확장.
         return norm == assistant_norm or norm in assistant_norm or assistant_norm in norm
+
+    def _in_tts_echo_tail(self) -> bool:
+        ended = float(getattr(self, "_last_tts_playback_ended_at", 0.0) or 0.0)
+        if ended <= 0:
+            return False
+        tail_ms = max(0, int(getattr(self._voice_prefs, "stt_echo_tail_ms", 180) or 0))
+        # 최소 0.4s — 스피커→마이크 잔향이 echo_tail 설정보다 길 수 있음
+        window = max(tail_ms / 1000.0, 0.4)
+        return (time.perf_counter() - ended) < window
+
+    def _tts_blocks_voice_input(self) -> bool:
+        """끼어들기 OFF일 때 TTS(및 직후 echo) 구간은 STT 입력을 받지 않는다."""
+        if getattr(self._voice_prefs, "voice_barge_in_enabled", True):
+            return False
+        if self._tts_active_play or self._tts_busy() or self._tts_queue:
+            return True
+        return self._in_tts_echo_tail()
+
+    def _mic_suppress_for_tts(self, on: bool) -> None:
+        if not self._mic_listen_active:
+            return
+        allow = bool(getattr(self._voice_prefs, "voice_barge_in_enabled", True))
+        self._mic.suppress_speech(
+            on,
+            echo_tail_ms=self._voice_prefs.stt_echo_tail_ms,
+            allow_barge_in=allow,
+        )
 
     def _is_voice_stop_intent(self, text: str) -> bool:
         norm = self._normalize_voice_text(text)
@@ -1953,18 +2035,26 @@ class MainWindow(QMainWindow):
     def _submit_voice_turn(self, text: str, *, session_id: int) -> None:
         body = (text or "").strip()
         if not body:
+            self._cancel_stt_pending_ux()
             return
         # 규칙 기반 상황 명령이 모델보다 먼저다. 전화벨은 LLM 왕복을 기다려 주지 않는다.
         if self._handle_voice_command(body):
             return
         if self._should_dedupe_voice_text(body, session_id):
             self._live_activity.append_instant_line("VOICE duplicate_stt_ignored")
+            self._cancel_stt_pending_ux()
             return
         if self._is_self_echo_transcript(body):
             self._live_activity.append_instant_line("VOICE self_echo_ignored")
+            self._cancel_stt_pending_ux()
+            return
+        if self._tts_blocks_voice_input():
+            self._live_activity.append_instant_line("VOICE tts_echo_blocked")
+            self._cancel_stt_pending_ux()
             return
         if self._is_voice_stop_intent(body):
             self._live_activity.append_instant_line("VOICE stop_intent")
+            self._cancel_stt_pending_ux()
             if self._turn_dispatcher.pending_count():
                 self._turn_dispatcher.clear_pending()
             self._cancel_current_turn(reason="voice_stop_intent", preserve_partial_response=True)
@@ -1973,7 +2063,10 @@ class MainWindow(QMainWindow):
             stripped = self._strip_wake_word(body)
             if not stripped:
                 self._live_activity.append_instant_line("VOICE wake_word_required")
+                self._cancel_stt_pending_ux()
                 self._sync_voice_conversation_state()
+                if self._mic_listen_active:
+                    self._chat.set_user_listening_status("깨우기 말이 필요합니다")
                 return
             body = stripped
         if self._busy:
@@ -1985,6 +2078,12 @@ class MainWindow(QMainWindow):
                     "VOICE turn_queued pending="
                     f"{self._turn_dispatcher.pending_count() + 1}"
                 )
+        elif getattr(self._voice_prefs, "voice_barge_in_enabled", True) and (
+            self._tts_active_play or self._tts_busy() or self._tts_queue
+        ):
+            # LLM은 끝났지만 TTS 재생 중 — 끼어들기로 재생만 끊고 새 turn 진행
+            self._live_activity.append_instant_line("VOICE barge_in")
+            self._cancel_current_turn(reason="voice_barge_in", preserve_partial_response=True)
         self._live_activity.append_instant_line(f"VOICE turn_created text={body[:80]}")
         turn = self._turn_dispatcher.submit(
             text=body,
@@ -1993,6 +2092,7 @@ class MainWindow(QMainWindow):
         )
         if turn is None:
             self._live_activity.append_instant_line("VOICE turn_submit_rejected")
+            self._cancel_stt_pending_ux()
             return
         self._sync_voice_conversation_state()
 
@@ -2246,6 +2346,7 @@ class MainWindow(QMainWindow):
     def _on_chat_mic_clicked(self) -> None:
         if self._mic.state != MicState.OFF and self._mic.state != MicState.ERROR:
             self._stop_mic_listen()
+            self._persist_mic_listen_preferred(False)
             return
         if not self._voice_prefs.stt_enabled:
             self._live_activity.append_instant_line(
@@ -2254,6 +2355,21 @@ class MainWindow(QMainWindow):
             return
         if not self._ensure_voice_runtime():
             return
+        self._start_mic_listen()
+        self._persist_mic_listen_preferred(True)
+
+    def _persist_mic_listen_preferred(self, preferred: bool) -> None:
+        if bool(getattr(self._voice_prefs, "mic_listen_preferred", False)) == preferred:
+            return
+        self._voice_prefs.mic_listen_preferred = preferred
+        try:
+            save_voice_preferences(self._db, self._voice_prefs)
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(
+                f"마이크 상태 저장 실패: {str(exc)[:80]}"
+            )
+
+    def _start_mic_listen(self) -> None:
         self._request_stt_warmup()
         self._stt_queue.runtime_url = self._voice_prefs.voice_runtime_url
         self._stt_queue.model_name = self._voice_prefs.stt_model
@@ -2264,9 +2380,25 @@ class MainWindow(QMainWindow):
             stt_enabled=True,
         )
 
+    def _maybe_restore_mic_listen(self) -> None:
+        """이전 세션에서 켠 마이크 아이콘 상태 복원."""
+        if self._test_mode:
+            return
+        if not getattr(self._voice_prefs, "mic_listen_preferred", False):
+            return
+        if not self._voice_prefs.stt_enabled:
+            return
+        if self._mic.state.is_listening_ui() or self._mic.state == MicState.STARTING:
+            return
+        if not self._ensure_voice_runtime():
+            return
+        self._live_activity.append_instant_line("VOICE mic_listen restored")
+        self._start_mic_listen()
+
     def _stop_mic_listen(self) -> None:
         self._stt_session = self._mic.session_id + 1
         self._stt_queue.clear_pending()
+        self._cancel_stt_pending_ux()
         self._mic.request_off()
         self._chat.cancel_user_listening()
         self._sync_voice_conversation_state()
@@ -2276,8 +2408,11 @@ class MainWindow(QMainWindow):
         self._viz.set_mic_level(level)
 
     def _on_mic_speech_started(self) -> None:
-        if self._tts_active_play or self._tts_busy() or self._tts_queue:
-            self._stop_tts_playback()
+        # 끼어들기 OFF면 TTS를 끊지 않는다 (설정 토글이 실제로 먹히게)
+        if getattr(self._voice_prefs, "voice_barge_in_enabled", True):
+            if self._tts_active_play or self._tts_busy() or self._tts_queue:
+                self._chat.finish_typing()
+                self._stop_tts_playback()
         self._sync_voice_conversation_state()
         now = time.perf_counter()
         if now - self._last_stt_speech_started_ts > 0.8:
@@ -2291,6 +2426,11 @@ class MainWindow(QMainWindow):
     def _on_utterance_ready(self, result: RecordingResult) -> None:
         if not self._mic.state.is_listening_ui():
             self._live_activity.append_instant_line("VOICE utterance_ignored mic_off")
+            return
+        if self._tts_blocks_voice_input():
+            self._live_activity.append_instant_line(
+                "VOICE utterance_ignored tts_no_barge_in"
+            )
             return
         self._live_activity.append_instant_line(
             f"VOICE utterance_ready dur={result.duration_sec:.2f}s rms_peak={result.rms_peak:.4f}"
@@ -2318,7 +2458,11 @@ class MainWindow(QMainWindow):
             return
         self._chat.set_user_listening_status("음성을 인식하고 있습니다")
         self._live_activity.append_instant_line("VOICE stt_started")
+        begin_pending = getattr(self._chat, "begin_stt_pending", None)
+        if callable(begin_pending):
+            begin_pending()
         self._stt_queue.enqueue(result, session_id=self._mic.session_id)
+        self._start_stt_ux_timer()
         self._sync_voice_conversation_state()
 
     def _on_recording_failed(self, err: str) -> None:
@@ -2330,8 +2474,10 @@ class MainWindow(QMainWindow):
     def _on_stt_finished(self, payload: object, session: int = 0) -> None:
         if session != self._mic.session_id:
             self._live_activity.append_instant_line("VOICE stale_session_ignored")
+            self._cancel_stt_pending_ux()
             return
         if not self._mic.state.is_listening_ui():
+            self._cancel_stt_pending_ux()
             return
         data = payload if isinstance(payload, dict) else {}
         text = str(data.get("text") or "").strip()
@@ -2340,16 +2486,24 @@ class MainWindow(QMainWindow):
             if now - self._last_stt_skip_report_ts > 0.8:
                 self._last_stt_skip_report_ts = now
                 self._live_activity.append_instant_line(f"STT 완료(빈값): {data}")
-        if text:
-            self._live_activity.append_instant_line(f"VOICE stt_final text={text[:120]}")
-            self._submit_voice_turn(text, session_id=session)
+            self._cancel_stt_pending_ux()
+            self._sync_voice_conversation_state()
+            if self._mic_listen_active:
+                self._chat.set_user_listening_status("인식되지 않았습니다 — 다시 말해 주세요")
+            return
+        self._live_activity.append_instant_line(f"VOICE stt_final text={text[:120]}")
+        self._stop_stt_ux_timer()
+        self._submit_voice_turn(text, session_id=session)
         self._sync_voice_conversation_state()
 
     def _on_stt_failed(self, err: str, session: int = 0) -> None:
         if session != self._mic.session_id:
             return
         self._live_activity.append_instant_line(f"STT 오류: {err}")
+        self._cancel_stt_pending_ux()
         self._sync_voice_conversation_state()
+        if self._mic_listen_active:
+            self._chat.set_user_listening_status("인식 실패 — 다시 말해 주세요")
 
     def _stop_tts_playback(self) -> None:
         self._tts_job_id += 1
@@ -2574,8 +2728,7 @@ class MainWindow(QMainWindow):
         if self._tts_pcm_job_id != self._tts_job_id:
             return
         self._mark_tts_perf("speaker_open")
-        if self._mic_listen_active:
-            self._mic.suppress_speech(True, echo_tail_ms=self._voice_prefs.stt_echo_tail_ms)
+        self._mic_suppress_for_tts(True)
         self._tts_active_play = True
         self._status_header.set_tts_status("SPEAK")
         if self._tts_active_msg_id:
@@ -2595,8 +2748,7 @@ class MainWindow(QMainWindow):
         self._finish_tts_playback()
 
     def _resume_mic_after_tts(self) -> None:
-        if self._mic_listen_active:
-            self._mic.suppress_speech(False, echo_tail_ms=self._voice_prefs.stt_echo_tail_ms)
+        self._mic_suppress_for_tts(False)
 
     def _maybe_end_pcm_session(self) -> None:
         if (
@@ -2668,8 +2820,7 @@ class MainWindow(QMainWindow):
     def _on_media_playback_state(self, state: object) -> None:
         from PyQt6.QtMultimedia import QMediaPlayer as _MP
         if state == _MP.PlaybackState.PlayingState:
-            if self._mic_listen_active:
-                self._mic.suppress_speech(True, echo_tail_ms=self._voice_prefs.stt_echo_tail_ms)
+            self._mic_suppress_for_tts(True)
             return
         if state == _MP.PlaybackState.StoppedState:
             self._on_media_finished()
@@ -2826,6 +2977,7 @@ class MainWindow(QMainWindow):
         self._viz.hide()
         self._orb_spacer.hide()
         self._left_sidebar.obsidian_detail.reload()
+        self._obsidian_page.reload_graph()
         if self._obsidian_page.current_note:
             self._obsidian_page.show_note(self._obsidian_page.current_note)
 
@@ -3242,6 +3394,7 @@ class MainWindow(QMainWindow):
         self._email_page.show_error(f"발송 실패: {err[:200]}")
 
     # ---- 이메일 전용 아이리스 챗 → Hermes 에이전트 ----
+
     def _on_email_chat_send(self, text: str) -> None:
         text = (text or "").strip()
         if not text:
@@ -3408,7 +3561,10 @@ class MainWindow(QMainWindow):
             "(search thumbnail, og image, or page asset), include it inline as "
             "markdown ![short label](https://...png|jpg|gif|webp). "
             "Iris shows those images in the chat; users can click to enlarge. "
-            "업무 학습(화면 조작 녹화 시작/종료): learning.start / learning.stop. 이미 배운 업무 실행: learning.run. ",
+            "업무 학습(화면 조작 녹화 시작/종료): learning.start / learning.stop. 이미 배운 업무 실행: learning.run. "
+            "위키에 저장 / Iris Wiki에 남기기: iris_invoke wiki.write_user_note "
+            "(title + content, optional source_url). Default path user/inbox/{slug}.md. "
+            "Never claim a wiki save succeeded without that tool returning ok. ",
         )
         if root:
             bits.append(f"Project root: {root}")
@@ -3460,6 +3616,7 @@ class MainWindow(QMainWindow):
         workspace_root: str,
         mode: str,
         source: str,
+        owned: bool | None = None,
     ) -> None:
         root = ""
         if workspace_root:
@@ -3467,11 +3624,13 @@ class MainWindow(QMainWindow):
                 root = str(Path(workspace_root).expanduser().resolve())
             except OSError:
                 root = ""
+        pid_i = int(pid) if pid else None
+        hwnd_i = int(hwnd)
         self._ide_session = IdeSession(
             active=True,
             ide_id=(ide_id or "").strip().lower(),
-            hwnd=int(hwnd),
-            pid=int(pid) if pid else None,
+            hwnd=hwnd_i,
+            pid=pid_i,
             workspace_root=root,
             mode=mode if mode == "workspace" else "welcome",
             source=source if source in ("icon", "chat") else "chat",
@@ -3479,12 +3638,20 @@ class MainWindow(QMainWindow):
         )
         self._ide_hwnd = self._ide_session.hwnd
         self._ide_pid = self._ide_session.pid
+        if owned is None:
+            owned_flag = bool(self._ide_window_owned_by_iris)
+        else:
+            owned_flag = bool(owned)
+        if hwnd_i == self._iris_hwnd() or self._pid_is_self_or_ancestor(pid_i):
+            owned_flag = False
+        self._ide_window_owned_by_iris = owned_flag
 
     def _clear_ide_session(self, reason: str = "") -> None:
         was_companion = self._ui_mode == "ide_companion"
         self._ide_session = IdeSession()
         self._ide_hwnd = None
         self._ide_pid = None
+        self._ide_window_owned_by_iris = False
         if was_companion:
             self._apply_ide_companion_layout(False)
         if reason:
@@ -3687,30 +3854,14 @@ class MainWindow(QMainWindow):
                 workspace_root=session.workspace_root,
                 mode=session.mode,
                 source=source,
+                owned=None,  # 기존 ownership 유지
             )
             self._live_activity.append_instant_line("기존 bound IDE session 재사용")
             return
 
         project_root = self._current_project_root()
         if project_root:
-            hwnd2, pid2, title2 = self._find_workspace_window(ide_id, project_root)
-            if hwnd2 is not None:
-                err2 = self._activate_companion_tile(
-                    int(hwnd2), label=title2 or Path(project_root).name, pid=pid2
-                )
-                if err2:
-                    self._live_activity.append_instant_line(f"타일 배치 실패: {err2}")
-                    return
-                self._bind_ide_session(
-                    ide_id=ide_id,
-                    hwnd=int(hwnd2),
-                    pid=pid2,
-                    workspace_root=project_root,
-                    mode="workspace",
-                    source=source,
-                )
-                self._live_activity.append_instant_line("기존 프로젝트 Cursor 창을 bound session으로 재사용")
-                return
+            # 2c70c97: 개발용 Cursor 가로채기 금지 — 새 창만 (bound 아닌 기존 창 attach 금지)
             err3 = self._open_ide_folder(project_root, new_window=True, source=source)
             if err3:
                 self._live_activity.append_instant_line(f"IDE 프로젝트 열기 실패: {err3}")
@@ -3718,47 +3869,52 @@ class MainWindow(QMainWindow):
 
         hwnd = None
         pid = None
-        if hwnd is None:
-            before = {
-                int(w["hwnd"])
-                for w in list_ide_windows(
-                    ide_id, profile.ide_exe_path, include_untitled=True
-                )
-            }
-            launched_pid, launch_err = launch_ide(
+        before = {
+            int(w["hwnd"])
+            for w in list_ide_windows(
+                ide_id, profile.ide_exe_path, include_untitled=True
+            )
+        }
+        launched_pid, launch_err = launch_ide(
+            ide_id,
+            ide_exe_path=profile.ide_exe_path,
+            ide_cli_path=profile.ide_cli_path,
+            project_root="",
+            new_window=True,
+        )
+        if launch_err:
+            self._live_activity.append_instant_line(f"IDE 실행 실패: {launch_err}")
+            return
+        pid = launched_pid or pid
+        self._live_activity.append_instant_line("IDE 새 창을 기다리는 중…")
+        # Windows: Cursor 기동은 느릴 수 있음 — 최대 ~14s (Mac 3~4s 회귀 금지)
+        deadline = _time.monotonic() + 14.0
+        hwnd = None
+        title = ""
+        while _time.monotonic() < deadline:
+            QApplication.processEvents()
+            hwnd, wait_pid, title = wait_for_new_ide_window(
                 ide_id,
                 ide_exe_path=profile.ide_exe_path,
-                ide_cli_path=profile.ide_cli_path,
-                project_root="",
-                new_window=True,
+                exclude_hwnds=before,
+                title_substr="",
+                timeout_sec=0.45,
             )
-            if launch_err:
-                self._live_activity.append_instant_line(f"IDE 실행 실패: {launch_err}")
-                return
-            pid = launched_pid or pid
-            self._live_activity.append_instant_line("IDE 새 창을 기다리는 중…")
-            # processEvents로 UI 응답 유지하며 짧게 대기
-            deadline = _time.monotonic() + 4.0
-            hwnd = None
-            title = ""
-            while _time.monotonic() < deadline and hwnd is None:
-                QApplication.processEvents()
-                hwnd, wait_pid, title = wait_for_new_ide_window(
-                    ide_id,
-                    ide_exe_path=profile.ide_exe_path,
-                    exclude_hwnds=before,
-                    title_substr="",
-                    timeout_sec=0.35,
-                )
-                if wait_pid:
-                    pid = wait_pid
-                if hwnd is not None and is_cursor_agents_title(title):
+            if wait_pid:
+                pid = wait_pid
+            if hwnd is not None and int(hwnd) not in before:
+                if is_cursor_agents_title(title):
                     hwnd = None
-            if hwnd is None:
-                self._live_activity.append_instant_line(
-                    "IDE 새 창을 찾지 못했습니다. 설정에서 IDE 경로를 확인한 뒤 다시 시도하세요."
-                )
-                return
+                    _time.sleep(0.2)
+                    continue
+                break
+            hwnd = None
+            _time.sleep(0.2)
+        if hwnd is None:
+            self._live_activity.append_instant_line(
+                "IDE 새 창을 찾지 못했습니다. 설정에서 IDE 경로를 확인한 뒤 다시 시도하세요."
+            )
+            return
 
         # 순서 2~3: Companion 레이아웃 + 80:20
         spec = get_ide_spec(ide_id)
@@ -3774,6 +3930,7 @@ class MainWindow(QMainWindow):
             workspace_root="",
             mode="welcome",
             source=source,
+            owned=True,
         )
         self._live_activity.append_instant_line(
             f"IDE Companion: {name}. 바이브코딩은 Iris 채팅으로."
@@ -3802,7 +3959,7 @@ class MainWindow(QMainWindow):
         save_user_profile(self._db, profile)
 
         session = self._get_bound_ide_session(refresh=True)
-        # b) 이미 bound된 session — 같은 workspace면 즉시 타일
+        # 같은 workspace bound면 즉시 타일
         if (
             session is not None
             and session.ide_id == ide_id
@@ -3822,13 +3979,12 @@ class MainWindow(QMainWindow):
                 workspace_root=root_s,
                 mode="workspace",
                 source=source,
+                owned=None,
             )
             return ""
 
-        # c) workspace 제목이 확실한 기존 창
-        if session is None or not (
-            session.ide_id == ide_id and session.hwnd is not None and not new_window
-        ):
+        # new_window=False 일 때만 기존(개발용) Cursor attach — True면 가로채기 금지
+        if not new_window and session is None:
             existing_hwnd, existing_pid, existing_title = self._find_workspace_window(
                 ide_id, root_s
             )
@@ -3847,13 +4003,13 @@ class MainWindow(QMainWindow):
                     workspace_root=root_s,
                     mode="workspace",
                     source=source,
+                    owned=False,
                 )
                 return ""
 
-        # bound + reuse_window: 기존 창에 폴더 주입 후 즉시 타일
         if session is not None and session.ide_id == ide_id and session.hwnd is not None and not new_window:
             try:
-                from iris.automation.ide_input import force_focus_hwnd
+                from iris.automation.ide_input import force_focus_hwnd, get_window_title
 
                 force_focus_hwnd(int(session.hwnd))
             except Exception:
@@ -3868,23 +4024,37 @@ class MainWindow(QMainWindow):
             )
             if launch_err:
                 return launch_err
-            err2 = self._activate_companion_tile(
-                int(session.hwnd),
-                label=root.name,
-                pid=launched_pid or session.pid,
-            )
-            if err2:
-                return err2
-            self._bind_ide_session(
-                ide_id=ide_id,
-                hwnd=int(session.hwnd),
-                pid=launched_pid or session.pid,
-                workspace_root=root_s,
-                mode="workspace",
-                source=source,
-            )
-            return ""
+            deadline = _time.monotonic() + 10.0
+            while _time.monotonic() < deadline:
+                QApplication.processEvents()
+                try:
+                    from iris.automation.ide_input import get_window_title
 
+                    title = (get_window_title(int(session.hwnd)) or "").lower()
+                    if root.name.lower() in title:
+                        err2 = self._activate_companion_tile(
+                            int(session.hwnd),
+                            label=root.name,
+                            pid=launched_pid or session.pid,
+                        )
+                        if err2:
+                            return err2
+                        self._bind_ide_session(
+                            ide_id=ide_id,
+                            hwnd=int(session.hwnd),
+                            pid=launched_pid or session.pid,
+                            workspace_root=root_s,
+                            mode="workspace",
+                            source=source,
+                            owned=None,
+                        )
+                        return ""
+                except Exception:
+                    pass
+                _time.sleep(0.2)
+            return "bound IDE session did not confirm requested workspace"
+
+        # 순서 1: 설정 IDE GUI exe 로 새 창을 먼저 연다 (CLI --new-window 는 Agents에 흡수됨)
         before = {
             int(w["hwnd"])
             for w in list_ide_windows(
@@ -3894,51 +4064,7 @@ class MainWindow(QMainWindow):
         if self._ide_hwnd_alive(self._ide_hwnd):
             before.add(int(self._ide_hwnd))
 
-        self._live_activity.append_instant_line(f"IDE 폴더 여는 중: {root_s}")
-
-        hwnd = None
-        pid = None
-        title = ""
-
-        # Windows 우선 빠른 경로: GUI exe --new-window <folder> 한 방
-        launched_pid, launch_err = open_folder_in_ide(
-            ide_id,
-            root_s,
-            ide_exe_path=profile.ide_exe_path,
-            ide_cli_path=profile.ide_cli_path,
-            new_window=True,
-            reuse_window=False,
-        )
-        if launch_err:
-            self._live_activity.append_instant_line(f"IDE 폴더 열기 실패: {launch_err}")
-            return launch_err
-        pid = launched_pid or self._ide_pid
-
-        deadline = _time.monotonic() + 3.5
-        while _time.monotonic() < deadline and hwnd is None:
-            QApplication.processEvents()
-            hwnd, wait_pid, title = wait_for_new_ide_window(
-                ide_id,
-                ide_exe_path=profile.ide_exe_path,
-                exclude_hwnds=before,
-                title_substr=root.name,
-                timeout_sec=0.3,
-            )
-            if wait_pid:
-                pid = wait_pid
-            if hwnd is not None and is_cursor_agents_title(title):
-                hwnd = None
-
-        # 폴백: 빈 창 → reuse inject (one-shot이 새 hwnd를 안 줄 때만)
-        if hwnd is None and new_window:
-            before2 = {
-                int(w["hwnd"])
-                for w in list_ide_windows(
-                    ide_id, profile.ide_exe_path, include_untitled=True
-                )
-            }
-            if self._ide_hwnd_alive(self._ide_hwnd):
-                before2.add(int(self._ide_hwnd))
+        if new_window:
             launched_pid, launch_err = launch_ide(
                 ide_id,
                 ide_exe_path=profile.ide_exe_path,
@@ -3946,46 +4072,86 @@ class MainWindow(QMainWindow):
                 project_root="",
                 new_window=True,
             )
-            if launch_err:
-                return launch_err
-            pid = launched_pid or pid
-            deadline = _time.monotonic() + 3.5
-            while _time.monotonic() < deadline and hwnd is None:
-                QApplication.processEvents()
-                hwnd, wait_pid, title = wait_for_new_ide_window(
-                    ide_id,
-                    ide_exe_path=profile.ide_exe_path,
-                    exclude_hwnds=before2,
-                    title_substr="",
-                    timeout_sec=0.3,
-                )
-                if wait_pid:
-                    pid = wait_pid
-                if hwnd is not None and is_cursor_agents_title(title):
+        else:
+            launched_pid, launch_err = open_folder_in_ide(
+                ide_id,
+                root_s,
+                ide_exe_path=profile.ide_exe_path,
+                ide_cli_path=profile.ide_cli_path,
+                new_window=False,
+                reuse_window=True,
+            )
+        if launch_err:
+            self._live_activity.append_instant_line(f"IDE 폴더 열기 실패: {launch_err}")
+            return launch_err
+
+        self._live_activity.append_instant_line(f"IDE 새 창 여는 중: {root_s}")
+
+        hwnd = None
+        pid = launched_pid or self._ide_pid
+        title = ""
+        deadline = _time.monotonic() + 14.0
+        while _time.monotonic() < deadline:
+            QApplication.processEvents()
+            hwnd, wait_pid, title = wait_for_new_ide_window(
+                ide_id,
+                ide_exe_path=profile.ide_exe_path,
+                exclude_hwnds=before,
+                title_substr="" if new_window else root.name,
+                timeout_sec=0.5,
+            )
+            if wait_pid:
+                pid = wait_pid
+            if hwnd is not None and int(hwnd) not in before:
+                if is_cursor_agents_title(title):
                     hwnd = None
-            if hwnd is not None:
-                try:
-                    from iris.automation.ide_input import force_focus_hwnd
-
-                    force_focus_hwnd(int(hwnd))
-                    QApplication.processEvents()
-                except Exception:
-                    pass
-                open_folder_in_ide(
-                    ide_id,
-                    root_s,
-                    ide_exe_path=profile.ide_exe_path,
-                    ide_cli_path=profile.ide_cli_path,
-                    new_window=False,
-                    reuse_window=True,
-                )
-                # ponytail: 제목 대기 생략 — bind는 workspace_root로, 타일 즉시.
-
+                    _time.sleep(0.2)
+                    continue
+                break
+            hwnd = None
+            _time.sleep(0.2)
         if hwnd is None:
             return "IDE new window started but window not found"
 
-        # 제목 대기 없이 즉시 Companion 타일 (generic title이어도 session 유지)
-        label = title if title and not is_generic_ide_title(title) else root.name
+        # 새 창 포커스 후 프로젝트 폴더 로드 (reuse)
+        try:
+            from iris.automation.ide_input import force_focus_hwnd
+
+            force_focus_hwnd(int(hwnd))
+            QApplication.processEvents()
+            _time.sleep(0.35)
+        except Exception:
+            pass
+        open_folder_in_ide(
+            ide_id,
+            root_s,
+            ide_exe_path=profile.ide_exe_path,
+            ide_cli_path=profile.ide_cli_path,
+            new_window=False,
+            reuse_window=True,
+        )
+        # 제목에 폴더명이 붙을 때까지 짧게 대기 (없어도 새 창으로 Companion)
+        label_deadline = _time.monotonic() + 4.0
+        while _time.monotonic() < label_deadline:
+            QApplication.processEvents()
+            try:
+                from iris.automation.ide_input import get_window_title
+
+                cur = (get_window_title(int(hwnd)) or "").strip()
+                if cur:
+                    title = cur
+                if root.name.lower() in title.lower():
+                    break
+            except Exception:
+                pass
+            _time.sleep(0.25)
+
+        # 순서 2~3: Companion + 타일
+        label = (
+            title
+            if title and not is_generic_ide_title(title)
+            else root.name
+        )
         err2 = self._activate_companion_tile(int(hwnd), label=label, pid=pid)
         if err2:
             return err2
@@ -3996,13 +4162,113 @@ class MainWindow(QMainWindow):
             workspace_root=root_s,
             mode="workspace",
             source=source,
+            owned=bool(new_window),
         )
         return ""
 
     def _exit_ide_companion(self) -> None:
-        """Companion 해제 + bound session 해제."""
+        """Companion 해제 + Iris가 연 Companion IDE 창 종료(안전) + session 해제."""
+        hwnd = None
+        pid = None
+        session = self._ide_session if getattr(self, "_ide_session", None) else None
+        if session is not None and getattr(session, "active", False) and session.hwnd:
+            hwnd = int(session.hwnd)
+            pid = session.pid
+        elif self._ide_hwnd:
+            hwnd = int(self._ide_hwnd)
+            pid = self._ide_pid
+        closed = self._safe_close_companion_ide(hwnd, pid)
         self._clear_ide_session("companion 종료")
-        self._live_activity.append_instant_line("IDE Companion 종료")
+        self._live_activity.append_instant_line(
+            "IDE Companion 종료" + (" (IDE 창 닫음)" if closed else "")
+        )
+
+    def _iris_hwnd(self) -> int:
+        try:
+            wid = int(self.winId())
+            return wid if wid > 0 else 0
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _pid_is_self_or_ancestor(pid: int | None) -> bool:
+        if not pid or int(pid) <= 0:
+            return False
+        target = int(pid)
+        me = os.getpid()
+        if target == me:
+            return True
+        if sys.platform != "win32":
+            return False
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            TH32CS_SNAPPROCESS = 0x00000002
+
+            class PROCESSENTRY32W(ctypes.Structure):
+                _fields_ = [
+                    ("dwSize", wintypes.DWORD),
+                    ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                    ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", wintypes.WCHAR * 260),
+                ]
+
+            kernel32 = ctypes.windll.kernel32
+            snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+            if snap == -1:
+                return False
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            parents: dict[int, int] = {}
+            try:
+                if not kernel32.Process32FirstW(snap, ctypes.byref(entry)):
+                    return False
+                while True:
+                    parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+                    if not kernel32.Process32NextW(snap, ctypes.byref(entry)):
+                        break
+            finally:
+                kernel32.CloseHandle(snap)
+            cur = me
+            seen: set[int] = set()
+            while cur and cur not in seen:
+                seen.add(cur)
+                parent = parents.get(cur, 0)
+                if parent == target:
+                    return True
+                cur = parent
+            return False
+        except Exception:
+            return False
+
+    def _safe_close_companion_ide(self, hwnd: int | None, pid: int | None) -> bool:
+        """Iris가 연 Companion IDE만 닫는다. Iris/부모 Cursor는 닫지 않음."""
+        if not hwnd or int(hwnd) <= 0:
+            return False
+        hwnd_i = int(hwnd)
+        if hwnd_i == self._iris_hwnd():
+            self._live_activity.append_instant_line("IDE 종료 생략: hwnd가 Iris 창")
+            return False
+        if self._pid_is_self_or_ancestor(pid):
+            self._live_activity.append_instant_line(
+                "IDE 종료 생략: Iris 부모 프로세스 (레이아웃만 복구)"
+            )
+            return False
+        if not self._ide_window_owned_by_iris:
+            self._live_activity.append_instant_line(
+                "IDE 종료 생략: Companion 소유 창 아님 (레이아웃만 복구)"
+            )
+            return False
+        from iris.automation.window_controller import close_window_by_hwnd
+
+        return bool(close_window_by_hwnd(hwnd_i))
 
     def _companion_iris_rect(self):
         return compute_tile_rects(work_area_for(self)).iris
@@ -4115,45 +4381,34 @@ class MainWindow(QMainWindow):
         self._viz.request_sync_orb_anchor("ide_companion_exit")
 
     def _on_mobile_icon(self) -> None:
-        if is_emulator_running():
-            if is_emulator_headless():
-                self._live_activity.append_instant_line(
-                    "Headless Android 에뮬레이터 감지 — 창 있는 인스턴스로 재시작합니다."
-                )
-                try:
-                    proc = restart_emulator_windowed()
-                    self._live_activity.append_instant_line(
-                        f"Android 에뮬레이터 재시작 (PID {proc.pid}) — android-emulator/data"
-                    )
-                except OSError as exc:
-                    self._live_activity.append_instant_line(f"에뮬레이터 재시작 실패: {exc}")
-                    self._notes.try_add_alert(
-                        target_id=0,
-                        category="ERROR",
-                        title="Android 에뮬레이터",
-                        message=str(exc),
-                    )
-                return
-            self._live_activity.append_instant_line("Android 에뮬레이터가 이미 실행 중입니다.")
+        if self._emu_launch_worker is not None and self._emu_launch_worker.isRunning():
+            self._live_activity.append_instant_line("Android 에뮬레이터 기동 중…")
             return
-        try:
-            proc = launch_emulator()
-            self._live_activity.append_instant_line(
-                f"Android 에뮬레이터 시작 (PID {proc.pid}) — 부팅 후 adb 연결"
-            )
+        self._live_activity.append_instant_line("Android 에뮬레이터 시작 요청…")
+        worker = EmulatorLaunchWorker(parent=self)
+        worker.finished_ok.connect(self._on_emu_launch_ok)
+        worker.finished_err.connect(self._on_emu_launch_err)
+        worker.finished.connect(worker.deleteLater)
+        self._emu_launch_worker = worker
+        worker.start()
+
+    def _on_emu_launch_ok(self, message: str) -> None:
+        self._live_activity.append_instant_line(message)
+        if "시작 (PID" in message or "재시작 (PID" in message:
             self._live_activity.append_instant_line(
                 "한글은 에뮬 화면 키보드(IME) 사용. PC 키보드는 영문·키이벤트용."
             )
-        except OSError as exc:
-            self._live_activity.append_instant_line(f"에뮬레이터 시작 실패: {exc}")
-            self._notes.try_add_alert(
-                target_id=0,
-                category="ERROR",
-                title="Android 에뮬레이터",
-                message=str(exc),
-                focus_hint="",
-                event_id=0,
-            )
+
+    def _on_emu_launch_err(self, detail: str) -> None:
+        self._live_activity.append_instant_line(f"에뮬레이터 시작 실패: {detail}")
+        self._notes.try_add_alert(
+            target_id=0,
+            category="ERROR",
+            title="Android 에뮬레이터",
+            message=detail,
+            focus_hint="",
+            event_id=0,
+        )
 
     def _open_user_profile_dialog(self) -> None:
         dlg = UserProfileDialog(self._db, self)
@@ -4215,8 +4470,11 @@ class MainWindow(QMainWindow):
             self._stt_queue.language = self._voice_prefs.stt_language
             if not self._voice_prefs.stt_enabled:
                 self._stop_mic_listen()
+                self._persist_mic_listen_preferred(False)
             else:
                 self._request_stt_warmup()
+                if getattr(self._voice_prefs, "mic_listen_preferred", False):
+                    QTimer.singleShot(300, self._maybe_restore_mic_listen)
             self._pcm_player.set_voice_pitch(self._voice_prefs.tts_pitch_semitones)
             self._apply_alert_voice_prefs()
             self._pcm_player.set_voice_effect(

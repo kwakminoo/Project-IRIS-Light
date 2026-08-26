@@ -236,13 +236,17 @@ class HermesClient:
             "messages": messages,
             "stream": True,
         }
+        headers = {**self._headers(json_body=True)}
+        # urllib HTTP 헤더는 latin-1 — 한글 상태문구/모델라벨이 오면 요청 자체가 터진다
+        try:
+            (model or "").encode("latin-1")
+            headers["X-Hermes-Model"] = model
+        except UnicodeEncodeError:
+            pass
         req = Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
-            headers={
-                **self._headers(json_body=True),
-                "X-Hermes-Model": model,
-            },
+            headers=headers,
             method="POST",
         )
         try:

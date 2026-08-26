@@ -142,3 +142,44 @@ class GitHygieneTests(TestCase):
             "android-emulator/avd/*.ini",
         ):
             self.assertIn(pattern, body, f"{pattern} 가 .gitignore 에 없다")
+
+
+class EmulatorNoConsoleWindowTests(TestCase):
+    """기동/종료/스캔 시 Windows 콘솔 창이 뜨지 않도록 숨김 kwargs를 쓴다."""
+
+    def test_scan_processes_uses_psutil_not_powershell(self) -> None:
+        src = Path(ae.__file__).read_text(encoding="utf-8")
+        scan_src = src.split("def _scan_processes", 1)[1].split("def _is_emulator_binary", 1)[0]
+        code_lines = [
+            ln for ln in scan_src.splitlines() if not ln.lstrip().startswith("#")
+        ]
+        code = "\n".join(code_lines).lower()
+        self.assertIn("psutil", code)
+        self.assertNotIn("powershell", code)
+        self.assertNotIn("tasklist", code)
+
+    def test_force_kill_passes_no_window_kwargs(self) -> None:
+        with mock.patch.object(ae, "_no_window_kwargs", return_value={"creationflags": 0x08000000}):
+            with mock.patch("subprocess.run", return_value=mock.Mock()) as run:
+                self.assertTrue(ae._force_kill_pid(12345))
+        self.assertIn("creationflags", run.call_args.kwargs)
+
+    def test_helper_is_wired_for_launch_and_kill(self) -> None:
+        src = Path(ae.__file__).read_text(encoding="utf-8")
+        self.assertIn("_no_window_kwargs(", src)
+        self.assertIn("CREATE_NEW_PROCESS_GROUP", src)
+        self.assertIn("DETACHED_PROCESS", src)
+        self.assertIn('_GPU_MODE = "host"', src)
+        self.assertIn("_gui_launch_creationflags", src)
+        launch_src = src.split("def launch_emulator", 1)[1].split(
+            "\ndef restart_emulator", 1
+        )[0]
+        code_lines = [
+            ln for ln in launch_src.splitlines() if not ln.lstrip().startswith("#")
+        ]
+        code = "\n".join(code_lines)
+        # GUI 기동 경로에는 CREATE_NO_WINDOW 금지 (검은 화면)
+        self.assertNotIn("CREATE_NO_WINDOW", code)
+        self.assertNotIn("startupinfo", code.lower())
+        self.assertIn("netsimd.exe", src)
+        self.assertGreaterEqual(src.count("**_no_window_kwargs()"), 5)

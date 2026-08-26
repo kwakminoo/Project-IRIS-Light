@@ -140,7 +140,8 @@ def _html_to_text(html_body: str) -> str:
 
 
 def _connect_imap(config: MailServerConfig, address: str, password: str) -> imaplib.IMAP4_SSL:
-    mail = imaplib.IMAP4_SSL(config.imap_host, config.imap_port)
+    # timeout 없으면 부팅 점검(BootChecksWorker)이 이메일 단계에서 영구 대기할 수 있다.
+    mail = imaplib.IMAP4_SSL(config.imap_host, config.imap_port, timeout=30)
     mail.login(address, password)
     return mail
 

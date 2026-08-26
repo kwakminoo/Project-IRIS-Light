@@ -1,9 +1,13 @@
-# dist\IRIS.exe → 바탕화면 / 시작 메뉴 / 프로젝트 루트 바로가기
+# dist\IRIS.exe (thin launcher → 항상 최신 소스) → 바탕화면 / 시작메뉴 / 프로젝트 루트
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $exe = Join-Path $root "dist\IRIS.exe"
+$ico = Join-Path $root "iris\assets\iris_icon.ico"
 if (-not (Test-Path $exe)) {
     throw "dist\IRIS.exe 없음 — 먼저 scripts\build_iris_exe.ps1 실행"
+}
+if (-not (Test-Path $ico)) {
+    throw "iris\assets\iris_icon.ico 없음"
 }
 
 function New-IrisShortcut {
@@ -15,12 +19,14 @@ function New-IrisShortcut {
     }
     $s = $shell.CreateShortcut($LinkPath)
     $s.TargetPath = $exe
+    $s.Arguments = ""
     $s.WorkingDirectory = Split-Path $exe -Parent
     $s.WindowStyle = 1
-    $s.Description = "IRIS"
-    $s.IconLocation = "$exe,0"
+    $s.Description = "IRIS (latest via launcher)"
+    # 투명 아이콘 보장 — exe 내장 + ico 직접 지정
+    $s.IconLocation = "$ico,0"
     $s.Save()
-    Write-Host "Shortcut:" $LinkPath
+    Write-Host "Shortcut:" $LinkPath "->" $exe
 }
 
 New-IrisShortcut (Join-Path ([Environment]::GetFolderPath("Desktop")) "IRIS.lnk")

@@ -54,12 +54,15 @@ def ensure_onnxruntime() -> bool:
         _ORT_INSTALL_TRIED = True
         LOGGER.info("onnxruntime 없음 — pip install 시도")
         try:
+            from iris.system.win_subprocess import no_window_kwargs
+
             subprocess.run(
                 [sys.executable, "-m", "pip", "install", "onnxruntime>=1.17.0"],
                 check=True,
                 timeout=180,
                 capture_output=True,
                 text=True,
+                **no_window_kwargs(),
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("onnxruntime 설치 실패: %s", exc)

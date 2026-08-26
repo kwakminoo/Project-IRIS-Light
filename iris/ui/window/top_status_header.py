@@ -127,17 +127,23 @@ class TopStatusHeader:
         """레거시 호환 — 그리드에 포함되어 빈 위젯 반환."""
         return self._empty_legacy
 
-    def set_app_state(self, state: AppState) -> None:
-        name = state.name
+    def set_app_state(self, state: AppState, *, label: str | None = None) -> None:
+        name = (label or state.name).strip().upper() or state.name
         kind = "idle"
-        if state in (AppState.LISTENING,):
+        if name in ("LISTEN", "LISTENING"):
+            kind = "listening"
+        elif name in ("STT", "LLM", "PROCESSING", "EXECUTING"):
+            kind = "processing"
+        elif name in ("TTS", "RESPONDING"):
+            kind = "responding"
+        elif name in ("ERROR", "ALERTING") or state in (AppState.ERROR, AppState.ALERTING):
+            kind = "error"
+        elif state in (AppState.LISTENING,):
             kind = "listening"
         elif state in (AppState.PROCESSING, AppState.EXECUTING):
             kind = "processing"
         elif state in (AppState.RESPONDING,):
             kind = "responding"
-        elif state in (AppState.ERROR, AppState.ALERTING):
-            kind = "error"
         self._state_chip.set_value(name, dot_kind=kind)
 
     def set_model_name(self, name: str) -> None:

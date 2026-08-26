@@ -24,6 +24,8 @@ SKILL_NAMES = (
     "iris-emulator",
     "iris-mobile-mcp",
     "iris-learning",
+    "iris-calendar",
+    "iris-wiki",
 )
 
 

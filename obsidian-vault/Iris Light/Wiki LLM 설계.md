@@ -1,7 +1,7 @@
 # Iris Wiki — LLM 지식 활용 설계
 
 > Generated-at: 2026-07-30  
-> Status: 설계 (UI 그래프 개선은 동시 반영, 자동 주입·쓰기 API는 단계 구현)
+> Status: 부분 구현 (`wiki.write_user_note` + inbox 저장 + iris-wiki 스킬 반영, 자동 검색 주입은 미구현)
 
 ## 목표
 
@@ -104,7 +104,7 @@ Iris Wiki를 **장기 기억 저장소**로 쓰고, 채팅·Hermes가 **검색 �
 |------|------|
 | A | 그래프 UI는 기존 유지 |
 | B | `wiki.search` + 채팅 전송 시 Top-k 주입 |
-| C | `wiki.write_user_note` MCP + “위키에 저장” |
+| C | `wiki.write_user_note` MCP + “위키에 저장” ← **구현됨** (`inbox/{slug}.md`, skill `iris-wiki`) |
 | D | 일일/세션 요약 자동 노트 |
 
 ---
