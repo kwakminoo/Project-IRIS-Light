@@ -33,6 +33,8 @@ from PyQt6.QtWidgets import (
 )
 
 from iris.audio.pcm_player import PcmPlayer
+from iris.audio.mic_state import MicState
+from iris.audio.microphone_controller import MicrophoneController
 from iris.audio.recorder import AudioRecorder
 from iris.audio.voice_runtime_client import VoiceRuntimeClient, VoiceRuntimeError
 from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
@@ -136,10 +138,31 @@ class LightSettingsSelection:
     learning_prefs: LearningPreferences
 
 
+def _nearest_index(combo, value: float) -> int:
+    """콤보에서 저장된 수치와 가장 가까운 항목. 임의 값이 들어와도 UI가 깨지지 않는다."""
+    try:
+        target = float(value)
+    except (TypeError, ValueError):
+        target = 0.0
+    if combo.count() == 0:
+        return 0
+    return min(
+        range(combo.count()),
+        key=lambda i: abs(float(combo.itemData(i) or 0.0) - target),
+    )
+
+
 class SettingsDialog(QDialog):
     """연결 설정 + 이메일 계정 + IDE Companion."""
 
-    def __init__(self, settings: Settings, db: Database | None = None, parent=None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        db: Database | None = None,
+        parent=None,
+        *,
+        microphone: MicrophoneController | None = None,
+    ) -> None:
         super().__init__(parent)
         configure_hud_dialog(
             self,
@@ -172,9 +195,11 @@ class SettingsDialog(QDialog):
         self._settings_tts_job_id = 0
         self._preview_player = PcmPlayer(self)
         self._ref_preview_player = QSoundEffect(self)
-        self._mic_monitor = AudioRecorder(self)
-        self._mic_monitor.level_changed.connect(self._on_mic_monitor_level)
-        self._mic_monitor.failed.connect(self._on_mic_monitor_failed)
+        self._microphone = microphone
+        if self._microphone is not None:
+            self._microphone.level_changed.connect(self._on_mic_monitor_level)
+            self._microphone.state_changed.connect(self._on_shared_mic_state)
+            self._microphone.error.connect(self._on_mic_monitor_failed)
         self._verify_worker: EmailVerifyWorker | None = None
         self._api_providers: list[ApiProvider] = (
             load_api_providers(db) if db is not None else []
@@ -820,7 +845,7 @@ class SettingsDialog(QDialog):
         lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
             make_hint(
-                "STT는 녹음 후 입력창에 전사 결과만 넣고 자동 전송하지 않습니다. "
+                "STT는 녹음 후 대화 turn으로 바로 전달되고 입력창 초안은 건드리지 않습니다. "
                 "TTS는 기본적으로 IRIS 보이스 프로필을 씁니다 — 기준 음성 파일을 고르지 않아도 됩니다. "
                 "프로필을 끄면 아래 기준 음성/대본을 확정한 뒤에만 동작합니다. "
                 "실제 목소리는 커밋된 IRIS 보이스 프로필(2차 녹음본) + Qwen TTS입니다. "
@@ -867,6 +892,15 @@ class SettingsDialog(QDialog):
         self._voice_stt_device.currentRowChanged.connect(self._on_mic_device_changed)
 
         self._mic_threshold_bar = MicThresholdBar(speech_rms=self._voice_prefs.stt_speech_rms)
+        self._voice_barge_in = QCheckBox("응답 중 끼어들기 허용")
+        self._voice_barge_in.setChecked(self._voice_prefs.voice_barge_in_enabled)
+        self._voice_wake_word_on = QCheckBox("Wake Word 사용")
+        self._voice_wake_word_on.setChecked(self._voice_prefs.voice_wake_word_enabled)
+        self._voice_wake_words = QLineEdit(self._voice_prefs.voice_wake_words or "아이리스,Iris")
+        self._voice_followup_window = QLineEdit(
+            str(max(1, int(self._voice_prefs.voice_followup_window_sec or 20)))
+        )
+        self._voice_followup_window.setPlaceholderText("20")
 
         self._voice_runtime_url = QLineEdit(self._voice_prefs.voice_runtime_url)
         self._voice_runtime_mock = QCheckBox("개발용 mock (무음 WAV — Qwen TTS 사용 안 함)")
@@ -914,6 +948,55 @@ class SettingsDialog(QDialog):
             ),
         )
         self._voice_ai_voice_fx_intensity.setCurrentIndex(fx_idx)
+        self._voice_pitch = QComboBox()
+        for label, value in (
+            ("원래대로", 0.0),
+            ("살짝 높게", 1.5),
+            ("높게", 3.0),
+            ("많이 높게", 4.5),
+        ):
+            self._voice_pitch.addItem(label, value)
+        self._voice_pitch.setCurrentIndex(
+            _nearest_index(self._voice_pitch, self._voice_prefs.tts_pitch_semitones)
+        )
+        self._voice_pitch.setToolTip(
+            "재생 단계에서만 톤을 올립니다. 보이스 프로필(음색)은 바뀌지 않으므로"
+            " 다시 빌드할 필요가 없습니다."
+        )
+
+        self._voice_alert_pitch = QComboBox()
+        for label, value in (
+            ("없음", 0.0),
+            ("조금", 1.0),
+            ("보통", 2.0),
+            ("많이", 3.5),
+        ):
+            self._voice_alert_pitch.addItem(label, value)
+        self._voice_alert_pitch.setCurrentIndex(
+            _nearest_index(self._voice_alert_pitch, self._voice_prefs.tts_alert_pitch_boost)
+        )
+        self._voice_alert_pitch.setToolTip(
+            "알림·전화를 읽을 때 기본 톤 위에 더 얹는 값입니다. 평소 말투와 구분됩니다."
+        )
+
+        self._voice_alert_speech = QCheckBox("알림을 음성으로 읽어 주기")
+        self._voice_alert_speech.setChecked(self._voice_prefs.alert_speech_enabled)
+        self._voice_call_speech = QCheckBox("전화가 오면 음성으로 알려 주기 (Android/adb)")
+        self._voice_call_speech.setChecked(self._voice_prefs.call_speech_enabled)
+        self._voice_call_speech.setToolTip(
+            "연결된 Android 기기의 수신 전화를 감지해 발신자를 읽어 줍니다."
+        )
+        self._voice_command_rules = QCheckBox('상황별 음성 명령 ("전화 받아줘")')
+        self._voice_command_rules.setChecked(self._voice_prefs.voice_command_rules_enabled)
+        self._voice_command_rules.setToolTip(
+            "전화가 울리는 동안 이 문장들은 모델을 거치지 않고 즉시 처리됩니다."
+        )
+        self._voice_hint_visible = QCheckBox("사이드바에 상황별 문장 힌트 표시")
+        self._voice_hint_visible.setChecked(self._voice_prefs.voice_hint_visible)
+        self._voice_hint_visible.setToolTip(
+            "지금 말하면 되는 문장을 회색으로 보여 줍니다. 눌러도 같은 동작을 합니다."
+        )
+
         self._voice_profile_status = QLabel(self._voice_profile_summary())
         self._voice_profile_status.setWordWrap(True)
 
@@ -972,6 +1055,10 @@ class SettingsDialog(QDialog):
         form.addRow(make_form_label(""), self._voice_stt_on)
         form.addRow(make_form_label("STT 모델"), self._voice_stt_model)
         form.addRow(make_form_label("STT 언어"), self._voice_stt_lang)
+        form.addRow(make_form_label(""), self._voice_barge_in)
+        form.addRow(make_form_label(""), self._voice_wake_word_on)
+        form.addRow(make_form_label("Wake Words"), self._voice_wake_words)
+        form.addRow(make_form_label("Follow-up 창(초)"), self._voice_followup_window)
         form.addRow(make_form_label("Runtime URL"), self._voice_runtime_url)
         form.addRow(make_form_label(""), self._voice_runtime_mock)
         form.addRow(make_form_label(""), self._voice_tts_on)
@@ -985,6 +1072,12 @@ class SettingsDialog(QDialog):
         form.addRow(make_form_label(""), self._voice_tone_routing)
         form.addRow(make_form_label(""), self._voice_ai_voice_fx)
         form.addRow(make_form_label("효과 강도"), self._voice_ai_voice_fx_intensity)
+        form.addRow(make_form_label("목소리 톤"), self._voice_pitch)
+        form.addRow(make_form_label("알림 톤 추가"), self._voice_alert_pitch)
+        form.addRow(make_form_label(""), self._voice_alert_speech)
+        form.addRow(make_form_label(""), self._voice_call_speech)
+        form.addRow(make_form_label(""), self._voice_command_rules)
+        form.addRow(make_form_label(""), self._voice_hint_visible)
         form.addRow(make_form_label("보이스 프로필"), self._voice_profile_status)
         form.addRow(make_form_label("녹음 폴더"), folder_row)
         form.addRow(make_form_label("선택된 참고 음성"), pick_row)
@@ -1029,7 +1122,7 @@ class SettingsDialog(QDialog):
         self._voice_status.setWordWrap(True)
         lay.addWidget(self._voice_status)
         self._refresh_voice_recommendations_from_runtime(silent=True)
-        QTimer.singleShot(0, self._restart_mic_monitor)
+        QTimer.singleShot(0, self._sync_mic_meter)
         return box
 
     def _selected_mic_device_id(self) -> str:
@@ -1039,10 +1132,11 @@ class SettingsDialog(QDialog):
         return str(item.data(Qt.ItemDataRole.UserRole) or "")
 
     def _on_mic_device_changed(self, _row: int) -> None:
-        self._restart_mic_monitor()
+        self._sync_mic_meter()
+        if self._microphone is not None:
+            self._microphone.set_device(self._selected_mic_device_id())
 
-    def _restart_mic_monitor(self) -> None:
-        self._mic_monitor.stop_monitor()
+    def _sync_mic_meter(self) -> None:
         device_id = self._selected_mic_device_id()
         label = "기본 장치"
         item = self._voice_stt_device.currentItem()
@@ -1051,28 +1145,47 @@ class SettingsDialog(QDialog):
         self._voice_connected_mic.setText(
             f"선택된 마이크: {label}  |  시스템 기본: {AudioRecorder.default_input_label()}"
         )
-        self._mic_monitor.start_monitor(device_id=device_id, sample_rate=16000, channels=1)
+        del device_id
+        if self._microphone is None or not self._microphone.state.is_listening_ui():
+            self._mic_threshold_bar.set_inactive()
+
+    def _on_shared_mic_state(self, state: object) -> None:
+        mic_state = state if isinstance(state, MicState) else MicState.OFF
+        if not mic_state.is_listening_ui():
+            self._mic_threshold_bar.set_inactive()
 
     def _on_mic_monitor_level(self, level: float) -> None:
+        if self._microphone is not None and not self._microphone.state.is_listening_ui():
+            self._mic_threshold_bar.set_inactive()
+            return
         self._mic_threshold_bar.set_level(level)
 
     def _on_mic_monitor_failed(self, err: str) -> None:
-        self._mic_threshold_bar.set_status(f"마이크 모니터 오류: {err}")
+        self._mic_threshold_bar.set_status(f"마이크 오류: {err}")
 
     def _stop_mic_monitor(self) -> None:
-        self._mic_monitor.stop_monitor()
+        return
 
     def _current_voice_prefs_from_ui(self) -> VoicePreferences:
         stt_model = self._voice_stt_model.currentData()
         stt_lang = self._voice_stt_lang.currentData()
         device_id = self._selected_mic_device_id()
         tts_mode = self._voice_tts_mode.currentData()
+        try:
+            followup_window_sec = max(1, int(self._voice_followup_window.text().strip() or "20"))
+        except (TypeError, ValueError):
+            followup_window_sec = 20
         return VoicePreferences(
             stt_enabled=self._voice_stt_on.isChecked(),
             stt_model=str(stt_model or "small"),
             stt_language=str(stt_lang or "ko"),
             stt_device_id=str(device_id or ""),
             stt_speech_rms=self._mic_threshold_bar.speech_rms(),
+            stt_echo_tail_ms=self._voice_prefs.stt_echo_tail_ms,
+            voice_barge_in_enabled=self._voice_barge_in.isChecked(),
+            voice_wake_word_enabled=self._voice_wake_word_on.isChecked(),
+            voice_wake_words=self._voice_wake_words.text().strip() or "아이리스,Iris",
+            voice_followup_window_sec=followup_window_sec,
             tts_enabled=self._voice_tts_on.isChecked(),
             tts_mode=str(tts_mode or "off"),
             tts_model=self._voice_tts_model.currentText().strip() or "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
@@ -1086,6 +1199,12 @@ class SettingsDialog(QDialog):
             tts_ai_voice_fx_intensity=float(
                 self._voice_ai_voice_fx_intensity.currentData() or 0.75
             ),
+            tts_pitch_semitones=float(self._voice_pitch.currentData() or 0.0),
+            tts_alert_pitch_boost=float(self._voice_alert_pitch.currentData() or 0.0),
+            alert_speech_enabled=self._voice_alert_speech.isChecked(),
+            call_speech_enabled=self._voice_call_speech.isChecked(),
+            voice_command_rules_enabled=self._voice_command_rules.isChecked(),
+            voice_hint_visible=self._voice_hint_visible.isChecked(),
             tts_engine=str(self._voice_tts_engine.currentData() or "qwen"),
             tts_custom_speaker=self._voice_custom_speaker.text().strip() or "iris",
             tts_custom_model_path=self._voice_custom_model.text().strip(),
@@ -1301,6 +1420,7 @@ class SettingsDialog(QDialog):
         if not payload.get("running"):
             self._on_settings_tts_runtime_failed("Voice runtime을 시작하지 못했습니다.", job_id)
             return
+        self._preview_player.set_voice_pitch(prefs.tts_pitch_semitones)
         self._preview_player.set_voice_effect(
             enabled=prefs.tts_ai_voice_fx_enabled,
             intensity=prefs.tts_ai_voice_fx_intensity,
@@ -1971,6 +2091,8 @@ class SettingsDialog(QDialog):
             self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
             return
         self._stop_mic_monitor()
+        if self._microphone is not None:
+            self._microphone.set_device(self._voice_prefs.stt_device_id)
         super().reject()
 
     def accept(self) -> None:

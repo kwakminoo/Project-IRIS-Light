@@ -1,0 +1,58 @@
+{
+  "trajectory": [
+    {
+      "step_idx": 1,
+      "caption": {
+        "observation": "The user is on the desktop (explorer.exe).",
+        "think": "I need to launch the web browser to start the task.",
+        "action": "click @(752.0,1051.0)",
+        "expectation": "Google Chrome opens and becomes the active window."
+      }
+    },
+    {
+      "step_idx": 2,
+      "caption": {
+        "observation": "The Chrome browser is open.",
+        "think": "I need to navigate to a specific search or page.",
+        "action": "click @(697.0,633.0)",
+        "expectation": "The cursor focuses on the search bar or a specific link."
+      }
+    },
+    {
+      "step_idx": 3,
+      "caption": {
+        "observation": "The browser is active.",
+        "think": "I will access the menu or navigation options.",
+        "action": "click @(275.0,95.0)",
+        "expectation": "A dropdown menu or navigation panel opens."
+      }
+    },
+    {
+      "step_idx": 4,
+      "caption": {
+        "observation": "The menu or page is open.",
+        "think": "I need to select a specific option or link from the page.",
+        "action": "click @(1196.0,512.0)",
+        "expectation": "The requested page or section loads."
+      }
+    },
+    {
+      "step_idx": 5,
+      "caption": {
+        "observation": "The target page is loaded.",
+        "think": "I need to browse through the content to find specific information.",
+        "action": "scroll @(1356.0,712.0)",
+        "expectation": "The page scrolls down to reveal more content."
+      }
+    },
+    {
+      "step_idx": 6,
+      "caption": {
+        "observation": "Continuing to browse the page.",
+        "think": "I need to scroll further down to reach the bottom or a specific section.",
+        "action": "scroll @(1629.0,698.0)",
+        "expectation": "The page continues to scroll down to the desired section."
+      }
+    }
+  ]
+}

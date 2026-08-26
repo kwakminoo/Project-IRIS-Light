@@ -27,6 +27,10 @@ class VoicePrefsTests(TestCase):
                 stt_model="base",
                 stt_language="auto",
                 stt_speech_rms=0.035,
+                voice_barge_in_enabled=False,
+                voice_wake_word_enabled=True,
+                voice_wake_words="아이리스,Iris",
+                voice_followup_window_sec=15,
                 tts_enabled=True,
                 tts_mode="manual",
                 tts_reference_audio=r"C:\tmp\ref.wav",
@@ -42,6 +46,10 @@ class VoicePrefsTests(TestCase):
             self.assertEqual(loaded.stt_model, "base")
             self.assertEqual(loaded.stt_language, "auto")
             self.assertAlmostEqual(loaded.stt_speech_rms, 0.035)
+            self.assertFalse(loaded.voice_barge_in_enabled)
+            self.assertTrue(loaded.voice_wake_word_enabled)
+            self.assertEqual(loaded.voice_wake_words, "아이리스,Iris")
+            self.assertEqual(loaded.voice_followup_window_sec, 15)
             self.assertEqual(loaded.tts_mode, "manual")
             self.assertEqual(loaded.tts_reference_text, "hello")
             self.assertEqual(loaded.tts_engine, "qwen")

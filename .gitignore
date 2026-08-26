@@ -26,6 +26,10 @@ ENV/
 # Test / runtime artifacts
 .iris_light_test_tmp/
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
+tmp_*.db*
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -47,6 +51,15 @@ android-emulator/avd/**/multiinstance.lock
 android-emulator/avd/**/emu-launch-params.txt
 android-emulator/avd/**/snapshots/
 *.lock
+# 기동할 때마다 다시 생성되는 파일들. 커밋하면 만든 사람 PC의 SDK/AVD
+# 절대경로가 박힌 채 굳어서, 다른 PC에서 clone 했을 때 에뮬이 뜨지 않는다.
+android-emulator/avd/**/hardware-qemu.ini
+android-emulator/avd/**/emulator-user.ini
+android-emulator/avd/**/quickbootChoice.ini
+android-emulator/avd/**/read-snapshot.txt
+android-emulator/avd/**/version_num.cache
+# 포인터 .ini 도 절대경로를 담는다. ensure_avd() 가 이 PC 기준으로 생성한다.
+android-emulator/avd/*.ini
 
 # Voice data / generated assets
 voice_recordings/

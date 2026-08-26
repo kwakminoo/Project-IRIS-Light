@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import sys
 from pathlib import Path
@@ -20,12 +21,15 @@ from PyQt6.QtWidgets import (
 )
 from iris.assets.branding import APP_DISPLAY_NAME, load_app_icon
 from iris.audio.pcm_player import PcmPlayer
-from iris.audio.recorder import AudioRecorder, RecordingResult
+from iris.audio.mic_state import MicState
+from iris.audio.microphone_controller import MicrophoneController
+from iris.audio.recorder import RecordingResult
+from iris.audio.stt_queue import SttJobQueue
 from iris.audio.text_normalizer import load_pronunciation_map, split_tts_sentences
 from iris.audio.tts_pipeline import TtsSentencePump, should_start_tts_synth
 from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
 from iris.audio.workers import (
-    STTTranscriptionWorker,
+    STTWarmupWorker,
     TTSRuntimeBootstrapWorker,
     TTSStreamWorker,
     TTSWarmupWorker,
@@ -49,6 +53,15 @@ from iris.storage.api_providers import (
 )
 from iris.storage.email_accounts import EmailAccount, find_account, load_email_accounts
 from iris.monitoring.notification_policy import NotificationPolicy
+from iris.audio.alert_speech import (
+    AlertPriority,
+    AlertSpeaker,
+    call_announcement,
+    notification_announcement,
+)
+from iris.monitoring.call_monitor import CallMonitorService
+from iris.runtime import UserTurn, UserTurnDispatcher, UserTurnSource
+from iris.runtime.voice_intents import IntentContext, VoiceIntent, match_intent
 from iris.storage.database import Database
 from iris.storage.model_prefs import load_selected_model, save_selected_model
 from iris.storage.user_profile import load_user_profile, save_user_profile
@@ -189,7 +202,8 @@ class MainWindow(QMainWindow):
         self._last_assistant_text = ""
         self._pending_local_vibe_prompt = ""
         self._chat_worker: QThread | None = None
-        self._stt_worker: STTTranscriptionWorker | None = None
+        self._stt_warmup_worker: STTWarmupWorker | None = None
+        self._stt_warmup_model = ""
         self._tts_worker: TTSStreamWorker | None = None
         self._tts_cancelled_workers: list[TTSStreamWorker] = []
         self._tts_warmup_worker: TTSWarmupWorker | None = None
@@ -270,22 +284,42 @@ class MainWindow(QMainWindow):
         if self._saved_model:
             self._settings.ollama_model = self._saved_model
             self._settings.model_name = self._saved_model
+        self._turn_dispatcher = UserTurnDispatcher(self)
+        self._turn_dispatcher.turn_ready.connect(self._dispatch_user_turn)
+        self._turn_dispatcher.turn_queued.connect(self._on_turn_queued)
+        self._turn_dispatcher.turn_dropped.connect(self._on_turn_dropped)
+        self._active_turn_id = ""
+        self._active_turn_source = UserTurnSource.KEYBOARD
+        self._recent_voice_turns: deque[tuple[float, int | None, str]] = deque()
+        self._voice_followup_deadline = 0.0
+        self._last_tts_playback_ended_at = 0.0
         self._voice_runtime = VoiceRuntimeProcessManager(
             base_url=self._voice_prefs.voice_runtime_url,
             iris_root=Path(__file__).resolve().parents[3],
         )
         self._mic_listen_active = False
-        # ponytail: STT QThread는 중단이 약함 — 끄기 시 세션만 올리면 늦은 콜백 무시
         self._stt_session = 0
-        self._recorder = AudioRecorder(self)
-        self._recorder.level_changed.connect(self._on_recorder_level)
-        self._recorder.recording_started.connect(self._on_recording_started)
-        self._recorder.recording_stopped.connect(self._on_recording_stopped)
-        self._recorder.recording_cancelled.connect(self._on_recording_cancelled)
-        self._recorder.utterance_ready.connect(self._on_utterance_ready)
-        self._recorder.failed.connect(self._on_recording_failed)
+        self._last_stt_skip_report_ts = 0.0
+        self._last_stt_speech_started_ts = 0.0
+        self._mic = MicrophoneController(self)
+        self._mic.state_changed.connect(self._on_mic_state)
+        self._mic.level_changed.connect(self._on_recorder_level)
+        self._mic.utterance_ready.connect(self._on_utterance_ready)
+        self._mic.utterance_dropped.connect(self._on_utterance_dropped)
+        self._mic.error.connect(self._on_recording_failed)
+        self._stt_queue = SttJobQueue(
+            self,
+            runtime_url=self._voice_prefs.voice_runtime_url,
+            model_name=self._voice_prefs.stt_model,
+            language=self._voice_prefs.stt_language,
+        )
+        self._stt_queue.finished_ok.connect(self._on_stt_finished)
+        self._stt_queue.failed.connect(self._on_stt_failed)
+        self._stt_queue.perf.connect(self._on_stt_perf)
+        self._stt_queue.dropped.connect(self._on_stt_job_dropped)
         self._pcm_player = PcmPlayer(self)
         self._pcm_player.set_volume(self._voice_prefs.tts_volume)
+        self._pcm_player.set_voice_pitch(self._voice_prefs.tts_pitch_semitones)
         self._pcm_player.set_voice_effect(
             enabled=self._voice_prefs.tts_ai_voice_fx_enabled,
             intensity=self._voice_prefs.tts_ai_voice_fx_intensity,
@@ -293,6 +327,8 @@ class MainWindow(QMainWindow):
         self._pcm_player.speakers_opened.connect(self._on_pcm_speakers_opened)
         self._pcm_player.drained.connect(self._on_pcm_drained)
         self._pcm_player.failed.connect(self._on_pcm_failed)
+        self._mic.set_echo_source(self._pcm_player)
+        self._mic.speech_started.connect(self._on_mic_speech_started)
         self._media_audio_out = QAudioOutput(self)
         self._media_audio_out.setVolume(self._voice_prefs.tts_volume)
         self._media_player = QMediaPlayer(self)
@@ -358,7 +394,7 @@ class MainWindow(QMainWindow):
         status_header.set_model_name(
             self._settings.model_name or self._settings.ollama_model or "(unset)"
         )
-        status_header.set_tts_status("OFF")
+        status_header.set_tts_status(self._tts_idle_status())
         status_header.set_app_state(AppState.IDLE)
         self._drag.place_status_rows(
             status_header.status_widget(),
@@ -475,6 +511,27 @@ class MainWindow(QMainWindow):
         self._pinned_monitor.report.connect(self._on_pinned_report)
         self._pinned_monitor.start()
 
+        # 알림·전화 낭독 — 채팅 TTS와 분리된 저지연 경로
+        self._alert_speaker = AlertSpeaker(
+            self,
+            runtime_url_provider=lambda: self._voice_prefs.voice_runtime_url,
+            payload_provider=self._tts_stream_payload,
+            volume_provider=lambda: self._voice_prefs.tts_volume,
+        )
+        self._alert_speaker.failed.connect(
+            lambda err: self._live_activity.append_instant_line(f"ALERT 낭독 실패: {err}")
+        )
+        self._apply_alert_voice_prefs()
+
+        # 수신 전화 감시 (adb). 에뮬레이터가 없으면 스스로 물러선다.
+        self._call_monitor = CallMonitorService(
+            self, enabled=not self._test_mode and self._voice_prefs.call_speech_enabled
+        )
+        self._call_monitor.ringing_started.connect(self._on_call_ringing)
+        self._call_monitor.call_answered.connect(self._on_call_answered)
+        self._call_monitor.call_ended.connect(self._on_call_ended)
+        self._call_monitor.start()
+
         self._notif_policy = NotificationPolicy(self._db)
         self._notes = NotificationPanel(policy=self._notif_policy)
         self._notes.setMinimumHeight(120)
@@ -485,6 +542,10 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setCollapsible(0, False)
+
+        self._voice_hint = self._left_sidebar.utility.voice_hint
+        self._voice_hint.set_enabled_by_pref(self._voice_prefs.voice_hint_visible)
+        self._voice_hint.prompt_activated.connect(self._on_voice_hint_clicked)
 
         actions = self._left_sidebar.utility.actions
         actions.set_default_callback(self._show_assistant_workspace)
@@ -972,6 +1033,125 @@ class MainWindow(QMainWindow):
         if count:
             self._pinned_monitor.analyze_soon()
 
+    # ------------------------------------------------------------------
+    # 알림·전화 음성
+    # ------------------------------------------------------------------
+
+    def _apply_alert_voice_prefs(self) -> None:
+        """알림 낭독 톤 = 기본 재생 톤 + 알림 부스트."""
+        speaker = getattr(self, "_alert_speaker", None)
+        if speaker is None:
+            return
+        speaker.set_pitch(
+            self._voice_prefs.tts_pitch_semitones + self._voice_prefs.tts_alert_pitch_boost
+        )
+
+    def _voice_context(self) -> IntentContext:
+        """지금 어떤 상황별 명령이 유효한지."""
+        monitor = getattr(self, "_call_monitor", None)
+        if monitor is not None:
+            if monitor.is_ringing():
+                return IntentContext.CALL_RINGING
+            if monitor.is_in_call():
+                return IntentContext.CALL_ACTIVE
+        speaker = getattr(self, "_alert_speaker", None)
+        if speaker is not None and speaker.last_text:
+            return IntentContext.ALERT_PENDING
+        return IntentContext.IDLE
+
+    def _refresh_voice_hint(self, caption: str = "") -> None:
+        hint = getattr(self, "_voice_hint", None)
+        if hint is None:
+            return
+        hint.set_enabled_by_pref(self._voice_prefs.voice_hint_visible)
+        hint.set_context(self._voice_context(), caption=caption)
+
+    def _speak_alert(self, text: str, *, priority: int = AlertPriority.NOTICE) -> None:
+        if not self._voice_prefs.alert_speech_enabled or not self._voice_prefs.tts_enabled:
+            return
+        speaker = getattr(self, "_alert_speaker", None)
+        if speaker is None:
+            return
+        self._apply_alert_voice_prefs()
+        speaker.speak(text, priority=priority)
+
+    def _on_call_ringing(self, display_name: str, number: str) -> None:
+        self._live_activity.append_instant_line(f"CALL ringing — {display_name}")
+        self._refresh_voice_hint(caption=f"수신 전화 · {display_name}")
+        if self._voice_prefs.call_speech_enabled:
+            self._speak_alert(
+                call_announcement(display_name, number=number),
+                priority=AlertPriority.CALL,
+            )
+
+    def _on_call_answered(self) -> None:
+        self._refresh_voice_hint(caption="통화 중")
+        speaker = getattr(self, "_alert_speaker", None)
+        if speaker is not None:
+            speaker.stop()  # 통화가 연결되면 안내를 계속 떠들면 안 된다
+
+    def _on_call_ended(self) -> None:
+        self._refresh_voice_hint()
+        speaker = getattr(self, "_alert_speaker", None)
+        if speaker is not None:
+            speaker.stop()
+
+    def _on_voice_hint_clicked(self, intent_value: str) -> None:
+        """말하기 어려운 사용자를 위한 대체 경로 — 문장을 누르면 같은 동작."""
+        try:
+            intent = VoiceIntent(intent_value)
+        except ValueError:
+            return
+        self._run_voice_intent(intent, source="click")
+
+    def _handle_voice_command(self, text: str) -> bool:
+        """STT 결과가 상황별 규칙 명령이면 여기서 끝낸다. True면 모델로 안 보낸다."""
+        if not self._voice_prefs.voice_command_rules_enabled:
+            return False
+        match = match_intent(text, context=self._voice_context())
+        if match is None:
+            return False
+        self._live_activity.append_instant_line(
+            f"VOICE intent={match.intent.value} rule={match.rule} conf={match.confidence}"
+        )
+        return self._run_voice_intent(match.intent, source="voice")
+
+    def _run_voice_intent(self, intent: VoiceIntent, *, source: str) -> bool:
+        monitor = getattr(self, "_call_monitor", None)
+        speaker = getattr(self, "_alert_speaker", None)
+
+        if intent in (VoiceIntent.ANSWER_CALL, VoiceIntent.REJECT_CALL, VoiceIntent.HANG_UP):
+            if monitor is None:
+                return False
+            if speaker is not None:
+                speaker.stop()  # 통화 조작 중에 안내가 겹치면 안 된다
+            if intent is VoiceIntent.ANSWER_CALL:
+                ok, message = monitor.answer()
+            else:
+                ok, message = monitor.reject()
+            self._live_activity.append_instant_line(f"CALL {intent.value}({source}) {message}")
+            if not ok:
+                self._speak_alert(message, priority=AlertPriority.CALL)
+            self._refresh_voice_hint()
+            return True
+
+        if intent is VoiceIntent.SILENCE_ALERT:
+            if speaker is not None:
+                speaker.stop()
+            if monitor is not None and monitor.is_ringing():
+                monitor.silence()
+            self._refresh_voice_hint()
+            return True
+
+        if intent in (VoiceIntent.READ_ALERT, VoiceIntent.REPEAT_ALERT):
+            if speaker is not None and speaker.last_text:
+                self._apply_alert_voice_prefs()
+                speaker.repeat()
+                return True
+            return False
+
+        return False
+
     def _on_pinned_report(self, title: str, category: str, headline: str, detail: str) -> None:
         """감시 중인 창의 상태가 주의 필요로 바뀐 순간 — 알림 패널에 띄운다."""
         suppressed = None
@@ -990,6 +1170,8 @@ class MainWindow(QMainWindow):
             focus_hint=title,
             event_id=0,
         )
+        self._speak_alert(notification_announcement(headline, title[:40]))
+        self._refresh_voice_hint()
         try:
             self._notif_policy.mark_shown(0, category)
             self._notif_policy.log_notification(0, 0, category, title, detail or headline)
@@ -1019,14 +1201,28 @@ class MainWindow(QMainWindow):
             self._live_activity.append_instant_line(f"MCP: {text}")
 
     def _on_user_text(self, text: str) -> None:
-        text = (text or "").strip()
+        self._turn_dispatcher.submit(text=text, source=UserTurnSource.KEYBOARD)
+
+    def _dispatch_user_turn(self, turn: object) -> None:
+        if not isinstance(turn, UserTurn):
+            return
+        self._execute_user_turn(turn)
+
+    def _execute_user_turn(self, turn: UserTurn) -> None:
+        text = (turn.text or "").strip()
         if not text:
+            self._turn_dispatcher.finish_active_turn(turn.id)
             return
-        if self._busy:
-            self._live_activity.append_instant_line("Busy — wait for the current reply.")
-            return
+        self._active_turn_id = turn.id
+        self._active_turn_source = turn.source
+        if turn.source == UserTurnSource.VOICE:
+            self._live_activity.append_instant_line(
+                f"VOICE turn_dispatched source={turn.source.value} queued={self._turn_dispatcher.pending_count()}"
+            )
+        text = (text or "").strip()
         # IDE 아이콘과 동일 동작 — 모델이 도구를 안 써도 Companion이 켜지게
         if self._try_local_ide_control(text):
+            self._finish_current_turn(turn.id, open_followup=False)
             return
         model = self._chat.current_model()
         if not model:
@@ -1035,6 +1231,7 @@ class MainWindow(QMainWindow):
                 "사용할 모델을 선택해 주세요. Ollama가 실행 중인지 확인한 뒤 설정을 열어 보세요.",
             )
             self._refresh_models()
+            self._finish_current_turn(turn.id, open_followup=False)
             return
         if self._use_hermes_backend() and not self._hermes_online:
             self._live_activity.append_instant_line(
@@ -1052,7 +1249,7 @@ class MainWindow(QMainWindow):
         self._api_fallback_pending = False
         self._api_fallback_model = ""
         self._chat.set_generating(True)
-        self._state.set_state(AppState.PROCESSING)
+        self._sync_voice_conversation_state()
 
         try:
             from iris.system.project_ops import is_code_reveal_request
@@ -1079,7 +1276,7 @@ class MainWindow(QMainWindow):
                     "Iris",
                     "선택한 API가 설정에서 삭제되었거나 Base URL이 없습니다. 설정을 확인하세요.",
                 )
-                self._state.set_state(AppState.IDLE)
+                self._finish_current_turn(turn.id, open_followup=False)
                 return
             self._api_fallback_pending = True
             self._api_fallback_model = api_model
@@ -1091,12 +1288,7 @@ class MainWindow(QMainWindow):
                 display_model=f"{provider.name}/{api_model}",
                 parent=self,
             )
-            self._chat_worker = worker
-            worker.connecting.connect(self._on_chat_connecting)
-            worker.content_chunk.connect(self._on_content_chunk)
-            worker.finished_ok.connect(self._on_chat_finished)
-            worker.failed.connect(self._on_chat_failed)
-            worker.start()
+            self._start_chat_worker(worker, turn.id)
             return
 
         if self._use_hermes_backend():
@@ -1108,13 +1300,7 @@ class MainWindow(QMainWindow):
                 command=self._settings.hermes_command,
                 parent=self,
             )
-            self._chat_worker = worker
-            worker.connecting.connect(self._on_chat_connecting)
-            worker.tool_progress.connect(self._on_hermes_tool_progress)
-            worker.content_chunk.connect(self._on_content_chunk)
-            worker.finished_ok.connect(self._on_chat_finished)
-            worker.failed.connect(self._on_chat_failed)
-            worker.start()
+            self._start_chat_worker(worker, turn.id)
             return
 
         worker = OllamaChatWorker(
@@ -1124,19 +1310,50 @@ class MainWindow(QMainWindow):
             think=True,
             parent=self,
         )
+        self._start_chat_worker(worker, turn.id)
+
+    def _start_chat_worker(self, worker: QThread, turn_id: str) -> None:
         self._chat_worker = worker
-        worker.connecting.connect(self._on_chat_connecting)
-        worker.thinking_started.connect(self._on_thinking_started)
-        worker.thinking_chunk.connect(self._on_thinking_chunk)
-        worker.thinking_done.connect(self._on_thinking_done)
-        worker.content_chunk.connect(self._on_content_chunk)
-        worker.finished_ok.connect(self._on_chat_finished)
-        worker.failed.connect(self._on_chat_failed)
+        worker.connecting.connect(lambda model, host, tid=turn_id: self._on_chat_connecting_for_turn(model, host, tid))
+        if hasattr(worker, "tool_progress"):
+            worker.tool_progress.connect(lambda message, tid=turn_id: self._on_hermes_tool_progress_for_turn(message, tid))
+        if hasattr(worker, "thinking_started"):
+            worker.thinking_started.connect(lambda tid=turn_id: self._on_thinking_started_for_turn(tid))
+        if hasattr(worker, "thinking_chunk"):
+            worker.thinking_chunk.connect(lambda chunk, tid=turn_id: self._on_thinking_chunk_for_turn(chunk, tid))
+        if hasattr(worker, "thinking_done"):
+            worker.thinking_done.connect(lambda tid=turn_id: self._on_thinking_done_for_turn(tid))
+        worker.content_chunk.connect(lambda chunk, tid=turn_id: self._on_content_chunk_for_turn(chunk, tid))
+        worker.finished_ok.connect(lambda content, tid=turn_id: self._on_chat_finished_for_turn(content, tid))
+        worker.failed.connect(lambda err, tid=turn_id: self._on_chat_failed_for_turn(err, tid))
         worker.start()
 
-    def _on_chat_stop(self) -> None:
-        """생성 중 정지 버튼 — Cursor/GPT처럼 즉시 UI를 멈추고 워커에 취소 요청."""
+    def _is_current_turn(self, turn_id: str) -> bool:
+        return bool(turn_id) and turn_id == self._active_turn_id
+
+    def _finish_current_turn(self, turn_id: str | None = None, *, open_followup: bool) -> None:
+        current_id = turn_id or self._active_turn_id
+        self._busy = False
+        self._chat.set_generating(False)
+        if current_id and current_id == self._active_turn_id:
+            self._active_turn_id = ""
+        elif not current_id and self._active_turn_id:
+            current_id = self._active_turn_id
+            self._active_turn_id = ""
+        if open_followup:
+            self._open_voice_followup_window()
+        active = self._turn_dispatcher.active_turn
+        if active is not None:
+            finish_id = current_id or active.id
+            self._turn_dispatcher.finish_active_turn(finish_id)
+        self._sync_voice_conversation_state()
+
+    def _cancel_current_turn(self, *, reason: str, preserve_partial_response: bool) -> None:
+        """생성 중 turn을 안전하게 끊고 다음 turn이 진행되게 한다."""
         if not self._busy:
+            if self._tts_active_play or self._tts_busy() or self._tts_queue:
+                self._stop_tts_playback()
+                self._sync_voice_conversation_state()
             return
         self._ignore_chat_result = True
         worker = self._chat_worker
@@ -1147,19 +1364,70 @@ class MainWindow(QMainWindow):
         partial = (self._chat.typing_buffer_text or "").strip()
         if getattr(self._chat, "_stream_active", False):
             self._chat.end_stream_message(partial or None)
-            if partial:
+            if preserve_partial_response and partial:
                 self._history.append({"role": "assistant", "content": partial})
                 self._last_assistant_text = partial
                 self._refresh_context_gauge()
         else:
             self._chat.finish_typing()
-        self._busy = False
-        self._chat.set_generating(False)
-        self._state.set_state(AppState.IDLE)
         self._stop_tts_playback()
         self._tts_pump = None
-        self._live_activity.append_instant_line("Stopped.")
+        self._live_activity.append_instant_line(f"VOICE current_turn_cancel_requested reason={reason}")
         self._maybe_refresh_ollama_quota()
+        self._finish_current_turn(open_followup=False)
+
+    def _on_chat_stop(self) -> None:
+        self._cancel_current_turn(reason="user_stop", preserve_partial_response=True)
+        self._live_activity.append_instant_line("Stopped.")
+
+    def _on_chat_connecting_for_turn(self, model: str, host: str, turn_id: str) -> None:
+        if self._is_current_turn(turn_id):
+            self._on_chat_connecting(model, host)
+
+    def _on_hermes_tool_progress_for_turn(self, message: str, turn_id: str) -> None:
+        if self._is_current_turn(turn_id):
+            self._on_hermes_tool_progress(message)
+
+    def _on_thinking_started_for_turn(self, turn_id: str) -> None:
+        if self._is_current_turn(turn_id):
+            self._on_thinking_started()
+
+    def _on_thinking_chunk_for_turn(self, chunk: str, turn_id: str) -> None:
+        if self._is_current_turn(turn_id):
+            self._on_thinking_chunk(chunk)
+
+    def _on_thinking_done_for_turn(self, turn_id: str) -> None:
+        if self._is_current_turn(turn_id):
+            self._on_thinking_done()
+
+    def _on_content_chunk_for_turn(self, chunk: str, turn_id: str) -> None:
+        if self._is_current_turn(turn_id):
+            self._on_content_chunk(chunk)
+
+    def _on_chat_finished_for_turn(self, content: str, turn_id: str) -> None:
+        if self._is_current_turn(turn_id):
+            self._on_chat_finished(content)
+
+    def _on_chat_failed_for_turn(self, err: str, turn_id: str) -> None:
+        if self._is_current_turn(turn_id):
+            self._on_chat_failed(err)
+
+    def _on_turn_queued(self, turn: object, reason: str) -> None:
+        if not isinstance(turn, UserTurn):
+            return
+        prefix = "VOICE" if turn.source == UserTurnSource.VOICE else "TURN"
+        self._live_activity.append_instant_line(
+            f"{prefix} turn_queued reason={reason} pending={self._turn_dispatcher.pending_count()} text={turn.text[:80]}"
+        )
+        self._sync_voice_conversation_state()
+
+    def _on_turn_dropped(self, turn: object, reason: str) -> None:
+        if not isinstance(turn, UserTurn):
+            return
+        prefix = "VOICE" if turn.source == UserTurnSource.VOICE else "TURN"
+        self._live_activity.append_instant_line(
+            f"{prefix} turn_dropped reason={reason} text={turn.text[:80]}"
+        )
 
     def _on_hermes_tool_progress(self, message: str) -> None:
         if self._ignore_chat_result:
@@ -1270,10 +1538,9 @@ class MainWindow(QMainWindow):
         if self._ignore_chat_result:
             self._ignore_chat_result = False
             self._chat_worker = None
-            self._busy = False
-            self._chat.set_generating(False)
             self._tts_pump = None
             self._maybe_refresh_ollama_quota()
+            self._finish_current_turn(open_followup=False)
             return
         text = (content or "").strip()
         if getattr(self._chat, "_stream_active", False):
@@ -1321,6 +1588,7 @@ class MainWindow(QMainWindow):
                 else:
                     status = "idle"
                 self._chat.set_speaker_status(self._tts_active_msg_id, status)
+        self._finish_current_turn(open_followup=True)
 
     def _try_reveal_local_vibe_code(self, assistant_text: str) -> None:
         prompt = self._pending_local_vibe_prompt
@@ -1386,6 +1654,10 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             self._chat.append_message_instant("Iris", f"IDE 실행 연결 실패: {exc}")
 
+    def _tts_idle_status(self) -> str:
+        """설정창 'TTS 사용' 체크 여부를 상단 칩에 ON/OFF로 반영."""
+        return "ON" if self._voice_prefs.tts_enabled else "OFF"
+
     def _ensure_voice_runtime(self) -> bool:
         try:
             self._voice_runtime.set_base_url(self._voice_prefs.voice_runtime_url)
@@ -1393,9 +1665,10 @@ class MainWindow(QMainWindow):
                 mock_mode=self._voice_prefs.voice_runtime_mock
             )
             self._tts_runtime_ready = bool(status.running)
-            self._status_header.set_tts_status("READY")
+            self._status_header.set_tts_status(self._tts_idle_status())
             if status.running:
                 self._request_tts_warmup()
+                self._request_stt_warmup()
             return status.running
         except Exception as exc:  # noqa: BLE001
             self._tts_runtime_ready = False
@@ -1542,10 +1815,207 @@ class MainWindow(QMainWindow):
         self._tts_warmup_worker = None
         self._live_activity.append_instant_line(f"TTS warmup skipped: {err[:160]}")
 
+    def _request_stt_warmup(self) -> None:
+        if self._test_mode or not self._voice_prefs.stt_enabled:
+            return
+        if self._voice_prefs.voice_runtime_mock:
+            return
+        model = (self._voice_prefs.stt_model or "small").strip() or "small"
+        if model == self._stt_warmup_model:
+            return
+        if self._stt_warmup_worker is not None and self._stt_warmup_worker.isRunning():
+            return
+        worker = STTWarmupWorker(
+            runtime_url=self._voice_prefs.voice_runtime_url,
+            model_name=model,
+            parent=self,
+        )
+        self._stt_warmup_worker = worker
+        worker.finished_ok.connect(lambda result, m=model: self._on_stt_warmup_done(result, m))
+        worker.failed.connect(lambda err: self._on_stt_warmup_failed(err))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_stt_warmup_done(self, result: object, model: str) -> None:
+        self._stt_warmup_worker = None
+        payload = result if isinstance(result, dict) else {}
+        if not payload.get("accepted"):
+            return
+        self._stt_warmup_model = model
+        self._live_activity.append_instant_line("STT warmup scheduled")
+
+    def _on_stt_warmup_failed(self, err: str) -> None:
+        self._stt_warmup_worker = None
+        self._live_activity.append_instant_line(f"STT warmup skipped: {err[:160]}")
+
     def _set_mic_recording(self, recording: bool) -> None:
         self._mic_listen_active = recording
         self._drag.set_mic_recording(recording)
         self._chat.set_mic_recording(recording)
+
+    def _sync_voice_conversation_state(self) -> None:
+        if self._tts_active_play or self._tts_busy() or self._tts_queue:
+            self._state.set_state(AppState.RESPONDING)
+            if self._mic_listen_active:
+                self._chat.set_user_listening_status("IRIS가 말하고 있습니다")
+            return
+        if self._busy or self._turn_dispatcher.is_busy():
+            self._state.set_state(AppState.PROCESSING)
+            if self._mic_listen_active:
+                self._chat.set_user_listening_status("처리 중")
+            return
+        if self._stt_queue.is_busy() or self._stt_queue.pending_count():
+            self._state.set_state(AppState.PROCESSING)
+            if self._mic_listen_active:
+                self._chat.set_user_listening_status("음성을 인식하고 있습니다")
+            return
+        if self._mic.state == MicState.SPEECH:
+            self._state.set_state(AppState.LISTENING)
+            self._chat.set_user_listening_status("말씀하세요")
+            return
+        if self._mic_listen_active:
+            self._state.set_state(AppState.LISTENING)
+            self._chat.set_user_listening_status("듣고 있습니다")
+            return
+        self._state.set_state(AppState.IDLE)
+
+    def _on_stt_job_dropped(self, session_id: int, reason: str) -> None:
+        self._live_activity.append_instant_line(
+            f"VOICE stt_job_dropped reason={reason} session={session_id}"
+        )
+        self._sync_voice_conversation_state()
+
+    def _split_voice_wake_words(self) -> list[str]:
+        raw = (getattr(self._voice_prefs, "voice_wake_words", "") or "").strip()
+        if not raw:
+            raw = "아이리스,Iris"
+        return [item.strip() for item in raw.split(",") if item.strip()]
+
+    def _normalize_voice_text(self, text: str) -> str:
+        chars = []
+        for ch in (text or "").strip().lower():
+            if ch.isalnum() or ("\uac00" <= ch <= "\ud7a3"):
+                chars.append(ch)
+            else:
+                chars.append(" ")
+        return " ".join("".join(chars).split())
+
+    def _should_dedupe_voice_text(self, text: str, session_id: int) -> bool:
+        norm = self._normalize_voice_text(text)
+        if not norm:
+            return True
+        now = time.perf_counter()
+        while self._recent_voice_turns and now - self._recent_voice_turns[0][0] > 2.0:
+            self._recent_voice_turns.popleft()
+        for seen_at, seen_session, seen_text in self._recent_voice_turns:
+            if seen_session == session_id and seen_text == norm and now - seen_at <= 1.2:
+                return True
+        self._recent_voice_turns.append((now, session_id, norm))
+        return False
+
+    def _strip_wake_word(self, text: str) -> str:
+        raw = (text or "").strip()
+        lowered = raw.lower()
+        for wake in self._split_voice_wake_words():
+            wake_lower = wake.lower()
+            if lowered == wake_lower:
+                return ""
+            if lowered.startswith(wake_lower):
+                rest = raw[len(wake) :].lstrip(" ,.!?~:-")
+                return rest.strip()
+        return ""
+
+    def _is_self_echo_transcript(self, text: str) -> bool:
+        if not self._tts_active_play:
+            return False
+        norm = self._normalize_voice_text(text)
+        if len(norm) < 10:
+            return False
+        assistant_norm = self._normalize_voice_text(
+            self._chat.typing_buffer_text or self._last_assistant_text
+        )
+        if not assistant_norm:
+            return False
+        # ponytail: exact/containment match only, ceiling은 변형된 에코는 못 잡는다. 필요하면 음향 fingerprint로 확장.
+        return norm == assistant_norm or norm in assistant_norm or assistant_norm in norm
+
+    def _is_voice_stop_intent(self, text: str) -> bool:
+        norm = self._normalize_voice_text(text)
+        return norm in {"그만", "멈춰", "잠깐", "취소", "됐어", "스톱", "stop"}
+
+    def _open_voice_followup_window(self) -> None:
+        sec = max(1, int(getattr(self._voice_prefs, "voice_followup_window_sec", 20) or 20))
+        self._voice_followup_deadline = time.perf_counter() + sec
+
+    def _voice_followup_open(self) -> bool:
+        return time.perf_counter() <= self._voice_followup_deadline
+
+    def _submit_voice_turn(self, text: str, *, session_id: int) -> None:
+        body = (text or "").strip()
+        if not body:
+            return
+        # 규칙 기반 상황 명령이 모델보다 먼저다. 전화벨은 LLM 왕복을 기다려 주지 않는다.
+        if self._handle_voice_command(body):
+            return
+        if self._should_dedupe_voice_text(body, session_id):
+            self._live_activity.append_instant_line("VOICE duplicate_stt_ignored")
+            return
+        if self._is_self_echo_transcript(body):
+            self._live_activity.append_instant_line("VOICE self_echo_ignored")
+            return
+        if self._is_voice_stop_intent(body):
+            self._live_activity.append_instant_line("VOICE stop_intent")
+            if self._turn_dispatcher.pending_count():
+                self._turn_dispatcher.clear_pending()
+            self._cancel_current_turn(reason="voice_stop_intent", preserve_partial_response=True)
+            return
+        if getattr(self._voice_prefs, "voice_wake_word_enabled", False) and not self._voice_followup_open():
+            stripped = self._strip_wake_word(body)
+            if not stripped:
+                self._live_activity.append_instant_line("VOICE wake_word_required")
+                self._sync_voice_conversation_state()
+                return
+            body = stripped
+        if self._busy:
+            self._live_activity.append_instant_line("VOICE barge_in")
+            if getattr(self._voice_prefs, "voice_barge_in_enabled", True):
+                self._cancel_current_turn(reason="voice_barge_in", preserve_partial_response=True)
+            elif self._turn_dispatcher.is_busy():
+                self._live_activity.append_instant_line(
+                    "VOICE turn_queued pending="
+                    f"{self._turn_dispatcher.pending_count() + 1}"
+                )
+        self._live_activity.append_instant_line(f"VOICE turn_created text={body[:80]}")
+        turn = self._turn_dispatcher.submit(
+            text=body,
+            source=UserTurnSource.VOICE,
+            session_id=session_id,
+        )
+        if turn is None:
+            self._live_activity.append_instant_line("VOICE turn_submit_rejected")
+            return
+        self._sync_voice_conversation_state()
+
+    def _on_mic_state(self, state: object) -> None:
+        mic_state = state if isinstance(state, MicState) else MicState.OFF
+        listening = mic_state.is_listening_ui()
+        self._mic_listen_active = listening
+        self._drag.set_mic_state(mic_state)
+        self._chat.set_mic_recording(mic_state.is_hardware_open())
+        if mic_state == MicState.STARTING:
+            self._chat.begin_user_listening()
+            self._chat.set_user_listening_status("마이크를 여는 중")
+            return
+        if listening:
+            self._chat.begin_user_listening()
+            self._sync_voice_conversation_state()
+            return
+        self._chat.cancel_user_listening()
+        if mic_state == MicState.ERROR:
+            self._state.set_state(AppState.ERROR)
+            QTimer.singleShot(800, self._sync_voice_conversation_state)
+            return
+        self._sync_voice_conversation_state()
 
     def _build_aloha_learner(self) -> AlohaLearner:
         prefs = getattr(self, "_learning_prefs", None) or load_learning_preferences(self._db)
@@ -1774,161 +2244,112 @@ class MainWindow(QMainWindow):
             self._live_activity.append_instant_line(f"Wiki 학습 동기화 스킵: {str(exc)[:80]}")
 
     def _on_chat_mic_clicked(self) -> None:
-        if self._mic_listen_active or self._recorder.is_continuous():
+        if self._mic.state != MicState.OFF and self._mic.state != MicState.ERROR:
             self._stop_mic_listen()
             return
         if not self._voice_prefs.stt_enabled:
-            self._live_activity.append_instant_line("STT가 비활성화되어 있어 기본 설정으로 시작합니다.")
-            self._voice_prefs.stt_enabled = True
-            save_voice_preferences(self._db, self._voice_prefs)
+            self._live_activity.append_instant_line(
+                "STT가 비활성화되어 있습니다. 설정에서 STT 사용을 켜세요."
+            )
+            return
         if not self._ensure_voice_runtime():
             return
-        self._chat.begin_user_listening()
-        self._set_mic_recording(True)
-        self._state.set_state(AppState.LISTENING)
-        self._recorder.start_continuous(
+        self._request_stt_warmup()
+        self._stt_queue.runtime_url = self._voice_prefs.voice_runtime_url
+        self._stt_queue.model_name = self._voice_prefs.stt_model
+        self._stt_queue.language = self._voice_prefs.stt_language
+        self._mic.request_on(
             device_id=self._voice_prefs.stt_device_id,
             speech_rms=self._voice_prefs.stt_speech_rms,
-            sample_rate=16000,
-            channels=1,
+            stt_enabled=True,
         )
 
     def _stop_mic_listen(self) -> None:
-        self._stt_session += 1
-        self._set_mic_recording(False)
+        self._stt_session = self._mic.session_id + 1
+        self._stt_queue.clear_pending()
+        self._mic.request_off()
         self._chat.cancel_user_listening()
-        self._recorder.set_capture_paused(False)
-        if self._recorder.is_recording():
-            self._recorder.cancel_recording()
-        self._state.set_state(AppState.IDLE)
-
-    def _on_recording_started(self) -> None:
-        if self._mic_listen_active:
-            self._chat.set_user_listening_status("듣고 있습니다")
+        self._sync_voice_conversation_state()
 
     def _on_recorder_level(self, level: float) -> None:
         self._chat.set_mic_level(level)
         self._viz.set_mic_level(level)
 
-    def _on_recording_stopped(self, result: RecordingResult) -> None:
-        # oneshot 경로(레거시) — 연속 청취는 utterance_ready 사용
-        self._transcribe_wav(result, keep_listening=False)
+    def _on_mic_speech_started(self) -> None:
+        if self._tts_active_play or self._tts_busy() or self._tts_queue:
+            self._stop_tts_playback()
+        self._sync_voice_conversation_state()
+        now = time.perf_counter()
+        if now - self._last_stt_speech_started_ts > 0.8:
+            self._last_stt_speech_started_ts = now
+            self._live_activity.append_instant_line("VOICE speech_started")
+
+    def _on_utterance_dropped(self, reason: str) -> None:
+        self._live_activity.append_instant_line(f"VOICE utterance_dropped reason={reason}")
+        self._sync_voice_conversation_state()
 
     def _on_utterance_ready(self, result: RecordingResult) -> None:
-        if not self._mic_listen_active:
+        if not self._mic.state.is_listening_ui():
+            self._live_activity.append_instant_line("VOICE utterance_ignored mic_off")
             return
-        self._transcribe_wav(result, keep_listening=True)
+        self._live_activity.append_instant_line(
+            f"VOICE utterance_ready dur={result.duration_sec:.2f}s rms_peak={result.rms_peak:.4f}"
+        )
+        self._transcribe_wav(result)
 
-    def _transcribe_wav(self, result: RecordingResult, *, keep_listening: bool) -> None:
-        if keep_listening and not self._mic_listen_active:
+    def _transcribe_wav(self, result: RecordingResult) -> None:
+        if not self._mic.state.is_listening_ui():
             return
         if not result.wav_bytes:
-            if not keep_listening:
-                self._on_recording_failed("빈 녹음입니다.")
+            self._live_activity.append_instant_line("VOICE stt_skipped empty_wav")
             return
-        min_rms = max(0.001, self._voice_prefs.stt_speech_rms * 0.5)
-        if result.duration_sec < 0.25 or result.rms_peak < min_rms:
-            if not keep_listening:
-                self._on_recording_failed("무음에 가깝습니다. 마이크와 거리를 확인해 주세요.")
-            elif self._mic_listen_active:
-                self._chat.set_user_listening_status("듣고 있습니다")
+        min_rms = max(0.001, self._voice_prefs.stt_speech_rms * 0.25)
+        min_duration = 0.12
+        if result.duration_sec < min_duration or result.rms_peak < min_rms:
+            now = time.perf_counter()
+            if now - self._last_stt_skip_report_ts > 1.5:
+                self._last_stt_skip_report_ts = now
+                self._live_activity.append_instant_line(
+                    f"VOICE stt_skipped dur={result.duration_sec:.2f}s(<{min_duration:.2f}) "
+                    f"rms={result.rms_peak:.4f}(<{min_rms:.4f})"
+                )
+            self._chat.set_user_listening_status("듣고 있습니다")
+            self._sync_voice_conversation_state()
             return
-        if self._stt_worker is not None and self._stt_worker.isRunning():
-            return
-        if keep_listening and not self._mic_listen_active:
-            return
-        self._recorder.set_capture_paused(True)
         self._chat.set_user_listening_status("음성을 인식하고 있습니다")
-        if not keep_listening:
-            self._state.set_state(AppState.PROCESSING)
-        session = self._stt_session
-        worker = STTTranscriptionWorker(
-            result.wav_bytes,
-            runtime_url=self._voice_prefs.voice_runtime_url,
-            model_name=self._voice_prefs.stt_model,
-            language=self._voice_prefs.stt_language,
-            parent=self,
-        )
-        self._stt_worker = worker
-        worker.finished_ok.connect(
-            lambda payload, kl=keep_listening, s=session: self._on_stt_finished(
-                payload, keep_listening=kl, session=s
-            )
-        )
-        worker.failed.connect(
-            lambda err, kl=keep_listening, s=session: self._on_stt_failed(
-                err, keep_listening=kl, session=s
-            )
-        )
-        worker.start()
-
-    def _on_recording_cancelled(self) -> None:
-        self._chat.cancel_user_listening()
-        self._set_mic_recording(False)
-        self._state.set_state(AppState.IDLE)
+        self._live_activity.append_instant_line("VOICE stt_started")
+        self._stt_queue.enqueue(result, session_id=self._mic.session_id)
+        self._sync_voice_conversation_state()
 
     def _on_recording_failed(self, err: str) -> None:
-        self._chat.cancel_user_listening()
-        self._set_mic_recording(False)
-        if self._recorder.is_recording():
-            self._recorder.cancel_recording()
-        self._state.set_state(AppState.ERROR)
         self._live_activity.append_instant_line(f"녹음 오류: {err}")
-        QTimer.singleShot(800, lambda: self._state.set_state(AppState.IDLE))
 
-    def _on_stt_finished(
-        self, payload: object, *, keep_listening: bool = False, session: int | None = None
-    ) -> None:
-        if session is not None and session != self._stt_session:
-            self._stt_worker = None
+    def _on_stt_perf(self, line: str) -> None:
+        self._live_activity.append_instant_line(line)
+
+    def _on_stt_finished(self, payload: object, session: int = 0) -> None:
+        if session != self._mic.session_id:
+            self._live_activity.append_instant_line("VOICE stale_session_ignored")
             return
-        self._stt_worker = None
-        self._recorder.set_capture_paused(False)
-        if keep_listening and not self._mic_listen_active:
-            self._chat.cancel_user_listening()
-            self._state.set_state(AppState.IDLE)
+        if not self._mic.state.is_listening_ui():
             return
         data = payload if isinstance(payload, dict) else {}
         text = str(data.get("text") or "").strip()
-        if keep_listening and self._mic_listen_active:
-            if text:
-                self._chat.insert_input_text(text)
-                self._live_activity.append_instant_line("STT 완료 — 입력창에 전사 결과를 넣었습니다.")
-            self._chat.set_user_listening_status("듣고 있습니다")
-            self._state.set_state(AppState.LISTENING)
-            return
-        self._set_mic_recording(False)
-        self._chat.cancel_user_listening()
         if not text:
-            self._chat.append_message_instant("Iris", "음성이 감지되지 않았습니다. 다시 시도해 주세요.")
-            self._state.set_state(AppState.IDLE)
-            return
-        self._chat.insert_input_text(text)
-        self._live_activity.append_instant_line("STT 완료 — 입력창에 전사 결과를 넣었습니다.")
-        self._state.set_state(AppState.IDLE)
+            now = time.perf_counter()
+            if now - self._last_stt_skip_report_ts > 0.8:
+                self._last_stt_skip_report_ts = now
+                self._live_activity.append_instant_line(f"STT 완료(빈값): {data}")
+        if text:
+            self._live_activity.append_instant_line(f"VOICE stt_final text={text[:120]}")
+            self._submit_voice_turn(text, session_id=session)
+        self._sync_voice_conversation_state()
 
-    def _on_stt_failed(
-        self, err: str, *, keep_listening: bool = False, session: int | None = None
-    ) -> None:
-        if session is not None and session != self._stt_session:
-            self._stt_worker = None
+    def _on_stt_failed(self, err: str, session: int = 0) -> None:
+        if session != self._mic.session_id:
             return
-        self._stt_worker = None
-        self._recorder.set_capture_paused(False)
-        if keep_listening and not self._mic_listen_active:
-            self._chat.cancel_user_listening()
-            self._state.set_state(AppState.IDLE)
-            return
-        if keep_listening and self._mic_listen_active:
-            self._live_activity.append_instant_line(f"STT 오류: {err}")
-            self._chat.set_user_listening_status("듣고 있습니다")
-            self._state.set_state(AppState.LISTENING)
-            return
-        self._set_mic_recording(False)
-        self._chat.cancel_user_listening()
-        self._chat.append_message_instant("Iris", f"STT 오류: {err}")
-        self._state.set_state(AppState.ERROR)
-        QTimer.singleShot(800, lambda: self._state.set_state(AppState.IDLE))
+        self._live_activity.append_instant_line(f"STT 오류: {err}")
+        self._sync_voice_conversation_state()
 
     def _stop_tts_playback(self) -> None:
         self._tts_job_id += 1
@@ -1951,6 +2372,7 @@ class MainWindow(QMainWindow):
             pass
         finally:
             self._tts_stopping = False
+        self._last_tts_playback_ended_at = time.perf_counter()
         self._resume_mic_after_tts()
         worker, self._tts_worker = self._tts_worker, None
         if worker is not None and worker.isRunning():
@@ -1959,7 +2381,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self._tts_cancelled_workers.append(worker)
-        self._status_header.set_tts_status("READY" if self._voice_prefs.tts_enabled else "OFF")
+        self._status_header.set_tts_status(self._tts_idle_status())
 
     def _release_cancelled_tts_worker(self, worker: TTSStreamWorker) -> None:
         try:
@@ -2153,7 +2575,7 @@ class MainWindow(QMainWindow):
             return
         self._mark_tts_perf("speaker_open")
         if self._mic_listen_active:
-            self._recorder.set_capture_paused(True)
+            self._mic.suppress_speech(True, echo_tail_ms=self._voice_prefs.stt_echo_tail_ms)
         self._tts_active_play = True
         self._status_header.set_tts_status("SPEAK")
         if self._tts_active_msg_id:
@@ -2173,8 +2595,8 @@ class MainWindow(QMainWindow):
         self._finish_tts_playback()
 
     def _resume_mic_after_tts(self) -> None:
-        if self._mic_listen_active and (self._stt_worker is None or not self._stt_worker.isRunning()):
-            self._recorder.set_capture_paused(False)
+        if self._mic_listen_active:
+            self._mic.suppress_speech(False, echo_tail_ms=self._voice_prefs.stt_echo_tail_ms)
 
     def _maybe_end_pcm_session(self) -> None:
         if (
@@ -2194,12 +2616,14 @@ class MainWindow(QMainWindow):
     def _finish_tts_playback(self) -> None:
         self._tts_active_play = False
         self._tts_pcm_ending = False
+        self._last_tts_playback_ended_at = time.perf_counter()
         self._set_tts_orb_warmup(False)
         if self._tts_active_msg_id:
             self._chat.set_speaker_status(self._tts_active_msg_id, "idle")
-        self._status_header.set_tts_status("READY" if self._voice_prefs.tts_enabled else "OFF")
+        self._status_header.set_tts_status(self._tts_idle_status())
         self._resume_mic_after_tts()
         self._log_tts_perf()
+        self._sync_voice_conversation_state()
 
     def _mark_tts_perf(self, name: str) -> None:
         if name not in self._tts_perf:
@@ -2243,6 +2667,10 @@ class MainWindow(QMainWindow):
 
     def _on_media_playback_state(self, state: object) -> None:
         from PyQt6.QtMultimedia import QMediaPlayer as _MP
+        if state == _MP.PlaybackState.PlayingState:
+            if self._mic_listen_active:
+                self._mic.suppress_speech(True, echo_tail_ms=self._voice_prefs.stt_echo_tail_ms)
+            return
         if state == _MP.PlaybackState.StoppedState:
             self._on_media_finished()
 
@@ -2300,11 +2728,10 @@ class MainWindow(QMainWindow):
         if self._ignore_chat_result:
             self._ignore_chat_result = False
             self._chat_worker = None
-            self._busy = False
-            self._chat.set_generating(False)
             self._stop_tts_playback()
             self._tts_pump = None
             self._api_fallback_pending = False
+            self._finish_current_turn(open_followup=False)
             return
         # 커스텀 API 직접 호출 실패 → Hermes online이면 1회 폴백
         if self._try_hermes_fallback_after_api_fail(err):
@@ -2322,13 +2749,12 @@ class MainWindow(QMainWindow):
             "Iris",
             f"{self._backend_label()} 오류: {err}",
         )
-        self._busy = False
-        self._chat.set_generating(False)
         self._chat_worker = None
         self._api_fallback_pending = False
-        self._state.set_state(AppState.ERROR)
         self._maybe_refresh_ollama_quota()
-        QTimer.singleShot(800, lambda: self._state.set_state(AppState.IDLE))
+        self._finish_current_turn(open_followup=False)
+        self._state.set_state(AppState.ERROR)
+        QTimer.singleShot(800, self._sync_voice_conversation_state)
 
     def _try_hermes_fallback_after_api_fail(self, err: str) -> bool:
         """직접 API 실패 시 Hermes 경유 재시도. 처리했으면 True."""
@@ -2357,13 +2783,7 @@ class MainWindow(QMainWindow):
             command=self._settings.hermes_command,
             parent=self,
         )
-        self._chat_worker = worker
-        worker.connecting.connect(self._on_chat_connecting)
-        worker.tool_progress.connect(self._on_hermes_tool_progress)
-        worker.content_chunk.connect(self._on_content_chunk)
-        worker.finished_ok.connect(self._on_chat_finished)
-        worker.failed.connect(self._on_chat_failed)
-        worker.start()
+        self._start_chat_worker(worker, self._active_turn_id)
         return True
 
     def _on_app_state(self, state: object) -> None:
@@ -2987,7 +3407,8 @@ class MainWindow(QMainWindow):
             "When a product/place/UI is clearer with a picture and you have a direct image URL "
             "(search thumbnail, og image, or page asset), include it inline as "
             "markdown ![short label](https://...png|jpg|gif|webp). "
-            "Iris shows those images in the chat; users can click to enlarge.",
+            "Iris shows those images in the chat; users can click to enlarge. "
+            "업무 학습(화면 조작 녹화 시작/종료): learning.start / learning.stop. 이미 배운 업무 실행: learning.run. ",
         )
         if root:
             bits.append(f"Project root: {root}")
@@ -3739,9 +4160,7 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _open_settings_dialog(self) -> None:
-        if self._mic_listen_active:
-            self._stop_mic_listen()
-        dlg = SettingsDialog(self._settings, self._db, self)
+        dlg = SettingsDialog(self._settings, self._db, self, microphone=self._mic)
         if dlg.exec():
             sel = dlg.selection()
             if sel is None:
@@ -3789,7 +4208,17 @@ class MainWindow(QMainWindow):
                 self._tts_warmup_model = ""
             self._settings.always_listen_speech_rms = self._voice_prefs.stt_speech_rms
             self._chat.set_speech_threshold_rms(self._voice_prefs.stt_speech_rms)
-            self._recorder.set_speech_rms(self._voice_prefs.stt_speech_rms)
+            self._mic.set_speech_rms(self._voice_prefs.stt_speech_rms)
+            self._mic.set_device(self._voice_prefs.stt_device_id)
+            self._stt_queue.runtime_url = self._voice_prefs.voice_runtime_url
+            self._stt_queue.model_name = self._voice_prefs.stt_model
+            self._stt_queue.language = self._voice_prefs.stt_language
+            if not self._voice_prefs.stt_enabled:
+                self._stop_mic_listen()
+            else:
+                self._request_stt_warmup()
+            self._pcm_player.set_voice_pitch(self._voice_prefs.tts_pitch_semitones)
+            self._apply_alert_voice_prefs()
             self._pcm_player.set_voice_effect(
                 enabled=self._voice_prefs.tts_ai_voice_fx_enabled,
                 intensity=self._voice_prefs.tts_ai_voice_fx_intensity,
@@ -3801,9 +4230,7 @@ class MainWindow(QMainWindow):
                 self._learning.set_learning_prefs(self._learning_prefs)
                 if not self._test_mode:
                     self._learning.set_learner(self._build_aloha_learner())
-            self._status_header.set_tts_status(
-                "READY" if self._voice_prefs.tts_enabled else "OFF"
-            )
+            self._status_header.set_tts_status(self._tts_idle_status())
             self._saved_model = sel.ollama_model.strip()
             if self._saved_model:
                 save_selected_model(self._db, self._saved_model)
@@ -3860,6 +4287,11 @@ class MainWindow(QMainWindow):
             stop_control_surface(self)
             self._pinned_monitor.stop()
             try:
+                self._call_monitor.stop()
+                self._alert_speaker.stop()
+            except Exception:
+                pass
+            try:
                 self._learning.interrupt_on_shutdown()
             except Exception:
                 pass
@@ -3868,8 +4300,7 @@ class MainWindow(QMainWindow):
                 if callable(cancel):
                     cancel()
                 self._learning_worker.wait(2000)
-            if self._recorder.is_recording():
-                self._recorder.cancel_recording()
+            self._stop_mic_listen()
             self._stop_tts_playback()
             for worker in list(self._tts_cancelled_workers):
                 if worker.isRunning():
@@ -3885,8 +4316,8 @@ class MainWindow(QMainWindow):
                 if callable(cancel):
                     cancel()
                 self._chat_worker.wait(1500)
-            if self._stt_worker is not None and self._stt_worker.isRunning():
-                self._stt_worker.wait(1500)
+            if self._stt_queue.is_busy():
+                self._stt_queue.clear_pending()
             if self._tts_worker is not None and self._tts_worker.isRunning():
                 self._tts_worker.wait(1500)
             self._media_player.stop()

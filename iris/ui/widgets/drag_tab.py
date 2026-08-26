@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from iris.audio.mic_state import MicState
 from iris.learning.models import LearningState
 from iris.ui.window.top_status_header import STATUS_BLOCK_HEIGHT
 
@@ -62,7 +63,7 @@ def _waveform_mic_icon(*, active: bool, size: QSize | None = None) -> QIcon:
     painter = QPainter(pm)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-    base = QColor(248, 113, 113) if active else QColor(34, 211, 238)
+    base = QColor(34, 211, 238) if active else QColor(248, 113, 113)
     path = _heartbeat_path(float(sz.width()), float(sz.height()))
 
     # 얇은 네온사인: 바깥 글로우 → 코어 하이라이트
@@ -324,11 +325,21 @@ class DragTab(QWidget):
         )
 
     def set_mic_recording(self, recording: bool) -> None:
+        self.set_mic_state(MicState.LISTENING if recording else MicState.OFF)
+
+    def set_mic_state(self, state: MicState) -> None:
+        on = state.is_listening_ui()
+        starting = state == MicState.STARTING
         self._btn_mic.blockSignals(True)
-        self._btn_mic.setChecked(recording)
+        self._btn_mic.setChecked(on)
         self._btn_mic.blockSignals(False)
-        self._btn_mic.setIcon(_waveform_mic_icon(active=recording))
-        self._btn_mic.setToolTip("음성 인식 끄기" if recording else "음성 인식 켜기")
+        if starting:
+            self._btn_mic.setIcon(_waveform_mic_icon(active=False))
+            self._btn_mic.setToolTip("마이크를 여는 중")
+            self._btn_mic.setEnabled(True)
+            return
+        self._btn_mic.setIcon(_waveform_mic_icon(active=on))
+        self._btn_mic.setToolTip("음성 인식 끄기" if on else "음성 인식 켜기")
 
     def set_ide_companion_active(self, active: bool) -> None:
         """Companion(Iris≈20%): 상태행 숨김, IDE 버튼 표시, 최소화 숨김."""

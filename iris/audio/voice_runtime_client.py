@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import base64
 import json
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,19 +86,70 @@ class VoiceRuntimeClient:
         condition_on_previous_text: bool = False,
         compute_type: str | None = None,
     ) -> dict[str, Any]:
-        audio_bytes = wav_path.read_bytes()
-        audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
-        payload = {
-            "audio_b64": audio_b64,
-            "filename_hint": wav_path.name,
-            "model_name": model_name,
-            "language": language,
-            "vad_filter": bool(vad_filter),
-            "beam_size": int(beam_size),
-            "condition_on_previous_text": bool(condition_on_previous_text),
-            "compute_type": compute_type,
-        }
-        return self._post_json("/v1/audio/transcriptions", payload)
+        return self.transcribe_wav_bytes(
+            wav_path.read_bytes(),
+            model_name=model_name,
+            language=language,
+            vad_filter=vad_filter,
+            beam_size=beam_size,
+            condition_on_previous_text=condition_on_previous_text,
+            compute_type=compute_type,
+        )
+
+    def transcribe_wav_bytes(
+        self,
+        wav_bytes: bytes,
+        *,
+        model_name: str = "small",
+        language: str = "ko",
+        vad_filter: bool = True,
+        beam_size: int = 5,
+        condition_on_previous_text: bool = False,
+        compute_type: str | None = None,
+    ) -> dict[str, Any]:
+        del compute_type
+        started = time.perf_counter()
+        qs = urllib.parse.urlencode(
+            {
+                "model_name": model_name,
+                "language": language,
+                "vad_filter": "true" if vad_filter else "false",
+                "beam_size": int(beam_size),
+                "condition_on_previous_text": "true" if condition_on_previous_text else "false",
+            }
+        )
+        url = f"{self._base_url}/v1/audio/transcriptions/raw?{qs}"
+        req = urllib.request.Request(
+            url,
+            data=wav_bytes,
+            method="POST",
+            headers={
+                "Content-Type": "audio/wav",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                upload_done = time.perf_counter()
+                body = resp.read().decode("utf-8", errors="replace")
+                payload = json.loads(body) if body.strip() else {}
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+            raise VoiceRuntimeError(f"Voice runtime HTTP {e.code}: {raw[:400]}") from e
+        except Exception as e:
+            raise VoiceRuntimeError(f"Voice runtime request failed: {e}") from e
+        finished = time.perf_counter()
+        if isinstance(payload, dict):
+            payload["upload_sec"] = max(0.0, upload_done - started)
+            payload["transcribe_sec"] = max(0.0, finished - upload_done)
+        return payload if isinstance(payload, dict) else {}
+
+    def stt_warmup(self, *, model_name: str = "small", wait: bool = False) -> dict[str, Any]:
+        return self._post_json(
+            "/v1/audio/stt/warmup",
+            {"model_name": model_name, "wait": bool(wait)},
+            timeout=max(self._timeout, 600.0) if wait else self._timeout,
+        )
 
     def voice_prepare(
         self,

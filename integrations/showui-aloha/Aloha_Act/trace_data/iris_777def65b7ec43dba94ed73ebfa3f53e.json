@@ -1,0 +1,49 @@
+{
+  "trajectory": [
+    {
+      "step_idx": 1,
+      "caption": {
+        "observation": "The system is currently on the explorer.exe window.",
+        "think": "I need to switch to the KakaoTalk application.",
+        "action": "click @(1212.0,932.0)",
+        "expectation": "The explorer window is closed or backgrounded, and focus shifts toward KakaoTalk."
+      }
+    },
+    {
+      "step_idx": 2,
+      "caption": {
+        "observation": "The KakaoTalk window is now active.",
+        "think": "I need to select a specific chat or contact from the list.",
+        "action": "click @(1131.0,665.0)",
+        "expectation": "A specific chat room or contact profile is opened."
+      }
+    },
+    {
+      "step_idx": 3,
+      "caption": {
+        "observation": "The chat interface is open.",
+        "think": "I will use keyboard shortcuts to navigate the message history or list.",
+        "action": "key_down SHIFT, ENTER, CTRL_L",
+        "expectation": "The cursor or focus is positioned for navigation."
+      }
+    },
+    {
+      "step_idx": 4,
+      "caption": {
+        "observation": "The focus is on the message/contact list.",
+        "think": "I need to scroll down to find a specific entry.",
+        "action": "key_down DOWN (repeated 14 times)",
+        "expectation": "The list scrolls down to the desired item."
+      }
+    },
+    {
+      "step_idx": 5,
+      "caption": {
+        "observation": "The list has been scrolled down.",
+        "think": "I need to adjust the selection slightly upwards.",
+        "action": "key_down UP",
+        "expectation": "The selection moves up by one item."
+      }
+    }
+  ]
+}

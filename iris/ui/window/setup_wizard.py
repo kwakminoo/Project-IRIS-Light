@@ -53,7 +53,10 @@ _STREAM_STEPS = {
     "ollama_model",
     "hermes_install",
     "voice",
+    "voice_full",
+    "learning",
     "emulator",
+    "mobile_mcp",
 }
 
 # winget/UAC 승격이 멈추는 걸 막으려고 콘솔 창을 일부러 숨기지 않는 단계들
@@ -423,7 +426,7 @@ class SetupWizard(QDialog):
         if is_setup_preview():
             self._append_log("미리보기 모드 — 실제 설치는 하지 않습니다.")
         else:
-            self._append_log("실제 설치 모드 — 「설치」를 누르면 winget/공식 스크립트가 실행됩니다.")
+            self._append_log("실제 설치 모드 — 「설치」를 누르면 공식 스크립트/winget이 실행됩니다.")
 
     def _append_log(self, line: str) -> None:
         text = (line or "").strip()

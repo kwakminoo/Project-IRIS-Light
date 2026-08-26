@@ -1,0 +1,49 @@
+{
+  "trajectory": [
+    {
+      "step_idx": 1,
+      "caption": {
+        "observation": "KakaoTalk window is active.",
+        "think": "I need to navigate to a specific chat or contact.",
+        "action": "click @(1722.0,239.0)",
+        "expectation": "The target element is selected."
+      }
+    },
+    {
+      "step_idx": 2,
+      "caption": {
+        "observation": "The interface has updated.",
+        "think": "I will select the chat room.",
+        "action": "click @(1496.0,295.0)",
+        "expectation": "The chat window opens."
+      }
+    },
+    {
+      "step_idx": 3,
+      "caption": {
+        "observation": "The chat window is open.",
+        "think": "I need to interact with a specific message or setting.",
+        "action": "click @(1707.0,400.0)",
+        "expectation": "The specific item is highlighted or selected."
+      }
+    },
+    {
+      "step_idx": 4,
+      "caption": {
+        "observation": "The cursor needs to be positioned for typing.",
+        "think": "I will click the message input field.",
+        "action": "click @(323.0,810.0)",
+        "expectation": "The input field is focused and ready for text entry."
+      }
+    },
+    {
+      "step_idx": 5,
+      "caption": {
+        "observation": "The input field is focused.",
+        "think": "I will type the message 'DKSSHD DKSSHD' (which corresponds to '안녕 안녕' in Korean keyboard layout).",
+        "action": "type 'DKSSHD DKSSHD'",
+        "expectation": "The text is entered into the message box."
+      }
+    }
+  ]
+}

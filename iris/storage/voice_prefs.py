@@ -49,6 +49,11 @@ class VoicePreferences:
     stt_language: str = "ko"  # "ko" | "auto"
     stt_device_id: str = ""
     stt_speech_rms: float = 0.02  # 연속 청취 발화 임계 RMS
+    stt_echo_tail_ms: int = 180
+    voice_barge_in_enabled: bool = True
+    voice_wake_word_enabled: bool = False
+    voice_wake_words: str = "아이리스,Iris"
+    voice_followup_window_sec: int = 20
 
     tts_enabled: bool = False
     tts_mode: str = "off"  # off | manual | auto
@@ -64,6 +69,17 @@ class VoicePreferences:
     # 재생 단계에서만 적용하는 절제된 AI 비서 음향 효과. 원본 보이스 클론은 바꾸지 않는다.
     tts_ai_voice_fx_enabled: bool = True
     tts_ai_voice_fx_intensity: float = 0.75
+    # 재생 단계 피치(반음). 보이스 프로필은 그대로 두고 톤만 올린다.
+    tts_pitch_semitones: float = 1.5
+    # 알림·전화 낭독에 얹는 추가 부스트. 평소 말투와 구분돼 주의를 끈다.
+    tts_alert_pitch_boost: float = 2.0
+    # 알림·전화를 음성으로 읽어 줄지
+    alert_speech_enabled: bool = True
+    call_speech_enabled: bool = True
+    # 규칙 기반 음성 명령("전화 받아줘")을 모델보다 먼저 처리할지
+    voice_command_rules_enabled: bool = True
+    # 상황별 문장 힌트를 사이드바에 띄울지
+    voice_hint_visible: bool = True
     # qwen | qwen_custom | gpt_sovits
     tts_engine: str = "qwen"
     tts_custom_speaker: str = "iris"
@@ -114,6 +130,44 @@ def load_voice_preferences(db: Database) -> VoicePreferences:
     prefs.stt_speech_rms = _to_float(data.get("stt_speech_rms"), prefs.stt_speech_rms)
     if prefs.stt_speech_rms <= 0:
         prefs.stt_speech_rms = 0.02
+    try:
+        prefs.stt_echo_tail_ms = max(0, int(data.get("stt_echo_tail_ms", prefs.stt_echo_tail_ms)))
+    except (TypeError, ValueError):
+        prefs.stt_echo_tail_ms = 180
+    prefs.voice_barge_in_enabled = _to_bool(
+        data.get("voice_barge_in_enabled"), prefs.voice_barge_in_enabled
+    )
+    prefs.voice_wake_word_enabled = _to_bool(
+        data.get("voice_wake_word_enabled"), prefs.voice_wake_word_enabled
+    )
+    prefs.voice_wake_words = str(data.get("voice_wake_words", prefs.voice_wake_words) or "아이리스,Iris")
+    try:
+        prefs.voice_followup_window_sec = max(
+            1,
+            int(data.get("voice_followup_window_sec", prefs.voice_followup_window_sec)),
+        )
+    except (TypeError, ValueError):
+        prefs.voice_followup_window_sec = 20
+    for key, low, high in (
+        ("tts_pitch_semitones", -6.0, 6.0),
+        ("tts_alert_pitch_boost", 0.0, 6.0),
+    ):
+        try:
+            setattr(prefs, key, max(low, min(high, float(data.get(key, getattr(prefs, key))))))
+        except (TypeError, ValueError):
+            pass
+    prefs.alert_speech_enabled = _to_bool(
+        data.get("alert_speech_enabled"), prefs.alert_speech_enabled
+    )
+    prefs.call_speech_enabled = _to_bool(
+        data.get("call_speech_enabled"), prefs.call_speech_enabled
+    )
+    prefs.voice_command_rules_enabled = _to_bool(
+        data.get("voice_command_rules_enabled"), prefs.voice_command_rules_enabled
+    )
+    prefs.voice_hint_visible = _to_bool(
+        data.get("voice_hint_visible"), prefs.voice_hint_visible
+    )
     prefs.tts_enabled = _to_bool(data.get("tts_enabled"), prefs.tts_enabled)
     prefs.tts_mode = str(data.get("tts_mode", prefs.tts_mode) or prefs.tts_mode)
     prefs.tts_model = str(data.get("tts_model", prefs.tts_model) or prefs.tts_model)

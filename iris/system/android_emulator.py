@@ -19,6 +19,8 @@ DATA_DIR = ANDROID_EMU_DIR / "data"
 AVD_NAME = "IrisLight_Pixel"
 _SYSTEM_IMAGE = "system-images;android-36;google_apis_playstore_ps16k;x86_64"
 _DEVICE_ID = "pixel_9a"
+# 포인터 .ini 의 target= 값. _SYSTEM_IMAGE 의 API 레벨과 같아야 한다.
+_AVD_TARGET = "android-36"
 _DATA_PARTITION_SIZE = "32G"
 _SDCARD_SIZE = "2048M"
 # ponytail: 신규 AVD는 userdata 32G 생성이라 여유가 필요. 기존 이미지가 있으면 완화.
@@ -358,12 +360,99 @@ def _ensure_emulator_disk_space() -> None:
         )
 
 
+def avd_pointer_path() -> Path:
+    """AVD_HOME/<이름>.ini — 에뮬레이터가 .avd 폴더를 찾는 포인터."""
+    return AVD_HOME / f"{AVD_NAME}.ini"
+
+
+def system_image_dir() -> Path:
+    """config.ini 가 요구하는 시스템 이미지 경로."""
+    return _sdk_root() / Path(*_SYSTEM_IMAGE.replace(";", "/").split("/"))
+
+
+def repair_avd_pointer() -> bool:
+    """포인터 .ini 의 path 를 이 PC 기준으로 다시 쓴다.
+
+    저장소에 커밋된 `IrisLight_Pixel.ini` 에는 만든 사람 PC의 절대경로가
+    박혀 있다. 다른 PC에서 clone 하면 에뮬레이터가 config.ini 를 못 읽고
+    기본값(arm)으로 떨어져서 이렇게 죽는다:
+
+        CPU Architecture 'arm' is not supported by the QEMU2 emulator
+
+    원인이 경로라는 걸 알 방법이 메시지에 없다. 매 기동 전에 고쳐 둔다.
+    """
+    avd_dir = AVD_HOME / f"{AVD_NAME}.avd"
+    if not avd_dir.is_dir():
+        return False
+    pointer = avd_pointer_path()
+    desired = (
+        "avd.ini.encoding=UTF-8\n"
+        f"path={avd_dir}\n"
+        f"path.rel=avd/{AVD_NAME}.avd\n"
+        f"target={_AVD_TARGET}\n"
+    )
+    try:
+        if pointer.is_file() and pointer.read_text(encoding="utf-8") == desired:
+            return False
+        pointer.write_text(desired, encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def _stale_runtime_artifacts() -> list[Path]:
+    """다른 PC 경로가 박힌 채 굳어 버리는 런타임 산출물.
+
+    에뮬레이터가 기동할 때마다 다시 만드는 파일들인데, 저장소에 커밋돼
+    있으면 남의 SDK/AVD 경로를 그대로 물고 들어온다.
+    """
+    avd_dir = AVD_HOME / f"{AVD_NAME}.avd"
+    names = (
+        "hardware-qemu.ini",
+        "emulator-user.ini",
+        "quickbootChoice.ini",
+        "read-snapshot.txt",
+        "version_num.cache",
+    )
+    return [avd_dir / name for name in names if (avd_dir / name).is_file()]
+
+
+def _drop_foreign_runtime_artifacts() -> list[str]:
+    """이 PC 것이 아닌 경로를 담은 런타임 산출물만 지운다."""
+    marker = str(_sdk_root()).lower()
+    dropped: list[str] = []
+    for path in _stale_runtime_artifacts():
+        try:
+            body = path.read_text(encoding="utf-8", errors="ignore").lower()
+        except OSError:
+            continue
+        if marker in body:
+            continue  # 이 PC에서 만들어진 것 — 그대로 둔다
+        try:
+            path.unlink()
+            dropped.append(path.name)
+        except OSError:
+            pass
+    return dropped
+
+
 def ensure_avd() -> str:
-    """프로젝트 AVD가 없으면 생성하고 저장 용량을 늘린다."""
+    """프로젝트 AVD가 없으면 생성하고, 경로·저장 용량을 이 PC 기준으로 맞춘다."""
     AVD_HOME.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     cfg = avd_config_path()
     if cfg.is_file():
+        repair_avd_pointer()
+        _drop_foreign_runtime_artifacts()
+        image = system_image_dir()
+        if not image.is_dir():
+            raise FileNotFoundError(
+                f"시스템 이미지 없음: {image}\n"
+                f"Android Studio > SDK Manager 에서 '{_SYSTEM_IMAGE}' 를 설치하거나,\n"
+                f"sdkmanager \"{_SYSTEM_IMAGE}\" 로 내려받으세요.\n"
+                "(설치돼 있지 않으면 에뮬레이터가 arm 으로 잘못 떨어져 "
+                "\"CPU Architecture 'arm' is not supported\" 로 죽습니다.)"
+            )
         _patch_avd_storage(cfg)
         return AVD_NAME
 

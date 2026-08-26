@@ -1,0 +1,40 @@
+{
+  "trajectory": [
+    {
+      "step_idx": 1,
+      "caption": {
+        "observation": "The system is idle.",
+        "think": "I need to open the KakaoTalk application.",
+        "action": "Click on the KakaoTalk icon on the taskbar.",
+        "expectation": "KakaoTalk window becomes active."
+      }
+    },
+    {
+      "step_idx": 2,
+      "caption": {
+        "observation": "KakaoTalk is open, showing a list of chats.",
+        "think": "I need to find a specific chat or contact by scrolling through the list.",
+        "action": "Scroll down through the chat list multiple times.",
+        "expectation": "The desired chat or contact appears in the view."
+      }
+    },
+    {
+      "step_idx": 3,
+      "caption": {
+        "observation": "The target chat is now visible.",
+        "think": "I need to select the chat to start typing.",
+        "action": "Click on the selected chat item.",
+        "expectation": "The chat window opens and the cursor focuses on the text input field."
+      }
+    },
+    {
+      "step_idx": 4,
+      "caption": {
+        "observation": "The chat input field is active.",
+        "think": "I will type the message 'GMDMA...GHK' into the chat.",
+        "action": "Type 'GMDMA...GHK' using the keyboard.",
+        "expectation": "The text appears in the message input box."
+      }
+    }
+  ]
+}

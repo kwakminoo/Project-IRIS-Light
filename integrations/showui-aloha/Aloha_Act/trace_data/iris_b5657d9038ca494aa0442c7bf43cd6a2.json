@@ -1,0 +1,364 @@
+{
+  "trajectory": [
+    {
+      "step_idx": 1,
+      "caption": {
+        "observation": "UI in python.exe",
+        "think": "Interact with on-screen control",
+        "action": "Click at (1692, 567)",
+        "expectation": "UI responds to click"
+      }
+    },
+    {
+      "step_idx": 2,
+      "caption": {
+        "observation": "Foreground changed to KakaoTalk.exe",
+        "think": "Track application context",
+        "action": "Focus KakaoTalk.exe",
+        "expectation": "Target app is active"
+      }
+    },
+    {
+      "step_idx": 3,
+      "caption": {
+        "observation": "UI in KakaoTalk.exe",
+        "think": "Interact with on-screen control",
+        "action": "Click at (1692, 567)",
+        "expectation": "UI responds to click"
+      }
+    },
+    {
+      "step_idx": 4,
+      "caption": {
+        "observation": "UI in KakaoTalk.exe",
+        "think": "Interact with on-screen control",
+        "action": "Click at (1670, 650)",
+        "expectation": "UI responds to click"
+      }
+    },
+    {
+      "step_idx": 5,
+      "caption": {
+        "observation": "UI in KakaoTalk.exe",
+        "think": "Interact with on-screen control",
+        "action": "Click at (1670, 650)",
+        "expectation": "UI responds to click"
+      }
+    },
+    {
+      "step_idx": 6,
+      "caption": {
+        "observation": "UI in KakaoTalk.exe",
+        "think": "Interact with on-screen control",
+        "action": "Click at (1670, 650)",
+        "expectation": "UI responds to click"
+      }
+    },
+    {
+      "step_idx": 7,
+      "caption": {
+        "observation": "Foreground changed to KakaoTalk.exe",
+        "think": "Track application context",
+        "action": "Focus KakaoTalk.exe",
+        "expectation": "Target app is active"
+      }
+    },
+    {
+      "step_idx": 8,
+      "caption": {
+        "observation": "UI in KakaoTalk.exe",
+        "think": "Interact with on-screen control",
+        "action": "Click at (1670, 650)",
+        "expectation": "UI responds to click"
+      }
+    },
+    {
+      "step_idx": 9,
+      "caption": {
+        "observation": "UI in KakaoTalk.exe",
+        "think": "Interact with on-screen control",
+        "action": "Click at (787, 275)",
+        "expectation": "UI responds to click"
+      }
+    },
+    {
+      "step_idx": 10,
+      "caption": {
+        "observation": "UI in KakaoTalk.exe",
+        "think": "Interact with on-screen control",
+        "action": "Click at (787, 275)",
+        "expectation": "UI responds to click"
+      }
+    },
+    {
+      "step_idx": 11,
+      "caption": {
+        "observation": "Text input in KakaoTalk.exe",
+        "think": "Enter text or shortcut",
+        "action": "Type 'TMZPWNF'",
+        "expectation": "Input accepted"
+      }
+    },
+    {
+      "step_idx": 12,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 13,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 14,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 15,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 16,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 17,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 18,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 19,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 20,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 21,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 22,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 23,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 24,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 25,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 26,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 27,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 28,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 29,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 30,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 31,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 32,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 33,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 34,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 35,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 36,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 37,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 38,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 39,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    },
+    {
+      "step_idx": 40,
+      "caption": {
+        "observation": "Scrollable content in KakaoTalk.exe",
+        "think": "Reveal more content",
+        "action": "Scroll",
+        "expectation": "Viewport updates"
+      }
+    }
+  ]
+}

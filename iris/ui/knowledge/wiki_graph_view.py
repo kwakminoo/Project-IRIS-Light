@@ -151,7 +151,9 @@ class WikiGraphView(QWidget):
                 shell_a = (mi * 2.399963229728653 + fi * 0.7) % (math.pi * 2)
                 shell_z = 1.0 - 2.0 * ((mi + 0.5) / max(m, 1))
                 shell_r = math.sqrt(max(0.0, 1.0 - shell_z * shell_z))
-                cluster_r = min(0.24, 0.10 + 0.006 * m)
+                # ponytail: 상한을 0.14로 낮춰 노트 수가 많은 폴더(코드/ui 등)가
+                # 구체를 독점하지 않게 함; 업그레이드 시 0.18~0.22로 올릴 것
+                cluster_r = min(0.14, 0.10 + 0.006 * m)
                 x3 = hub_pos[0] + cluster_r * shell_r * math.cos(shell_a)
                 y3 = hub_pos[1] + cluster_r * shell_r * math.sin(shell_a)
                 z3 = hub_pos[2] + cluster_r * shell_z

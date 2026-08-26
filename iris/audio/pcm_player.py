@@ -5,6 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 
+from iris.audio.aec import PlaybackTap
 from iris.audio.pcm_stream import DEFAULT_SAMPLE_RATE, START_MS, should_open_speakers
 from iris.audio.voice_effects import VoiceAssistantEffect
 
@@ -25,6 +26,7 @@ class PcmPlayer(QObject):
         self._opened = False
         self._ending = False
         self._voice_effect = VoiceAssistantEffect(self._sr)
+        self._tap = PlaybackTap(self._sr)
 
     def is_open(self) -> bool:
         return self._opened
@@ -41,6 +43,13 @@ class PcmPlayer(QObject):
         """모델의 음색은 그대로 두고 speaker PCM에만 AI 비서 질감을 더한다."""
         self._voice_effect.configure(enabled=enabled, intensity=intensity)
 
+    def set_voice_pitch(self, semitones: float) -> None:
+        """재생 톤(반음). 알림·전화 낭독은 여기에 부스트를 얹는다."""
+        self._voice_effect.set_pitch(semitones)
+
+    def voice_pitch(self) -> float:
+        return self._voice_effect.pitch_semitones
+
     def set_format(self, sample_rate: int) -> None:
         rate = int(sample_rate or DEFAULT_SAMPLE_RATE)
         if rate == self._sr:
@@ -49,6 +58,7 @@ class PcmPlayer(QObject):
         self.stop()
         self._sr = rate
         self._voice_effect.set_sample_rate(rate)
+        self._tap.set_sample_rate(rate)
         if had:
             self.failed.emit("샘플레이트가 바뀌어 재생을 다시 시작합니다.")
 
@@ -88,6 +98,17 @@ class PcmPlayer(QObject):
         if self._sink is not None and self._sink.state() == QAudio.State.IdleState:
             self.stop()
             self.drained.emit()
+
+    def farend_canonical(self, n_bytes: int, delay_ms: int = 180) -> bytes:
+        """지금 스피커에서 나오는 구간에 가깝게 맞춘 16 kHz int16 far-end."""
+        processed = None
+        sink = self._sink
+        if sink is not None:
+            try:
+                processed = int(sink.processedUSecs() * self._sr / 1_000_000)
+            except Exception:
+                processed = None
+        return self._tap.farend_canonical(n_bytes, delay_ms, processed_samples=processed)
 
     def stop(self) -> None:
         self._buf.clear()
@@ -139,6 +160,7 @@ class PcmPlayer(QObject):
         self._sink = sink
         self._io = io
         self._opened = True
+        self._tap.clear()
         pending = bytes(self._buf)
         self._buf.clear()
         if pending:
@@ -158,6 +180,8 @@ class PcmPlayer(QObject):
                     # 버퍼가 가득 차면 남은 분량을 보관해 다음 feed/state 전환 때 재시도
                     self._buf.extend(view[offset:])
                     break
+                if n > 0:
+                    self._tap.push(bytes(view[offset : offset + n]))
                 offset += n
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"PCM 쓰기 실패: {exc}")

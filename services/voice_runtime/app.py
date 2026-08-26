@@ -10,7 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -133,6 +133,90 @@ def transcribe(req: TranscribeRequest) -> Any:
         )
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/v1/audio/transcriptions/raw", response_model=TranscribeResponse)
+async def transcribe_raw(
+    request: Request,
+    model_name: str = "small",
+    language: str = "ko",
+    vad_filter: bool = True,
+    beam_size: int = 5,
+    condition_on_previous_text: bool = False,
+) -> Any:
+    try:
+        wav_bytes = await request.body()
+        res = stt_service.transcribe_wav_bytes(
+            wav_bytes,
+            model_name=model_name,
+            language=language,
+            vad_filter=vad_filter,
+            beam_size=beam_size,
+            condition_on_previous_text=condition_on_previous_text,
+        )
+        return TranscribeResponse(
+            text=res.text,
+            language=res.language,
+            language_probability=res.language_probability,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+class STTWarmupRequest(BaseModel):
+    model_name: str = "small"
+    wait: bool = False
+
+
+class STTWarmupResponse(BaseModel):
+    accepted: bool
+    scheduled: bool = False
+    loaded: bool = False
+    already: bool = False
+    mock: bool = False
+
+
+_STT_WARMUPS: set[str] = set()
+_STT_WARMUP_LOCK = threading.Lock()
+
+
+def schedule_stt_warmup(model_name: str) -> bool:
+    with _STT_WARMUP_LOCK:
+        if model_name in _STT_WARMUPS or stt_service.is_loaded(model_name):
+            return False
+        _STT_WARMUPS.add(model_name)
+
+    def _run() -> None:
+        try:
+            stt_service.warmup(model_name)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("STT warmup failed (%s): %s", model_name, exc)
+        finally:
+            with _STT_WARMUP_LOCK:
+                _STT_WARMUPS.discard(model_name)
+
+    threading.Thread(target=_run, name="iris-stt-warmup", daemon=True).start()
+    return True
+
+
+@app.post("/v1/audio/stt/warmup", response_model=STTWarmupResponse)
+def stt_warmup(req: STTWarmupRequest) -> Any:
+    if CONFIG.mock_mode:
+        return STTWarmupResponse(accepted=True, loaded=True, already=True, mock=True)
+    if req.wait:
+        try:
+            status = stt_service.warmup(req.model_name)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return STTWarmupResponse(**status, scheduled=False)
+    scheduled = schedule_stt_warmup(req.model_name)
+    return STTWarmupResponse(
+        accepted=True,
+        scheduled=scheduled,
+        loaded=stt_service.is_loaded(req.model_name),
+        already=stt_service.is_loaded(req.model_name) and not scheduled,
+        mock=False,
+    )
 
 
 class VoicePrepareRequest(BaseModel):

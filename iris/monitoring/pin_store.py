@@ -76,6 +76,7 @@ class PinStore:
                 return False
             self._pins[key] = PinnedTarget(title=title.strip(), hwnd=int(hwnd or 0))
             self._save()
+        self._register_target(title.strip(), hwnd)
         return True
 
     def unpin(self, title: str) -> bool:
@@ -85,6 +86,7 @@ class PinStore:
                 return False
             del self._pins[key]
             self._save()
+        self._disable_target(title)
         return True
 
     def toggle(self, title: str, hwnd: int = 0) -> tuple[bool, str]:
@@ -146,7 +148,9 @@ class PinStore:
             t.recommended_action = recommended_action
             t.last_checked_at = checked_at
             t.analyzing = False
-            return previous
+            persist_title = t.title
+        self._persist_status(persist_title, status, reason, checked_at)
+        return previous
 
     # ------------------------------------------------------------------
     # 영속화 — user_preferences에 제목 목록만
@@ -162,11 +166,97 @@ class PinStore:
             return
         if not isinstance(titles, list):
             return
+        restored: list[str] = []
         with self._lock:
             for title in titles[:MAX_PINS]:
                 key = self._key(str(title))
                 if key:
-                    self._pins[key] = PinnedTarget(title=str(title).strip())
+                    name = str(title).strip()
+                    self._pins[key] = PinnedTarget(title=name)
+                    restored.append(name)
+        # 재시작 후에도 카드가 지난 세션의 마지막 상태를 보여줄 수 있도록 되살린다
+        for name in restored:
+            self._register_target(name, 0)
+        self._restore_last_status(restored)
+
+    # ------------------------------------------------------------------
+    # targets 테이블 연동
+    #
+    # 이 연동이 없으면 targets 는 영원히 비어 있고,
+    # unified_monitor_panel 의 "상태: …" 블록이 한 번도 그려지지 않는다.
+    # DB 실패가 감시 기능 자체를 멈추면 안 되므로 전부 삼킨다.
+    # ------------------------------------------------------------------
+
+    def _register_target(self, title: str, hwnd: int) -> None:
+        if self._db is None:
+            return
+        try:
+            self._db.upsert_target(
+                title,
+                kind="desktop_window",
+                handle=str(int(hwnd or 0)),
+                enabled=True,
+            )
+        except Exception:
+            pass
+
+    def _disable_target(self, title: str) -> None:
+        if self._db is None:
+            return
+        try:
+            self._db.set_target_enabled_by_title(title, False)
+        except Exception:
+            pass
+
+    def _persist_status(
+        self, title: str, status: StatusCategory, reason: str, checked_at: str
+    ) -> None:
+        if self._db is None:
+            return
+        try:
+            self._db.update_target_status(
+                title,
+                status=status.value,
+                last_event=reason or "",
+                last_checked_at=checked_at or "",
+            )
+        except Exception:
+            pass
+
+    def _restore_last_status(self, titles: list[str]) -> None:
+        """지난 세션의 마지막 분석 결과를 메모리 핀에 되살린다.
+
+        analyzing 은 켜지 않는다 — 실제 분석은 워커가 다시 돌 때 갱신된다."""
+        if self._db is None or not titles:
+            return
+        try:
+            rows = self._db.list_targets(True)
+        except Exception:
+            return
+        by_title = {}
+        for row in rows:
+            try:
+                by_title[self._key(str(row["title"] or ""))] = row
+            except Exception:
+                continue
+        with self._lock:
+            for name in titles:
+                key = self._key(name)
+                target = self._pins.get(key)
+                row = by_title.get(key)
+                if target is None or row is None:
+                    continue
+                try:
+                    target.status = StatusCategory(str(row["status"] or "UNKNOWN"))
+                except ValueError:
+                    target.status = StatusCategory.UNKNOWN
+                except Exception:
+                    continue
+                try:
+                    target.reason = str(row["last_event"] or "")
+                    target.last_checked_at = str(row["last_checked_at"] or "")
+                except Exception:
+                    pass
 
     def _save(self) -> None:
         """호출 측이 이미 락을 잡고 있어야 한다."""

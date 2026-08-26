@@ -23,6 +23,7 @@ SKILL_NAMES = (
     "iris-vibe-code",
     "iris-emulator",
     "iris-mobile-mcp",
+    "iris-learning",
 )
 
 

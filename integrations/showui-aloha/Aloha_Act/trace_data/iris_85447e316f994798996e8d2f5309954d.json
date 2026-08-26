@@ -1,0 +1,67 @@
+{
+  "trajectory": [
+    {
+      "step_idx": 1,
+      "caption": {
+        "observation": "The user is on the desktop.",
+        "think": "I need to launch the web browser.",
+        "action": "click @(765.0,1054.0)",
+        "expectation": "Chrome browser opens."
+      }
+    },
+    {
+      "step_idx": 2,
+      "caption": {
+        "observation": "Chrome is open.",
+        "think": "I need to navigate to the search bar or a specific website.",
+        "action": "click @(699.0,586.0)",
+        "expectation": "Search bar or link is focused."
+      }
+    },
+    {
+      "step_idx": 3,
+      "caption": {
+        "observation": "The browser page has loaded.",
+        "think": "I will click on the address bar or navigation menu.",
+        "action": "click @(263.0,93.0)",
+        "expectation": "Address bar is active."
+      }
+    },
+    {
+      "step_idx": 4,
+      "caption": {
+        "observation": "The page is displayed.",
+        "think": "I need to interact with a specific element on the right side of the page.",
+        "action": "click @(1235.0,512.0)",
+        "expectation": "Element is selected."
+      }
+    },
+    {
+      "step_idx": 5,
+      "caption": {
+        "observation": "The user is viewing a list or a long page.",
+        "think": "I need to scroll down to find the target item.",
+        "action": "scroll @(1666.0,577.0)",
+        "expectation": "Page scrolls down."
+      }
+    },
+    {
+      "step_idx": 6,
+      "caption": {
+        "observation": "The target element is now visible.",
+        "think": "I will click on the desired item.",
+        "action": "click @(1231.0,836.0)",
+        "expectation": "Target item is clicked."
+      }
+    },
+    {
+      "step_idx": 7,
+      "caption": {
+        "observation": "A new section or page has opened.",
+        "think": "I need to scroll further to review the content.",
+        "action": "scroll @(1079.0,756.0)",
+        "expectation": "Page scrolls down further."
+      }
+    }
+  ]
+}
