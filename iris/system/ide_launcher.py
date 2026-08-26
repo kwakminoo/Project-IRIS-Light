@@ -541,6 +541,18 @@ def wait_for_new_ide_window(
     return None, last_pid, ""
 
 
+# VS Code/Cursor 등은 Electron 앱 — 이 변수가 상속되면 GUI 대신 내장 Node.js로
+# 떠서 창이 하나도 안 생긴다 (Iris가 VS Code 통합 터미널/확장에서 실행될 때 흔함).
+_ELECTRON_HIJACK_ENV_VARS = ("ELECTRON_RUN_AS_NODE",)
+
+
+def _sanitized_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for key in _ELECTRON_HIJACK_ENV_VARS:
+        env.pop(key, None)
+    return env
+
+
 def _popen_detached(
     cmd: list[str],
     *,
@@ -562,6 +574,7 @@ def _popen_detached(
             stdin=subprocess.DEVNULL,
             creationflags=creationflags,
             shell=use_shell,
+            env=_sanitized_env(),
         )
         return int(proc.pid), ""
     except OSError as exc:
@@ -714,6 +727,7 @@ def open_file_in_ide(
             stdin=subprocess.DEVNULL,
             creationflags=creationflags,
             shell=use_shell,
+            env=_sanitized_env(),
         )
         return True, ""
     except OSError as exc:

@@ -73,6 +73,7 @@ from iris.system.ide_launcher import (
 )
 from iris.system.ide_tiler import (
     compute_tile_rects,
+    is_ide_maximized,
     place_hwnd,
     place_qt_window,
     read_ide_rect,
@@ -154,6 +155,9 @@ class IdeSession:
     mode: str = "welcome"  # "welcome" | "workspace"
     source: str = "icon"  # "icon" | "chat"
     last_seen_at: float = 0.0
+
+
+MIN_COMPANION_IRIS_WIDTH = 260  # companion sync가 Iris 폭을 0으로 밀지 않도록 하는 하한선
 
 
 class MainWindow(QMainWindow):
@@ -3165,6 +3169,16 @@ class MainWindow(QMainWindow):
         if current_ide is None:
             return
 
+        work = work_area_for(self)
+
+        # IDE가 최대화되면 GetWindowRect가 work area 전체를 돌려준다 — 이걸
+        # "사용자가 창 경계를 끝까지 드래그했다"로 오인하면 Iris 폭이 0으로
+        # 밀려 화면 밖으로 사라진다. 최대화는 드래그가 아니라 80:20 강제 복원 대상.
+        if is_ide_maximized(self._ide_hwnd, current_ide, work):
+            tile_ide_and_iris(self._ide_hwnd, self, ide_ratio=0.8, ide_pid=self._ide_pid)
+            self._record_synced_rects()
+            return
+
         ide_changed = (
             self._last_synced_ide_rect is None or current_ide != self._last_synced_ide_rect
         )
@@ -3174,11 +3188,12 @@ class MainWindow(QMainWindow):
         if not ide_changed and not iris_changed:
             return
 
-        work = work_area_for(self)
         if ide_changed:
-            # IDE 오른쪽 끝을 새 경계로 — Iris는 남은 폭을 채운다.
+            # IDE 오른쪽 끝을 새 경계로 — Iris는 남은 폭을 채운다 (최소 폭 보장).
             iris_left = max(work.left(), min(current_ide.left() + current_ide.width(), work.right()))
-            iris_rect = QRect(iris_left, work.top(), work.left() + work.width() - iris_left, work.height())
+            iris_width = max(MIN_COMPANION_IRIS_WIDTH, work.left() + work.width() - iris_left)
+            iris_left = min(iris_left, work.left() + work.width() - iris_width)
+            iris_rect = QRect(iris_left, work.top(), iris_width, work.height())
             place_qt_window(self, iris_rect)
             self._last_synced_ide_rect = current_ide
             self._last_synced_iris_rect = QRect(self.geometry())
@@ -3641,7 +3656,7 @@ class MainWindow(QMainWindow):
             self._show_assistant_workspace()
 
             iris = self._companion_iris_rect()
-            self.setMinimumSize(min(260, iris.width()), min(480, iris.height()))
+            self.setMinimumSize(min(MIN_COMPANION_IRIS_WIDTH, iris.width()), min(480, iris.height()))
             self._root_lay.setContentsMargins(6, 4, 6, 4)
             self._mount_companion_body(iris.width(), iris.height())
 

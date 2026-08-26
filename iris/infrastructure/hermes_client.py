@@ -147,8 +147,11 @@ class HermesClient:
             raise RuntimeError(errors[-1])
 
     def _set_model_via_api(self, model: str, provider: str, errors: list[str]) -> bool:
+        # Hermes(0.19+)엔 'ollama' provider가 없다 — 로컬 OpenAI-compat 프록시는
+        # 'custom'으로 등록해야 한다 (base_url은 아래에서 그대로 127.0.0.1:11434).
+        hermes_provider = "custom" if provider == "ollama" else provider
         payload = json.dumps(
-            {"scope": "main", "provider": provider, "model": model}
+            {"scope": "main", "provider": hermes_provider, "model": model}
         ).encode("utf-8")
         for path in (f"{self.api_root}/api/model/set", f"{self.api_root}/api/model/set/"):
             try:
@@ -175,8 +178,11 @@ class HermesClient:
         if not exe:
             errors.append(f"Hermes CLI 실행 파일을 찾을 수 없습니다: {self.command}")
             return False
+        # Hermes(0.19+)엔 'ollama' provider가 없다 — 로컬 OpenAI-compat 프록시는
+        # 'custom'으로 등록해야 한다 (base_url은 아래에서 그대로 127.0.0.1:11434).
+        hermes_provider = "custom" if provider == "ollama" else provider
         cmds = [
-            [exe, "config", "set", "model.provider", provider],
+            [exe, "config", "set", "model.provider", hermes_provider],
             [exe, "config", "set", "model.default", model],
         ]
         # 로컬 Ollama 프록시 — cloud 모델도 :11434 경유

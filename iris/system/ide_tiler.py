@@ -16,6 +16,36 @@ class TileRects:
     iris: QRect
 
 
+def _dpi_scale_for_hwnd(hwnd: int) -> float:
+    """hwnd가 있는 모니터의 DPI 배율 (100%=1.0, 200%=2.0).
+
+    Qt의 availableGeometry/geometry는 DIP(논리 픽셀)인데, win32 GetWindowRect/
+    SetWindowPos는 PHYSICAL(실제) 픽셀을 쓴다 — 200% 배율 모니터에서 DIP 좌표를
+    그대로 SetWindowPos에 넘기면 창이 실제 크기의 절반으로 배치된다
+    (예: 의도한 폭 1152가 physical 1152px = DIP 576px로 보임)."""
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        get_dpi = getattr(user32, "GetDpiForWindow", None)
+        if get_dpi is not None:
+            dpi = int(get_dpi(hwnd))
+            if dpi > 0:
+                return dpi / 96.0
+    except Exception:
+        pass
+    return 1.0
+
+
+def _scale_rect(rect: QRect, factor: float) -> QRect:
+    return QRect(
+        round(rect.left() * factor),
+        round(rect.top() * factor),
+        round(rect.width() * factor),
+        round(rect.height() * factor),
+    )
+
+
 def work_area_for(widget: QWidget) -> QRect:
     """Iris가 있는 모니터의 availableGeometry (작업 표시줄 제외)."""
     screen = widget.screen()
@@ -112,7 +142,12 @@ def read_ide_rect(hwnd: int, *, pid: int | None = None) -> QRect | None:
         if not win32gui.IsWindow(hwnd):
             return None
         left, top, right, bot = win32gui.GetWindowRect(hwnd)
-        return QRect(left, top, right - left, bot - top)
+        physical = QRect(left, top, right - left, bot - top)
+        # GetWindowRect는 physical 픽셀 — Qt(DIP) 좌표계와 맞춰 반환
+        scale = _dpi_scale_for_hwnd(hwnd)
+        if scale != 1.0:
+            return _scale_rect(physical, 1.0 / scale)
+        return physical
     except Exception:
         return None
 
@@ -138,18 +173,41 @@ def place_hwnd(hwnd: int, rect: QRect, *, pid: int | None = None) -> tuple[bool,
             pass
         if win32gui.IsIconic(hwnd):
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        # SetWindowPos는 physical 픽셀을 기대 — rect는 Qt(DIP) 좌표계이므로
+        # 배율을 곱해 physical로 변환 (안 하면 200% 배율에서 절반 크기로 배치됨)
+        scale = _dpi_scale_for_hwnd(hwnd)
+        physical = _scale_rect(rect, scale) if scale != 1.0 else rect
         win32gui.SetWindowPos(
             hwnd,
             win32con.HWND_TOP,
-            int(rect.left()),
-            int(rect.top()),
-            int(rect.width()),
-            int(rect.height()),
+            int(physical.left()),
+            int(physical.top()),
+            int(physical.width()),
+            int(physical.height()),
             win32con.SWP_SHOWWINDOW | win32con.SWP_FRAMECHANGED,
         )
         return True, "ok"
     except Exception as exc:
         return False, str(exc)
+
+
+def is_ide_maximized(hwnd: int, rect: QRect | None, work: QRect) -> bool:
+    """IDE 창이 최대화(또는 work area 전체를 덮음) 상태인지.
+
+    Windows는 IsZoomed로 정확히 판정한다. macOS(HWND 없음) 등은 rect가 work area를
+    거의 다 덮었는지로 근사한다 — 이 경우를 "사용자 드래그"로 오인해 companion
+    sync가 Iris 폭을 0으로 밀어버리는 버그를 막기 위한 판정이다."""
+    if sys.platform == "win32" and hwnd > 0:
+        try:
+            import win32gui  # type: ignore
+
+            if win32gui.IsWindow(hwnd):
+                return bool(win32gui.IsZoomed(hwnd))
+        except Exception:
+            pass
+    if rect is None:
+        return False
+    return rect.width() >= work.width() * 0.92 and rect.height() >= work.height() * 0.85
 
 
 def place_qt_window(window: QWidget, rect: QRect) -> None:
