@@ -196,6 +196,7 @@ class MainWindow(QMainWindow):
         self._history: list[dict[str, str]] = []
         self._last_assistant_text = ""
         self._pending_local_vibe_prompt = ""
+        self._live_vibe: dict | None = None
         self._chat_worker: QThread | None = None
         self._stt_warmup_worker: STTWarmupWorker | None = None
         self._stt_warmup_model = ""
@@ -1275,12 +1276,12 @@ class MainWindow(QMainWindow):
         self._chat.set_generating(True)
         self._sync_voice_conversation_state()
 
-        try:
-            from iris.system.project_ops import is_code_reveal_request
-
-            self._pending_local_vibe_prompt = text if is_code_reveal_request(text) else ""
-        except Exception:
-            self._pending_local_vibe_prompt = ""
+        # ponytail: 트리거 키워드 체크 없이 항상 후보로 둔다 — 실제 게이트는
+        # _feed_live_vibe_stream/_try_reveal_local_vibe_code의 코드블록 감지
+        # (응답에 코드블록이 있어야만 IDE를 연다). 사용자 문구에 "코드/프로그램" 등이
+        # 없어도 (예: "웹사이트 만들어줘") AI가 코드로 답하면 연출이 뜨게 하기 위함.
+        self._pending_local_vibe_prompt = text
+        self._live_vibe = None
 
         if self._use_hermes_backend():
             messages = self._chat_messages_with_project_context()
@@ -1513,6 +1514,7 @@ class MainWindow(QMainWindow):
             self._mark_tts_perf("llm_first_content")
         self._chat.append_stream_chunk(chunk)
         self._feed_tts_stream(chunk)
+        self._feed_live_vibe_stream(chunk)
 
     def _feed_tts_stream(self, chunk: str, *, flush: bool = False) -> None:
         pump = self._tts_pump
@@ -1616,9 +1618,142 @@ class MainWindow(QMainWindow):
                 self._chat.set_speaker_status(self._tts_active_msg_id, status)
         self._finish_current_turn(open_followup=True)
 
+    def _feed_live_vibe_stream(self, chunk: str) -> None:
+        """AI 응답이 스트리밍되는 도중 코드블록을 감지해 IDE에 실시간으로 흘려쓴다.
+
+        토큰이 도착하는 속도 그대로 파일에 반영되므로, 답변이 다 끝난 뒤
+        재생하는 게 아니라 코드가 만들어지는 것과 동시에 타이핑처럼 보인다.
+        어떤 이유로든 실패하면 조용히 포기하고, 턴이 끝날 때
+        _try_reveal_local_vibe_code가 기존(사후 재생) 방식으로 폴백한다.
+        """
+        if not chunk or not self._pending_local_vibe_prompt:
+            return
+        state = self._live_vibe
+        if state is None:
+            state = self._live_vibe = {"raw": "", "started": False, "closed": False}
+        if state["closed"]:
+            return
+        try:
+            state["raw"] += chunk
+            if not state["started"]:
+                self._live_vibe_try_start(state)
+                if not state["started"]:
+                    return
+            self._live_vibe_flush(state)
+        except Exception:  # noqa: BLE001
+            state["closed"] = True
+
+    def _live_vibe_try_start(self, state: dict) -> None:
+        raw = state["raw"]
+        fence_idx = raw.find("```")
+        if fence_idx < 0:
+            if len(raw) > 4000:
+                state["raw"] = raw[-4000:]
+            return
+        nl_idx = raw.find("\n", fence_idx)
+        if nl_idx < 0:
+            return  # lang 태그 줄이 아직 안 끝남 — 다음 청크 대기
+        lang = raw[fence_idx + 3 : nl_idx].strip()
+        if not self._live_vibe_open_target(state, lang):
+            state["closed"] = True
+            return
+        state["started"] = True
+        state["code_start"] = nl_idx + 1
+        state["written_len"] = 0
+        state["last_write_at"] = 0.0
+
+    def _live_vibe_open_target(self, state: dict, lang: str) -> bool:
+        surface = getattr(self, "_control_surface", None)
+        if surface is None:
+            return False
+        profile = load_user_profile(self._db)
+        root = (profile.project_root or "").strip()
+        if not root:
+            return False
+        # ponytail(사고): 여기서 ide.open_folder를 동기 호출하면 안 됨 — 그 안의
+        # 대기 루프가 QApplication.processEvents()를 반복 호출하는데, 이게 아직
+        # 스트리밍 중인 Hermes worker의 content_chunk 시그널을 큐에서 꺼내 재전달해
+        # _on_content_chunk가 "이 함수 안에서" 재진입된다. 재진입된 호출도 아직
+        # started=False라 ide.open_folder를 또 호출 → 창이 여러 개 뜨고 세션/턴
+        # 상태가 꼬여 응답이 빈 값으로 끝나버리는 사고가 있었다. 그래서 companion이
+        # 이미 workspace로 붙어있을 때만(빠른 체크, blocking 없음) 라이브 타이핑을
+        # 시도하고, 안 붙어있으면 새로 열지 않고 _try_reveal_local_vibe_code의
+        # 사후 재생 폴백에 맡긴다.
+        session = self._get_bound_ide_session(refresh=True)
+        if (
+            self._ui_mode != "ide_companion"
+            or session is None
+            or session.mode != "workspace"
+            or not session.hwnd
+        ):
+            return False
+
+        from iris.automation.ide_input import open_file_in_workspace, wait_ide_shows_file
+        from iris.system.project_ops import default_generated_rel_path, resolve_under_root
+
+        rel = default_generated_rel_path(self._pending_local_vibe_prompt, lang)
+        try:
+            _root, abs_path, norm_rel = resolve_under_root(root, rel)
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text("", encoding="utf-8")
+        except (OSError, ValueError):
+            return False
+
+        hwnd = int(session.hwnd)
+        opened = bool(
+            open_file_in_workspace(
+                hwnd, str(abs_path), workspace_root=session.workspace_root, pid=session.pid
+            )
+        )
+        if opened:
+            wait_ide_shows_file(hwnd, str(abs_path), timeout_sec=6.0)
+
+        state["abs_path"] = abs_path
+        state["root"] = root
+        state["rel"] = norm_rel
+        state["hwnd"] = hwnd
+        state["opened"] = opened
+        return True
+
+    def _live_vibe_flush(self, state: dict) -> None:
+        tail = state["raw"][state["code_start"] :]
+        close_idx = tail.find("```")
+        if close_idx >= 0:
+            final_code = tail[:close_idx].strip("\n")
+            self._live_vibe_write(state, final_code)
+            state["closed"] = True
+            state["finished"] = True
+            return
+        # 청크 경계에서 닫는 ``` 가 쪼개져 올 수 있어 마지막 2글자는 보류
+        safe_len = max(0, len(tail) - 2)
+        if safe_len <= state["written_len"]:
+            return
+        # ponytail: 토큰마다 디스크에 풀 rewrite 하면 그 동기 I/O가 채팅 렌더링
+        # 스레드를 막아 응답 전체가 느려짐 — 일정 시간/분량 모일 때만 쓴다
+        # (닫는 펜스를 만나면 위에서 무조건 즉시 flush 하므로 마지막 조각은 항상 반영됨).
+        now = time.monotonic()
+        grown_enough = (safe_len - state["written_len"]) >= 40
+        time_enough = (now - state["last_write_at"]) >= 0.12
+        if not (grown_enough or time_enough):
+            return
+        self._live_vibe_write(state, tail[:safe_len])
+        state["written_len"] = safe_len
+        state["last_write_at"] = now
+
+    def _live_vibe_write(self, state: dict, text: str) -> None:
+        abs_path = state.get("abs_path")
+        if abs_path is None:
+            return
+        try:
+            abs_path.write_text(text, encoding="utf-8")
+        except OSError:
+            pass
+
     def _try_reveal_local_vibe_code(self, assistant_text: str) -> None:
         prompt = self._pending_local_vibe_prompt
+        state = self._live_vibe
         self._pending_local_vibe_prompt = ""
+        self._live_vibe = None
         if not prompt:
             return
         surface = getattr(self, "_control_surface", None)
@@ -1626,11 +1761,29 @@ class MainWindow(QMainWindow):
             self._chat.append_message_instant("Iris", "IDE 제어면이 아직 준비되지 않았습니다.")
             return
         try:
-            from iris.system.project_ops import (
-                default_generated_rel_path,
-                extract_first_code_block,
-                is_run_request,
-            )
+            from iris.system.project_ops import is_run_request
+
+            if state is not None and state.get("started"):
+                # 실시간 스트리밍으로 이미 IDE에 타이핑됐다 — 안 끝났으면 남은 부분만 마저 쓴다.
+                if not state.get("finished"):
+                    tail = state["raw"][state["code_start"] :].strip("\n")
+                    self._live_vibe_write(state, tail)
+                root = state.get("root", "")
+                rel = state.get("rel", "")
+                if not is_run_request(prompt):
+                    self._chat.append_message_instant("Iris", f"IDE에 `{rel}` 파일을 열었습니다.")
+                    return
+                ran = surface.registry.invoke(
+                    "project.run",
+                    {"project_root": root, "file": rel, "reveal_terminal": True},
+                )
+                result = ran.get("result") if isinstance(ran.get("result"), dict) else {}
+                summary = result.get("summary") or ran.get("error") or "실행 요청을 보냈습니다."
+                self._chat.append_message_instant("Iris", f"IDE 터미널 실행: {summary}")
+                return
+
+            # 실시간 스트리밍이 시작되지 못했을 때(project_root 미설정 등)의 폴백 — 사후 재생.
+            from iris.system.project_ops import default_generated_rel_path, extract_first_code_block
 
             block = extract_first_code_block(assistant_text)
             if not block:
@@ -4122,18 +4275,27 @@ class MainWindow(QMainWindow):
             _time.sleep(0.35)
         except Exception:
             pass
-        open_folder_in_ide(
-            ide_id,
-            root_s,
-            ide_exe_path=profile.ide_exe_path,
-            ide_cli_path=profile.ide_cli_path,
-            new_window=False,
-            reuse_window=True,
-        )
-        # 제목에 폴더명이 붙을 때까지 짧게 대기 (없어도 새 창으로 Companion)
-        label_deadline = _time.monotonic() + 4.0
+        # ponytail: cold start(Cursor/VS Code가 아예 안 떠 있던 상태)면 방금 뜬 창의
+        # IPC가 아직 안 붙었을 수 있어 이 reuse-window 명령이 조용히 씹힐 수 있다 —
+        # 그러면 창은 계속 이전 프로젝트를 보여주는데 Iris는 root_s로 bound됐다고
+        # 착각해서, "새로 켰는데 예전에 작업하던 창이 뜬다"는 현상으로 보인다.
+        # 그래서 제목이 확인될 때까지 폴링하면서 주기적으로 재전송한다.
+        deadline_reuse_retry = 0.0
+        label_deadline = _time.monotonic() + 8.0
+        matched = False
         while _time.monotonic() < label_deadline:
             QApplication.processEvents()
+            now = _time.monotonic()
+            if now >= deadline_reuse_retry:
+                open_folder_in_ide(
+                    ide_id,
+                    root_s,
+                    ide_exe_path=profile.ide_exe_path,
+                    ide_cli_path=profile.ide_cli_path,
+                    new_window=False,
+                    reuse_window=True,
+                )
+                deadline_reuse_retry = now + 1.2
             try:
                 from iris.automation.ide_input import get_window_title
 
@@ -4141,10 +4303,17 @@ class MainWindow(QMainWindow):
                 if cur:
                     title = cur
                 if root.name.lower() in title.lower():
+                    matched = True
                     break
             except Exception:
                 pass
             _time.sleep(0.25)
+
+        if not matched:
+            return (
+                "IDE 새 창이 프로젝트 폴더를 반영하지 못했습니다 "
+                "(cold start IPC 지연 — 다시 시도해 주세요)"
+            )
 
         # 순서 2~3: Companion + 타일
         label = (
@@ -4164,6 +4333,18 @@ class MainWindow(QMainWindow):
             source=source,
             owned=bool(new_window),
         )
+        if new_window:
+            # ponytail: 방금 새로 연 창인데도 VS Code/Cursor가 이 workspace를 예전에
+            # 열었던 적 있으면 그때 탭 상태를 그대로 복원한다 — "새 창인데 예전
+            # 파일이 열려있다"로 보이는 원인. 새로 켤 때는 빈 화면에서 시작하도록
+            # 모든 탭을 닫아준다.
+            try:
+                from iris.automation.ide_input import trigger_close_all_editors
+
+                _time.sleep(0.2)
+                trigger_close_all_editors(int(hwnd), pid=pid)
+            except Exception:
+                pass
         return ""
 
     def _exit_ide_companion(self) -> None:
@@ -4249,7 +4430,14 @@ class MainWindow(QMainWindow):
             return False
 
     def _safe_close_companion_ide(self, hwnd: int | None, pid: int | None) -> bool:
-        """Iris가 연 Companion IDE만 닫는다. Iris/부모 Cursor는 닫지 않음."""
+        """Iris가 연 Companion IDE만 닫는다. Iris/부모 Cursor는 닫지 않음.
+
+        WM_CLOSE(PostMessage)는 비동기 fire-and-forget이라 실제로 창이 닫혔는지
+        보장하지 않는다 — 응답이 없으면(저장 확인창 등으로 무시됨) 세션만 풀리고
+        창은 유령처럼 남아, 다음에 다시 열 때 또 새 창이 뜨고 작업은 둘 중
+        어느 창으로 갈지 불확실해진다. 그래서 실제로 사라졌는지 확인하고,
+        안 사라지면(Iris 소유 창에 한해) 프로세스 종료로 승격한다.
+        """
         if not hwnd or int(hwnd) <= 0:
             return False
         hwnd_i = int(hwnd)
@@ -4266,9 +4454,38 @@ class MainWindow(QMainWindow):
                 "IDE 종료 생략: Companion 소유 창 아님 (레이아웃만 복구)"
             )
             return False
+
         from iris.automation.window_controller import close_window_by_hwnd
 
-        return bool(close_window_by_hwnd(hwnd_i))
+        close_window_by_hwnd(hwnd_i)
+        if self._wait_hwnd_gone(hwnd_i, timeout_sec=2.5):
+            return True
+
+        # WM_CLOSE가 무시됨(저장 확인 대화상자 등) — Iris 소유 창만 강제 종료로 승격
+        if pid:
+            try:
+                import psutil  # type: ignore
+
+                proc = psutil.Process(int(pid))
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.5)
+                except psutil.TimeoutExpired:
+                    proc.kill()
+            except Exception:
+                pass
+        return self._wait_hwnd_gone(hwnd_i, timeout_sec=1.0)
+
+    def _wait_hwnd_gone(self, hwnd: int, *, timeout_sec: float) -> bool:
+        from PyQt6.QtWidgets import QApplication
+
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if not self._ide_hwnd_alive(hwnd):
+                return True
+            QApplication.processEvents()
+            time.sleep(0.15)
+        return not self._ide_hwnd_alive(hwnd)
 
     def _companion_iris_rect(self):
         return compute_tile_rects(work_area_for(self)).iris

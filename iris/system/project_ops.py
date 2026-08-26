@@ -252,15 +252,6 @@ def write_project_file(project_root: str | Path, rel_path: str, content: str) ->
     return {"path": str(path), "rel_path": rel, "bytes": len(content.encode("utf-8"))}
 
 
-def is_code_reveal_request(text: str) -> bool:
-    s = (text or "").lower()
-    code_words = ("코드", "프로그램", "파일", "script", "code", "program", "app")
-    make_words = ("만들", "작성", "짜", "구현", "생성", "write", "create", "make", "build")
-    if is_run_request(s) or "구구단" in s:
-        return True
-    return any(w in s for w in make_words) and any(w in s for w in code_words)
-
-
 def is_run_request(text: str) -> bool:
     s = (text or "").lower()
     return any(w in s for w in ("실행", "출력", "돌려", "run", "execute", "print"))

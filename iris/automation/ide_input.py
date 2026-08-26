@@ -32,6 +32,8 @@ _VK_A = 0x00
 _VK_S = 0x01
 _VK_P = 0x23
 _VK_B = 0x0B
+_VK_K = 0x28
+_VK_W = 0x0D
 _VK_GRAVE = 0x32
 
 
@@ -95,6 +97,12 @@ def _macos_key_combo(flags: int, keycode: int) -> None:
     up = Quartz.CGEventCreateKeyboardEvent(None, keycode, False)
     Quartz.CGEventSetFlags(up, flags)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+
+
+def _macos_key_chord(flags: int, keycode1: int, keycode2: int) -> None:
+    """2단 chord(예: Cmd+K → Cmd+W) — 두 키를 modifier 누른 채 순서대로 탭."""
+    _macos_key_combo(flags, keycode1)
+    _macos_key_combo(flags, keycode2)
 
 
 def _macos_click_point(x: float, y: float) -> None:
@@ -222,6 +230,48 @@ def send_key_combo(hwnd: int, *vk_codes: int) -> bool:
         return True
     except Exception:
         return False
+
+
+def send_key_chord(hwnd: int, modifier_vk: int, key1: int, key2: int) -> bool:
+    """Windows 전용 — Ctrl+K Ctrl+W 같은 2단 chord. modifier는 두 키 내내 눌려있음."""
+    if not _win32() or not hwnd:
+        return False
+    try:
+        import win32api  # type: ignore
+        import win32con  # type: ignore
+
+        force_focus_hwnd(hwnd)
+        time.sleep(0.12)
+        win32api.keybd_event(int(modifier_vk), 0, 0, 0)
+        win32api.keybd_event(int(key1), 0, 0, 0)
+        win32api.keybd_event(int(key1), 0, win32con.KEYEVENTF_KEYUP, 0)
+        time.sleep(0.05)
+        win32api.keybd_event(int(key2), 0, 0, 0)
+        win32api.keybd_event(int(key2), 0, win32con.KEYEVENTF_KEYUP, 0)
+        win32api.keybd_event(int(modifier_vk), 0, win32con.KEYEVENTF_KEYUP, 0)
+        return True
+    except Exception:
+        return False
+
+
+def trigger_close_all_editors(hwnd: int, *, pid: int | None = None) -> bool:
+    """Ctrl+K Ctrl+W (win) / Cmd+K Cmd+W (mac) — 열려있는 탭을 모두 닫는다.
+
+    Companion으로 새로 연 워크스페이스가 지난 세션에 열려있던 탭을 그대로
+    복원해서 "새 창인데 예전에 쓰던 파일이 열려있다"고 보이는 걸 막기 위함
+    (VS Code/Cursor는 워크스페이스별로 마지막 탭 상태를 기억해 복원한다).
+    """
+    if _macos():
+        if not force_focus_hwnd(hwnd, pid=pid):
+            return False
+        time.sleep(0.1)
+        import Quartz  # type: ignore
+
+        _macos_key_chord(Quartz.kCGEventFlagMaskCommand, _VK_K, _VK_W)
+        return True
+    import win32con  # type: ignore
+
+    return send_key_chord(hwnd, win32con.VK_CONTROL, ord("K"), ord("W"))
 
 
 def trigger_default_build_task(hwnd: int, *, pid: int | None = None) -> bool:
