@@ -21,6 +21,21 @@ HandlerFn = Callable[[dict[str, Any]], dict[str, Any]]
 # 클라이언트가 응답 전에 연결을 끊으면 Windows에서 흔함 (Hermes MCP 타임아웃 등)
 _CLIENT_GONE = (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, TimeoutError)
 
+# ponytail: adb/kill sleep·IMAP을 Qt 메인에 올리면 Windows "응답 없음". HTTP 워커에서 실행.
+# 천장: 핸들러가 UI 위젯을 직접 건드리면 안 됨 — control_bindings._call_on_ui 가 마샬함.
+_OFF_UI_PREFIXES = ("emulator.",)
+_OFF_UI_ACTIONS = frozenset(
+    {
+        "email.list_messages",
+        "email.read_message",
+    }
+)
+
+
+def runs_off_ui_thread(action: str) -> bool:
+    name = (action or "").strip()
+    return name in _OFF_UI_ACTIONS or any(name.startswith(p) for p in _OFF_UI_PREFIXES)
+
 
 def _is_client_gone(exc: BaseException) -> bool:
     if isinstance(exc, _CLIENT_GONE):
@@ -256,10 +271,14 @@ class ControlSurface:
                     )
                     return
                 if path == "/v1/catalog":
-                    body = surface.invoker.run(
-                        lambda: ok_result("get_catalog", {"actions": surface.registry.catalog()})
+                    # registry만 — UI 스레드 불필요 (Companion/타일 중 타임아웃 방지)
+                    self._json(
+                        200,
+                        ok_result(
+                            "get_catalog",
+                            {"actions": surface.registry.catalog()},
+                        ),
                     )
-                    self._json(200, body)
                     return
                 if path == "/v1/state":
                     body = surface.invoker.run(
@@ -288,8 +307,6 @@ class ControlSurface:
                             "get_catalog",
                         ):
                             return err_result(action or "invoke", "Iris is still booting")
-                        if action in ("ping", "get_catalog", "get_state"):
-                            return surface.registry.invoke(action, args)
                         return surface.registry.invoke(action, args)
 
                     # ponytail: live file stream / project.run 은 메인스레드에서 길어질 수 있음
@@ -304,7 +321,12 @@ class ControlSurface:
                             timeout = 180.0
                         elif bool(args.get("stream")):
                             timeout = 120.0
-                    body = surface.invoker.run(_run, timeout=timeout)
+
+                    if runs_off_ui_thread(action):
+                        # HTTP 워커 스레드에서 직접 — invoker 경유 시 UI freeze
+                        body = _run()
+                    else:
+                        body = surface.invoker.run(_run, timeout=timeout)
                     self._json(200 if body.get("ok") else 400, body)
                     return
                 self._json(404, err_result("http", f"not found: {path}"))

@@ -31,6 +31,8 @@ def build_calendar_agent_context(
         "- calendar.delete_event {id}",
         "- calendar.set_month {year, month}",
         "- calendar.refresh_holidays",
+        "- 기본 화면/홈: workspace.open_assistant",
+        "- 마이크: voice.mic_off / voice.mic_on",
         "MCP를 쓸 수 없을 때만 아래 블록을 응답 끝에 포함하세요.",
         "일반 설명은 한국어로 짧게, 마크다운 가능.",
         "",

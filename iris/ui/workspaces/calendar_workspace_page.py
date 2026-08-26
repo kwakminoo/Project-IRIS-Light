@@ -19,7 +19,6 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
-    QSizePolicy,
     QSplitter,
     QTimeEdit,
     QVBoxLayout,
@@ -35,7 +34,6 @@ from iris.infrastructure.map_place_search import (
     search_places,
 )
 from iris.storage.calendar_events import CalendarEvent
-from iris.ui.chat.chat_panel import ChatComposerInput
 from iris.ui.settings.hud_dialog import (
     configure_form,
     configure_hud_dialog,
@@ -44,8 +42,7 @@ from iris.ui.settings.hud_dialog import (
     make_title,
 )
 from iris.ui.shared.theme_tokens import TOKENS
-from iris.ui.widgets.particle_visualizer import ParticleVisualizer
-from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisChatLog
+from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisPanel
 
 _WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
 
@@ -290,87 +287,6 @@ class _AddEventDialog(QDialog):
         return title, start, note, place
 
 
-class _CalendarIrisPanel(QWidget):
-    chat_send = pyqtSignal(str)
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("CalendarIrisPanel")
-
-        col = QVBoxLayout(self)
-        col.setContentsMargins(8, 8, 8, 8)
-        col.setSpacing(8)
-
-        self.orb = ParticleVisualizer(self)
-        self.orb.setMinimumHeight(300)
-        self.orb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.orb.set_size_scale(3.0)
-        col.addWidget(self.orb, 0)
-
-        self._log = WorkspaceIrisChatLog("CalendarChatLog")
-        col.addWidget(self._log, 1)
-
-        input_row = QHBoxLayout()
-        input_row.setSpacing(6)
-        self._input = ChatComposerInput()
-        self._input.setObjectName("CalendarChatInput")
-        self._input.setPlaceholderText("일정 추가·관리를 요청하세요 (예: 내일 3시 회의 잡아줘)")
-        self._input.setStyleSheet(
-            """
-            QPlainTextEdit#CalendarChatInput {
-                background-color: rgba(15, 23, 42, 0.85);
-                color: #ffffff;
-                border: 1px solid rgba(56, 189, 248, 0.28);
-                border-radius: 16px;
-                padding: 6px 12px;
-            }
-            QPlainTextEdit#CalendarChatInput:focus { border-color: rgba(56, 189, 248, 0.6); }
-            """
-        )
-        self._input.submit_requested.connect(self._emit_send)
-        self._send = QPushButton("↑")
-        self._send.setFixedSize(30, 30)
-        self._send.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._send.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #4f46e5; color: #fff; border: none;
-                border-radius: 15px; font-size: 15px; font-weight: 700;
-            }
-            QPushButton:hover { background-color: #6366f1; }
-            """
-        )
-        self._send.clicked.connect(self._emit_send)
-        input_row.addWidget(self._input, 1, Qt.AlignmentFlag.AlignBottom)
-        input_row.addWidget(self._send, 0, Qt.AlignmentFlag.AlignBottom)
-        col.addLayout(input_row)
-
-    def _emit_send(self) -> None:
-        text = self._input.text().strip()
-        if not text:
-            return
-        self._input.clear()
-        self.chat_send.emit(text)
-
-    def append_user(self, text: str) -> None:
-        self._log.append_user(text)
-
-    def append_iris_chunk(self, text: str) -> None:
-        self._log.append_iris_chunk(text)
-
-    def end_iris(self, final_text: str | None = None) -> None:
-        self._log.end_iris(final_text)
-
-    def append_iris_tool(self, text: str) -> None:
-        self._log.append_iris_tool(text)
-
-    def append_iris_error(self, text: str) -> None:
-        self._log.append_iris_error(text)
-
-    def set_orb_state(self, state_name: str) -> None:
-        self.orb.set_state(state_name)
-
-
 class CalendarWorkspacePage(QWidget):
     """중앙 월간 달력/일정 + 우측 아이리스 패널."""
 
@@ -401,7 +317,10 @@ class CalendarWorkspacePage(QWidget):
         splitter.setHandleWidth(0)
         splitter.addWidget(self._build_center())
 
-        self.iris_panel = _CalendarIrisPanel()
+        self.iris_panel = WorkspaceIrisPanel(
+            name_prefix="Calendar",
+            placeholder="일정 추가·관리를 요청하세요 (예: 내일 3시 회의 잡아줘)",
+        )
         self.iris_panel.setMinimumWidth(240)
         self.iris_panel.setMaximumWidth(380)
         self.iris_panel.chat_send.connect(self.calendar_chat_send.emit)

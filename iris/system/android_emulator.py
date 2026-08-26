@@ -77,7 +77,8 @@ def _no_window_kwargs(**extra: object) -> dict:
     """adb/taskkill/avdmanager — 콘솔 창이 안 뜨게.
 
     GUI 에뮬 기동에는 쓰지 말 것 — CREATE_NO_WINDOW/SW_HIDE 가
-    UpdateLayeredWindowIndirect 실패(검은 화면)를 낸다. DETACHED + 콘솔 HWND 숨김.
+    UpdateLayeredWindowIndirect 실패(검은 화면)를 낸다.
+    DETACHED + Cascadia/PseudoConsole 표면 숨김.
     """
     from iris.system.win_subprocess import no_window_kwargs
 
@@ -290,6 +291,15 @@ def is_emulator_running() -> bool:
     return bool(_list_emulator_processes())
 
 
+def is_emulator_process_up() -> bool:
+    """adb 없이 프로세스/추적 PID만 — get_state UI 핫패스용."""
+    if _launch_in_progress:
+        return True
+    if _pids_alive(_launched_pids):
+        return True
+    return bool(_list_emulator_processes())
+
+
 def prepare_emulator() -> tuple[bool, str]:
     """IRIS 기동 시 AVD·경로·디스크·adb 를 점검/수리한다.
 
@@ -363,14 +373,34 @@ def _emulator_env() -> dict[str, str]:
     return env
 
 
-# emulator.exe 가 띄우는 CUI 헬퍼 — Qt 창이 아니므로 ConsoleWindowClass만 숨김 대상.
+# emulator.exe 가 띄우는 CUI 헬퍼 — Win11에선 ConsoleWindowClass가 아니라
+# PseudoConsoleWindow(앱 PID) + Cascadia(Windows Terminal)로 뜬다.
 _CONSOLE_HELPER_NAMES = frozenset(
     {
         "netsimd.exe",
         "netsim.exe",
         "crashpad_handler.exe",
         "emulator-check.exe",
+        "qemu-system-x86_64.exe",
+        "qemu-system-aarch64.exe",
+        "emulator.exe",
     }
+)
+# classic conhost / Win11 ConPTY / Windows Terminal 호스트
+_CONSOLE_SURFACE_CLASSES = frozenset(
+    {
+        "ConsoleWindowClass",
+        "PseudoConsoleWindow",
+        "CASCADIA_HOSTING_WINDOW_CLASS",
+    }
+)
+# Cascadia 탭 제목 = 호스팅 중인 exe 경로 (실측)
+_CONSOLE_TITLE_MARKERS = (
+    "\\emulator\\netsimd",
+    "\\emulator\\crashpad_handler",
+    "\\emulator\\emulator.exe",
+    "\\emulator\\emulator-check",
+    "\\emulator\\qemu\\",
 )
 
 
@@ -379,8 +409,8 @@ def _gui_launch_creationflags() -> int:
 
     CREATE_NO_WINDOW 금지 — 이 플래그가 있으면 Qt 레이어드 창이
     UpdateLayeredWindowIndirect 실패로 검은 화면이 된다 (실측 로그 확인).
-    DETACHED|+NEW_GROUP 만으로 부모 콘솔과 분리하고, 뜨는 콘솔은
-    ConsoleWindowClass 를 프로세스 이름(netsimd 포함)으로 숨긴다.
+    DETACHED|+NEW_GROUP 만으로 부모 콘솔과 분리하고, 뜨는 터미널 표면은
+    PseudoConsole/Cascadia 제목·헬퍼 PID로 숨긴다.
     """
     if sys.platform != "win32":
         return 0
@@ -389,9 +419,25 @@ def _gui_launch_creationflags() -> int:
     return flags
 
 
-def _hide_console_windows_for_pids(pids: set[int]) -> int:
-    """지정 PID의 ConsoleWindowClass만 SW_HIDE (Qt/에뮬 화면 창은 제외)."""
-    if sys.platform != "win32" or not pids:
+def _is_emulator_console_title(title: str) -> bool:
+    """Windows Terminal 탭 제목이 SDK emulator 헬퍼 경로인지."""
+    if not title:
+        return False
+    lowered = title.replace("/", "\\").lower()
+    return any(marker in lowered for marker in _CONSOLE_TITLE_MARKERS)
+
+
+def _hide_emulator_console_surfaces(pids: set[int]) -> int:
+    """에뮬 CUI 터미널만 SW_HIDE — Qt 폰 화면 창은 건드리지 않음.
+
+    Win11 실측: qemu/crashpad/netsimd 콘솔은 ConsoleWindowClass가 아니라
+    PseudoConsoleWindow(프로세스 PID)와 CASCADIA_HOSTING_WINDOW_CLASS
+    (Windows Terminal, 제목=exe 경로)다. 예전 PID+ConsoleWindowClass만
+    보면 창이 그대로 남는다.
+    """
+    if sys.platform != "win32":
+        return 0
+    if not pids and not _CONSOLE_TITLE_MARKERS:
         return 0
     try:
         import ctypes
@@ -406,18 +452,27 @@ def _hide_console_windows_for_pids(pids: set[int]) -> int:
     @WNDENUMPROC
     def _each(hwnd: int, _lp: int) -> bool:
         nonlocal hidden
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        cls_buf = ctypes.create_unicode_buffer(256)
+        if user32.GetClassNameW(hwnd, cls_buf, 256) <= 0:
+            return True
+        if cls_buf.value not in _CONSOLE_SURFACE_CLASSES:
+            return True
+        title_buf = ctypes.create_unicode_buffer(512)
+        user32.GetWindowTextW(hwnd, title_buf, 512)
+        title = title_buf.value
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if int(pid.value) not in pids:
+        pid_i = int(pid.value)
+        # Cascadia: WT PID라 트리에 없음 → 제목(호스팅 exe 경로)으로만 판별
+        if cls_buf.value == "CASCADIA_HOSTING_WINDOW_CLASS":
+            if not _is_emulator_console_title(title):
+                return True
+        elif pid_i not in pids and not _is_emulator_console_title(title):
             return True
-        buf = ctypes.create_unicode_buffer(256)
-        if user32.GetClassNameW(hwnd, buf, 256) <= 0:
-            return True
-        if buf.value != "ConsoleWindowClass":
-            return True
-        if user32.IsWindowVisible(hwnd):
-            user32.ShowWindow(hwnd, 0)  # SW_HIDE
-            hidden += 1
+        user32.ShowWindow(hwnd, 0)  # SW_HIDE
+        hidden += 1
         return True
 
     try:
@@ -428,7 +483,7 @@ def _hide_console_windows_for_pids(pids: set[int]) -> int:
 
 
 def _pids_for_console_hide(root_pid: int) -> set[int]:
-    """에뮬 트리 + netsimd 등 헬퍼 PID."""
+    """에뮬 트리 + netsimd/qemu/crashpad 등 헬퍼 PID."""
     pids = {root_pid} if root_pid > 0 else set()
     try:
         import psutil
@@ -450,14 +505,14 @@ def _pids_for_console_hide(root_pid: int) -> set[int]:
 
 
 def _schedule_console_hide(root_pid: int) -> None:
-    """netsimd/qemu 콘솔 — 부팅(~2분) 동안 반복 숨김."""
+    """netsimd/qemu Cascadia·PseudoConsole — 부팅(~2분) 동안 반복 숨김."""
 
     def _run() -> None:
-        # full startup toast 구간까지 netsimd 가 늦게 뜰 수 있다.
+        # full startup toast 구간까지 netsimd/Cascadia 가 늦게 뜰 수 있다.
         deadline = time.time() + 120.0
         while time.time() < deadline:
-            _hide_console_windows_for_pids(_pids_for_console_hide(root_pid))
-            time.sleep(0.5)
+            _hide_emulator_console_surfaces(_pids_for_console_hide(root_pid))
+            time.sleep(0.35)
 
     threading.Thread(target=_run, daemon=True, name="iris-emu-hide-console").start()
 
@@ -739,7 +794,7 @@ def launch_emulator(*, headless: bool = False) -> subprocess.Popen[bytes]:
             # Vulkan host ICD + 레이어드 창 충돌 회피
             "-feature",
             "-Vulkan",
-            # netsimd 콘솔/웹UI 소음 축소 (콘솔 창은 _schedule_console_hide 가 숨김)
+            # netsimd 웹UI 소음 축소 (터미널 표면은 _schedule_console_hide)
             "-netsim-args",
             "--no-web-ui",
         ]
@@ -748,7 +803,7 @@ def launch_emulator(*, headless: bool = False) -> subprocess.Popen[bytes]:
         _launch_log_handle.write(f"cmd: {' '.join(cmd)}\n")  # type: ignore[union-attr]
         _launch_log_handle.flush()  # type: ignore[union-attr]
         # CREATE_NO_WINDOW 금지 → UpdateLayeredWindowIndirect 실패(검은 화면).
-        # DETACHED만 + ConsoleWindowClass(netsimd 포함) 숨김.
+        # DETACHED + Win11 Cascadia/PseudoConsole(제목·헬퍼 PID) 숨김.
         env = _emulator_env()
         proc = subprocess.Popen(
             cmd,
@@ -919,6 +974,31 @@ def emulator_status() -> dict:
         "boot_completed": boot,
         "serials": list(serials),
         "serial": serial,
+        "headless": is_emulator_headless() if phase != "stopped" else False,
+        "avd": AVD_NAME,
+        "adb": str(adb_exe()),
+        "adb_ok": adb_exe().is_file(),
+        "launch_log": str(launch_log_path()),
+        "keyboard_hint": _KEYBOARD_HINT_KO,
+    }
+
+
+def emulator_status_fast() -> dict:
+    """adb 프로브 없음 — get_state가 UI에서 멈춤 방지."""
+    procs = _list_emulator_processes()
+    if _launch_in_progress and not procs:
+        phase = "starting"
+    elif procs or _pids_alive(_launched_pids):
+        phase = "booting"
+    else:
+        phase = "stopped"
+    return {
+        "running": phase != "stopped",
+        "phase": phase,
+        "adb_ready": False,
+        "boot_completed": False,
+        "serials": [],
+        "serial": None,
         "headless": is_emulator_headless() if phase != "stopped" else False,
         "avd": AVD_NAME,
         "adb": str(adb_exe()),

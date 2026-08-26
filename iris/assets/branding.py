@@ -5,33 +5,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtGui import QFontDatabase, QIcon
+from PyQt6.QtGui import QIcon
 
 APP_DISPLAY_NAME = "IRIS"
 # Windows 작업표시줄 그룹핑 — python.exe와 분리
 APP_USER_MODEL_ID = "kwakminoo.IRIS.Light"
 _ASSETS = Path(__file__).resolve().parent
-_FONT_DIR = _ASSETS / "fonts"
-_BUNDLED_FONT_FILES = ("Pretendard-Regular.otf", "Pretendard-Bold.otf")
-
-# PC마다 시스템 폰트 설치 여부가 달라 UI가 다르게 보이는 문제를 막기 위해
-# 폰트를 앱에 번들 — 등록 성공 시 이 family명이 항상 쓰인다.
-BUNDLED_FONT_FAMILY = "Pretendard"
-
-
-def load_bundled_fonts() -> str:
-    """QApplication 생성 후, 위젯 생성 전에 호출. 등록된 family명을 반환.
-
-    등록 실패(파일 손상 등) 시 시스템 폰트로 폴백하도록 기존 폴백 체인 이름을 반환.
-    """
-    ok = False
-    for name in _BUNDLED_FONT_FILES:
-        path = _FONT_DIR / name
-        if not path.is_file():
-            continue
-        if QFontDatabase.addApplicationFont(str(path)) != -1:
-            ok = True
-    return BUNDLED_FONT_FAMILY if ok else "Segoe UI"
 
 
 def apply_windows_app_id() -> None:

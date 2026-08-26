@@ -206,10 +206,35 @@ def mark_control_ready(window: MainWindow) -> None:
 
 def _log(window: MainWindow, action: str, ok: bool) -> None:
     status = "ok" if ok else "fail"
+    _append_activity(window, f"Iris control: {action} {status}")
+
+
+def _append_activity(window: MainWindow, line: str) -> None:
+    def _do() -> None:
+        try:
+            window._live_activity.append_instant_line(line)
+        except Exception:
+            pass
+
+    _call_on_ui(window, _do)
+
+
+def _call_on_ui(window: MainWindow, fn: Callable[[], Any]) -> Any:
+    """UI 위젯 접근 마샬. 이미 메인이면 직접 호출 (Queued+wait 데드락 금지)."""
     try:
-        window._live_activity.append_instant_line(f"Iris control: {action} {status}")
+        from PyQt6.QtCore import QThread
+
+        if QThread.currentThread() is window.thread():
+            return fn()
     except Exception:
-        pass
+        return fn()
+    qt = getattr(window, "_control_qt_invoker", None)
+    if qt is None:
+        return fn()
+    try:
+        return qt.run(fn, timeout=3.0)
+    except Exception:
+        return None
 
 
 def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
@@ -279,6 +304,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                         getattr(window._settings, "data_go_kr_service_key", "")
                     ),
                 },
+                "mic": _mic_state_fields(window),
                 "emulator_running": _emulator_running(),
                 **_emulator_state_fields(),
             },
@@ -306,6 +332,16 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         window._toggle_maximize()
         _log(window, "window.toggle_maximize", True)
         return ok_result("window.toggle_maximize", {"maximized": window.isMaximized()})
+
+    def window_show(_a: dict[str, Any]) -> dict[str, Any]:
+        window.showNormal()
+        window.raise_()
+        window.activateWindow()
+        _log(window, "window.show", True)
+        return ok_result(
+            "window.show",
+            {"visible": window.isVisible(), "minimized": window.isMinimized()},
+        )
 
     def ide_enter(_a: dict[str, Any]) -> dict[str, Any]:
         path = str(_a.get("project_root") or "").strip()
@@ -888,6 +924,11 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         summary="Toggle maximize Iris window",
     )
     reg.register(
+        "window.show",
+        window_show,
+        summary="Show / raise / activate Iris window (un-minimize)",
+    )
+    reg.register(
         "ide.enter_companion",
         ide_enter,
         summary="Enter IDE Companion using the current bound session or create one with preferred IDE",
@@ -1308,6 +1349,14 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 if is_emulator_headless() and not headless:
                     proc = restart_emulator_windowed()
                     _log(window, "emulator.launch", True)
+                    _append_activity(
+                        window,
+                        f"Android 에뮬레이터 재시작 (PID {proc.pid})",
+                    )
+                    _append_activity(
+                        window,
+                        "에뮬레이터 첫 기동·부팅에는 약간의 시간이 소요될 수 있습니다.",
+                    )
                     return ok_result(
                         "emulator.launch",
                         {
@@ -1322,8 +1371,13 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 )
             proc = launch_emulator(headless=headless)
             _log(window, "emulator.launch", True)
-            window._live_activity.append_instant_line(
-                f"Android 에뮬레이터 시작 (PID {proc.pid})"
+            _append_activity(
+                window,
+                f"Android 에뮬레이터 시작 (PID {proc.pid})",
+            )
+            _append_activity(
+                window,
+                "에뮬레이터 첫 기동·부팅에는 약간의 시간이 소요될 수 있습니다.",
             )
             return ok_result(
                 "emulator.launch",
@@ -1785,6 +1839,29 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         risk="medium",
     )
 
+    def learning_toggle(_a: dict[str, Any]) -> dict[str, Any]:
+        """타이틀바 학습 아이콘과 동일 — IDLE↔RECORDING 토글."""
+        from iris.learning.models import LearningState
+
+        mgr = getattr(window, "_learning", None)
+        if mgr is None:
+            return err_result("learning.toggle", "learning manager unavailable")
+        before = getattr(mgr.state, "value", str(mgr.state))
+        window._on_learning_toggle()
+        after = getattr(mgr.state, "value", str(mgr.state))
+        _log(window, "learning.toggle", True)
+        return ok_result(
+            "learning.toggle",
+            {"was": before, "state": after, "idle": mgr.state == LearningState.IDLE},
+        )
+
+    reg.register(
+        "learning.toggle",
+        learning_toggle,
+        summary="Toggle learning record (same as titlebar learning icon)",
+        risk="medium",
+    )
+
     # --- UI dialogs ---
     def ui_settings(_a: dict[str, Any]) -> dict[str, Any]:
         window._open_settings_dialog()
@@ -1796,11 +1873,39 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         _log(window, "ui.open_user_profile", True)
         return ok_result("ui.open_user_profile", {})
 
+    def ui_skills(_a: dict[str, Any]) -> dict[str, Any]:
+        chat = getattr(window, "_chat", None)
+        opener = getattr(chat, "_open_skills_dialog", None) if chat is not None else None
+        if not callable(opener):
+            return err_result("ui.open_skills", "skills dialog unavailable")
+        opener()
+        _log(window, "ui.open_skills", True)
+        return ok_result("ui.open_skills", {})
+
+    def ui_mcp(_a: dict[str, Any]) -> dict[str, Any]:
+        chat = getattr(window, "_chat", None)
+        opener = getattr(chat, "_open_mcp_dialog", None) if chat is not None else None
+        if not callable(opener):
+            return err_result("ui.open_mcp", "mcp dialog unavailable")
+        opener()
+        _log(window, "ui.open_mcp", True)
+        return ok_result("ui.open_mcp", {})
+
     reg.register("ui.open_settings", ui_settings, summary="Open Iris settings dialog")
     reg.register(
         "ui.open_user_profile",
         ui_profile,
         summary="Open user profile dialog",
+    )
+    reg.register(
+        "ui.open_skills",
+        ui_skills,
+        summary="Open Hermes Skills manager dialog",
+    )
+    reg.register(
+        "ui.open_mcp",
+        ui_mcp,
+        summary="Open Hermes MCP manager dialog",
     )
 
     # --- settings values (direct, no dialog) ---
@@ -1899,6 +2004,154 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         _log(window, "email.refresh_inbox", True)
         return ok_result("email.refresh_inbox", {})
 
+    def email_list_messages(args: dict[str, Any]) -> dict[str, Any]:
+        """IMAP에서 목록을 가져와 Hermes가 요약할 수 있게 반환.
+
+        ponytail: IMAP은 HTTP 워커(오프-UI)에서. UI 갱신만 _call_on_ui.
+        기본은 화면 캐시 우선(응답 없음 방지). 강제 갱신은 refresh=true.
+        """
+        from datetime import date
+
+        from iris.infrastructure.email_client import (
+            filter_summaries_since,
+            fetch_folder,
+            fetch_gmail_category,
+            mail_summary_as_dict,
+        )
+        from iris.storage.email_accounts import account_password
+
+        def _snapshot() -> tuple[Any, str, str, list]:
+            account = window._current_email_account()
+            folder_default = str(getattr(window, "_email_folder", None) or "inbox")
+            mode = str(getattr(window, "_workspace_mode", "") or "")
+            cached: list = []
+            if mode == "email":
+                cached = list(window._email_page.current_mails())
+            return account, folder_default, mode, cached
+
+        snap = _call_on_ui(window, _snapshot)
+        if not isinstance(snap, tuple):
+            accounts = load_email_accounts(window._db)
+            if not accounts:
+                return err_result("email.list_messages", "no email account configured")
+            account, folder_default, mode, cached = accounts[0], "inbox", "", []
+        else:
+            account, folder_default, mode, cached = snap
+        if account is None:
+            accounts = load_email_accounts(window._db)
+            if not accounts:
+                return err_result("email.list_messages", "no email account configured")
+            account = accounts[0]
+
+        folder = str(args.get("folder") or folder_default or "inbox").strip() or "inbox"
+        category = str(args.get("category") or "").strip()
+        limit = max(1, min(int(args.get("limit") or 40), 80))
+        since = str(args.get("since") or "").strip()
+        if str(args.get("today") or "").strip().lower() in {"1", "true", "yes"}:
+            since = date.today().isoformat()
+        force_refresh = str(args.get("refresh") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        # cached 기본 true — 화면에 이미 불러온 목록이면 IMAP 스킵
+        cached_flag = str(args.get("cached") or "true").strip().lower()
+        prefer_cache = (not force_refresh) and cached_flag not in {"0", "false", "no"}
+
+        try:
+            if prefer_cache and cached:
+                items = list(cached)
+            elif category:
+                items = fetch_gmail_category(
+                    account.address, account_password(account), category, limit=limit
+                )
+            else:
+                items = fetch_folder(
+                    account.address, account_password(account), folder, limit=limit
+                )
+            if since:
+                items = filter_summaries_since(items, since)
+
+            def _apply_ui() -> None:
+                if window._workspace_mode != "email":
+                    window._email_preloaded = True
+                    window._on_email_icon()
+                window._email_page.set_mails(items)
+
+            _call_on_ui(window, _apply_ui)
+            _log(window, "email.list_messages", True)
+            return ok_result(
+                "email.list_messages",
+                {
+                    "account": account.address,
+                    "folder": folder,
+                    "since": since,
+                    "count": len(items),
+                    "cached": bool(prefer_cache and cached),
+                    "messages": [mail_summary_as_dict(m) for m in items],
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            return err_result("email.list_messages", str(exc)[:240])
+
+    def email_read_message(args: dict[str, Any]) -> dict[str, Any]:
+        """본문 텍스트를 반환(에이전트 요약용). UI에도 연다.
+
+        ponytail: IMAP은 오프-UI. 이미 받은 MailMessage로 show_message (이중 fetch 금지).
+        """
+        from iris.infrastructure.email_client import fetch_message
+        from iris.storage.email_accounts import account_password
+
+        uid = str(args.get("uid") or "").strip()
+        if not uid:
+            return err_result("email.read_message", "uid required")
+
+        def _snapshot() -> tuple[Any, str]:
+            account = window._current_email_account()
+            folder = str(getattr(window, "_email_folder", None) or "inbox")
+            return account, folder
+
+        snap = _call_on_ui(window, _snapshot)
+        if isinstance(snap, tuple):
+            account, folder_default = snap
+        else:
+            accounts = load_email_accounts(window._db)
+            account = accounts[0] if accounts else None
+            folder_default = "inbox"
+        if account is None:
+            return err_result("email.read_message", "no email account configured")
+        folder = str(args.get("folder") or folder_default or "inbox").strip() or "inbox"
+        try:
+            msg = fetch_message(
+                account.address,
+                account_password(account),
+                uid,
+                folder_key=folder,
+            )
+
+            def _apply_ui() -> None:
+                if window._workspace_mode != "email":
+                    window._email_preloaded = True
+                    window._on_email_icon()
+                window._email_page.show_message(msg)
+
+            _call_on_ui(window, _apply_ui)
+            body = (msg.body or "").strip()[:4000]
+            _log(window, "email.read_message", True)
+            return ok_result(
+                "email.read_message",
+                {
+                    "uid": msg.uid,
+                    "subject": msg.subject,
+                    "sender": msg.sender,
+                    "to": msg.to,
+                    "date": msg.date,
+                    "body": body,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            return err_result("email.read_message", str(exc)[:240])
+
     def email_open_message(args: dict[str, Any]) -> dict[str, Any]:
         uid = str(args.get("uid") or "").strip()
         if not uid:
@@ -1960,6 +2213,16 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     )
     reg.register("email.set_category", email_set_category, summary="Gmail category tab index")
     reg.register("email.refresh_inbox", email_refresh, summary="Refresh email inbox")
+    reg.register(
+        "email.list_messages",
+        email_list_messages,
+        summary="Fetch inbox summaries (optional since/today/limit/cached/refresh) for agent answers",
+    )
+    reg.register(
+        "email.read_message",
+        email_read_message,
+        summary="Fetch email body by uid and open it in the UI",
+    )
     reg.register("email.open_message", email_open_message, summary="Open email message by uid")
     reg.register("email.open_compose", email_open_compose, summary="Open email compose UI")
     reg.register(
@@ -2088,6 +2351,52 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         _log(window, "chat.clear_history", True)
         return ok_result("chat.clear_history", {"history_len": 0})
 
+    def chat_stop(_a: dict[str, Any]) -> dict[str, Any]:
+        window._on_chat_stop()
+        _log(window, "chat.stop", True)
+        return ok_result("chat.stop", {})
+
+    def voice_toggle_mic(_a: dict[str, Any]) -> dict[str, Any]:
+        window._on_chat_mic_clicked()
+        mic = getattr(window, "_mic", None)
+        state = getattr(getattr(mic, "state", None), "value", str(getattr(mic, "state", "")))
+        _log(window, "voice.toggle_mic", True)
+        return ok_result("voice.toggle_mic", {"mic_state": state})
+
+    def voice_mic_off(_a: dict[str, Any]) -> dict[str, Any]:
+        window._set_mic_listen(False)
+        mic = getattr(window, "_mic", None)
+        state = getattr(getattr(mic, "state", None), "value", str(getattr(mic, "state", "")))
+        _log(window, "voice.mic_off", True)
+        return ok_result("voice.mic_off", {"mic_state": state, "listening": False})
+
+    def voice_mic_on(_a: dict[str, Any]) -> dict[str, Any]:
+        window._set_mic_listen(True)
+        mic = getattr(window, "_mic", None)
+        state = getattr(getattr(mic, "state", None), "value", str(getattr(mic, "state", "")))
+        _log(window, "voice.mic_on", True)
+        return ok_result("voice.mic_on", {"mic_state": state})
+
+    def voice_mic_status(_a: dict[str, Any]) -> dict[str, Any]:
+        from iris.audio.microphone_controller import MicState
+
+        mic = getattr(window, "_mic", None)
+        state = getattr(getattr(mic, "state", None), "value", str(getattr(mic, "state", "")))
+        listening = bool(
+            mic is not None and getattr(mic, "state", None) not in (MicState.OFF, MicState.ERROR)
+        )
+        return ok_result(
+            "voice.mic_status",
+            {
+                "mic_state": state,
+                "listening": listening,
+                "stt_enabled": bool(getattr(window._voice_prefs, "stt_enabled", False)),
+                "preferred": bool(
+                    getattr(window._voice_prefs, "mic_listen_preferred", False)
+                ),
+            },
+        )
+
     def activity_log(args: dict[str, Any]) -> dict[str, Any]:
         text = str(args.get("text") or args.get("message") or "").strip()
         if not text:
@@ -2122,6 +2431,36 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         risk="medium",
         confirm_required=True,
     )
+    reg.register(
+        "chat.stop",
+        chat_stop,
+        summary="Stop current chat turn (same as Stop button)",
+        risk="low",
+    )
+    reg.register(
+        "voice.toggle_mic",
+        voice_toggle_mic,
+        summary="Toggle mic listen (same as titlebar mic icon)",
+        risk="medium",
+    )
+    reg.register(
+        "voice.mic_off",
+        voice_mic_off,
+        summary="Turn microphone listen off",
+        risk="low",
+    )
+    reg.register(
+        "voice.mic_on",
+        voice_mic_on,
+        summary="Turn microphone listen on (requires STT enabled)",
+        risk="medium",
+    )
+    reg.register(
+        "voice.mic_status",
+        voice_mic_status,
+        summary="Get mic listen / STT status",
+        risk="low",
+    )
     reg.register("activity.log", activity_log, summary="Append Live Activity line")
     reg.register("notify.add_alert", notify_add, summary="Add notification alert row")
 
@@ -2132,18 +2471,44 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
 
 def _emulator_running() -> bool:
     try:
-        from iris.system.android_emulator import is_emulator_running
+        from iris.system.android_emulator import is_emulator_process_up
 
-        return bool(is_emulator_running())
+        return bool(is_emulator_process_up())
     except Exception:
         return False
 
 
+def _mic_state_fields(window: MainWindow) -> dict[str, Any]:
+    try:
+        from iris.audio.microphone_controller import MicState
+
+        mic = getattr(window, "_mic", None)
+        state = getattr(getattr(mic, "state", None), "value", str(getattr(mic, "state", "")))
+        listening = bool(
+            mic is not None
+            and getattr(mic, "state", None) not in (MicState.OFF, MicState.ERROR)
+        )
+        prefs = getattr(window, "_voice_prefs", None)
+        return {
+            "state": state,
+            "listening": listening,
+            "stt_enabled": bool(getattr(prefs, "stt_enabled", False)),
+            "preferred": bool(getattr(prefs, "mic_listen_preferred", False)),
+        }
+    except Exception:
+        return {
+            "state": "",
+            "listening": False,
+            "stt_enabled": False,
+            "preferred": False,
+        }
+
+
 def _emulator_state_fields() -> dict[str, Any]:
     try:
-        from iris.system.android_emulator import emulator_status
+        from iris.system.android_emulator import emulator_status_fast
 
-        st = emulator_status()
+        st = emulator_status_fast()
         return {
             "emulator_serial": st.get("serial"),
             "emulator_serials": st.get("serials") or [],

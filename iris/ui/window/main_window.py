@@ -700,7 +700,10 @@ class MainWindow(QMainWindow):
         ).strip()
         if model in ("", "(unset)"):
             model = "(미선택)"
-        return f"아이리스 준비완료 모델: {model} 응답 대기중"
+        return (
+            f"아이리스 준비완료 모델: {model} 응답 대기중"
+            " — 첫 발화에는 약간의 시간이 소요될 수 있습니다"
+        )
 
     def _on_intro_finished(self) -> None:
         mark_control_ready(self)
@@ -778,11 +781,25 @@ class MainWindow(QMainWindow):
             return
         if self._hermes_model_worker is not None and self._hermes_model_worker.isRunning():
             return
+        try:
+            from iris.infrastructure.hermes_client import resolve_hermes_inference
+
+            target = resolve_hermes_inference(
+                model,
+                db=self._db,
+                ollama_base_url=self._settings.ollama_base_url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(
+                f"Hermes model sync skip: {str(exc)[:120]}"
+            )
+            return
         worker = HermesModelSyncWorker(
             self._settings.hermes_base_url,
-            model,
+            target.model,
             api_key=self._settings.hermes_api_key,
             command=self._settings.hermes_command,
+            target=target,
             parent=self,
         )
         self._hermes_model_worker = worker
@@ -869,7 +886,7 @@ class MainWindow(QMainWindow):
             self._live_activity.append_instant_line(
                 f"Models: {n_local} local + {n_cloud} cloud + {n_api} API"
             )
-            if self._settings.hermes_enabled and chosen and not is_api_runtime_model(chosen):
+            if self._settings.hermes_enabled and chosen:
                 self._sync_hermes_model(chosen)
         else:
             self._chat.set_model_status("(모델 없음)")
@@ -969,7 +986,7 @@ class MainWindow(QMainWindow):
             desc = describe_model(model)
             if desc:
                 self._live_activity.append_instant_line(f"모델: {desc}")
-        if self._settings.hermes_enabled and not is_api_runtime_model(model):
+        if self._settings.hermes_enabled and model:
             self._sync_hermes_model(model)
         self._refresh_context_gauge()
         self._api_quota_worker.set_cloud_polling(self._is_cloud_model(model))
@@ -1236,6 +1253,19 @@ class MainWindow(QMainWindow):
         if self._try_local_ide_control(text):
             self._finish_current_turn(turn.id, open_followup=False)
             return
+        if self._try_local_workspace_control(text):
+            self._finish_current_turn(turn.id, open_followup=False)
+            return
+        # 메일/캘린더 화면 — 음성·요청을 우측 Iris 패널 챗으로 (메인 채팅은 숨김)
+        if self._route_to_workspace_chat(text):
+            if turn.source == UserTurnSource.VOICE:
+                self._stop_stt_ux_timer()
+                self._cancel_stt_pending_ux()
+            self._finish_current_turn(
+                turn.id,
+                open_followup=(turn.source == UserTurnSource.VOICE),
+            )
+            return
         model = (
             self._chat.current_model()
             or (getattr(self, "_saved_model", None) or "").strip()
@@ -1287,7 +1317,37 @@ class MainWindow(QMainWindow):
             messages = self._chat_messages_with_project_context()
         messages = self._chat_messages_with_project_context()
 
-        # 커스텀 API 모델 — 직접 호출 우선 (Hermes 에이전트와 병행 가능)
+        # Hermes ON → 모든 모델(Ollama·NVIDIA API 등)을 Hermes 에이전트로
+        # (IDE/메일 MCP 도구 유지). Hermes OFF일 때만 API 직접 호출.
+        if self._use_hermes_backend():
+            try:
+                from iris.infrastructure.hermes_client import resolve_hermes_inference
+
+                target = resolve_hermes_inference(
+                    model,
+                    db=self._db,
+                    ollama_base_url=self._settings.ollama_base_url,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._busy = False
+                self._chat.set_generating(False)
+                if self._history and self._history[-1].get("role") == "user":
+                    self._history.pop()
+                self._chat.append_message_instant("Iris", str(exc))
+                self._finish_current_turn(turn.id, open_followup=False)
+                return
+            worker = HermesChatWorker(
+                self._settings.hermes_base_url,
+                target.label,
+                messages,
+                api_key=self._settings.hermes_api_key,
+                command=self._settings.hermes_command,
+                target=target,
+                parent=self,
+            )
+            self._start_chat_worker(worker, turn.id)
+            return
+
         parsed = parse_runtime_model_id(model)
         if parsed is not None:
             pid, api_model = parsed
@@ -1303,26 +1363,12 @@ class MainWindow(QMainWindow):
                 )
                 self._finish_current_turn(turn.id, open_followup=False)
                 return
-            self._api_fallback_pending = True
-            self._api_fallback_model = api_model
             worker = OpenAICompatChatWorker(
                 provider.base_url,
                 provider.api_key,
                 api_model,
                 messages,
                 display_model=f"{provider.name}/{api_model}",
-                parent=self,
-            )
-            self._start_chat_worker(worker, turn.id)
-            return
-
-        if self._use_hermes_backend():
-            worker = HermesChatWorker(
-                self._settings.hermes_base_url,
-                model,
-                messages,
-                api_key=self._settings.hermes_api_key,
-                command=self._settings.hermes_command,
                 parent=self,
             )
             self._start_chat_worker(worker, turn.id)
@@ -2037,37 +2083,40 @@ class MainWindow(QMainWindow):
             self._state.set_state(AppState.RESPONDING)
             self._status_header.set_app_state(AppState.RESPONDING, label="TTS")
             if self._mic_listen_active:
-                self._chat.set_user_listening_status("IRIS가 말하고 있습니다")
+                self._mirror_voice_listening_status("IRIS가 말하고 있습니다")
             return
-        if self._busy or self._turn_dispatcher.is_busy():
+        if self._busy or self._turn_dispatcher.is_busy() or self._workspace_chat_busy():
             self._state.set_state(AppState.PROCESSING)
             self._status_header.set_app_state(AppState.PROCESSING, label="LLM")
             if self._mic_listen_active:
-                self._chat.set_user_listening_status("처리 중")
+                self._mirror_voice_listening_status("처리 중")
             return
         if self._stt_queue.is_busy() or self._stt_queue.pending_count():
             self._state.set_state(AppState.PROCESSING)
             self._status_header.set_app_state(AppState.PROCESSING, label="STT")
             if self._mic_listen_active:
-                self._chat.set_user_listening_status("음성을 인식하고 있습니다")
+                self._mirror_voice_listening_status("음성을 인식하고 있습니다")
             return
         if self._mic.state == MicState.SPEECH:
             self._state.set_state(AppState.LISTENING)
             self._status_header.set_app_state(AppState.LISTENING, label="LISTEN")
-            self._chat.set_user_listening_status("말씀하세요")
+            self._mirror_voice_listening_status("말씀하세요")
             return
         if self._mic_listen_active:
             self._state.set_state(AppState.LISTENING)
             self._status_header.set_app_state(AppState.LISTENING, label="LISTEN")
-            self._chat.set_user_listening_status("듣고 있습니다")
+            self._mirror_voice_listening_status("듣고 있습니다")
             return
         self._state.set_state(AppState.IDLE)
         self._status_header.set_app_state(AppState.IDLE)
+        panel = self._active_workspace_iris_panel()
+        if panel is not None:
+            panel.reset_listening_status()
 
     def _on_stt_ux_slow(self) -> None:
         if not (self._stt_queue.is_busy() or self._stt_queue.pending_count()):
             return
-        self._chat.set_user_listening_status("조금 더 걸리고 있습니다…")
+        self._mirror_voice_listening_status("조금 더 걸리고 있습니다…")
         self._live_activity.append_instant_line("VOICE stt_slow_hint")
 
     def _start_stt_ux_timer(self) -> None:
@@ -2089,7 +2138,7 @@ class MainWindow(QMainWindow):
         self._cancel_stt_pending_ux()
         self._sync_voice_conversation_state()
         if self._mic_listen_active:
-            self._chat.set_user_listening_status("인식이 취소되었습니다")
+            self._mirror_voice_listening_status("인식이 취소되었습니다")
 
     def _split_voice_wake_words(self) -> list[str]:
         raw = (getattr(self._voice_prefs, "voice_wake_words", "") or "").strip()
@@ -2219,7 +2268,7 @@ class MainWindow(QMainWindow):
                 self._cancel_stt_pending_ux()
                 self._sync_voice_conversation_state()
                 if self._mic_listen_active:
-                    self._chat.set_user_listening_status("깨우기 말이 필요합니다")
+                    self._mirror_voice_listening_status("깨우기 말이 필요합니다")
                 return
             body = stripped
         if self._busy:
@@ -2257,13 +2306,16 @@ class MainWindow(QMainWindow):
         self._chat.set_mic_recording(mic_state.is_hardware_open())
         if mic_state == MicState.STARTING:
             self._chat.begin_user_listening()
-            self._chat.set_user_listening_status("마이크를 여는 중")
+            self._mirror_voice_listening_status("마이크를 여는 중")
             return
         if listening:
             self._chat.begin_user_listening()
             self._sync_voice_conversation_state()
             return
         self._chat.cancel_user_listening()
+        panel = self._active_workspace_iris_panel()
+        if panel is not None:
+            panel.reset_listening_status()
         if mic_state == MicState.ERROR:
             self._state.set_state(AppState.ERROR)
             QTimer.singleShot(800, self._sync_voice_conversation_state)
@@ -2559,6 +2611,9 @@ class MainWindow(QMainWindow):
     def _on_recorder_level(self, level: float) -> None:
         self._chat.set_mic_level(level)
         self._viz.set_mic_level(level)
+        panel = self._active_workspace_iris_panel()
+        if panel is not None:
+            panel.set_mic_level(level)
 
     def _on_mic_speech_started(self) -> None:
         # 끼어들기 OFF면 TTS를 끊지 않는다 (설정 토글이 실제로 먹히게)
@@ -2642,7 +2697,7 @@ class MainWindow(QMainWindow):
             self._cancel_stt_pending_ux()
             self._sync_voice_conversation_state()
             if self._mic_listen_active:
-                self._chat.set_user_listening_status("인식되지 않았습니다 — 다시 말해 주세요")
+                self._mirror_voice_listening_status("인식되지 않았습니다 — 다시 말해 주세요")
             return
         self._live_activity.append_instant_line(f"VOICE stt_final text={text[:120]}")
         self._stop_stt_ux_timer()
@@ -2656,7 +2711,7 @@ class MainWindow(QMainWindow):
         self._cancel_stt_pending_ux()
         self._sync_voice_conversation_state()
         if self._mic_listen_active:
-            self._chat.set_user_listening_status("인식 실패 — 다시 말해 주세요")
+            self._mirror_voice_listening_status("인식 실패 — 다시 말해 주세요")
 
     def _stop_tts_playback(self) -> None:
         self._tts_job_id += 1
@@ -3061,14 +3116,32 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(800, self._sync_voice_conversation_state)
 
     def _try_hermes_fallback_after_api_fail(self, err: str) -> bool:
-        """직접 API 실패 시 Hermes 경유 재시도. 처리했으면 True."""
+        """직접 API 실패 시 Hermes 경유 재시도(Hermes OFF→ON 과도기용).
+
+        Hermes가 켜진 채팅은 처음부터 Hermes 경로라 여기로 거의 안 온다.
+        """
         if not self._api_fallback_pending:
             return False
         self._api_fallback_pending = False
         if not self._settings.hermes_enabled or not self._hermes_online:
             return False
-        model = (self._api_fallback_model or "").strip()
+        model = (
+            self._chat.current_model()
+            or self._api_fallback_model
+            or self._saved_model
+            or ""
+        ).strip()
         if not model:
+            return False
+        try:
+            from iris.infrastructure.hermes_client import resolve_hermes_inference
+
+            target = resolve_hermes_inference(
+                model,
+                db=self._db,
+                ollama_base_url=self._settings.ollama_base_url,
+            )
+        except Exception:
             return False
         if getattr(self._chat, "_stream_active", False):
             self._chat.end_stream_message(None)
@@ -3081,10 +3154,11 @@ class MainWindow(QMainWindow):
         messages = self._chat_messages_with_project_context()
         worker = HermesChatWorker(
             self._settings.hermes_base_url,
-            model,
+            target.label,
             messages,
             api_key=self._settings.hermes_api_key,
             command=self._settings.hermes_command,
+            target=target,
             parent=self,
         )
         self._start_chat_worker(worker, self._active_turn_id)
@@ -3116,6 +3190,7 @@ class MainWindow(QMainWindow):
 
     def _show_assistant_workspace(self) -> None:
         self._workspace_mode = "assistant"
+        self._restore_live_activity_to_assistant()
         self._workspace_stack.setCurrentWidget(self._assistant_page)
         self._left_sidebar.set_workspace_mode("assistant")
         self._set_workspace_icon_active(None)
@@ -3124,6 +3199,7 @@ class MainWindow(QMainWindow):
 
     def _on_obsidian_icon(self) -> None:
         self._workspace_mode = "obsidian"
+        self._restore_live_activity_to_assistant()
         self._workspace_stack.setCurrentWidget(self._obsidian_page)
         self._left_sidebar.set_workspace_mode("obsidian")
         self._set_workspace_icon_active("obsidian")
@@ -3141,6 +3217,7 @@ class MainWindow(QMainWindow):
         self._set_workspace_icon_active("email")
         self._viz.hide()
         self._orb_spacer.hide()
+        self._mount_live_activity_on_workspace(self._email_page.iris_panel)
         accounts = load_email_accounts(self._db)
         self._left_sidebar.email_folder.set_accounts(
             accounts, selected_id=self._selected_email_account_id
@@ -3165,9 +3242,50 @@ class MainWindow(QMainWindow):
         self._set_workspace_icon_active("calendar")
         self._viz.hide()
         self._orb_spacer.hide()
+        self._mount_live_activity_on_workspace(self._calendar_page.iris_panel)
         self._reload_calendar_month()
         self._refresh_calendar_holidays()
         self._check_calendar_reminders()
+
+    def _workspace_activity_height(self) -> int:
+        panel = self._active_workspace_iris_panel()
+        if panel is not None and panel.height() > 80:
+            return max(72, min(110, int(panel.height() * 0.18)))
+        return 96
+
+    def _clear_workspace_live_slots(self) -> None:
+        for page in (self._email_page, self._calendar_page):
+            panel = getattr(page, "iris_panel", None)
+            if panel is not None and hasattr(panel, "clear_live_slot"):
+                panel.clear_live_slot()
+
+    def _mount_live_activity_on_workspace(self, panel) -> None:
+        """메일/캘린더 우측: IDE Companion과 동일 — 오브 아래 Live Activity."""
+        if self._ui_mode == "ide_companion" or self._companion_page.is_mounted():
+            return
+        self._clear_workspace_live_slots()
+        panel.mount_live_activity(
+            self._live_activity,
+            height=self._workspace_activity_height(),
+        )
+
+    def _restore_live_activity_to_assistant(self) -> None:
+        """assistant center로 Live Activity 복귀 (companion 중이면 스킵)."""
+        if self._ui_mode == "ide_companion" or self._companion_page.is_mounted():
+            return
+        self._clear_workspace_live_slots()
+        self._live_activity.setMinimumHeight(72)
+        self._live_activity.setMaximumHeight(180)
+        self._live_activity.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        left_lay = self._assistant_page.center_layout
+        # 순서 고정: orb · activity · chat (addWidget만 — orphan 금지)
+        left_lay.addWidget(self._orb_spacer, 2)
+        left_lay.addWidget(self._live_activity, 0)
+        left_lay.addWidget(self._chat, 3)
+        self._live_activity.show()
 
     def _sync_calendar_wiki(self) -> None:
         from iris.storage.calendar_events import events_as_dicts, list_events
@@ -3321,9 +3439,43 @@ class MainWindow(QMainWindow):
                 )
                 mark_reminded(self._db, ev.id, soon=True)
 
+    def _active_workspace_iris_panel(self):
+        """메일/캘린더 우측 Iris 패널. 그 외(assistant/IDE)는 None."""
+        mode = getattr(self, "_workspace_mode", "") or ""
+        if mode == "email":
+            return self._email_page.iris_panel
+        if mode == "calendar":
+            return self._calendar_page.iris_panel
+        return None
+
+    def _route_to_workspace_chat(self, text: str) -> bool:
+        """현재 워크스페이스 전용 챗으로 전달. True면 메인 채팅 스킵."""
+        mode = getattr(self, "_workspace_mode", "") or ""
+        if mode == "email":
+            self._on_email_chat_send(text)
+            return True
+        if mode == "calendar":
+            self._on_calendar_chat_send(text)
+            return True
+        return False
+
+    def _mirror_voice_listening_status(self, status: str) -> None:
+        """메인 ChatPanel + (메일/캘린더면) 우측 패널 placeholder."""
+        self._chat.set_user_listening_status(status)
+        panel = self._active_workspace_iris_panel()
+        if panel is not None:
+            panel.set_listening_status(status)
+
+    def _workspace_chat_busy(self) -> bool:
+        return bool(
+            getattr(self, "_email_busy", False) or getattr(self, "_calendar_busy", False)
+        )
+
     def _on_calendar_chat_send(self, text: str) -> None:
         text = (text or "").strip()
         if not text:
+            return
+        if self._try_local_workspace_control(text):
             return
         panel = self._calendar_page.iris_panel
         if self._calendar_busy:
@@ -3341,6 +3493,17 @@ class MainWindow(QMainWindow):
         if not model:
             panel.append_iris_error("사용할 모델을 먼저 선택해 주세요.")
             self._refresh_models()
+            return
+        try:
+            from iris.infrastructure.hermes_client import resolve_hermes_inference
+
+            target = resolve_hermes_inference(
+                model,
+                db=self._db,
+                ollama_base_url=self._settings.ollama_base_url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            panel.append_iris_error(str(exc))
             return
 
         from iris.infrastructure.calendar_agent import build_calendar_agent_context
@@ -3365,12 +3528,15 @@ class MainWindow(QMainWindow):
 
         self._calendar_busy = True
         panel.set_orb_state("PROCESSING")
+        self._stop_tts_playback()
+        self._begin_auto_tts_response()
         worker = HermesChatWorker(
             self._settings.hermes_base_url,
-            model,
+            target.label,
             messages,
             api_key=self._settings.hermes_api_key,
             command=self._settings.hermes_command,
+            target=target,
             parent=self,
         )
         self._calendar_chat_worker = worker
@@ -3389,6 +3555,7 @@ class MainWindow(QMainWindow):
     def _on_calendar_chat_chunk(self, chunk: str) -> None:
         self._calendar_page.iris_panel.set_orb_state("RESPONDING")
         self._calendar_page.iris_panel.append_iris_chunk(chunk)
+        self._feed_tts_stream(chunk)
 
     def _on_calendar_chat_finished(self, content: str) -> None:
         from iris.infrastructure.calendar_agent import parse_calendar_ops, strip_calendar_ops
@@ -3397,6 +3564,7 @@ class MainWindow(QMainWindow):
         ops = parse_calendar_ops(text)
         visible = strip_calendar_ops(text)
         self._calendar_page.iris_panel.end_iris(visible or None)
+        self._feed_tts_stream("", flush=True)
         if text:
             self._calendar_history.append({"role": "assistant", "content": text})
         for note in self._apply_calendar_ops(ops):
@@ -3410,15 +3578,18 @@ class MainWindow(QMainWindow):
         self._calendar_busy = False
         self._calendar_chat_worker = None
         self._calendar_page.iris_panel.set_orb_state("IDLE")
+        self._sync_voice_conversation_state()
 
     def _on_calendar_chat_failed(self, err: str) -> None:
         self._calendar_page.iris_panel.end_iris()
+        self._feed_tts_stream("", flush=True)
         if self._calendar_history and self._calendar_history[-1].get("role") == "user":
             self._calendar_history.pop()
         self._calendar_page.iris_panel.append_iris_error(f"Hermes 오류: {err[:200]}")
         self._calendar_busy = False
         self._calendar_chat_worker = None
         self._calendar_page.iris_panel.set_orb_state("ERROR")
+        self._sync_voice_conversation_state()
 
     def _current_email_account(self) -> EmailAccount | None:
         acc_id = self._selected_email_account_id or self._left_sidebar.email_folder.current_account_id()
@@ -3552,6 +3723,9 @@ class MainWindow(QMainWindow):
         text = (text or "").strip()
         if not text:
             return
+        # 기본화면/마이크/화면전환 — MCP 없이 즉시 (메일 패널에서도 동일)
+        if self._try_local_workspace_control(text):
+            return
         panel = self._email_page.iris_panel
         if self._email_busy:
             panel.append_iris_error("이전 요청을 처리 중입니다. 잠시만요.")
@@ -3569,12 +3743,27 @@ class MainWindow(QMainWindow):
             panel.append_iris_error("사용할 모델을 먼저 선택해 주세요.")
             self._refresh_models()
             return
+        try:
+            from iris.infrastructure.hermes_client import resolve_hermes_inference
+
+            target = resolve_hermes_inference(
+                model,
+                db=self._db,
+                ollama_base_url=self._settings.ollama_base_url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            panel.append_iris_error(str(exc))
+            return
 
         from iris.infrastructure.email_client import build_agent_context
 
         account = self._current_email_account()
         address = account.address if account else ""
-        context = build_agent_context(address, self._email_page.current_message())
+        context = build_agent_context(
+            address,
+            self._email_page.current_message(),
+            inbox=self._email_page.current_mails(),
+        )
 
         panel.append_user(text)
         self._email_history.append({"role": "user", "content": text})
@@ -3582,12 +3771,15 @@ class MainWindow(QMainWindow):
 
         self._email_busy = True
         panel.set_orb_state("PROCESSING")
+        self._stop_tts_playback()
+        self._begin_auto_tts_response()
         worker = HermesChatWorker(
             self._settings.hermes_base_url,
-            model,
+            target.label,
             messages,
             api_key=self._settings.hermes_api_key,
             command=self._settings.hermes_command,
+            target=target,
             parent=self,
         )
         self._email_chat_worker = worker
@@ -3606,10 +3798,12 @@ class MainWindow(QMainWindow):
     def _on_email_chat_chunk(self, chunk: str) -> None:
         self._email_page.iris_panel.set_orb_state("RESPONDING")
         self._email_page.iris_panel.append_iris_chunk(chunk)
+        self._feed_tts_stream(chunk)
 
     def _on_email_chat_finished(self, content: str) -> None:
         text = (content or "").strip()
         self._email_page.iris_panel.end_iris(text or None)
+        self._feed_tts_stream("", flush=True)
         if text:
             self._email_history.append({"role": "assistant", "content": text})
         if not self._hermes_online:
@@ -3621,15 +3815,18 @@ class MainWindow(QMainWindow):
         self._email_busy = False
         self._email_chat_worker = None
         self._email_page.iris_panel.set_orb_state("IDLE")
+        self._sync_voice_conversation_state()
 
     def _on_email_chat_failed(self, err: str) -> None:
         self._email_page.iris_panel.end_iris()
+        self._feed_tts_stream("", flush=True)
         if self._email_history and self._email_history[-1].get("role") == "user":
             self._email_history.pop()
         self._email_page.iris_panel.append_iris_error(f"Hermes 오류: {err[:200]}")
         self._email_busy = False
         self._email_chat_worker = None
         self._email_page.iris_panel.set_orb_state("ERROR")
+        self._sync_voice_conversation_state()
 
     def _try_local_ide_control(self, text: str) -> bool:
         """짧은 IDE 켜기/끄기 요청은 아이콘과 같은 로컬 핸들러로 처리."""
@@ -3675,6 +3872,144 @@ class MainWindow(QMainWindow):
                 return True
         return False
 
+    def _try_local_workspace_control(self, text: str) -> bool:
+        """짧은 메일/캘린더/위키/기본화면·마이크 요청은 Hermes 없이 아이콘과 동일 처리."""
+        import re
+
+        normalized = re.sub(r"\s+", " ", text.strip().lower())
+
+        # 기본화면 / 홈 — 메일·캘린더에서도 MCP 없이 즉시 복귀
+        home_patterns = (
+            r"^(기본\s*화면|홈\s*화면|메인\s*화면|홈|메인)(\s*으로|\s*로)?(\s*(가|돌아가|바꿔|전환|열어|보여))?(줘|라|요)?[!?.]*$",
+            r"^(다시\s*)?(기본|홈|메인)(\s*화면)?(\s*으로|\s*로)?[!?.]*$",
+            r"^(go\s+)?(back\s+to\s+)?(home|assistant|main(\s*screen)?)[!?.]*$",
+            r"^workspace\.?open_assistant[!?.]*$",
+        )
+        for pat in home_patterns:
+            if re.match(pat, normalized, flags=re.IGNORECASE):
+                self._reply_local_control(text, self._go_home_workspace, "기본 화면으로 돌아갔습니다.")
+                return True
+
+        mic_off_patterns = (
+            r"^(마이크|mic|음성\s*인식)\s*(을\s*)?(꺼|끄|off|중지|멈춰|비활성)(줘|라|요)?[!?.]*$",
+            r"^(mute|turn\s+off)\s+(the\s+)?(mic|microphone)[!?.]*$",
+            r"^mic\s*off[!?.]*$",
+        )
+        mic_on_patterns = (
+            r"^(마이크|mic|음성\s*인식)\s*(을\s*)?(켜|on|시작|활성)(줘|라|요)?[!?.]*$",
+            r"^(unmute|turn\s+on)\s+(the\s+)?(mic|microphone)[!?.]*$",
+            r"^mic\s*on[!?.]*$",
+        )
+        for pat in mic_off_patterns:
+            if re.match(pat, normalized, flags=re.IGNORECASE):
+                self._reply_local_control(text, lambda: self._set_mic_listen(False), "마이크를 껐습니다.")
+                return True
+        for pat in mic_on_patterns:
+            if re.match(pat, normalized, flags=re.IGNORECASE):
+                self._reply_local_control(text, lambda: self._set_mic_listen(True), "마이크를 켰습니다.")
+                return True
+
+        routes: tuple[tuple[tuple[str, ...], str, object, str], ...] = (
+            (
+                (
+                    r"^(메일|이메일|메일함|받은\s*편지함)\s*(화면)?\s*(켜|열어|열|보여|보여줘|실행|시작)(줘|라|요)?[!?.]*$",
+                    r"^(open|show)\s+(the\s+)?(mail|email|inbox)[!?.]*$",
+                    r"^email\s*(on|open)?[!?.]*$",
+                ),
+                "email",
+                self._on_email_icon,
+                "이메일 화면을 열었습니다.",
+            ),
+            (
+                (
+                    r"^(캘린더|일정|스케줄)\s*(화면)?\s*(켜|열어|열|보여|보여줘|실행|시작)(줘|라|요)?[!?.]*$",
+                    r"^(open|show)\s+(the\s+)?(calendar|schedule)[!?.]*$",
+                ),
+                "calendar",
+                self._on_calendar_icon,
+                "캘린더 화면을 열었습니다.",
+            ),
+            (
+                (
+                    r"^(위키|iris\s*wiki|옵시디언)\s*(화면)?\s*(켜|열어|열|보여|보여줘|실행|시작)(줘|라|요)?[!?.]*$",
+                    r"^(open|show)\s+(the\s+)?(wiki|obsidian)[!?.]*$",
+                ),
+                "obsidian",
+                self._on_obsidian_icon,
+                "위키 화면을 열었습니다.",
+            ),
+        )
+        for patterns, mode, handler, reply_ok in routes:
+            for pat in patterns:
+                if re.match(pat, normalized, flags=re.IGNORECASE):
+                    already = (
+                        self._workspace_mode == mode
+                        and self._ui_mode != "ide_companion"
+                    )
+                    if already:
+                        reply = "이미 위키 화면입니다."
+                        if mode == "email":
+                            reply = "이미 이메일 화면입니다."
+                        elif mode == "calendar":
+                            reply = "이미 캘린더 화면입니다."
+                        elif mode != "obsidian":
+                            reply = f"이미 {mode} 화면입니다."
+
+                        def _act() -> None:
+                            return None
+                    else:
+                        reply = reply_ok
+
+                        def _act(h=handler) -> None:
+                            if self._ui_mode == "ide_companion":
+                                self._exit_ide_companion()
+                            h()
+
+                    self._reply_local_control(text, _act, reply)
+                    return True
+        return False
+
+    def _go_home_workspace(self) -> None:
+        if self._ui_mode == "ide_companion":
+            self._exit_ide_companion()
+        self._show_assistant_workspace()
+
+    def _set_mic_listen(self, on: bool) -> None:
+        from iris.audio.microphone_controller import MicState
+
+        listening = self._mic.state not in (MicState.OFF, MicState.ERROR)
+        if on and not listening:
+            if not self._voice_prefs.stt_enabled:
+                self._live_activity.append_instant_line(
+                    "STT가 비활성화되어 있습니다. 설정에서 STT 사용을 켜세요."
+                )
+                return
+            if not self._ensure_voice_runtime():
+                return
+            self._start_mic_listen()
+            self._persist_mic_listen_preferred(True)
+        elif (not on) and listening:
+            self._stop_mic_listen()
+            self._persist_mic_listen_preferred(False)
+
+    def _reply_local_control(self, text: str, action, reply_ok: str) -> None:
+        """메인 채팅 또는 메일/캘린더 패널에 로컬 조작 결과 반영.
+
+        화면 전환 action은 답변을 남긴 뒤에 실행(패널이 사라져 답변이 안 보이는 것 방지).
+        """
+        panel = self._active_workspace_iris_panel()
+        if panel is not None:
+            panel.append_user(text)
+            panel.end_iris(reply_ok)
+            action()
+            return
+        self._chat.append_message_instant("You", text)
+        self._history.append({"role": "user", "content": text})
+        action()
+        self._chat.append_message_instant("Iris", reply_ok)
+        self._history.append({"role": "assistant", "content": reply_ok})
+        self._refresh_context_gauge()
+
     def _chat_messages_with_project_context(self) -> list[dict[str, str]]:
         """Hermes/Ollama 요청용 — Iris Control MCP 지침 + project_root.
 
@@ -3717,7 +4052,12 @@ class MainWindow(QMainWindow):
             "업무 학습(화면 조작 녹화 시작/종료): learning.start / learning.stop. 이미 배운 업무 실행: learning.run. "
             "위키에 저장 / Iris Wiki에 남기기: iris_invoke wiki.write_user_note "
             "(title + content, optional source_url). Default path user/inbox/{slug}.md. "
-            "Never claim a wiki save succeeded without that tool returning ok. ",
+            "Never claim a wiki save succeeded without that tool returning ok. "
+            "메일/이메일 화면: iris_invoke workspace.open_email. "
+            "오늘 온 메일·받은편지 요약: email.list_messages (args.today=true 또는 since=YYYY-MM-DD). "
+            "본문 읽기: email.read_message (uid). 일정: workspace.open_calendar + calendar.*. "
+            "기본 화면/홈으로: workspace.open_assistant (Companion이면 ide.exit_companion 후). "
+            "마이크 끄기: voice.mic_off / 켜기: voice.mic_on / 토글: voice.toggle_mic. ",
         )
         if root:
             bits.append(f"Project root: {root}")
@@ -4498,6 +4838,7 @@ class MainWindow(QMainWindow):
 
     def _mount_companion_body(self, iris_w: int, iris_h: int) -> None:
         act_h = max(72, min(110, int(iris_h * 0.11)))
+        self._clear_workspace_live_slots()
         # addWidget만으로 이동 — removeWidget/setParent(None) 없음
         self._companion_page.mount(
             orb_spacer=self._orb_spacer,
@@ -4531,6 +4872,7 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
         )
+        self._clear_workspace_live_slots()
         left_lay = self._assistant_page.center_layout
         if self._companion_page.is_mounted():
             self._companion_page.transfer_to(left_lay, (2, 0, 3))
@@ -4544,6 +4886,12 @@ class MainWindow(QMainWindow):
         self._body_stack.setCurrentWidget(self._main_splitter)
         self._viz.set_orb_anchor(self._orb_spacer)
         self._viz.particle_core().set_size_scale(1.0)
+        # companion 종료 후 현재 워크스페이스가 메일/캘린더면 로그 다시 우측으로
+        mode = getattr(self, "_workspace_mode", "") or ""
+        if mode == "email":
+            self._mount_live_activity_on_workspace(self._email_page.iris_panel)
+        elif mode == "calendar":
+            self._mount_live_activity_on_workspace(self._calendar_page.iris_panel)
 
     def _apply_ide_companion_layout(self, companion: bool) -> None:
         if companion:
@@ -4612,6 +4960,9 @@ class MainWindow(QMainWindow):
     def _on_emu_launch_ok(self, message: str) -> None:
         self._live_activity.append_instant_line(message)
         if "시작 (PID" in message or "재시작 (PID" in message:
+            self._live_activity.append_instant_line(
+                "에뮬레이터 첫 기동·부팅에는 약간의 시간이 소요될 수 있습니다."
+            )
             self._live_activity.append_instant_line(
                 "한글은 에뮬 화면 키보드(IME) 사용. PC 키보드는 영문·키이벤트용."
             )
@@ -4711,11 +5062,7 @@ class MainWindow(QMainWindow):
                 save_selected_model(self._db, self._saved_model)
             self._status_header.set_model_name(self._settings.model_name or "(unset)")
             self._refresh_hermes_health()
-            if (
-                self._settings.hermes_enabled
-                and self._saved_model
-                and not is_api_runtime_model(self._saved_model)
-            ):
+            if self._settings.hermes_enabled and self._saved_model:
                 self._sync_hermes_model(self._saved_model)
             self._refresh_models()
             self._refresh_ide_session_state()

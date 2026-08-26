@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from iris.infrastructure.hermes_client import HermesClient, host_label_for_hermes
+from iris.infrastructure.hermes_client import (
+    HermesClient,
+    HermesInferenceTarget,
+    host_label_for_hermes,
+    resolve_hermes_inference,
+)
 from iris.system.hermes_gateway import (
     ensure_hermes_gateway_running,
     ensure_hermes_provider_config,
@@ -50,9 +55,6 @@ class HermesHealthWorker(QThread):
                         f"MCP 점검 실패 {report.mcp_fail_count}개 — 설정·경로를 확인하세요."
                     )
 
-                gateway_up = is_hermes_gateway_running(
-                    self._base_url, api_key=self._api_key
-                )
                 if report.needs_gateway_reload:
                     self.notice.emit("MCP 연결 — Hermes gateway 완전 재기동…")
                     ok = restart_hermes_gateway(
@@ -77,6 +79,10 @@ class HermesHealthWorker(QThread):
                     self.finished_ok.emit(ok)
                     return
 
+                # soft reconnect: config 동일·control live → 강제 재기동 없이 검증만
+                gateway_up = is_hermes_gateway_running(
+                    self._base_url, api_key=self._api_key
+                )
                 if gateway_up:
                     # 이미 떠 있어도 MCP가 죽은 채일 수 있음 → 검증 후 필요 시 재기동
                     mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self._command)
@@ -191,7 +197,7 @@ class HermesControlSyncWorker(QThread):
 
 
 class HermesModelSyncWorker(QThread):
-    """Iris 모델 선택 → Hermes config 동기화."""
+    """Iris 모델 선택 → Hermes config 동기화 (Ollama + 커스텀 API)."""
 
     finished_ok = pyqtSignal()
     failed = pyqtSignal(str)
@@ -203,6 +209,7 @@ class HermesModelSyncWorker(QThread):
         *,
         api_key: str = "",
         command: str = "hermes",
+        target: HermesInferenceTarget | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -210,6 +217,7 @@ class HermesModelSyncWorker(QThread):
         self._model = model
         self._api_key = api_key
         self._command = command
+        self._target = target
 
     def run(self) -> None:
         try:
@@ -218,7 +226,10 @@ class HermesModelSyncWorker(QThread):
                 api_key=self._api_key,
                 command=self._command,
             )
-            client.set_inference_model(self._model)
+            if self._target is not None:
+                client.set_inference_model(self._target.model, target=self._target)
+            else:
+                client.set_inference_model(self._model)
             self.finished_ok.emit()
         except Exception as e:
             self.failed.emit(str(e))
@@ -241,6 +252,7 @@ class HermesChatWorker(QThread):
         *,
         api_key: str = "",
         command: str = "hermes",
+        target: HermesInferenceTarget | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -249,14 +261,16 @@ class HermesChatWorker(QThread):
         self._messages = messages
         self._api_key = api_key
         self._command = command
+        self._target = target
         self._cancel = False
 
     def request_cancel(self) -> None:
         self._cancel = True
 
     def run(self) -> None:
+        display = self._target.label if self._target is not None else self._model
         host = host_label_for_hermes(self._base_url)
-        self.connecting.emit(self._model, host)
+        self.connecting.emit(display, host)
         content_parts: list[str] = []
         try:
             if not is_hermes_gateway_running(self._base_url, api_key=self._api_key):
@@ -275,8 +289,13 @@ class HermesChatWorker(QThread):
                 api_key=self._api_key,
                 command=self._command,
             )
-            client.set_inference_model(self._model)
-            for ev in client.stream_chat(self._model, self._messages):
+            if self._target is not None:
+                client.set_inference_model(self._target.model, target=self._target)
+                stream_model = self._target.model
+            else:
+                client.set_inference_model(self._model)
+                stream_model = self._model
+            for ev in client.stream_chat(stream_model, self._messages):
                 if self._cancel:
                     break
                 tool = ev.get("tool_progress")
@@ -291,3 +310,14 @@ class HermesChatWorker(QThread):
             self.finished_ok.emit("".join(content_parts))
         except Exception as e:
             self.failed.emit(str(e))
+
+
+# re-export for callers that resolve targets in UI thread
+__all__ = [
+    "HermesHealthWorker",
+    "HermesControlSyncWorker",
+    "HermesModelSyncWorker",
+    "HermesChatWorker",
+    "HermesInferenceTarget",
+    "resolve_hermes_inference",
+]

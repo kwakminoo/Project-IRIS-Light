@@ -21,6 +21,20 @@ _BAR_H = 7
 _LINE_CORE_PX = 1.5
 _BAR_INSET_PX = 1  # 펜·글로우가 위젯 경계에서 잘리지 않게
 
+# 할당량 게이지: 0~30 연녹 / 40~70 파랑 / 80~100 빨강 (사이 구간은 인접색)
+_QUOTA_COLOR_LOW = "#86efac"  # light green
+_QUOTA_COLOR_MID = "#3b82f6"  # blue
+_QUOTA_COLOR_HIGH = "#ef4444"  # red
+
+
+def _quota_fill_color(percent: float) -> str:
+    p = max(0.0, min(100.0, float(percent)))
+    if p < 40.0:
+        return _QUOTA_COLOR_LOW
+    if p < 80.0:
+        return _QUOTA_COLOR_MID
+    return _QUOTA_COLOR_HIGH
+
 
 class _NeonLineBar(QWidget):
     """얇은 네온 사인 라인 게이지 (직사각형·끝 둥글지 않음)."""
@@ -55,25 +69,25 @@ class _NeonLineBar(QWidget):
         x0 = inset
         x1 = inset + usable
         track = QColor(TOKENS.metric_track)
-        painter.setPen(QPen(track, _LINE_CORE_PX))
-        painter.drawLine(x0, int(mid_y), x1, int(mid_y))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(track)
+        painter.drawRect(QRectF(x0, mid_y - 2.0, usable, 4.0))
 
-        fill_w = int(round(usable * self._ratio))
+        fill_w = max(0, int(round(usable * self._ratio)))
         if fill_w <= 0:
             painter.end()
             return
 
         c = self._color
         glow = QColor(c)
-        glow.setAlpha(55)
-        painter.setPen(Qt.PenStyle.NoPen)
+        glow.setAlpha(70)
         painter.setBrush(glow)
         painter.drawRect(QRectF(x0, mid_y - 2.5, fill_w, 5.0))
 
         soft = QColor(c)
-        soft.setAlpha(140)
+        soft.setAlpha(200)
         painter.setBrush(soft)
-        painter.drawRect(QRectF(x0, mid_y - 1.25, fill_w, 2.5))
+        painter.drawRect(QRectF(x0, mid_y - 1.5, fill_w, 3.0))
 
         core = QColor(c)
         core.setAlpha(255)
@@ -160,11 +174,13 @@ class _MetricRow(QWidget):
                 "(from ollama.com/settings DevTools) · 클릭: 새로고침"
             )
         else:
+            pct = float(quota.percent)
+            self._bar.set_fill_color(_quota_fill_color(pct))
+            self._bar.set_ratio(pct / 100.0)
             if float(quota.total) == 100.0:
                 self.setToolTip(f"한도 대비 사용 {quota.used:g}% (클릭: 새로고침)")
             else:
-                self.setToolTip("API 사용량 (클릭: 새로고침)")
-            self._bar.set_ratio(quota.percent / 100.0)
+                self.setToolTip(f"API 사용량 {pct:.0f}% (클릭: 새로고침)")
 
 
 class SystemMetricsPanel(QWidget):

@@ -47,6 +47,21 @@ def has_hangul(text: str) -> bool:
     return bool(_HANGUL_RE.search(text))
 
 
+def _keep_text_symbol(ch: str, code: int) -> bool:
+    """So여도 채팅 본문으로 쓰는 가로줄·박스 드로잉은 유지.
+
+    U+2500 ─ 등은 한글 모음 'ㅡ'와 비슷하게 보이는데, 예전엔 So라서
+    prepare_chat_text에서 통째로 사라져 채팅에 안 보였다.
+    """
+    # Box Drawing (─ │ ┌ …)
+    if 0x2500 <= code <= 0x257F:
+        return True
+    # Block Elements (▀ ▄ █ …) — 구분선/다이어그램
+    if 0x2580 <= code <= 0x259F:
+        return True
+    return False
+
+
 def strip_emoji(text: str) -> str:
     """이모지·이모티콘·장식 심볼을 항상 제거. 일반 한글/영문/문장부호는 유지."""
     if not text:
@@ -65,7 +80,7 @@ def strip_emoji(text: str) -> str:
             continue
         cat = unicodedata.category(ch)
         # Symbol, other / modifier — 이모지·장식. 통화기호(Sc)·수학(Sm)은 유지
-        if cat in ("So", "Sk", "Cs"):
+        if cat in ("So", "Sk", "Cs") and not _keep_text_symbol(ch, o):
             continue
         out.append(ch)
     cleaned = "".join(out)
@@ -179,4 +194,8 @@ if __name__ == "__main__":
     assert prepare_activity_line("plain text") == "plain text"
     assert "\u26a1" not in prepare_chat_text("답변 \u26a1 입니다")
     assert "안녕" in prepare_chat_text("안녕 \U0001F44B")
+    # 한글 모음 ㅡ + 박스 가로줄(─)은 채팅에 남아야 함
+    assert "\u3161" in prepare_chat_text("스나드에서 \u3161")
+    assert "\u2500" in prepare_chat_text("스나드에서 \u2500\u2500\u2500")
+    assert prepare_chat_text("스나드에서 \u2500\u2500") == "스나드에서 \u2500\u2500"
     print("activity_privacy self-check ok")

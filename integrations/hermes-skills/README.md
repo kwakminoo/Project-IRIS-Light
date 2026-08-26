@@ -1,4 +1,4 @@
-# Hermes ↔ Iris Control Surface
+﻿# Hermes ↔ Iris Control Surface
 
 Iris가 떠 있을 때만 동작한다. Hermes가 Iris UI를 **tool-calling**으로 조작한다.
 
@@ -9,7 +9,7 @@ Iris 시작 시 `iris.system.hermes_iris_control_sync`가:
 1. `%LOCALAPPDATA%\hermes\config.yaml`에 `mcp_servers.iris-control` upsert  
 2. 같은 config에 `mcp_servers.mobile-mcp` upsert  
    (`npx -y @mobilenext/mobile-mcp@latest`, `ANDROID_HOME`/`ANDROID_SDK_ROOT`/`PATH`=Iris SDK)  
-3. `skills/iris-control/{iris-work-*,iris-vibe-code,iris-emulator,iris-mobile-mcp,iris-calendar,iris-wiki,iris-learning}` 복사  
+3. `skills/iris-control/{iris-work-*,iris-vibe-code,iris-emulator,iris-mobile-mcp,iris-calendar,iris-wiki,iris-email,iris-learning}` 복사  
 4. `memories/MEMORY.md`에 Iris control 힌트 append (1회)  
 5. 설정이 바뀌었고 gateway가 이미 떠 있으면 `--replace` 재기동  
 

@@ -31,7 +31,9 @@ def normalize_chat_body(who: str, text: str) -> str:
 
 def chat_body_to_html(text: str) -> str:
     """QTextEdit 본문 삽입용 HTML — 줄바꿈은 <br>로 처리해 문단 간격이 벌어지지 않게 한다."""
-    return html.escape(text or "").replace("\n", "<br>")
+    # color 명시: HTML 삽입 시 문서 기본 검정 전경이 다크 채팅에서 가로획을 삼킴
+    body = html.escape(text or "").replace("\n", "<br>")
+    return f'<span style="color:#e8f0fe;">{body}</span>'
 
 
 def visible_typing_text(
@@ -52,7 +54,7 @@ def visible_typing_text(
 def typing_body_to_html(text: str) -> str:
     """타이핑 중 본문 HTML — 공백·줄바꿈이 HTML 접힘 없이 그대로 보이게 한다."""
     escaped = html.escape(text or "")
-    return f'<span style="white-space:pre-wrap;">{escaped}</span>'
+    return f'<span style="color:#e8f0fe;white-space:pre-wrap;">{escaped}</span>'
 
 
 # 타이핑 속도 기본값 (speech_sync 없을 때)

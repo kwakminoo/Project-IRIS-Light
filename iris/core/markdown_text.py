@@ -136,16 +136,26 @@ def _style_img_tag(attrs: str) -> str:
 
 def _style_chat_html(html_body: str) -> str:
     """다크 채팅창에 맞게 QTextEdit 호환 스타일 적용."""
+    # ponytail: QTextEdit HTML 기본 전경이 검정이면 다크 배경에서 가로획(ㅡ/─/hr)이 안 보임
+    _body = "color:#e8f0fe;"
     t = html_body
     t = re.sub(
         r"<p>",
-        '<span style="display:block;margin:0 0 4px 0;">',
+        f'<span style="display:block;margin:0 0 4px 0;{_body}">',
         t,
     )
     t = re.sub(r"</p>", "</span>", t)
+    # --- / ___ 마크다운 구분선 — 투명/검정 hr 대신 보이는 선
+    t = re.sub(
+        r"<hr\s*/?>",
+        '<hr style="border:none;border-top:1px solid #64748b;margin:8px 0;height:0;" />',
+        t,
+        flags=re.IGNORECASE,
+    )
     t = re.sub(
         r"<pre>",
-        '<pre style="background-color:#1e293b;border-radius:6px;padding:8px;margin:4px 0;white-space:pre-wrap;">',
+        f'<pre style="background-color:#1e293b;border-radius:6px;padding:8px;margin:4px 0;'
+        f'white-space:pre-wrap;{_body}">',
         t,
     )
     t = re.sub(
@@ -155,7 +165,7 @@ def _style_chat_html(html_body: str) -> str:
     )
     t = re.sub(
         r"<h([1-6])>",
-        r'<span style="display:block;font-weight:700;margin:6px 0 4px 0;">',
+        f'<span style="display:block;font-weight:700;margin:6px 0 4px 0;{_body}">',
         t,
     )
     t = re.sub(r"</h[1-6]>", "</span>", t)
@@ -167,3 +177,11 @@ def _style_chat_html(html_body: str) -> str:
     # 이미지 래핑은 링크 스타일 적용 후에 — 썸네일 앵커에 파란 밑줄이 안 붙게
     t = _IMG_TAG.sub(lambda m: _style_img_tag(m.group(1)), t)
     return t
+
+
+if __name__ == "__main__":
+    html = markdown_to_chat_html("스나드에서 \u3161\n\n---\n\n다음")
+    assert "\u3161" in html
+    assert "color:#e8f0fe" in html
+    assert "border-top:1px solid" in html
+    print("markdown_text chat html ok")

@@ -12,6 +12,6 @@ alwaysApply: false
 - Android 에뮬레이터 **GUI** 기동:
   - `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`만 사용.
   - **`CREATE_NO_WINDOW` / `STARTUPINFO` / `SW_HIDE` 금지** — `UpdateLayeredWindowIndirect` 실패로 **검은 화면**이 된다 (실측).
-  - 뜨는 콘솔(`emulator.exe`, **`netsimd.exe`** 등)은 `ConsoleWindowClass`만 EnumWindows로 숨긴다 (Qt/에뮬 화면 창 제외).
+  - Win11에서 뜨는 터미널은 `ConsoleWindowClass`가 아니라 **`PseudoConsoleWindow`**(qemu/netsimd/crashpad PID) + **`CASCADIA_HOSTING_WINDOW_CLASS`**(Windows Terminal, 제목=exe 경로). `_hide_emulator_console_surfaces`로 숨긴다 (Qt 폰 화면 제외).
 - `CREATE_NEW_CONSOLE` / 숨김 없는 `powershell` / 숨김 없는 `taskkill` 금지.
 - 막는 대상은 **터미널/콘솔 플래시**뿐이다. 에뮬레이터 화면 창은 보여야 한다.

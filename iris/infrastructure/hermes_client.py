@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -21,6 +22,84 @@ def api_root_from_base(base_url: str) -> str:
     return raw or "http://127.0.0.1:8642"
 
 
+def is_iris_api_runtime_model(model: str) -> bool:
+    """Iris 커스텀 API runtime id (`api:{provider_id}:{model}`) 여부."""
+    return (model or "").strip().lower().startswith("api:")
+
+
+def is_hermes_syncable_model(model: str) -> bool:
+    """Hermes config.yaml default에 그대로 쓸 수 있는 모델명인지.
+
+    Iris API runtime id(`api:…`)는 default에 넣으면 안 된다 — 반드시
+    resolve_hermes_inference()로 푼 뒤 custom endpoint로 동기화한다.
+    """
+    name = (model or "").strip()
+    if not name or is_iris_api_runtime_model(name):
+        return False
+    return True
+
+
+@dataclass(frozen=True)
+class HermesInferenceTarget:
+    """Iris 피커 선택 → Hermes main-slot에 넣을 값."""
+
+    model: str
+    provider: str
+    base_url: str = ""
+    api_key: str = ""
+    display: str = ""
+
+    @property
+    def label(self) -> str:
+        return (self.display or self.model or "").strip()
+
+
+def resolve_hermes_inference(
+    runtime: str,
+    *,
+    db: Any = None,
+    ollama_base_url: str = "http://127.0.0.1:11434/v1",
+) -> HermesInferenceTarget:
+    """Iris runtime 모델 id → Hermes custom/OpenAI-compat 타깃.
+
+    - `api:{provider_id}:{model}` → 등록된 API의 base_url/api_key + 실제 모델명
+    - Ollama/로컬 이름 → custom + :11434 (Hermes 0.19+ 권장)
+    """
+    raw = (runtime or "").strip()
+    if not raw:
+        raise ValueError("model required")
+
+    from iris.storage.api_providers import get_api_provider, parse_runtime_model_id
+
+    parsed = parse_runtime_model_id(raw)
+    if parsed is not None:
+        pid, api_model = parsed
+        provider = get_api_provider(db, pid) if db is not None else None
+        if provider is None or not (provider.base_url or "").strip():
+            raise ValueError(
+                "선택한 API가 없거나 Base URL이 없습니다. 설정 → API를 확인하세요."
+            )
+        base = (provider.base_url or "").strip().rstrip("/")
+        return HermesInferenceTarget(
+            model=api_model,
+            provider="custom",
+            base_url=base,
+            api_key=(provider.api_key or "").strip(),
+            display=f"{provider.name}/{api_model}",
+        )
+
+    ollama = (ollama_base_url or "http://127.0.0.1:11434/v1").strip().rstrip("/")
+    if not ollama.endswith("/v1"):
+        ollama = ollama + "/v1"
+    return HermesInferenceTarget(
+        model=raw,
+        provider="custom",
+        base_url=ollama,
+        api_key="",
+        display=raw,
+    )
+
+
 def infer_hermes_provider(model: str) -> str:
     """Iris 모델명 → Hermes provider.
 
@@ -30,8 +109,9 @@ def infer_hermes_provider(model: str) -> str:
     + 빈 content가 되어 Iris에 '(빈 응답)'만 보인다.
     """
     name = (model or "").strip().lower()
-    if not name:
+    if not name or is_iris_api_runtime_model(name):
         return "auto"
+    # OpenRouter 스타일 vendor/model — Iris API runtime의 nvidia/... 는 위에서 차단
     if "/" in name:
         return "openrouter"
     return "ollama"
@@ -132,27 +212,74 @@ class HermesClient:
             return iris_model
         return advertised[0]
 
-    def set_inference_model(self, model: str) -> None:
-        """Iris에서 고른 모델을 Hermes 런타임 기본 모델로 동기화."""
+    def set_inference_model(
+        self,
+        model: str,
+        *,
+        provider: str = "",
+        base_url: str = "",
+        api_key: str = "",
+        target: HermesInferenceTarget | None = None,
+    ) -> None:
+        """Iris에서 고른 모델을 Hermes 런타임 기본 모델로 동기화.
+
+        Iris API runtime id는 그대로 넣지 말고 ``resolve_hermes_inference`` /
+        ``target=`` 로 푼 값(model/base_url/api_key)을 넘긴다.
+        """
+        if target is not None:
+            model = target.model
+            provider = target.provider
+            base_url = target.base_url
+            api_key = target.api_key
         model = (model or "").strip()
         if not model:
             return
-        provider = infer_hermes_provider(model)
-        errors: list[str] = []
-        if self._set_model_via_api(model, provider, errors):
+        if is_iris_api_runtime_model(model):
+            # 호출자가 runtime id를 그대로 넘긴 경우 — 오염 방지
             return
-        if self._set_model_via_cli(model, provider, errors):
+        provider = (provider or "").strip() or infer_hermes_provider(model)
+        if provider == "auto":
+            return
+        # Hermes 0.19+: 로컬 OpenAI-compat는 custom + base_url
+        if provider == "ollama":
+            provider = "custom"
+            if not (base_url or "").strip():
+                base_url = "http://127.0.0.1:11434/v1"
+        errors: list[str] = []
+        if self._set_model_via_api(
+            model, provider, errors, base_url=base_url, api_key=api_key
+        ):
+            return
+        if self._set_model_via_cli(
+            model, provider, errors, base_url=base_url, api_key=api_key
+        ):
             return
         if errors:
             raise RuntimeError(errors[-1])
 
-    def _set_model_via_api(self, model: str, provider: str, errors: list[str]) -> bool:
+    def _set_model_via_api(
+        self,
+        model: str,
+        provider: str,
+        errors: list[str],
+        *,
+        base_url: str = "",
+        api_key: str = "",
+    ) -> bool:
         # Hermes(0.19+)엔 'ollama' provider가 없다 — 로컬 OpenAI-compat 프록시는
         # 'custom'으로 등록해야 한다 (base_url은 아래에서 그대로 127.0.0.1:11434).
         hermes_provider = "custom" if provider == "ollama" else provider
-        payload = json.dumps(
-            {"scope": "main", "provider": hermes_provider, "model": model}
-        ).encode("utf-8")
+        body: dict[str, Any] = {
+            "scope": "main",
+            "provider": hermes_provider,
+            "model": model,
+            "confirm_expensive_model": True,
+        }
+        if (base_url or "").strip():
+            body["base_url"] = base_url.strip()
+        if api_key:
+            body["api_key"] = api_key
+        payload = json.dumps(body).encode("utf-8")
         for path in (f"{self.api_root}/api/model/set", f"{self.api_root}/api/model/set/"):
             try:
                 req = Request(
@@ -163,6 +290,20 @@ class HermesClient:
                 )
                 with urlopen(req, timeout=15.0) as resp:
                     if 200 <= resp.status < 300:
+                        raw = resp.read().decode("utf-8", errors="replace")
+                        try:
+                            data = json.loads(raw) if raw else {}
+                        except json.JSONDecodeError:
+                            data = {}
+                        # 비싼 모델 confirm 요구 — 이미 confirm=true 이므로 실패로 본다
+                        if isinstance(data, dict) and data.get("confirm_required"):
+                            errors.append(
+                                str(data.get("confirm_message") or "model confirm required")
+                            )
+                            return False
+                        if isinstance(data, dict) and data.get("ok") is False:
+                            errors.append(str(data.get("detail") or data)[:200])
+                            return False
                         return True
             except HTTPError as e:
                 detail = e.read().decode("utf-8", errors="replace")[:200]
@@ -171,7 +312,15 @@ class HermesClient:
                 errors.append(f"Hermes model API 연결 실패: {e}")
         return False
 
-    def _set_model_via_cli(self, model: str, provider: str, errors: list[str]) -> bool:
+    def _set_model_via_cli(
+        self,
+        model: str,
+        provider: str,
+        errors: list[str],
+        *,
+        base_url: str = "",
+        api_key: str = "",
+    ) -> bool:
         from iris.system.hermes_gateway import hermes_executable
 
         exe = hermes_executable(self.command)
@@ -185,8 +334,11 @@ class HermesClient:
             [exe, "config", "set", "model.provider", hermes_provider],
             [exe, "config", "set", "model.default", model],
         ]
-        # 로컬 Ollama 프록시 — cloud 모델도 :11434 경유
-        if provider == "ollama":
+        if (base_url or "").strip():
+            cmds.append(
+                [exe, "config", "set", "model.base_url", base_url.strip()]
+            )
+        elif provider in {"ollama", "custom"}:
             cmds.append(
                 [
                     exe,
@@ -196,6 +348,7 @@ class HermesClient:
                     "http://127.0.0.1:11434/v1",
                 ]
             )
+        # api_key는 프로세스 목록에 노출되므로 CLI 대신 yaml 직접 기록
         try:
             for cmd in cmds:
                 from iris.system.win_subprocess import no_window_kwargs
@@ -216,10 +369,37 @@ class HermesClient:
                         f"Hermes CLI 실패 ({' '.join(cmd)}): {err or proc.returncode}"
                     )
                     return False
+            if api_key:
+                self._write_model_api_key(api_key, errors)
             return True
         except (OSError, subprocess.TimeoutExpired) as e:
             errors.append(f"Hermes CLI 실행 실패: {e}")
             return False
+
+    def _write_model_api_key(self, api_key: str, errors: list[str]) -> None:
+        """config.yaml model.api_key만 upsert (CLI argv 노출 회피)."""
+        try:
+            from iris.system.hermes_gateway import hermes_home
+
+            path = hermes_home() / "config.yaml"
+            if not path.is_file():
+                return
+            import yaml  # type: ignore
+
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            if not isinstance(data, dict):
+                return
+            model = data.get("model")
+            if not isinstance(model, dict):
+                model = {}
+            model["api_key"] = api_key
+            data["model"] = model
+            path.write_text(
+                yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Hermes api_key 기록 실패: {exc}")
 
     def stream_chat(
         self,
@@ -346,6 +526,12 @@ if __name__ == "__main__":
     assert infer_hermes_provider("gemma4:31b-cloud") == "ollama"
     assert infer_hermes_provider("gemma4:26b") == "ollama"
     assert infer_hermes_provider("anthropic/claude") == "openrouter"
+    assert infer_hermes_provider("api:41025a6367b9:nvidia/nemotron-3") == "auto"
+    assert not is_hermes_syncable_model("api:x:nvidia/y")
+    assert is_hermes_syncable_model("gemma4:26b")
+    local = resolve_hermes_inference("gemma4:26b")
+    assert local.provider == "custom" and "11434" in local.base_url
+    assert local.model == "gemma4:26b"
     assert "OLLAMA_API_KEY" in _sse_error_message(
         {
             "choices": [{"finish_reason": "error", "delta": {}}],

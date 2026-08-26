@@ -389,26 +389,48 @@ def verify_login(address: str, password: str) -> None:
 
 
 _AGENT_BODY_MAX = 2000
+_AGENT_INBOX_MAX = 25
 
 
-def build_agent_context(account_address: str, message: "MailMessage | None") -> str:
+def build_agent_context(
+    account_address: str,
+    message: "MailMessage | None",
+    *,
+    inbox: "list[MailSummary] | None" = None,
+) -> str:
     """이메일 챗 → Hermes 에이전트에 주입할 시스템 컨텍스트.
 
-    현재 계정과 (열람 중이면) 메일 본문을 요약해 '이 메일 답장 초안' 같은
-    지시가 바로 동작하도록 한다. ponytail: 본문은 2000자에서 자른다(토큰 절약).
+    현재 계정·받은편지 요약·(열람 중이면) 메일 본문을 넣어
+    '오늘 온 메일' / '이 메일 답장 초안'이 도구 없이도 바로 동작하게 한다.
+    ponytail: 본문 2000자·받은편지 25통에서 자른다.
     """
     lines = [
         "너는 이메일 업무를 돕는 아이리스야. 기본 페르소나(SOUL)의 말투·판단 원칙을 따른다.",
-        "헤르메스 에이전트의 이메일/웹/파일 도구를 사용할 수 있어.",
-        "한국어로 간결하게 답하고, 메일 조회·요약·답장 초안·발송이 필요하면 도구를 사용해.",
+        "메일 화면 조작·목록 조회는 Iris Control MCP(iris_invoke)를 쓴다: "
+        "workspace.open_email, email.list_messages, email.read_message, "
+        "email.refresh_inbox, email.open_message, email.open_compose, email.send. "
+        "기본 화면/홈으로: workspace.open_assistant. "
+        "마이크 끄기/켜기: voice.mic_off / voice.mic_on (또는 voice.toggle_mic). "
+        "IDE Companion 종료만: ide.exit_companion.",
+        "한국어로 간결하게 답하고, 목록에 없는 최신 메일이 필요하면 email.list_messages를 호출해.",
     ]
     addr = (account_address or "").strip()
     if addr:
         lines.append(f"현재 사용자 이메일 계정: {addr}")
+    if inbox:
+        lines.append("현재 화면에 불러온 받은편지(최신순):")
+        for i, m in enumerate(inbox[:_AGENT_INBOX_MAX], 1):
+            lines.append(
+                f"{i}. [{m.date}] {m.sender} — {m.subject} (uid={m.uid})"
+            )
+            snip = (m.snippet or "").strip()
+            if snip:
+                lines.append(f"   요약: {snip[:100]}")
     if message is not None:
         body = (message.body or "").strip()[:_AGENT_BODY_MAX]
         lines += [
             "사용자가 지금 열람 중인 메일:",
+            f"- uid: {message.uid}",
             f"- 제목: {message.subject}",
             f"- 보낸사람: {message.sender}",
             f"- 받는사람: {message.to}",
@@ -417,6 +439,35 @@ def build_agent_context(account_address: str, message: "MailMessage | None") -> 
             body,
         ]
     return "\n".join(lines)
+
+
+def mail_summary_as_dict(m: MailSummary) -> dict:
+    return {
+        "uid": m.uid,
+        "subject": m.subject,
+        "sender": m.sender,
+        "date": m.date,
+        "snippet": m.snippet,
+    }
+
+
+def filter_summaries_since(
+    items: list[MailSummary],
+    since: str,
+) -> list[MailSummary]:
+    """since=YYYY-MM-DD (또는 YYYY-MM-DD HH:MM) — date 접두가 since 이상인 항목만."""
+    needle = (since or "").strip()
+    if not needle:
+        return list(items)
+    out: list[MailSummary] = []
+    for m in items:
+        d = (m.date or "").strip()
+        if not d:
+            continue
+        # "2026-08-26 10:00" / "2026-08-26" 모두 since 날짜로 비교
+        if d[: len(needle)] >= needle:
+            out.append(m)
+    return out
 
 
 if __name__ == "__main__":
@@ -438,8 +489,19 @@ if __name__ == "__main__":
     ctx_full = build_agent_context("me@gmail.com", sample)
     assert "회의 일정" in ctx_full
     assert "boss@corp.com" in ctx_full
-    # 본문은 2000자로 잘려야 한다
-    assert ctx_full.count("x") == _AGENT_BODY_MAX
+    # 본문만 2000자로 잘림 (프롬프트 다른 줄의 x는 무시)
+    body_start = ctx_full.index("- 본문:\n") + len("- 본문:\n")
+    assert ctx_full[body_start:].startswith("x" * _AGENT_BODY_MAX)
+    assert len(ctx_full[body_start:].split("\n", 1)[0]) == _AGENT_BODY_MAX
+
+    inbox_sample = [
+        MailSummary("9", "오늘 메일", "a@b.com", "2026-08-26 09:00", "hello"),
+        MailSummary("8", "어제 메일", "c@d.com", "2026-08-25 09:00", "old"),
+    ]
+    ctx_inbox = build_agent_context("me@gmail.com", None, inbox=inbox_sample)
+    assert "오늘 메일" in ctx_inbox and "uid=9" in ctx_inbox
+    today_only = filter_summaries_since(inbox_sample, "2026-08-26")
+    assert len(today_only) == 1 and today_only[0].uid == "9"
 
     # HTML 멀티파트에서 plain/html 분리 + cid 인라인 이미지 치환 검증
     from email.mime.image import MIMEImage

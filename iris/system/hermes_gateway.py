@@ -481,7 +481,12 @@ def verify_iris_mcp_tools(*, command: str = "hermes", timeout_sec: float = 45.0)
 
 
 def ensure_hermes_provider_config() -> None:
-    """config.yaml provider 'ollama' → 'custom' (0.19+ 로컬 OpenAI-compat)."""
+    """config.yaml provider 정리 — Iris API id / 잘못된 openrouter 오염 복구.
+
+    - `ollama` → `custom` (Hermes 0.19+ 로컬 OpenAI-compat)
+    - `default`가 Iris `api:{id}:{model}` 이면 Ollama custom으로 되돌림
+    - provider=openrouter + base_url이 :11434 이면 로컬 custom으로 복구
+    """
     path = hermes_home() / "config.yaml"
     if not path.is_file():
         return
@@ -498,9 +503,39 @@ def ensure_hermes_provider_config() -> None:
     model = data.get("model")
     if not isinstance(model, dict):
         return
-    if str(model.get("provider") or "").strip().lower() != "ollama":
+
+    provider = str(model.get("provider") or "").strip().lower()
+    default = str(model.get("default") or "").strip()
+    base_url = str(model.get("base_url") or "").strip().lower()
+    changed = False
+    local_url = "http://127.0.0.1:11434/v1"
+
+    def _looks_like_iris_api(mid: str) -> bool:
+        return mid.lower().startswith("api:")
+
+    if _looks_like_iris_api(default):
+        # Iris 피커 API 모델이 Hermes default로 오염된 경우
+        model["default"] = _fallback_ollama_model_name()
+        model["provider"] = "custom"
+        model["base_url"] = local_url
+        changed = True
+    elif provider == "ollama":
+        model["provider"] = "custom"
+        if not base_url:
+            model["base_url"] = local_url
+        changed = True
+    elif provider == "openrouter" and (
+        _looks_like_iris_api(default) or "11434" in base_url
+    ):
+        # Iris API id 또는 Ollama URL이 openrouter에 섞인 오염 상태
+        model["provider"] = "custom"
+        model["base_url"] = local_url
+        if _looks_like_iris_api(default) or "/" in default:
+            model["default"] = _fallback_ollama_model_name()
+        changed = True
+
+    if not changed:
         return
-    model["provider"] = "custom"
     data["model"] = model
     try:
         path.write_text(
@@ -509,6 +544,25 @@ def ensure_hermes_provider_config() -> None:
         )
     except OSError:
         pass
+
+
+def _fallback_ollama_model_name() -> str:
+    """오염된 Hermes default 복구용 — 로컬 Ollama 목록의 첫 모델 또는 안전한 기본값."""
+    try:
+        from urllib.request import urlopen
+
+        with urlopen("http://127.0.0.1:11434/api/tags", timeout=2.0) as resp:
+            import json
+
+            payload = json.loads(resp.read().decode("utf-8"))
+        for item in payload.get("models") or []:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                if name and not name.lower().startswith("api:"):
+                    return name
+    except Exception:
+        pass
+    return "llama3.2"
 
 
 if __name__ == "__main__":

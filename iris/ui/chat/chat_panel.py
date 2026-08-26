@@ -811,18 +811,24 @@ class ChatPanel(QWidget):
         log_pal.setColor(QPalette.ColorRole.Base, transparent)
         log_pal.setColor(QPalette.ColorRole.Window, transparent)
         self._log.setPalette(log_pal)
+        # 첫 글자(Iris의 I, 한글 자모 가로획)가 좌측 가장자리에서 잘리지 않게
+        # 문서 자체 여백도 확보한다. HTML inline 앞부분은 stylesheet padding만으로는
+        # 플랫폼별 클리핑이 남을 수 있다.
+        self._log.document().setDocumentMargin(8.0)
+        self._log.document().setDefaultFont(self.font())
         self._log.setMinimumHeight(80)
         self._log.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
         )
         self._log.setStyleSheet(
-            """
-            QTextEdit#ChatLog {
+            f"""
+            QTextEdit#ChatLog {{
                 background: transparent;
                 border: none;
-                padding: 8px 4px;
-            }
+                color: {TOKENS.text_primary};
+                padding: 8px 10px;
+            }}
             """
         )
         self._typing_timer = QTimer(self)

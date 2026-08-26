@@ -26,6 +26,7 @@ SKILL_NAMES = (
     "iris-learning",
     "iris-calendar",
     "iris-wiki",
+    "iris-email",
 )
 
 
@@ -232,6 +233,9 @@ def desired_mcp_block(repo: Path) -> dict[str, Any]:
         "args": ["-u", str(entry)],
         "env": {
             "PYTHONUNBUFFERED": "1",
+            # Windows cp949 콘솔/파이프에서 MCP NDJSON 한글 깨짐·크래시 방지
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
         },
         "timeout": 120,
         "connect_timeout": 60,
@@ -243,6 +247,49 @@ def desired_mcp_block(repo: Path) -> dict[str, Any]:
             f"(command={block['command']!r} entry={entry})"
         )
     return block
+
+
+def _hermes_mcp_tool_path() -> Path:
+    return hermes_home() / "hermes-agent" / "tools" / "mcp_tool.py"
+
+
+def ensure_hermes_stdio_dead_check_patch() -> str:
+    """Hermes 0.20.x _stdio_children_dead 반전 버그 패치.
+
+    자식 PID가 살아 있는데 True(dead)를 반환해 iris-control 도구가
+    'has exited' TimeoutError로 즉시 실패하던 회귀를 고친다.
+    """
+    path = _hermes_mcp_tool_path()
+    if not path.is_file():
+        return "hermes mcp_tool.py missing — skip dead-check patch"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"hermes dead-check patch read fail: {exc}"
+
+    broken = (
+        "if not psutil.pid_exists(pid):\n"
+        "                continue  # this one is dead\n"
+        "            return True  # alive (signal permission irrelevant for liveness)\n"
+        "            return False  # at least one child alive"
+    )
+    fixed = (
+        "if psutil.pid_exists(pid):\n"
+        "                return False  # at least one child alive"
+    )
+    if broken not in text:
+        if fixed in text or "return False  # at least one child alive" in text:
+            return "hermes dead-check already patched"
+        return "hermes dead-check pattern unknown — skip"
+
+    bak = path.with_suffix(path.suffix + ".bak-iris-deadcheck")
+    try:
+        if not bak.is_file():
+            bak.write_text(text, encoding="utf-8")
+        path.write_text(text.replace(broken, fixed, 1), encoding="utf-8")
+    except OSError as exc:
+        return f"hermes dead-check patch write fail: {exc}"
+    return "hermes dead-check patched (stdio has-exited false positive)"
 
 
 def desired_mobile_mcp_block() -> dict[str, Any]:
@@ -268,6 +315,15 @@ def desired_mobile_mcp_block() -> dict[str, Any]:
     }
 
 
+def _path_prefix(path_env: str) -> str:
+    """PATH 첫 항목만 — 시스템 PATH 꼬리 변화는 MCP churn으로 치지 않음."""
+    raw = (path_env or "").strip()
+    if not raw:
+        return ""
+    sep = ";" if ";" in raw else ":"
+    return raw.split(sep, 1)[0].rstrip("\\/").lower()
+
+
 def _mcp_equivalent(a: Any, b: Any) -> bool:
     if not isinstance(a, dict) or not isinstance(b, dict):
         return False
@@ -282,7 +338,19 @@ def _mcp_equivalent(a: Any, b: Any) -> bool:
     # ignore empty env noise
     a_filt = {k: v for k, v in a_env.items() if v not in (None, "")}
     b_filt = {k: v for k, v in b_env.items() if v not in (None, "")}
-    return a_filt == b_filt
+    keys = set(a_filt) | set(b_filt)
+    for key in keys:
+        if str(key).upper() == "PATH":
+            # ponytail: mobile-mcp PATH = platform-tools + 전체 PATH.
+            # 꼬리가 매 기동마다 달라지면 gateway 강제 재기동 → iris-control 일시 끊김.
+            if _path_prefix(str(a_filt.get(key) or "")) != _path_prefix(
+                str(b_filt.get(key) or "")
+            ):
+                return False
+            continue
+        if a_filt.get(key) != b_filt.get(key):
+            return False
+    return True
 
 
 def ensure_mcp_in_config(repo: Path | None = None) -> tuple[bool, bool, str]:
@@ -520,12 +588,14 @@ def probe_mcp_server(name: str, cfg: Any) -> dict[str, Any]:
             except OSError:
                 out["detail"] = f"cwd invalid: {cwd}"
                 return out
-        # iris-control: 바이너리 + (가능하면) Control Surface live
+        # iris-control: 바이너리 + Control Surface live 필수 (꺼져 있으면 ok=False)
         if name == "iris-control":
             live_ok, live_detail = _probe_iris_control_http()
-            out["ok"] = True  # 커맨드/cwd OK — Iris 꺼져 있으면 live만 경고
-            out["detail"] = f"command ok; live: {live_detail}"
-            if not live_ok:
+            if live_ok:
+                out["ok"] = True
+                out["detail"] = f"command ok; live: {live_detail}"
+            else:
+                out["ok"] = False
                 out["detail"] = f"command ok but Iris control not live ({live_detail})"
             return out
         out["ok"] = True
@@ -624,6 +694,14 @@ def sync_iris_control(
         report.errors.append(f"mcp sync: {exc}")
 
     try:
+        dead_patch = ensure_hermes_stdio_dead_check_patch()
+        report.messages.append(dead_patch)
+        if "patched" in dead_patch and "already" not in dead_patch:
+            report.needs_gateway_reload = True
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"hermes dead-check patch skip: {exc}")
+
+    try:
         copied, ok, missing = ensure_skills_installed(repo)
         report.skills_copied = copied
         report.skills_ok = ok
@@ -698,12 +776,29 @@ def sync_iris_control(
         report.messages.append(f"mcp audit skip: {exc}")
 
     if reconnect_gateway and report.mcp_installed:
-        # Iris가 막 살아난 뒤엔 config가 같아도 Hermes MCP 서브프로세스를
-        # 다시 붙여야 도구가 활성화된다. (이전 "healthy skip"은 연결 유지 실패 원인)
-        report.needs_gateway_reload = True
-        report.messages.append(
-            "reconnect_gateway: Iris start — reload Hermes so MCP attaches to live control"
+        # Iris 기동 시 MCP 재부착이 필요할 수 있음. 다만 config·skills 동일하고
+        # control surface가 이미 live면 gateway 강제 재기동은 채팅 중 MCP를
+        # 일시적으로 죽인다 → soft(검증만) / hard(재기동) 분기.
+        control_live = any(
+            s.get("name") == "iris-control"
+            and "reachable" in str(s.get("detail") or "")
+            for s in report.mcp_servers
         )
+        hard = (
+            report.mcp_changed
+            or report.mobile_mcp_changed
+            or bool(report.skills_copied)
+            or not control_live
+        )
+        if hard:
+            report.needs_gateway_reload = True
+            report.messages.append(
+                "reconnect_gateway: hard — reload Hermes so MCP attaches to live control"
+            )
+        else:
+            report.messages.append(
+                "reconnect_gateway: soft — live control + config OK (verify only)"
+            )
 
     try:
         sync_state_path().write_text(
@@ -727,13 +822,26 @@ def _self_check() -> None:
     block = desired_mcp_block(root)
     assert Path(block["args"][-1]).is_file(), block["args"]
     assert "-u" in block["args"]
+    assert block["env"].get("PYTHONUTF8") == "1"
+    assert block["env"].get("PYTHONIOENCODING") == "utf-8"
     assert _mcp_equivalent(block, block)
+    # ponytail: Hermes dead-check 패치는 idempotent (이미 고쳤으면 already/unknown)
+    patch_msg = ensure_hermes_stdio_dead_check_patch()
+    assert "fail" not in patch_msg.lower() or "missing" in patch_msg, patch_msg
     mobile = desired_mobile_mcp_block()
     assert mobile["command"] == "npx"
     assert mobile["args"] == ["-y", "@mobilenext/mobile-mcp@latest"]
     assert mobile["env"]["ANDROID_HOME"] == mobile["env"]["ANDROID_SDK_ROOT"]
     assert "platform-tools" in str(mobile["env"].get("PATH") or "")
     assert _mcp_equivalent(mobile, mobile)
+    # PATH 꼬리만 달라도 equivalent
+    mobile_noisy = dict(mobile)
+    mobile_noisy["env"] = dict(mobile["env"])
+    mobile_noisy["env"]["PATH"] = (
+        str(mobile["env"]["PATH"]).split(";" if ";" in str(mobile["env"]["PATH"]) else ":", 1)[0]
+        + (";C:\\Windows\\System32;C:\\ExtraNoise" if sys.platform == "win32" else ":/usr/bin:/noise")
+    )
+    assert _mcp_equivalent(mobile, mobile_noisy)
     # live npx spawn skipped when Node missing
     if not shutil.which("npx"):
         print("hermes_iris_control_sync self-check: npx missing (mobile-mcp spawn skipped)")

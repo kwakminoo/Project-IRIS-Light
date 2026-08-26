@@ -2,7 +2,8 @@
 
 CallMonitor/adb/taskkill이 콘솔을 깜빡이면 안 된다.
 에뮬 GUI 기동은 DETACHED(+NEW_GROUP)만 — CREATE_NO_WINDOW는
-UpdateLayeredWindowIndirect 실패(검은 화면). netsimd 콘솔은 HWND 숨김.
+UpdateLayeredWindowIndirect 실패(검은 화면).
+Win11 netsimd/qemu 터미널은 Cascadia/PseudoConsole 표면 숨김.
 프로세스 스캔은 PowerShell 대신 psutil (콘솔 0).
 """
 
@@ -46,7 +47,9 @@ class SourceGuardTests(TestCase):
         self.assertRegex(body, r'_GPU_MODE\s*=\s*"host"')
         self.assertIn("**_no_window_kwargs()", body)
         self.assertIn("psutil", body)
-        self.assertIn("ConsoleWindowClass", body)
+        self.assertIn("CASCADIA_HOSTING_WINDOW_CLASS", body)
+        self.assertIn("PseudoConsoleWindow", body)
+        self.assertIn("_hide_emulator_console_surfaces", body)
         launch_src = body.split("def launch_emulator", 1)[1].split(
             "\ndef restart_emulator", 1
         )[0]
@@ -80,6 +83,11 @@ class HotPathTests(TestCase):
         self.assertFalse(flags & int(getattr(subprocess, "CREATE_NO_WINDOW", 0)))
         self.assertTrue(flags & int(getattr(subprocess, "DETACHED_PROCESS", 0)))
         self.assertIn("netsimd.exe", ae._CONSOLE_HELPER_NAMES)
+        self.assertIn("CASCADIA_HOSTING_WINDOW_CLASS", ae._CONSOLE_SURFACE_CLASSES)
+        self.assertTrue(ae._is_emulator_console_title(
+            r"C:\Users\x\AppData\Local\Android\Sdk\emulator\netsimd.exe"
+        ))
+        self.assertFalse(ae._is_emulator_console_title(r"C:\Windows\System32\cmd.exe"))
 
     def test_require_serial_skips_process_scan_when_adb_empty(self) -> None:
         with mock.patch.object(ae, "_matching_emulator_serials", return_value=[]):
