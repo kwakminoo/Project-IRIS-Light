@@ -30,10 +30,10 @@ def normalize_chat_body(who: str, text: str) -> str:
 
 
 def chat_body_to_html(text: str) -> str:
-    """QTextEdit 본문 삽입용 HTML — 줄바꿈은 <br>로 처리해 문단 간격이 벌어지지 않게 한다."""
-    # color 명시: HTML 삽입 시 문서 기본 검정 전경이 다크 채팅에서 가로획을 삼킴
-    body = html.escape(text or "").replace("\n", "<br>")
-    return f'<span style="color:#e8f0fe;">{body}</span>'
+    """QTextEdit 본문 삽입용 HTML — render_user_message thin wrapper."""
+    from iris.ui.chat.chat_renderer import render_user_message
+
+    return render_user_message(text)
 
 
 def visible_typing_text(
@@ -113,3 +113,51 @@ def extend_typing_timeline_ms(
         min_chars_per_sec=min_chars_per_sec,
     )
     return max(elapsed_ms, 0.0) + segment_ms
+
+
+def streaming_segments_html(
+    segments: list,
+    typing_index: int,
+    *,
+    render_markdown: bool = False,
+    tool_blocks: dict | None = None,
+) -> str:
+    """prose는 typing_index까지, code/tool은 즉시 HTML."""
+    from iris.core.chat_block_parser import CodeSegment, ProseSegment, ToolSegment
+    from iris.ui.chat.chat_blocks import (
+        FencedCodeBlock,
+        fenced_code_to_html,
+        marked_tool_shell_to_html,
+        wrap_document_html,
+    )
+
+    remaining = max(0, int(typing_index))
+    parts: list[str] = []
+    registry = tool_blocks if tool_blocks is not None else {}
+    for seg in segments:
+        if isinstance(seg, ProseSegment):
+            if remaining <= 0:
+                break
+            take = seg.text[:remaining]
+            remaining -= len(take)
+            if not take:
+                continue
+            visible = visible_typing_text(take, len(take), render_markdown=render_markdown)
+            parts.append(typing_body_to_html(visible))
+            if len(take) < len(seg.text):
+                break
+        elif isinstance(seg, CodeSegment):
+            parts.append(
+                wrap_document_html(
+                    fenced_code_to_html(
+                        FencedCodeBlock(seg.code, language=seg.language)
+                    )
+                )
+            )
+        elif isinstance(seg, ToolSegment) and seg.complete:
+            block = seg.block
+            bid = (block.block_id or "").strip()
+            if bid:
+                registry[bid] = block
+            parts.append(wrap_document_html(marked_tool_shell_to_html(block)))
+    return "".join(parts)

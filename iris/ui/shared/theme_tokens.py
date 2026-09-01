@@ -88,5 +88,11 @@ class ThemeTokens:
     font_size_micro: str = "10px"
     font_size_input: str = "14px"
 
+    # 채팅 블록 (Cursor식 prose / code / tool)
+    chat_block_bg: str = "#1e293b"
+    chat_block_border: str = "rgba(148, 163, 184, 0.22)"
+    chat_block_radius: int = 8
+    chat_block_mono_font: str = '"Consolas", "Cascadia Mono", "Courier New"'
+
 
 TOKENS = ThemeTokens()

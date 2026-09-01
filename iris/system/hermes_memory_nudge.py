@@ -6,8 +6,8 @@ import re
 
 from iris.system.hermes_iris_control_sync import hermes_home
 
-_MARKER = "<!-- iris-control-nudge-v10 -->"
-_BLOCK = """<!-- iris-control-nudge-v10 -->
+_MARKER = "<!-- iris-control-nudge-v12 -->"
+_BLOCK = """<!-- iris-control-nudge-v12 -->
 ## Iris Light UI control
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
 1. Prefer MCP tools `iris_get_state`, `iris_get_catalog`, `iris_invoke` (skills: iris-work-start, iris-work-end, iris-session-status, iris-vibe-code, iris-calendar, iris-wiki, iris-email).
@@ -23,7 +23,7 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 11. After creating/writing code: `project.write_file` with `open=true` (default live write: empty tab → wait visible → stream chunks into the file). Use `typewriter:false` only for instant dump.
 12. On run requests: `project.run` — output in **IDE integrated terminal** (not a log file tab); only summarize in chat.
 13. Calendar / 일정: `workspace.open_calendar`, then `calendar.add_event` / `calendar.list_events` / `calendar.select_day` / `calendar.delete_event` (skill iris-calendar).
-14. Wiki / 위키에 저장: gather content first, then `wiki.write_user_note` with `title`+`content` (+`source_url`); never claim saved without ok result (skill iris-wiki). Open UI: `workspace.open_obsidian` / `wiki.open_note`.
+14. Wiki / 위키에 저장: Iris may handle locally (file chip + save intent). Else PDF·URL·파일 → `wiki.import_content` (`source`, `mode=raw|summarize`); manual → `wiki.write_user_note`; never claim saved without ok (skill iris-wiki).
 15. Email / 메일: `workspace.open_email`, then `email.list_messages` (today=true or since=YYYY-MM-DD) / `email.read_message` / `email.open_compose` / `email.send` (skill iris-email). Never invent inbox contents.
 16. "기본화면으로" / home / leave email·calendar·Companion: `ide.exit_companion` if needed, then `workspace.open_assistant`.
 17. Mic off/on: `voice.mic_off` / `voice.mic_on` (status: `voice.mic_status`). Do not claim mic tools are missing.
@@ -53,6 +53,8 @@ def ensure_memory_nudge() -> str:
         and "iris-vibe-code" in existing
         and "iris-calendar" in existing
         and "wiki.write_user_note" in existing
+        and "wiki.import_content" in existing
+        and "handle locally" in existing
         and "email.list_messages" in existing
         and "iris-email" in existing
     ):
@@ -60,7 +62,7 @@ def ensure_memory_nudge() -> str:
     cleaned = _strip_old_nudge(existing) if "iris-control-nudge" in existing else existing
     text = cleaned.rstrip() + ("\n\n" if cleaned.strip() else "") + _BLOCK.strip() + "\n"
     path.write_text(text, encoding="utf-8")
-    return "memory nudge updated (v10)"
+    return "memory nudge updated (v12)"
 
 
 if __name__ == "__main__":

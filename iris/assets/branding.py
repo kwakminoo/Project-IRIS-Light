@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from PyQt6.QtGui import QIcon
@@ -14,15 +13,10 @@ _ASSETS = Path(__file__).resolve().parent
 
 
 def apply_windows_app_id() -> None:
-    """QApplication 생성 전에 호출 — 작업표시줄 아이콘/이름을 IRIS로."""
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
+    """QApplication 생성 전 — AppUserModelID + Start Menu shortcut."""
+    from iris.assets.windows_taskbar import ensure_windows_taskbar_branding
 
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
-    except Exception:
-        pass
+    ensure_windows_taskbar_branding()
 
 
 def app_icon_path() -> Path:

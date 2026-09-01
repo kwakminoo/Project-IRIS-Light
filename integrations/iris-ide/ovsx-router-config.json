@@ -1,0 +1,8 @@
+{
+  "registries": {
+    "open-vsx": "https://open-vsx.org/"
+  },
+  "use": [
+    "open-vsx"
+  ]
+}

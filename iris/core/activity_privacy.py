@@ -79,6 +79,10 @@ def strip_emoji(text: str) -> str:
         if 0x2300 <= o <= 0x23FF:
             continue
         cat = unicodedata.category(ch)
+        # markdown fence / inline code delimiter (U+0060 is Sk — must not strip)
+        if ch == "`":
+            out.append(ch)
+            continue
         # Symbol, other / modifier — 이모지·장식. 통화기호(Sc)·수학(Sm)은 유지
         if cat in ("So", "Sk", "Cs") and not _keep_text_symbol(ch, o):
             continue

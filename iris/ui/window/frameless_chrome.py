@@ -161,6 +161,13 @@ class FramelessShell(QWidget):
         super().resizeEvent(event)
         self._sync_layout()
 
+    def set_left_grips_visible(self, visible: bool) -> None:
+        """Companion 80:20 — IDE와 맞닿은 왼쪽 가장자리 리사이즈 그립 숨김."""
+        if len(self._grips) < 6:
+            return
+        for idx in (0, 3, 5):
+            self._grips[idx].setVisible(visible)
+
     def _sync_layout(self) -> None:
         if self._content is not None:
             self._content.setGeometry(0, 0, self.width(), self.height())

@@ -34,15 +34,18 @@ class UserTurnDispatcher(QObject):
         text: str,
         source: UserTurnSource | str,
         session_id: int | None = None,
+        attachments: tuple[str, ...] | list[str] = (),
         enqueue_front: bool = False,
     ) -> UserTurn | None:
         body = (text or "").strip()
-        if not body:
+        att = tuple(str(p).strip() for p in attachments if str(p).strip())
+        if not body and not att:
             return None
         turn = UserTurn(
             text=body,
             source=source if isinstance(source, UserTurnSource) else UserTurnSource(str(source)),
             session_id=session_id,
+            attachments=att,
         )
         if self._active is None:
             self._active = turn

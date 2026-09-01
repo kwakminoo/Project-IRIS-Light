@@ -23,20 +23,27 @@ User notes live under `~/.iris-light/iris-wiki/` and appear in the UI as `user/.
 
 ## Steps
 
-1. Gather content first (browse/fetch/search tools as needed). Summarize in Korean unless asked otherwise.
-2. `iris_invoke` → `wiki.write_user_note` with args:
+1. **PDF / URL / 파일 경로** → prefer `wiki.import_content` with `source` (one-shot extract + save + open Wiki UI).
+   - `mode`: `raw` (full text) or `summarize` (LLM summary before save).
+   - PDF: local `.pdf` path (user may attach file in chat — path appears in message).
+   - URL: `https://...` page text fetch (stdlib; JS-heavy sites may be incomplete).
+   - Text: `.md`, `.txt`, etc.
+2. Or: `content.extract` first to preview, then `wiki.write_user_note` with `title`+`content`.
+3. Manual markdown only: `wiki.write_user_note` with args:
    - `title` (required) — short note title
    - `content` (required) — markdown body (facts, links, bullets)
    - `source_url` (optional) — original URL
    - `rel_path` (optional) — default `inbox/{slug}.md`
    - `open` (optional, default true) — open Wiki UI on the new note
-3. Confirm with the returned `rel_path` (e.g. `user/inbox/example.md`).
-4. If the user only wants to open an existing note: `wiki.open_note` with `rel_path`.
-5. List notes: `wiki.list_notes`. Reload UI: `wiki.reload`.
+4. Confirm with the returned `rel_path` (e.g. `user/inbox/example.md`).
+5. If the user only wants to open an existing note: `wiki.open_note` with `rel_path`.
+6. List notes: `wiki.list_notes`. Reload UI: `wiki.reload`.
 
 ## Rules
 
-- Never say “저장했습니다” without a successful `wiki.write_user_note` result.
+- Never say “저장했습니다” without a successful `wiki.write_user_note` or `wiki.import_content` result.
+- Local Iris may handle save without MCP when user attaches a file or pastes a URL with save intent.
+- Prefer `mode=summarize` when user asks to 요약/정리; default `raw` for full capture.
 - Do not write under `docs/` — user wiki only.
 - Prefer `inbox/` for ad-hoc / website captures.
 - After write, Iris opens the Wiki workspace and shows the note when `open=true`.

@@ -1,8 +1,15 @@
-"""Iris Wiki 워크스페이스 — 점·선 그래프(중앙) + 노트 정보(우측)."""
+"""Iris Wiki 워크스페이스 — 점·선 그래프(중앙) + 노트 정보(우측).
+
+수동 확인 (코드 블록 카드):
+  1. IRIS 실행 → Wiki 워크스페이스
+  2. ``` fenced code 가 포함된 노트를 그래프에서 선택
+  3. 우측 미리보기에 chat_block_radius·mono 폰트 코드 카드가 보이는지 확인
+  4. 이미지 클릭 → 라이트박스, http 링크 → 브라우저
+"""
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtWidgets import (
     QLabel,
     QSizePolicy,
@@ -12,8 +19,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from iris.core.markdown_text import markdown_to_chat_html
 from iris.knowledge.iris_wiki import WIKI_NAME, IrisWiki
+from iris.ui.chat.chat_image_view import (
+    attach_image_loader,
+    handle_chat_anchor_click,
+    prefetch_chat_html_images,
+)
+from iris.ui.chat.chat_renderer import render_wiki_document
 from iris.ui.knowledge.wiki_graph_view import WikiGraphView
 
 _INFO_PANEL_WIDTH = 360
@@ -65,8 +77,10 @@ class ObsidianWorkspacePage(QWidget):
         info_lay.addWidget(self._title)
         self._body = QTextBrowser()
         self._body.setObjectName("ObsidianPreviewBody")
-        self._body.setOpenExternalLinks(True)
+        self._body.setOpenExternalLinks(False)
         self._body.setReadOnly(True)
+        attach_image_loader(self._body)
+        self._body.anchorClicked.connect(self._on_preview_anchor)
         info_lay.addWidget(self._body, 1)
         splitter.addWidget(info_wrap)
 
@@ -74,6 +88,9 @@ class ObsidianWorkspacePage(QWidget):
         splitter.setStretchFactor(1, 0)
         splitter.setSizes([820, 340])
         outer.addWidget(splitter)
+
+    def _on_preview_anchor(self, url: QUrl) -> None:
+        handle_chat_anchor_click(self, url.toString())
 
     def set_wiki(self, wiki: IrisWiki) -> None:
         self._wiki = wiki
@@ -96,8 +113,12 @@ class ObsidianWorkspacePage(QWidget):
         self._current_rel = rel_path
         title = rel_path.rsplit("/", 1)[-1].removesuffix(".md")
         self._title.setText(title)
-        html = markdown_to_chat_html(text)
-        self._body.setHtml(f'<div style="line-height:1.5;">{html}</div>')
+        html = render_wiki_document(text)
+        if not html:
+            self._body.setHtml('<p style="color:#94a3b8;">(빈 노트)</p>')
+        else:
+            self._body.setHtml(html)
+            prefetch_chat_html_images(self._body, html)
         self._graph.select(rel_path)
 
     @property

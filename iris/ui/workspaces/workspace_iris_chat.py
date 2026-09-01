@@ -12,17 +12,25 @@ from PyQt6.QtWidgets import (
 )
 
 from iris.core.activity_privacy import prepare_chat_text, strip_emoji
-from iris.core.chat_citations import iris_message_to_chat_html
+from iris.core.chat_block_parser import ChatBlockBuffer, parse_chat_segments, prose_char_count
 from iris.ui.chat.chat_display import (
-    chat_body_to_html,
     normalize_chat_body,
-    typing_body_to_html,
-    visible_typing_text,
+    streaming_segments_html,
+)
+from iris.ui.chat.chat_renderer import (
+    render_error_inline,
+    render_iris_message,
+    render_tool_shell,
+    render_user_message,
 )
 from iris.ui.chat.chat_image_view import (
     attach_image_loader,
     handle_chat_anchor_click,
     prefetch_chat_html_images,
+)
+from iris.ui.chat.chat_blocks import (
+    ToolShellBlock,
+    handle_tool_collapse_click,
 )
 from iris.ui.chat.chat_panel import _ChatInputArea
 from iris.ui.widgets.particle_visualizer import ParticleVisualizer
@@ -61,9 +69,16 @@ class WorkspaceIrisChatLog(QTextEdit):
         self._iris_active = False
         self._iris_buf = ""
         self._iris_body_start: int | None = None
+        self._block_buffer = ChatBlockBuffer()
+        self._tool_blocks: dict[str, ToolShellBlock] = {}
+        self._tool_seq = 0
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         anchor = self.anchorAt(event.pos())
+        if anchor.startswith("iris-collapse://"):
+            if handle_tool_collapse_click(self, self._tool_blocks, anchor):
+                event.accept()
+                return
         if handle_chat_anchor_click(self, anchor):
             event.accept()
             return
@@ -86,7 +101,7 @@ class WorkspaceIrisChatLog(QTextEdit):
             return
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertHtml(f"<p><b>You</b>: {chat_body_to_html(body)}</p>")
+        cursor.insertHtml(f"<p><b>You</b>: {render_user_message(body)}</p>")
         self.setTextCursor(cursor)
         self._append_trailing_blank()
         self._scroll_bottom()
@@ -103,14 +118,15 @@ class WorkspaceIrisChatLog(QTextEdit):
             self.setTextCursor(cursor)
             self._iris_active = True
             self._iris_buf = ""
+            self._block_buffer.reset()
         self._iris_buf += chunk
+        self._block_buffer.feed(chunk)
         self._replace_iris_body(
-            typing_body_to_html(
-                visible_typing_text(
-                    self._iris_buf,
-                    len(self._iris_buf),
-                    render_markdown=True,
-                )
+            streaming_segments_html(
+                parse_chat_segments(self._iris_buf),
+                prose_char_count(self._iris_buf),
+                render_markdown=True,
+                tool_blocks=self._tool_blocks,
             )
         )
 
@@ -133,6 +149,7 @@ class WorkspaceIrisChatLog(QTextEdit):
             return
         if final_text is not None:
             self._iris_buf = prepare_chat_text(final_text)
+            self._block_buffer.set_final(self._iris_buf)
             if not self._iris_active:
                 cursor = self.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -142,13 +159,14 @@ class WorkspaceIrisChatLog(QTextEdit):
                 self._iris_active = True
         body = normalize_chat_body("Iris", self._iris_buf)
         if body and self._iris_body_start is not None:
-            html_body = iris_message_to_chat_html(body)
+            html_body = render_iris_message(body)
             prefetch_chat_html_images(self, html_body)
             self._replace_iris_body(html_body)
             self._append_trailing_blank()
         self._iris_active = False
         self._iris_buf = ""
         self._iris_body_start = None
+        self._block_buffer.reset()
         self._scroll_bottom()
 
     def append_iris_tool(self, text: str) -> None:
@@ -156,13 +174,66 @@ class WorkspaceIrisChatLog(QTextEdit):
         safe = strip_emoji(prepare_chat_text(text or ""))
         if not safe:
             return
+        self._tool_seq += 1
+        block_id = f"ws-tool{self._tool_seq}"
+        block = ToolShellBlock(
+            title="Tool",
+            command="",
+            output=safe,
+            status="ok",
+            block_id=block_id,
+            collapsed=False,
+        )
+        self._tool_blocks[block_id] = block
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertHtml(
-            f"<p style='color:#64748b; font-size:11px;'>· {chat_body_to_html(safe)}</p>"
+            render_tool_shell(
+                block.title,
+                block.command,
+                block.output,
+                block.status,
+                block.block_id,
+            )
         )
         self.setTextCursor(cursor)
         self._scroll_bottom()
+
+    def insert_tool_block(
+        self,
+        *,
+        title: str,
+        command: str = "",
+        output: str = "",
+        status: str = "ok",
+        block_id: str | None = None,
+    ) -> str:
+        self.end_iris()
+        self._tool_seq += 1
+        bid = (block_id or f"ws-tool{self._tool_seq}").strip() or f"ws-tool{self._tool_seq}"
+        block = ToolShellBlock(
+            title=title or "Shell",
+            command=command or "",
+            output=output or "",
+            status=status or "ok",
+            block_id=bid,
+            collapsed=False,
+        )
+        self._tool_blocks[bid] = block
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(
+            render_tool_shell(
+                block.title,
+                block.command,
+                block.output,
+                block.status,
+                block.block_id,
+            )
+        )
+        self.setTextCursor(cursor)
+        self._scroll_bottom()
+        return bid
 
     def append_iris_error(self, text: str) -> None:
         self.end_iris()
@@ -171,9 +242,7 @@ class WorkspaceIrisChatLog(QTextEdit):
             return
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertHtml(
-            f"<p style='color:#f87171; font-size:12px;'>{chat_body_to_html(safe)}</p>"
-        )
+        cursor.insertHtml(render_error_inline(safe))
         self.setTextCursor(cursor)
         self._scroll_bottom()
 
@@ -271,6 +340,23 @@ class WorkspaceIrisPanel(QWidget):
 
     def append_iris_tool(self, text: str) -> None:
         self._log.append_iris_tool(text)
+
+    def insert_tool_block(
+        self,
+        *,
+        title: str,
+        command: str = "",
+        output: str = "",
+        status: str = "ok",
+        block_id: str | None = None,
+    ) -> str:
+        return self._log.insert_tool_block(
+            title=title,
+            command=command,
+            output=output,
+            status=status,
+            block_id=block_id,
+        )
 
     def append_iris_error(self, text: str) -> None:
         self._log.append_iris_error(text)

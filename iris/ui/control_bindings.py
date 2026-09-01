@@ -86,6 +86,41 @@ def _profile_parents(window: MainWindow) -> list[Path]:
     return resolve_project_parents(list(profile.project_parents or []))
 
 
+def _iris_ide_client(window: MainWindow):
+    session = window._get_bound_ide_session(refresh=False)
+    if session is None or session.ide_id != "iris_ide":
+        return None
+    try:
+        return window._iris_ide_bridge_client()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _iris_ide_context(window: MainWindow) -> dict[str, Any]:
+    client = _iris_ide_client(window)
+    if client is None:
+        return {}
+    # ponytail: get_state 핫패스 — bridge 미기동 시 30s×N 연쇄 대기로 UI가 멈춘다.
+    fast = type(client)(base_url=client.base_url, token=client.token, timeout=1.5)
+    try:
+        editor = fast.get_active_editor().get("editor")
+        selection = fast.get_selection().get("selection")
+        cursor = fast.get_cursor_position()
+        diagnostics = fast.get_diagnostics().get("diagnostics") or []
+        workspace = fast.get_workspace().get("root") or ""
+        return {
+            "iris_ide": {
+                "workspace": workspace,
+                "active_editor": editor,
+                "cursor": cursor,
+                "selection": selection,
+                "diagnostics": diagnostics,
+            }
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"iris_ide": {"error": str(exc)}}
+
+
 def _ide_open_file_path(
     window: MainWindow,
     path: str,
@@ -94,10 +129,45 @@ def _ide_open_file_path(
     column: int = 1,
     reuse_window: bool = True,
 ) -> dict[str, Any]:
+    session = window._get_bound_ide_session(refresh=True)
+    if session is None:
+        return {
+            "ok": False,
+            "path": path,
+            "error": "bound IDE session required",
+            "line": line,
+            "column": column,
+        }
+    if session.ide_id == "iris_ide":
+        try:
+            client = window._iris_ide_bridge_client()
+            rel = path
+            if session.workspace_root:
+                try:
+                    rel = str(Path(path).resolve().relative_to(Path(session.workspace_root).resolve()))
+                except ValueError:
+                    rel = path
+            out = client.open_file(rel, line=line, column=column)
+            return {
+                "ok": True,
+                "path": path,
+                "error": None,
+                "line": line,
+                "column": column,
+                "visible": True,
+                "bridge": out,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "path": path,
+                "error": str(exc),
+                "line": line,
+                "column": column,
+            }
     from iris.automation.ide_input import open_file_in_workspace, wait_ide_shows_file
 
-    session = window._get_bound_ide_session(refresh=True)
-    if session is None or not session.hwnd:
+    if not session.hwnd:
         return {
             "ok": False,
             "path": path,
@@ -307,6 +377,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 "mic": _mic_state_fields(window),
                 "emulator_running": _emulator_running(),
                 **_emulator_state_fields(),
+                **_iris_ide_context(window),
             },
         )
 
@@ -569,6 +640,47 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         session, session_err = _bound_session(window, require_workspace=do_open)
         if do_open and session_err:
             return err_result("project.write_file", session_err)
+        if session is not None and session.ide_id == "iris_ide":
+            try:
+                client = window._iris_ide_bridge_client()
+                _root, abs_path, norm_rel = resolve_under_root(root, rel)
+                text = str(content)
+                if str(_root) != str(Path(session.workspace_root).resolve()):
+                    return err_result(
+                        "project.write_file",
+                        "requested project_root does not match bound IDE workspace",
+                        {
+                            "project_root": str(_root),
+                            "bound_workspace_root": session.workspace_root,
+                        },
+                    )
+                path_s = str(abs_path)
+                if not do_open:
+                    written = write_project_file(root, rel, text)
+                    written["opened"] = False
+                    _log(window, "project.write_file", True)
+                    return ok_result("project.write_file", written)
+                abs_path.parent.mkdir(parents=True, exist_ok=True)
+                if abs_path.is_file():
+                    client.open_file(norm_rel)
+                    client.replace_range(text, path=norm_rel, start=0, end=max(len(text) + 1, 999999))
+                else:
+                    client.create_file(norm_rel, text)
+                    client.open_file(norm_rel)
+                written = {
+                    "path": path_s,
+                    "rel_path": norm_rel,
+                    "bytes": len(text.encode("utf-8")),
+                    "opened": True,
+                    "visible": True,
+                    "typed": False,
+                    "streamed": False,
+                    "via": "iris_ide_bridge",
+                }
+                _log(window, "project.write_file", True)
+                return ok_result("project.write_file", written)
+            except Exception as exc:  # noqa: BLE001
+                return err_result("project.write_file", str(exc))
         # open=true 이면 기본 live file stream. 명시 stream/typewriter=false 만 즉시 쓰기.
         if "typewriter" in args:
             do_type = bool(args.get("typewriter"))
@@ -820,6 +932,29 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
 
         ide_terminal = "failed"
         result: dict[str, Any]
+        if session.ide_id == "iris_ide":
+            try:
+                client = window._iris_ide_bridge_client()
+                term = client.run_terminal_command(shell_cmd, cwd=root_s)
+                elapsed = time.monotonic() - t0
+                output = str(term.get("output") or "")
+                payload = {
+                    "ok": True,
+                    "exit_code": 0,
+                    "stdout": output,
+                    "stderr": "",
+                    "elapsed_sec": round(elapsed, 3),
+                    "argv": argv,
+                    "cwd": root_s,
+                    "timed_out": False,
+                    "via": "iris_ide_bridge",
+                    "ide_terminal": "iris_ide_bridge",
+                }
+                payload["summary"] = summarize_run(payload).get("summary") or output[:120]
+                _log(window, "project.run", True)
+                return ok_result("project.run", payload)
+            except Exception as exc:  # noqa: BLE001
+                return err_result("project.run", str(exc))
         hwnd = int(session.hwnd) if session and session.hwnd else None
         pid = session.pid if session else None
         t0 = time.monotonic()
@@ -2315,6 +2450,80 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
             },
         )
 
+    def content_extract(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.knowledge.content_extract import extract_from_source
+
+        source = str(args.get("source") or args.get("path") or args.get("url") or "").strip()
+        if not source:
+            return err_result("content.extract", "source required (file path or http(s) URL)")
+        try:
+            data = extract_from_source(source)
+        except (ValueError, OSError, RuntimeError) as exc:
+            return err_result("content.extract", str(exc))
+        _log(window, "content.extract", True)
+        return ok_result(
+            "content.extract",
+            {
+                "kind": data["kind"],
+                "title": data["title"],
+                "text": data["text"],
+                "source": data["source"],
+                "truncated": data["truncated"],
+                "chars": len(str(data["text"])),
+            },
+        )
+
+    def wiki_import_content(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.knowledge.wiki_import_ops import import_to_wiki
+        from iris.knowledge.wiki_summarize import summarize_for_wiki
+
+        source = str(args.get("source") or args.get("path") or args.get("url") or "").strip()
+        title_in = str(args.get("title") or "").strip() or None
+        rel_in = str(args.get("rel_path") or "").strip() or None
+        open_note = bool(args.get("open", True))
+        mode = str(args.get("mode") or "raw").strip().lower()
+        if mode not in ("raw", "summarize"):
+            mode = "raw"
+        if not source:
+            return err_result("wiki.import_content", "source required (file path or http(s) URL)")
+        summarize_fn = None
+        if mode == "summarize":
+            model = str(
+                args.get("model")
+                or window._chat.current_model()
+                or getattr(window, "_saved_model", "")
+                or window._settings.ollama_model
+                or ""
+            ).strip()
+            if not model:
+                return err_result("wiki.import_content", "model required for summarize mode")
+            base = (window._settings.ollama_base_url or "http://127.0.0.1:11434/v1").strip()
+
+            def _sum(text: str) -> str:
+                return summarize_for_wiki(text, model=model, ollama_base_url=base)
+
+            summarize_fn = _sum
+        try:
+            result = import_to_wiki(
+                window._iris_wiki,
+                source=source,
+                title=title_in,
+                mode=mode,
+                rel_path=rel_in,
+                summarize_fn=summarize_fn,
+            )
+        except (ValueError, OSError, RuntimeError) as exc:
+            return err_result("wiki.import_content", str(exc))
+        wiki_rel = str(result["rel_path"])
+        window._on_obsidian_icon()
+        window._obsidian_page.reload_graph()
+        window._left_sidebar.obsidian_detail.reload()
+        if open_note:
+            window._obsidian_page.show_note(wiki_rel)
+        _log(window, "wiki.import_content", True)
+        result = {**result, "opened": open_note}
+        return ok_result("wiki.import_content", result)
+
     reg.register("wiki.list_notes", wiki_list, summary="List Iris Wiki note paths")
     reg.register(
         "wiki.open_note",
@@ -2326,6 +2535,18 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         "wiki.write_user_note",
         wiki_write,
         summary="Save markdown to Iris Wiki user/ (default inbox/{slug}.md) and show it",
+        risk="medium",
+    )
+    reg.register(
+        "content.extract",
+        content_extract,
+        summary="Extract text from PDF, text file, or http(s) URL",
+        risk="low",
+    )
+    reg.register(
+        "wiki.import_content",
+        wiki_import_content,
+        summary="Extract PDF/URL/file text and save to Iris Wiki inbox, then open in UI (mode=raw|summarize)",
         risk="medium",
     )
 

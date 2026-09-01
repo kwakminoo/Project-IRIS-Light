@@ -31,16 +31,9 @@ def _host_label(url: str) -> str:
 
 
 def _chip_html(n: int, url: str, title: str) -> str:
-    tip = html.escape(title or _host_label(url), quote=True)
-    href = html.escape(_clean_url(url), quote=True)
-    return (
-        f'<a href="{href}" title="{tip}" '
-        f'style="display:inline;font-size:10px;font-weight:600;'
-        f'padding:1px 6px;margin:0 2px;border-radius:9px;'
-        f'background-color:rgba(56,189,248,0.14);color:#7dd3fc;'
-        f'text-decoration:none;border:1px solid rgba(56,189,248,0.40);'
-        f'">[{n}]</a>'
-    )
+    from iris.ui.chat.chat_blocks import citation_chip_to_html
+
+    return citation_chip_to_html(n, _clean_url(url), title or _host_label(url))
 
 
 def collect_and_tokenize_citations(text: str) -> tuple[str, list[tuple[str, str]]]:
@@ -128,11 +121,9 @@ def tokens_to_chips_html(html_body: str, sources: list[tuple[str, str]]) -> str:
 
 def iris_message_to_chat_html(text: str) -> str:
     """Iris 답변: 마크다운 HTML + 인용 칩."""
-    from iris.core.markdown_text import markdown_to_chat_html
+    from iris.ui.chat.chat_renderer import render_iris_message
 
-    tokenized, sources = collect_and_tokenize_citations(text or "")
-    rendered = markdown_to_chat_html(tokenized)
-    return tokens_to_chips_html(rendered, sources)
+    return render_iris_message(text)
 
 
 if __name__ == "__main__":

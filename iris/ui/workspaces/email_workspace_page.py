@@ -5,7 +5,6 @@ from __future__ import annotations
 import html
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -236,18 +235,29 @@ class EmailWorkspacePage(QWidget):
         self._meta.setObjectName("SectionTitle")
         self._meta.setWordWrap(True)
         reader_lay.addWidget(self._meta)
-        # 실제 브라우저 엔진으로 렌더 → HTML·이미지·상호작용 정상 표시.
-        self._body = QWebEngineView()
-        self._body.setObjectName("EmailPreviewBody")
-        # 배경 흰색 제거 → 사이버스페이스 배경이 비치도록 투명 처리.
-        self._body.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._body.setStyleSheet("background: transparent;")
-        self._body.page().setBackgroundColor(Qt.GlobalColor.transparent)
-        reader_lay.addWidget(self._body, 1)
+        self._body: object | None = None
+        self._body_slot = QWidget()
+        self._body_slot_lay = QVBoxLayout(self._body_slot)
+        self._body_slot_lay.setContentsMargins(0, 0, 0, 0)
+        reader_lay.addWidget(self._body_slot, 1)
         self._stack.addWidget(reader)
 
         lay.addWidget(self._stack, 1)
         return center
+
+    def _ensure_body_view(self):
+        if self._body is not None:
+            return self._body
+        from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+        view = QWebEngineView()
+        view.setObjectName("EmailPreviewBody")
+        view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        view.setStyleSheet("background: transparent;")
+        view.page().setBackgroundColor(Qt.GlobalColor.transparent)
+        self._body_slot_lay.addWidget(view)
+        self._body = view
+        return view
 
     # ---- 외부 API (main_window에서 사용) ----
     def set_current_account(self, account: EmailAccount | None) -> None:
@@ -308,16 +318,18 @@ class EmailWorkspacePage(QWidget):
             f"border-bottom:1px solid rgba(148,163,184,0.25); margin-bottom:12px;'>{header}</div>"
             f"{content}</body></html>"
         )
-        self._body.setHtml(doc)
+        self._ensure_body_view().setHtml(doc)
         self._stack.setCurrentIndex(1)
 
     def show_error(self, text: str) -> None:
         self._status.setText(text)
-        self._body.setHtml("")
+        if self._body is not None:
+            self._body.setHtml("")
 
     def show_empty_inbox_hint(self) -> None:
         self._status.setText("메일이 없습니다.")
-        self._body.setHtml("")
+        if self._body is not None:
+            self._body.setHtml("")
 
     def open_compose(self, account: EmailAccount) -> None:
         dlg = _ComposeDialog(account, self)

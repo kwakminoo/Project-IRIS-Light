@@ -5,6 +5,8 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
+from iris.ui.shared.theme_tokens import TOKENS
+
 # 상단 구체 슬롯 — 좁은 20% 컬럼에서 3.0 스케일은 슬롯 밖으로 번져 로그와 겹쳤음
 EMAIL_ORB_HEIGHT = 260
 EMAIL_ORB_SCALE = 2.1
@@ -19,10 +21,12 @@ class IdeCompanionPage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("IdeCompanionPage")
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"background-color: {TOKENS.void_black};")
         self._lay = QVBoxLayout(self)
-        self._lay.setContentsMargins(8, 8, 8, 8)
-        self._lay.setSpacing(8)
+        # ponytail: companion은 IDE와 왼쪽이 맞닿음 — 좌측 여백 없음
+        self._lay.setContentsMargins(0, 6, 6, 6)
+        self._lay.setSpacing(6)
         self._mounted: list[QWidget] = []
 
     def mount(

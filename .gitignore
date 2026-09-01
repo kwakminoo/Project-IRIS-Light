@@ -45,6 +45,7 @@ android-emulator/data/
 Thumbs.db
 Desktop.ini
 .DS_Store
+nul
 
 # Emulator runtime
 android-emulator/avd/**/multiinstance.lock
@@ -72,4 +73,10 @@ voice_models/
 *.flac
 *.ogg
 *.aac
+
+# IRIS IDE — downloaded VS Code extension bundles (theia download:plugins)
+integrations/iris-ide/plugins/
+integrations/iris-ide/node_modules/
+integrations/iris-ide/lib/
+integrations/iris-ide/.theia/
 

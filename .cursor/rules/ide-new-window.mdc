@@ -11,7 +11,7 @@ alwaysApply: true
 1. GUI exe `Cursor.exe --new-window` 로 **빈 새 창**만 spawn
 2. 새 hwnd 확보 (기존 hwnd exclude, Agents 제외, 대기 ~14s)
 3. 그 창에 `--reuse-window <folder>` 로 폴더 inject
-4. Companion 80:20 타일
+4. Companion 80:20 타일 — PyQt/Win32 분리·seam 규칙은 `ide-companion-tile-8020.mdc` 참고
 
 기준 커밋: `36577a6` (new-window fix) → `2c70c97` (vibe smoke까지 IDE 완료).
 

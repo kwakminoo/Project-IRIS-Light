@@ -1584,7 +1584,7 @@ class SettingsDialog(QDialog):
         cols = 4
         idx = 0
         for spec in ide_catalog():
-            if spec.id == "custom":
+            if spec.id in ("custom", "iris_ide"):
                 continue
             btn = QToolButton()
             btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -1605,6 +1605,19 @@ class SettingsDialog(QDialog):
             grid.addWidget(btn, idx // cols, idx % cols)
             idx += 1
 
+        iris_btn = QToolButton()
+        iris_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        iris_btn.setIconSize(QSize(40, 40))
+        iris_btn.setIcon(ide_icon_for("iris_ide"))
+        iris_btn.setText("IRIS IDE")
+        iris_btn.setCheckable(True)
+        iris_btn.setMinimumSize(110, 78)
+        iris_btn.setToolTip("IRIS에 내장된 Eclipse Theia 기반 IDE")
+        iris_btn.clicked.connect(lambda: self._on_ide_picked("iris_ide"))
+        self._ide_buttons["iris_ide"] = iris_btn
+        grid.addWidget(iris_btn, idx // cols, idx % cols)
+        idx += 1
+
         custom_btn = QToolButton()
         custom_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         custom_btn.setIconSize(QSize(40, 40))
@@ -1612,11 +1625,29 @@ class SettingsDialog(QDialog):
         custom_btn.setText("사용자 지정")
         custom_btn.setCheckable(True)
         custom_btn.setMinimumSize(110, 78)
-        custom_btn.setToolTip("실행 파일을 직접 선택")
+        custom_btn.setToolTip("실행 파일을 직접 선택 (기타 IDE)")
         custom_btn.clicked.connect(lambda: self._on_ide_picked("custom"))
         self._ide_buttons["custom"] = custom_btn
         grid.addWidget(custom_btn, idx // cols, idx % cols)
+        idx += 1
         ide_lay.addLayout(grid)
+
+        from iris.system.iris_ide_runtime import IrisIdeRuntimeManager
+
+        self._iris_ide_status = QLabel()
+        self._iris_ide_status.setWordWrap(True)
+        ide_lay.addWidget(self._iris_ide_status)
+        iris_row = QHBoxLayout()
+        self._iris_ide_verify_btn = QPushButton("상태 확인")
+        self._iris_ide_verify_btn.clicked.connect(self._verify_iris_ide_runtime)
+        self._iris_ide_install_btn = QPushButton("IRIS IDE 설치")
+        self._iris_ide_install_btn.clicked.connect(self._install_iris_ide_from_settings)
+        iris_row.addWidget(self._iris_ide_verify_btn)
+        iris_row.addWidget(self._iris_ide_install_btn)
+        iris_row.addStretch(1)
+        ide_lay.addLayout(iris_row)
+        self._iris_ide_install_worker = None
+        self._refresh_iris_ide_status_label()
         return ide_box
 
     def _effective_parents_for_ui(self) -> list[str]:
@@ -1726,7 +1757,7 @@ class SettingsDialog(QDialog):
         lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
             make_hint(
-                "Ollama · Hermes · iris-control MCP 등 Core 환경을 설치하거나 상태를 검사합니다. "
+                "Ollama · Hermes · iris-control MCP 등 Core 환경과 IRIS IDE(선택)를 설치하거나 상태를 검사합니다. "
                 "미설치면 「시작 프로토콜 가동」, 이미 준비됐으면 「검사」가 표시됩니다."
             )
         )
@@ -1911,12 +1942,65 @@ class SettingsDialog(QDialog):
         name = spec.name if spec else ide_id
         if ide_id == "custom":
             installed = bool(self._ide_exe_path and Path(self._ide_exe_path).is_file())
+        elif ide_id == "iris_ide":
+            from iris.system.iris_ide_runtime import IrisIdeRuntimeManager
+
+            st = IrisIdeRuntimeManager().status()
+            installed = st.installed and not st.damaged
+            self._refresh_iris_ide_status_label()
         else:
             installed = is_ide_installed(ide_id, self._ide_exe_path)
         mark = "설치됨" if installed else "경로 확인 필요"
         self._ide_selected.setText(f"선택: {name} ({mark})")
 
+    def _refresh_iris_ide_status_label(self) -> None:
+        if not hasattr(self, "_iris_ide_status"):
+            return
+        from iris.system.iris_ide_runtime import IrisIdeRuntimeManager
+
+        st = IrisIdeRuntimeManager().status()
+        if st.installed:
+            dot = "● 설치됨"
+        elif st.damaged:
+            dot = "○ 손상됨"
+        else:
+            dot = "○ 미설치"
+        self._iris_ide_status.setText(f"IRIS IDE — {dot}\n{st.detail}")
+        if hasattr(self, "_iris_ide_install_btn"):
+            self._iris_ide_install_btn.setText("복구/재설치" if st.installed or st.damaged else "IRIS IDE 설치")
+
+    def _verify_iris_ide_runtime(self) -> None:
+        from iris.system.iris_ide_runtime import IrisIdeRuntimeManager
+
+        mgr = IrisIdeRuntimeManager()
+        ok, msg = mgr.verify_installation()
+        self._refresh_iris_ide_status_label()
+        if ok:
+            QMessageBox.information(self, "IRIS IDE", msg)
+        else:
+            QMessageBox.warning(self, "IRIS IDE", msg)
+
+    def _install_iris_ide_from_settings(self) -> None:
+        from iris.ui.settings.iris_ide_settings import run_iris_ide_install_dialog
+
+        if run_iris_ide_install_dialog(self):
+            self._refresh_iris_ide_status_label()
+            if self._preferred_ide == "iris_ide":
+                self._sync_ide_selection_ui()
+
     def _on_ide_picked(self, ide_id: str) -> None:
+        if ide_id == "iris_ide":
+            from iris.system.iris_ide_runtime import IrisIdeRuntimeManager
+            from iris.ui.settings.iris_ide_settings import prompt_iris_ide_install
+
+            if not IrisIdeRuntimeManager().is_installed():
+                if not prompt_iris_ide_install(self):
+                    self._sync_ide_selection_ui()
+                    return
+            self._preferred_ide = "iris_ide"
+            self._ide_exe_path = ""
+            self._sync_ide_selection_ui()
+            return
         if ide_id == "custom":
             path, _ = QFileDialog.getOpenFileName(
                 self,

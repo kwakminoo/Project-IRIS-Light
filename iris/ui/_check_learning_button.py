@@ -7,14 +7,9 @@ import sys
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
-if QApplication.instance() is None:
-    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
 
-# WebEngine import before app when possible
-try:
-    from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
-except Exception:
-    pass
+ensure_qt_webengine_ready()
 
 from iris.learning.models import LearningState
 from iris.ui.window.main_window import MainWindow

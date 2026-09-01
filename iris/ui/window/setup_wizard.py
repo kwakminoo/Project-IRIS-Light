@@ -57,6 +57,7 @@ _STREAM_STEPS = {
     "learning",
     "emulator",
     "mobile_mcp",
+    "iris_ide",
 }
 
 # winget/UAC 승격이 멈추는 걸 막으려고 콘솔 창을 일부러 숨기지 않는 단계들
@@ -284,6 +285,18 @@ class _NeedsUserCard(QFrame):
         self._console_hint.hide()
         self._bar.hide()
         self._term.hide()
+
+    def finish_install(self, *, message: str = "") -> None:
+        """설치 종료 — 터미널 로그는 유지."""
+        self._spin_timer.stop()
+        self._loading_row.hide()
+        self._console_hint.hide()
+        self._bar.hide()
+        if message:
+            self._why.setText(message)
+            self._why.show()
+        self._term.show()
+        self.setVisible(True)
 
     def _open_url(self) -> None:
         if self._url:

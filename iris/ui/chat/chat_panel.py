@@ -45,7 +45,21 @@ _COLOR_MODEL_NO_TOOLS = QColor("#9ca3af")  # 도구 미지원 — 회색
 _COLOR_MODEL_PRO = QColor("#fca5a5")  # Pro/구독 — 옅은 붉은색
 
 from iris.core.activity_privacy import prepare_chat_text
-from iris.core.chat_citations import iris_message_to_chat_html
+from iris.core.chat_block_parser import (
+    ChatBlockBuffer,
+    RenderOpKind,
+    parse_chat_segments,
+    prose_char_count,
+)
+from iris.ui.chat.chat_blocks import (
+    ToolShellBlock,
+    handle_tool_collapse_click,
+)
+from iris.ui.chat.chat_renderer import (
+    render_iris_message,
+    render_tool_shell,
+    render_user_message,
+)
 from iris.ui.chat.chat_image_view import (
     attach_image_loader,
     handle_chat_anchor_click,
@@ -56,15 +70,16 @@ from iris.ui.chat.chat_display import (
     TYPING_INTERVAL_MS,
     TYPING_SPEECH_MAX_CHARS_PER_TICK,
     TYPING_SPEECH_MIN_CHARS_PER_SEC,
-    chat_body_to_html,
     effective_typing_duration_ms,
     extend_typing_timeline_ms,
     normalize_chat_body,
     scale_typing_duration_ms,
+    streaming_segments_html,
     typing_body_to_html,
     typing_target_index,
     visible_typing_text,
 )
+from iris.ui.chat.composer_attachments import ComposerAttachmentStrip
 from iris.ui.chat.composer_plus_menu import ComposerPlusButton, ComposerPlusMenu, ComposerSendButton
 from iris.ui.chat.model_picker_menu import (
     ModelBrandDialog,
@@ -333,10 +348,15 @@ class ChatLogTextEdit(QTextEdit):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._tool_blocks: dict[str, ToolShellBlock] = {}
         attach_image_loader(self)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         anchor = self.anchorAt(event.pos())
+        if anchor.startswith("iris-collapse://"):
+            if handle_tool_collapse_click(self, self._tool_blocks, anchor):
+                event.accept()
+                return
         if anchor.startswith("iris-tts://"):
             self.speaker_clicked.emit(anchor.removeprefix("iris-tts://"))
             event.accept()
@@ -673,15 +693,7 @@ class _ChatInputBar(QWidget):
         clean = [str(p).strip() for p in paths if str(p).strip()]
         if not clean:
             return
-        self._insert_paths(clean)
         self.files_attached.emit(clean)
-
-    def _insert_paths(self, paths: list[str]) -> None:
-        bits = " ".join(f'"{p}"' for p in paths)
-        cur = self.input.text()
-        sep = "" if not cur or cur.endswith(" ") else " "
-        self.input.setText(cur + sep + bits)
-        self.input.setFocus()
 
     def _on_skill(self, name: str) -> None:
         token = f"/{name} "
@@ -720,6 +732,7 @@ class _ChatInputArea(QWidget):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
 
+        self.attachment_strip = ComposerAttachmentStrip()
         self.input_bar = _ChatInputBar()
         self.waveform = MicWaveformBar()
         self.waveform.setStyleSheet(
@@ -731,6 +744,7 @@ class _ChatInputArea(QWidget):
             """
         )
 
+        col.addWidget(self.attachment_strip)
         col.addWidget(self.input_bar)
         col.addWidget(self.waveform)
 
@@ -743,7 +757,8 @@ class _ChatInputArea(QWidget):
         # 입력 위젯 실측 + 바 마진(상하 4) + 파형 min.
         inp_h = max(self.input_bar.input.height(), self.input_bar.input.sizeHint().height())
         bar_h = inp_h + 8
-        need = bar_h + self.waveform.minimumHeight()
+        strip_h = self.attachment_strip.sizeHint().height() if self.attachment_strip.isVisible() else 0
+        need = bar_h + strip_h + self.waveform.minimumHeight()
         if self.height() != need or self.minimumHeight() != need:
             self.setFixedHeight(need)
         self.updateGeometry()
@@ -781,7 +796,7 @@ class _ChatInputArea(QWidget):
 
 
 class ChatPanel(QWidget):
-    send_clicked = pyqtSignal(str)
+    send_clicked = pyqtSignal(str, list)
     stop_clicked = pyqtSignal()
     model_changed = pyqtSignal(str)
     files_attached = pyqtSignal(list)
@@ -853,6 +868,8 @@ class ChatPanel(QWidget):
         self._tts_texts: dict[str, str] = {}
         self._tts_seq = 0
         self._last_tts_id = ""
+        self._tool_seq = 0
+        self._block_buffer = ChatBlockBuffer()
         self._input_area = _ChatInputArea()
         self._input = self._input_area.input_bar.input
         self._model_combo = self._input_area.input_bar.model_combo
@@ -871,6 +888,8 @@ class ChatPanel(QWidget):
         self._model_combo.popup_requested.connect(self._open_model_picker_menu)
         bar = self._input_area.input_bar
         bar.files_attached.connect(self.files_attached.emit)
+        bar.files_attached.connect(self._input_area.attachment_strip.add_paths)
+        self._input_area.attachment_strip.changed.connect(self._on_input_changed)
         bar.skill_inserted.connect(self.skill_inserted.emit)
         bar.mcp_inserted.connect(self.mcp_inserted.emit)
         self._log.speaker_clicked.connect(self.speaker_clicked.emit)
@@ -1340,7 +1359,7 @@ class ChatPanel(QWidget):
         if needle not in html_doc:
             self._stt_pending = False
             return False
-        body_html = chat_body_to_html(body)
+        body_html = render_user_message(body)
         # QTextEdit가 <a> 안을 <span>으로 감싸므로 non-greedy DOTALL 필요
         updated = re.sub(
             r'<a href="iris-stt://pending"[^>]*>.*?</a>',
@@ -1472,16 +1491,54 @@ class ChatPanel(QWidget):
         cursor = self._begin_chat_message_cursor()
         cursor.insertHtml(f"<b>{html.escape(who)}</b>: ")
         if who.strip().lower() == "iris":
-            html_body = iris_message_to_chat_html(body)
+            html_body = render_iris_message(body)
             prefetch_chat_html_images(self._log, html_body)
             cursor.insertHtml(html_body)
             msg_id = self.register_tts_message(body)
             cursor.insertHtml(self._speaker_link_html(msg_id))
         else:
-            cursor.insertHtml(chat_body_to_html(body))
+            cursor.insertHtml(render_user_message(body))
         self._log.setTextCursor(cursor)
         self._append_trailing_blank_line()
         self._scroll_log_to_bottom()
+
+    def insert_tool_block(
+        self,
+        *,
+        title: str,
+        command: str = "",
+        output: str = "",
+        status: str = "ok",
+        block_id: str | None = None,
+    ) -> str:
+        """Cursor식 도구/셸 실행 카드를 채팅 로그에 인라인 삽입."""
+        self.finish_typing()
+        self._typing_anchor_y = None
+        self._tool_seq += 1
+        bid = (block_id or f"tool{self._tool_seq}").strip() or f"tool{self._tool_seq}"
+        block = ToolShellBlock(
+            title=title or "Shell",
+            command=command or "",
+            output=output or "",
+            status=status or "ok",
+            block_id=bid,
+            collapsed=False,
+        )
+        self._log._tool_blocks[bid] = block
+        cursor = self._log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(
+            render_tool_shell(
+                block.title,
+                block.command,
+                block.output,
+                block.status,
+                block.block_id,
+            )
+        )
+        self._log.setTextCursor(cursor)
+        self._scroll_log_to_bottom()
+        return bid
 
     def begin_stream_message(
         self,
@@ -1507,6 +1564,7 @@ class ChatPanel(QWidget):
         self._typing_speech_start = None
         self._typing_wait_for_tts_completion = bool(speech_sync and wait_for_tts_completion)
         self._typing_timer.stop()
+        self._block_buffer.reset()
         self._begin_typing_anchor()
 
     def append_stream_chunk(self, text: str) -> None:
@@ -1517,8 +1575,13 @@ class ChatPanel(QWidget):
         if not self._stream_active:
             self.begin_stream_message("Iris", speech_sync=self._typing_speech_sync)
         self._append_typing_buffer(text)
+        ops = self._block_buffer.feed(text)
+        has_fixed_block = any(o.kind != RenderOpKind.REPLACE_PROSE for o in ops)
         if not self._typing_speech_sync:
-            self._typing_index = len(self._typing_text)
+            self._typing_index = prose_char_count(self._typing_text)
+            self._replace_typing_body()
+            self._scroll_log_to_bottom()
+        elif has_fixed_block:
             self._replace_typing_body()
             self._scroll_log_to_bottom()
 
@@ -1533,10 +1596,12 @@ class ChatPanel(QWidget):
         who = getattr(self, "_stream_who", "Iris")
         if final_text is not None:
             self._finalize_typing_buffer(who, final_text)
+            self._block_buffer.set_final(self._typing_text)
         self._stream_active = False
         self._stream_block_start = None
         self._ensure_buffered_typing_fallback()
         if not self._typing_speech_sync:
+            self._typing_index = prose_char_count(self._typing_text)
             self.finish_typing()
         self._scroll_log_to_bottom(deferred=True)
 
@@ -1579,7 +1644,8 @@ class ChatPanel(QWidget):
             return
         if not self._typing_text or not self._typing_speech_sync:
             return
-        text_len = visible_len if visible_len is not None else len(self._typing_text)
+        prose_len = prose_char_count(self._typing_text)
+        text_len = visible_len if visible_len is not None else prose_len
         if spoken_len is not None and spoken_len > 0:
             scaled = scale_typing_duration_ms(duration_ms, text_len, spoken_len)
         else:
@@ -1591,7 +1657,7 @@ class ChatPanel(QWidget):
         min_chars_per_sec = TYPING_SPEECH_MIN_CHARS_PER_SEC * 1.25
         scaled *= float(typing_speed_up_factor)
         self._typing_speech_duration_ms = effective_typing_duration_ms(
-            len(self._typing_text),
+            prose_len,
             scaled,
             min_chars_per_sec=min_chars_per_sec,
         )
@@ -1609,7 +1675,7 @@ class ChatPanel(QWidget):
         """후속 TTS 세그먼트 — 타이핑 타임라인 예산을 이어서 확장."""
         if not self._typing_text or not self._typing_speech_sync:
             return
-        remaining = len(self._typing_text) - self._typing_index
+        remaining = prose_char_count(self._typing_text) - self._typing_index
         if remaining <= 0:
             return
         spoken_len = max(len((spoken or "").strip()), 1)
@@ -1644,8 +1710,8 @@ class ChatPanel(QWidget):
         self._typing_timer.stop()
         if self._typing_render_markdown and self._typing_body_start is not None:
             self._render_markdown_body()
-        elif self._typing_index < len(self._typing_text):
-            self._typing_index = len(self._typing_text)
+        elif self._typing_index < prose_char_count(self._typing_text):
+            self._typing_index = prose_char_count(self._typing_text)
             self._replace_typing_body()
         had_body = bool(self._typing_text) or self._typing_body_start is not None
         self._typing_text = ""
@@ -1656,6 +1722,7 @@ class ChatPanel(QWidget):
         self._typing_speech_start = None
         self._typing_body_start = None
         self._typing_render_markdown = False
+        self._block_buffer.reset()
         if had_body:
             self._append_trailing_blank_line()
         self._scroll_log_to_bottom()
@@ -1664,17 +1731,17 @@ class ChatPanel(QWidget):
         """타이핑 버퍼만 확장 — 스트리밍 중 화면에는 아직 표시하지 않음."""
         if not chunk:
             return
-        old_len = len(self._typing_text)
+        old_prose = prose_char_count(self._typing_text)
         self._typing_text += chunk
         if (
             self._typing_speech_sync
             and self._typing_speech_duration_ms
             and self._typing_speech_start is not None
-            and old_len > 0
+            and old_prose > 0
         ):
-            new_len = len(self._typing_text)
-            if new_len > old_len:
-                self._typing_speech_duration_ms *= new_len / old_len
+            new_prose = prose_char_count(self._typing_text)
+            if new_prose > old_prose:
+                self._typing_speech_duration_ms *= new_prose / old_prose
 
     def _finalize_typing_buffer(self, who: str, final_text: str) -> None:
         """스트림 종료 시 정규화 본문으로 버퍼 확정."""
@@ -1684,7 +1751,10 @@ class ChatPanel(QWidget):
         if self._typing_index > len(body):
             self._typing_index = len(body)
         if self._typing_speech_sync and self._typing_speech_duration_ms and old:
-            self._typing_speech_duration_ms *= len(body) / max(len(old), 1)
+            old_prose = prose_char_count(old)
+            new_prose = prose_char_count(body)
+            if old_prose > 0:
+                self._typing_speech_duration_ms *= new_prose / old_prose
 
     def _ensure_buffered_typing_fallback(self) -> None:
         """TTS가 시작되지 않은 스트림 — 일반 타이핑으로 폴백."""
@@ -1709,23 +1779,25 @@ class ChatPanel(QWidget):
         self._ensure_buffered_typing_fallback()
 
     def _replace_typing_body(self) -> None:
-        """타이핑 본문 영역을 현재 인덱스까지의 평문으로 갱신."""
+        """타이핑 본문 — prose만 점진 표시, code/tool은 즉시 카드."""
         if self._typing_body_start is None:
             return
-        visible = visible_typing_text(
-            self._typing_text,
+        start = self._stream_block_start or self._typing_body_start
+        html_body = streaming_segments_html(
+            parse_chat_segments(self._typing_text),
             self._typing_index,
             render_markdown=self._typing_render_markdown,
+            tool_blocks=self._log._tool_blocks,
         )
         cursor = self._log.textCursor()
-        cursor.setPosition(self._typing_body_start)
+        cursor.setPosition(start)
         cursor.movePosition(
             QTextCursor.MoveOperation.End,
             QTextCursor.MoveMode.KeepAnchor,
         )
         cursor.removeSelectedText()
-        if visible:
-            cursor.insertHtml(typing_body_to_html(visible))
+        if html_body:
+            cursor.insertHtml(html_body)
         # setTextCursor는 캐럿을 보이게 하려고 뷰를 끌어내린다 — 읽기 전용 로그라 생략.
 
     def _render_markdown_body(self) -> None:
@@ -1733,18 +1805,20 @@ class ChatPanel(QWidget):
         if self._typing_body_start is None or not self._typing_text:
             return
         body = self._typing_text
+        start = self._stream_block_start or self._typing_body_start
         cursor = self._log.textCursor()
-        cursor.setPosition(self._typing_body_start)
+        cursor.setPosition(start)
         cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
         cursor.removeSelectedText()
-        html_body = iris_message_to_chat_html(body)
+        html_body = render_iris_message(body)
         prefetch_chat_html_images(self._log, html_body)
         cursor.insertHtml(html_body)
         msg_id = self.register_tts_message(body)
         cursor.insertHtml(self._speaker_link_html(msg_id))
 
     def _type_next_chunk(self) -> None:
-        if self._typing_index >= len(self._typing_text):
+        prose_len = prose_char_count(self._typing_text)
+        if self._typing_index >= prose_len:
             self._typing_timer.stop()
             if self._typing_render_markdown and self._typing_body_start is not None:
                 self._render_markdown_body()
@@ -1765,7 +1839,7 @@ class ChatPanel(QWidget):
                 self._typing_speech_start = time.monotonic()
             elapsed_ms = (time.monotonic() - self._typing_speech_start) * 1000.0
             target_index = typing_target_index(
-                len(self._typing_text),
+                prose_len,
                 elapsed_ms,
                 self._typing_speech_duration_ms,
             )
@@ -1778,18 +1852,23 @@ class ChatPanel(QWidget):
             )
         else:
             self._typing_index = min(
-                len(self._typing_text),
+                prose_len,
                 self._typing_index + TYPING_CHARS_PER_TICK,
             )
 
         self._replace_typing_body()
         self._scroll_log_to_bottom()
 
-    def _on_input_changed(self) -> None:
+    def _composer_can_send(self) -> bool:
         if self._generating:
-            self._input_area.input_bar.send_button.setEnabled(True)
-            return
-        self._input_area.input_bar.send_button.setEnabled(bool(self._input.text().strip()))
+            return True
+        has_text = bool(self._input.text().strip())
+        has_files = bool(self._input_area.attachment_strip.paths())
+        return has_text or has_files
+
+    def _on_input_changed(self) -> None:
+        self._input_area.sync_height_to_contents()
+        self._input_area.input_bar.send_button.setEnabled(self._composer_can_send())
 
     def set_generating(self, active: bool) -> None:
         """생성 중이면 전송 화살표 → 정지 네모. 클릭 시 stop_clicked."""
@@ -1797,10 +1876,7 @@ class ChatPanel(QWidget):
         self._generating = on
         btn = self._input_area.input_bar.send_button
         btn.set_stop_mode(on)
-        if on:
-            btn.setEnabled(True)
-        else:
-            btn.setEnabled(bool(self._input.text().strip()))
+        btn.setEnabled(self._composer_can_send())
 
     def is_generating(self) -> bool:
         return self._generating
@@ -1812,11 +1888,13 @@ class ChatPanel(QWidget):
         self._emit_send()
 
     def _emit_send(self) -> None:
+        paths = self._input_area.attachment_strip.take_paths()
         t = self._input.text().strip()
-        if not t:
+        if not t and not paths:
             return
         self._input.clear()
-        self.send_clicked.emit(t)
+        self._input_area.sync_height_to_contents()
+        self.send_clicked.emit(t, paths)
 
 
 if __name__ == "__main__":

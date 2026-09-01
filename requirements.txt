@@ -13,6 +13,9 @@ numpy>=1.21.0
 onnxruntime>=1.17.0
 openai>=1.0.0
 anthropic>=0.37.1
+pypdf>=4.0.0
+pytesseract>=0.3.10
+pymupdf>=1.24.0
 comtypes>=1.4.0; sys_platform == "win32"
 pywin32>=306; sys_platform == "win32"
 pygetwindow>=0.0.9; sys_platform == "darwin"

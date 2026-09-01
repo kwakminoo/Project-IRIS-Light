@@ -1,0 +1,46 @@
+# PyQt6 WebEngine 부트스트랩 (필수)
+
+## 증상
+
+IRIS IDE(`QWebEngineView`) 추가 후 앱 시작 시 Windows **「작업이 중단되었습니다」** / exit `0xC0000409`.
+
+## 원인
+
+`QWebEngineWidgets`를 `QApplication` 생성 **이후**에 처음 로드하면 Chromium GL 컨텍스트 충돌로 네이티브 크래시.
+
+이메일 HTML 뷰(`email_workspace_page`)와 IRIS IDE 창(`iris_ide_window`) 모두 WebEngine 사용.
+
+## 계약
+
+1. GUI 진입(`iris/__main__.py`, 테스트)에서 **`QApplication` 전에** 반드시:
+
+```python
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
+ensure_qt_webengine_ready()
+```
+
+2. `ensure_qt_webengine_ready()`는
+   - `QApplication.instance() is None`일 때 `AA_ShareOpenGLContexts` 설정
+   - `PyQt6.QtWebEngineWidgets` 선(import) 로드
+
+3. **금지**
+   - `MainWindow` / `email_workspace_page` import를 bootstrap **앞**에 두기
+   - WebEngine을 쓰는 새 UI 추가 시 bootstrap 없이 `QApplication` 먼저 생성
+   - `MainWindow.__init__` / 페이지 `__init__`에서 `QWebEngineView()` 즉시 생성 (첫 사용 시 lazy)
+
+4. **Lazy WebEngine**
+   - `EmailWorkspacePage._ensure_body_view()` — 메일 열 때만 생성
+   - `IrisIdeWindow._ensure_view()` — Companion/Theia 진입 시만 생성
+
+## 검증
+
+```powershell
+python -m iris.ui.qt_bootstrap
+python -m iris
+```
+
+## 관련 파일
+
+- `iris/ui/qt_bootstrap.py`
+- `iris/__main__.py`
+- `iris/ui/_check_iris_startup.py`

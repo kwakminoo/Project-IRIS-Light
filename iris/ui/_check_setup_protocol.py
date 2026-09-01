@@ -18,6 +18,7 @@ from iris.system.setup_protocol import (
 def main() -> None:
     assert len(CORE_STEP_IDS) == 10
     assert "voice_full" in OPTIONAL_IDS
+    assert "iris_ide" in OPTIONAL_IDS
     assert "learning" in OPTIONAL_IDS
     assert default_min_model()
     r = SetupStepResult("state_init", "pending")

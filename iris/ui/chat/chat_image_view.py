@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from PyQt6.QtCore import QObject, Qt, QThreadPool, QRunnable, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QImage, QKeyEvent, QPixmap, QTextDocument
+from PyQt6.QtGui import QDesktopServices, QGuiApplication, QImage, QKeyEvent, QPixmap, QTextDocument
 from PyQt6.QtWidgets import (
     QDialog,
     QLabel,
@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from iris.core.markdown_text import extract_chat_image_srcs, parse_iris_image_href
+from iris.ui.chat.chat_blocks import parse_copy_anchor, parse_file_chip_location, parse_iris_file_anchor
 
 _MAX_BYTES = 8 * 1024 * 1024
 _UA = "IrisLight/1.0 (chat-image)"
@@ -222,8 +223,78 @@ def show_image_lightbox(parent: QWidget | None, src: str) -> None:
     dlg.exec()
 
 
+def _find_main_window(widget: QWidget | None):
+    w = widget
+    while w is not None:
+        if hasattr(w, "_get_bound_ide_session"):
+            return w
+        w = w.parentWidget()
+    try:
+        from PyQt6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            for top in app.topLevelWidgets():
+                if hasattr(top, "_get_bound_ide_session"):
+                    return top
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_file_chip_abs_path(window, rel_path: str) -> str | None:
+    path_part, _, _ = parse_file_chip_location(rel_path)
+    if not path_part:
+        return None
+    candidate = Path(path_part)
+    if candidate.is_file():
+        return str(candidate.resolve())
+    session = window._get_bound_ide_session(refresh=False)
+    if session and session.workspace_root:
+        under_ws = (Path(session.workspace_root) / path_part).resolve()
+        if under_ws.is_file():
+            return str(under_ws)
+    try:
+        from iris.storage.user_profile import load_user_profile
+
+        profile = load_user_profile(window._db)
+        root = (profile.project_root or "").strip()
+        if root:
+            under_root = (Path(root) / path_part).resolve()
+            if under_root.is_file():
+                return str(under_root)
+    except Exception:
+        return None
+    return None
+
+
+def _open_file_chip_in_ide(parent: QWidget, rel_path: str) -> bool:
+    window = _find_main_window(parent)
+    if window is None:
+        return False
+    session = window._get_bound_ide_session(refresh=True)
+    if session is None or getattr(window, "_ui_mode", "") != "ide_companion":
+        return False
+    abs_path = _resolve_file_chip_abs_path(window, rel_path)
+    if not abs_path:
+        return False
+    _, line, column = parse_file_chip_location(rel_path)
+    from iris.ui.control_bindings import _ide_open_file_path
+
+    result = _ide_open_file_path(window, abs_path, line=line, column=column)
+    return bool(result.get("ok"))
+
+
 def handle_chat_anchor_click(parent: QWidget, anchor: str) -> bool:
-    """iris-image / http(s) 앵커 처리. True면 이벤트 소비."""
+    """iris-copy / iris-image / iris-file / http(s) 앵커 처리. True면 이벤트 소비."""
+    code = parse_copy_anchor(anchor)
+    if code is not None:
+        QGuiApplication.clipboard().setText(code)
+        return True
+    rel_path = parse_iris_file_anchor(anchor)
+    if rel_path is not None:
+        _open_file_chip_in_ide(parent, rel_path)
+        return True
     img_src = parse_iris_image_href(anchor)
     if img_src:
         show_image_lightbox(parent, img_src)
@@ -252,3 +323,12 @@ def prefetch_chat_html_images(text_edit: QWidget, html_body: str) -> None:
     if loader is None:
         loader = attach_image_loader(text_edit)
     loader.prefetch_from_html(html_body)
+
+
+if __name__ == "__main__":
+    from iris.ui.chat.chat_blocks import file_anchor_for, parse_iris_file_anchor
+
+    rel = "iris/ui/chat/chat_blocks.py:12:3"
+    assert parse_iris_file_anchor(file_anchor_for(rel)) == rel
+    assert parse_iris_file_anchor("iris-copy://x") is None
+    print("chat_image_view file anchor ok")

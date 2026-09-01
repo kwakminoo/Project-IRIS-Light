@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 from iris.system.ide_launcher import (  # noqa: E402
     is_cursor_agents_title,
     is_generic_ide_title,
+    is_iris_ide_window_title,
     launch_ide,
     list_ide_windows,
     open_folder_in_ide,
@@ -48,6 +49,9 @@ def _check_title_helpers() -> None:
     assert not is_cursor_agents_title("Project-IRIS-Light-main - Cursor")
 
     assert is_generic_ide_title("Cursor")
+    assert is_iris_ide_window_title("IRIS IDE")
+    assert is_iris_ide_window_title("readme.md — IRIS IDE")
+    assert not is_iris_ide_window_title("Other - Cursor")
     assert is_generic_ide_title("cursor")
     assert is_generic_ide_title("")
     assert not is_generic_ide_title("Project-IRIS-Light-main - Cursor")

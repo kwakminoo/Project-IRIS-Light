@@ -16,5 +16,6 @@ class UserTurn:
     text: str
     source: UserTurnSource
     session_id: int | None = None
+    attachments: tuple[str, ...] = ()
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     created_at: float = field(default_factory=time.perf_counter)

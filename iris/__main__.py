@@ -41,15 +41,18 @@ def main() -> None:
     except Exception:
         pass
 
-    from iris.assets.branding import (
-        APP_DISPLAY_NAME,
-        apply_windows_app_id,
-        load_app_icon,
-    )
-    from iris.ui.window.main_window import MainWindow
+    # Windows 작업표시줄 아이콘 — Qt/QApplication import 전에 AppID 등록
+    if sys.platform == "win32":
+        from iris.assets.windows_taskbar import ensure_windows_taskbar_branding
 
-    # QApplication 전에 AppID — 작업표시줄이 python 아이콘으로 묶이지 않게
-    apply_windows_app_id()
+        ensure_windows_taskbar_branding()
+
+    from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
+
+    ensure_qt_webengine_ready()
+
+    from iris.assets.branding import APP_DISPLAY_NAME, load_app_icon
+    from iris.ui.window.main_window import MainWindow
 
     app = QApplication(sys.argv)
     app.setOrganizationName(APP_DISPLAY_NAME)
@@ -61,7 +64,8 @@ def main() -> None:
     app.setFont(QFont("Noto Sans KR", 10))
     win = MainWindow()
     win.show()
-    app.processEvents()
+    for _ in range(3):
+        app.processEvents()
     sys.exit(app.exec())
 
 

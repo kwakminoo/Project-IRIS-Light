@@ -210,7 +210,23 @@ MIT/Apache-2.0로 가는 **유일한 경로**는 GPL 의존성을 제거하는 �
 
 ---
 
-## 6. 배포 전 체크리스트
+## 6. IRIS IDE (Eclipse Theia, optional)
+
+`integrations/iris-ide/`는 **선택 설치** optional runtime입니다. IRIS IDE를
+설치하지 않으면 Node.js/Theia는 내려받지 않습니다.
+
+| 구성요소 | 라이선스 | 비고 |
+|----------|----------|------|
+| Eclipse Theia 1.74.x | **EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0** | `@theia/*` npm packages |
+| Monaco Editor (Theia 경유) | MIT | Theia transitive |
+| Open VSX / VS Code extension host (Theia) | 각 확장 라이선스 | `@theia/plugin-ext-vscode`, `@theia/vsx-registry` |
+
+Theia는 IRIS Python 앱과 **별도 Node 프로세스**로 `127.0.0.1`에서만 동작합니다.
+About/Third-party notices에서 Eclipse Theia 사용 사실과 라이선스를 숨기지 않습니다.
+
+---
+
+## 7. 배포 전 체크리스트
 
 - [x] 루트에 `LICENSE` (GPL v3 전문) 존재
 - [x] 루트에 `LICENSE.md` (본 문서) 존재
@@ -222,7 +238,7 @@ MIT/Apache-2.0로 가는 **유일한 경로**는 GPL 의존성을 제거하는 �
 
 ---
 
-## 7. 기여자에게
+## 8. 기여자에게
 
 이 저장소에 PR을 보내면 해당 기여는 **GPL-3.0-or-later**로 제공하는 데 동의하는
 것으로 간주합니다. 새 의존성을 추가할 때는 다음을 지켜 주세요.

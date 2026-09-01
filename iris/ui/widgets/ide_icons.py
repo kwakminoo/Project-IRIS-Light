@@ -12,7 +12,8 @@ from PyQt6.QtWidgets import QMessageBox, QWidget
 
 from iris.system.ide_launcher import get_ide_spec
 
-_LOGO_DIR = Path(__file__).resolve().parents[2] / "assets" / "ide_logos"
+_IRIS_ICON_DIR = Path(__file__).resolve().parents[2] / "assets"
+_LOGO_DIR = _IRIS_ICON_DIR / "ide_logos"
 
 # 다크 UI용 — 검정 실루엣 / fill 없는 SVG에 브랜드 색 주입
 _BRAND_FILL: dict[str, str] = {
@@ -97,10 +98,24 @@ def _render_logo(path: Path, ide_id: str, size: int) -> QPixmap | None:
         return None
 
 
+def _iris_official_icon(size: int = 40) -> QIcon | None:
+    for name in ("iris_icon.png", "iris_icon.ico"):
+        p = _IRIS_ICON_DIR / name
+        if p.is_file() and p.stat().st_size > 0:
+            pm = _render_logo(p, "iris_ide", size)
+            if pm is not None and not pm.isNull():
+                return QIcon(pm)
+    return None
+
+
 def ide_icon_for(ide_id: str, exe_path: str = "", *, size: int = 40) -> QIcon:
     """공식 로고 우선. exe_path는 호환용으로 무시(설치 여부와 무관)."""
     _ = exe_path
     key = (ide_id or "").strip().lower()
+    if key == "iris_ide":
+        iris = _iris_official_icon(size=size)
+        if iris is not None:
+            return iris
     path = _logo_path(key)
     if path is not None:
         pm = _render_logo(path, key, size)
@@ -122,6 +137,11 @@ def ide_icon_for(ide_id: str, exe_path: str = "", *, size: int = 40) -> QIcon:
 
 def show_ide_not_installed_dialog(parent: QWidget | None, ide_id: str) -> None:
     """미설치 IDE — 닫기 / 설치하기."""
+    if (ide_id or "").strip().lower() == "iris_ide":
+        from iris.ui.settings.iris_ide_settings import prompt_iris_ide_install
+
+        prompt_iris_ide_install(parent)
+        return
     spec = get_ide_spec(ide_id)
     name = spec.name if spec else ide_id
     url = (spec.install_url if spec else "") or ""

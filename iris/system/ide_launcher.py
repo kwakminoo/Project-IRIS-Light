@@ -227,6 +227,14 @@ def ide_catalog() -> tuple[IdeSpec, ...]:
             install_url="https://neovim.io/",
         ),
         IdeSpec(
+            id="iris_ide",
+            name="IRIS IDE",
+            process_names=(),
+            exe_candidates=(),
+            install_url="",
+            title_hints=("IRIS IDE",),
+        ),
+        IdeSpec(
             id="custom",
             name="사용자 지정",
             process_names=(),
@@ -280,6 +288,13 @@ def resolve_ide_exe(
     ide_id = (preferred_ide or "cursor").strip().lower() or "cursor"
     if ide_id == "custom":
         return "", "사용자 지정 IDE 경로를 프로필에 입력하세요."
+    if ide_id == "iris_ide":
+        from iris.system.iris_ide_runtime import IrisIdeRuntimeManager
+
+        mgr = IrisIdeRuntimeManager()
+        if mgr.is_installed():
+            return "iris-ide-runtime", ""
+        return "", "IRIS IDE가 설치되어 있지 않습니다. 설정 또는 시작 프로토콜에서 설치하세요."
 
     spec = get_ide_spec(ide_id)
     if spec is None:
@@ -311,7 +326,15 @@ def resolve_ide_cli(preferred_ide: str, ide_cli_path: str = "", ide_exe_path: st
     return exe
 
 
+def is_iris_ide(preferred_ide: str) -> bool:
+    return (preferred_ide or "").strip().lower() == "iris_ide"
+
+
 def is_ide_installed(preferred_ide: str, ide_exe_path: str = "") -> bool:
+    if is_iris_ide(preferred_ide):
+        from iris.system.iris_ide_runtime import IrisIdeRuntimeManager
+
+        return IrisIdeRuntimeManager().is_installed()
     exe, err = resolve_ide_exe(preferred_ide, ide_exe_path)
     return bool(exe) and not err
 
@@ -457,6 +480,16 @@ def is_generic_ide_title(title: str) -> bool:
     return t in {"", "cursor", "visual studio code", "code", "code - oss"}
 
 
+def is_iris_ide_window_title(title: str) -> bool:
+    """IRIS IDE(PyQt/Theia) 창 — 에디터 탭 제목과 달라 workspace 힌트로 쓰지 않는다."""
+    t = (title or "").strip().lower()
+    if not t:
+        return True
+    if t == "iris ide":
+        return True
+    return t.endswith("iris ide") or " — iris ide" in t or " - iris ide" in t
+
+
 def workspace_title_lost_context(title: str, workspace_root: str) -> bool:
     """True only when title clearly shows a *different* workspace.
 
@@ -468,7 +501,7 @@ def workspace_title_lost_context(title: str, workspace_root: str) -> bool:
     root_name = Path(workspace_root).name.strip().lower()
     if not root_name:
         return False
-    if is_cursor_agents_title(t) or is_generic_ide_title(t):
+    if is_cursor_agents_title(t) or is_generic_ide_title(t) or is_iris_ide_window_title(t):
         return False
     if root_name in t:
         return False
@@ -775,6 +808,9 @@ if __name__ == "__main__":
     assert is_cursor_agents_title("Cursor Agents")
     assert not workspace_title_lost_context("Cursor", "/tmp/MyProj")
     assert workspace_title_lost_context("Other - Cursor", "/tmp/MyProj")
+    assert not workspace_title_lost_context("main.py — IRIS IDE", "/tmp/MyProj")
+    assert is_iris_ide_window_title("IRIS IDE")
+    assert is_iris_ide_window_title("extension.ts — IRIS IDE")
     exe, _err = resolve_ide_exe("cursor")
     print("cursor exe:", exe or "(missing)")
     print("vscode installed:", is_ide_installed("vscode"))

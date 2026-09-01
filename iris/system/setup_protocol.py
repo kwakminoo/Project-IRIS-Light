@@ -155,6 +155,7 @@ OPTIONAL_IDS: tuple[str, ...] = (
     "learning",
     "emulator",
     "mobile_mcp",
+    "iris_ide",
     "external_api",
     "mail",
     "ollama_cloud",
@@ -166,6 +167,7 @@ OPTIONAL_LABELS: dict[str, str] = {
     "learning": "업무 학습 (Aloha)",
     "emulator": "Android 에뮬레이터",
     "mobile_mcp": "mobile-mcp (Node)",
+    "iris_ide": "IRIS IDE",
     "external_api": "외부 API",
     "mail": "메일",
     "ollama_cloud": "Ollama 클라우드",
@@ -964,6 +966,7 @@ class SetupProtocol:
             "learning": self._opt_learning,
             "emulator": self._opt_emulator,
             "mobile_mcp": self._opt_mobile_mcp,
+            "iris_ide": self._opt_iris_ide,
             "external_api": self._opt_external_api,
             "mail": self._opt_mail,
             "ollama_cloud": self._opt_ollama_cloud,
@@ -1027,6 +1030,41 @@ class SetupProtocol:
                 continue
             return result.status in ("done", "skipped")
 
+    def install_optional_step(
+        self,
+        step_id: str,
+        on_progress: ProgressFn | None = None,
+    ) -> SetupStepResult:
+        """설정 등에서 단일 optional 설치 — needs_user 없이 바로 실행."""
+        step_id = (step_id or "").strip().lower()
+        label = OPTIONAL_LABELS.get(step_id, step_id)
+        if self.simulate:
+            time.sleep(0.35)
+            result = SetupStepResult(
+                step_id,
+                "done",
+                f"[데모] {label} 설치 시뮬레이션 완료",
+                label=label,
+            )
+            self._emit(on_progress, result)
+            self._save_optional(step_id, result)
+            return result
+        if self.dry_run:
+            time.sleep(0.8)
+            result = SetupStepResult(step_id, "done", f"{label} 확인됨", label=label)
+            self._emit(on_progress, result)
+            self._save_optional(step_id, result)
+            return result
+        self._emit(
+            on_progress,
+            SetupStepResult(step_id, "installing", "설치 실행 중…", label=label),
+        )
+        result = self._dispatch_install(step_id)
+        self._emit(on_progress, result)
+        if result.status == "done":
+            self._save_optional(step_id, result)
+        return result
+
     def _run_optional_simulated(
         self,
         which: str,
@@ -1039,6 +1077,7 @@ class SetupProtocol:
             "learning": OPTIONAL_LABELS["learning"],
             "emulator": OPTIONAL_LABELS["emulator"],
             "mobile_mcp": OPTIONAL_LABELS["mobile_mcp"],
+            "iris_ide": OPTIONAL_LABELS["iris_ide"],
             "external_api": OPTIONAL_LABELS["external_api"],
             "mail": OPTIONAL_LABELS["mail"],
             "ollama_cloud": OPTIONAL_LABELS["ollama_cloud"],
@@ -1055,7 +1094,7 @@ class SetupProtocol:
             action_hint="「설치」/「완료했어요」/「나중에」로 진행 (데모).",
             label=label,
             can_install=which
-            in ("emulator", "voice", "voice_full", "learning", "mobile_mcp"),
+            in ("emulator", "voice", "voice_full", "learning", "mobile_mcp", "iris_ide"),
         )
         self._emit(on_progress, result)
         self._save_optional(which, result)
@@ -1121,6 +1160,13 @@ class SetupProtocol:
                 "이미 Node가 있으면 「완료했어요」.",
                 True,
             ),
+            "iris_ide": (
+                OPTIONAL_LABELS["iris_ide"],
+                "IRIS IDE(Theia)가 없습니다. 「설치」로 Node·Theia를 준비하거나 「나중에」.",
+                "",
+                "Eclipse Theia 1.74 · Node 22+. 용량이 큽니다.",
+                True,
+            ),
             "external_api": (
                 OPTIONAL_LABELS["external_api"],
                 "외부 API 키는 설정에서 직접 추가합니다.",
@@ -1180,6 +1226,7 @@ class SetupProtocol:
                 "learning": "Aloha runtime ready",
                 "emulator": "실행 가능 (AVD IrisLight_Pixel)",
                 "mobile_mcp": "Node 확인됨 (Hermes MCP에 등록됨)",
+                "iris_ide": "IRIS IDE runtime ready",
             }.get(which, f"{label} 확인됨")
             done = SetupStepResult(which, "done", done_msg, label=label)
             self._emit(on_progress, done)
@@ -1215,6 +1262,7 @@ class SetupProtocol:
                 "voice_full": "Full TTS 준비됨 (CUDA·qwen)",
                 "learning": "Aloha runtime ready",
                 "mobile_mcp": "Node 확인됨 (Hermes MCP에 등록됨)",
+                "iris_ide": "IRIS IDE runtime ready",
             }.get(step_id, "완료")
             return SetupStepResult(step_id, "done", done_msg, label=label)
         if step_id == "ollama_install":
@@ -1231,6 +1279,8 @@ class SetupProtocol:
             return self._install_learning()
         if step_id == "mobile_mcp":
             return self._install_node()
+        if step_id == "iris_ide":
+            return self._install_iris_ide()
         return SetupStepResult(
             step_id=step_id,
             status="failed",
@@ -2116,65 +2166,66 @@ class SetupProtocol:
         )
 
     def _install_node(self) -> SetupStepResult:
+        from iris.system.node_runtime import install_node_winget, is_node_ready
+
         label = OPTIONAL_LABELS["mobile_mcp"]
-        if shutil.which("npx") or shutil.which("node"):
-            return SetupStepResult(
-                "mobile_mcp", "done", "Node 이미 사용 가능", label=label
-            )
-        if sys.platform != "win32" or not _winget_available():
-            return self._needs_user_install_check(
-                "mobile_mcp",
-                message="winget이 없습니다. 「열기」로 Node.js를 설치하세요.",
-                action_url=NODE_DOWNLOAD_URL,
-                can_install=False,
-            )
-        winget = _winget_exe()
-        assert winget is not None
-        self._emit_stream("winget으로 Node.js LTS 설치 중…", None, replace=False)
-        try:
-            proc = self._run_streamed(
-                [
-                    winget,
-                    "install",
-                    "-e",
-                    "--id",
-                    "OpenJS.NodeJS.LTS",
-                    "--accept-package-agreements",
-                    "--accept-source-agreements",
-                ],
-                timeout=_INSTALL_IDLE_SEC,
-                hard_timeout=_INSTALL_HARD_SEC,
-                hidden=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            if shutil.which("npx") or shutil.which("node"):
-                return SetupStepResult(
-                    "mobile_mcp", "done", "시간 초과 후 Node 확인됨", label=label
-                )
-            return self._needs_user_install_check(
-                "mobile_mcp",
-                message=f"Node 설치 확인 시간이 지났습니다 ({exc}).",
-                action_url=NODE_DOWNLOAD_URL,
-                can_install=True,
-            )
-        if shutil.which("npx") or shutil.which("node"):
-            return SetupStepResult(
-                "mobile_mcp", "done", "Node 설치됨 (Hermes MCP에 등록됨)", label=label
-            )
-        if proc.returncode == 0:
-            return self._needs_user_install_check(
-                "mobile_mcp",
-                message="설치는 됐지만 PATH에 없습니다. Iris 재시작 후 「완료했어요」.",
-                action_url="",
-                can_install=False,
-            )
-        err = (proc.stdout or "")[-160:]
+        ok, msg = is_node_ready()
+        if ok:
+            return SetupStepResult("mobile_mcp", "done", "Node 이미 사용 가능", label=label)
+        ok_inst, inst_msg = install_node_winget(run_streamed=self._run_streamed)
+        if ok_inst:
+            return SetupStepResult("mobile_mcp", "done", inst_msg, label=label)
         return self._needs_user_install_check(
             "mobile_mcp",
-            message=f"Node 설치 실패. 「열기」로 수동 설치하세요. {err}",
+            message=f"Node 설치 실패. {inst_msg}",
             action_url=NODE_DOWNLOAD_URL,
             can_install=True,
         )
+
+    def _opt_iris_ide(self) -> SetupStepResult:
+        from iris.system.iris_ide_runtime import IrisIdeRuntimeManager
+
+        label = OPTIONAL_LABELS["iris_ide"]
+        mgr = IrisIdeRuntimeManager()
+        ok, detail = mgr.verify_installation()
+        if ok:
+            return SetupStepResult("iris_ide", "done", detail, label=label)
+        st = mgr.status()
+        msg = st.detail or "IRIS IDE 미설치"
+        if st.damaged:
+            msg = "IRIS IDE runtime 손상됨 — 「설치」로 복구하세요."
+        return SetupStepResult(
+            step_id="iris_ide",
+            status="needs_user",
+            message=f"{msg}. 「설치」로 Node·Theia를 준비하거나 「나중에」.",
+            action_url=NODE_DOWNLOAD_URL,
+            action_hint="Theia 1.74 · Node 22+. 외부 IDE는 그대로 사용 가능.",
+            label=label,
+            can_install=True,
+        )
+
+    def _install_iris_ide(self) -> SetupStepResult:
+        from iris.system.iris_ide_runtime import IrisIdeRuntimeManager
+
+        label = OPTIONAL_LABELS["iris_ide"]
+        mgr = IrisIdeRuntimeManager()
+
+        def _progress(msg: str) -> None:
+            self._emit_stream(msg, None, replace=False)
+
+        ok, msg = mgr.install(progress=_progress, run_streamed=self._run_streamed)
+        if not ok:
+            return SetupStepResult("iris_ide", "failed", msg[:240], label=label)
+        self._emit_stream("Theia runtime health check…", None, replace=False)
+        started, start_msg = mgr.start(project_root())
+        if not started:
+            mgr.stop()
+            return SetupStepResult("iris_ide", "failed", start_msg[:240], label=label)
+        if not mgr.health():
+            mgr.stop()
+            return SetupStepResult("iris_ide", "failed", "Theia health check failed", label=label)
+        mgr.stop()
+        return SetupStepResult("iris_ide", "done", "IRIS IDE runtime ready", label=label)
 
     def _opt_external_api(self) -> SetupStepResult:
         return SetupStepResult(
@@ -2244,6 +2295,7 @@ def _self_check() -> None:
     # 키 마스킹: 메시지에 raw key 넣지 않는지 상수만 검사
     assert "token_urlsafe" not in DEFAULT_MIN_MODEL
     assert "voice_full" in OPTIONAL_IDS and "learning" in OPTIONAL_IDS
+    assert "iris_ide" in OPTIONAL_IDS
     assert parse_install_percent("Downloading  67%") == 67
     assert parse_install_percent("no percent here") is None
     assert parse_install_percent("150%") is None
