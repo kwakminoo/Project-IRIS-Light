@@ -11,3 +11,4 @@
 ## 내부 의존성
 
 - [[api_quota]]
+- [[ollama_usage]]

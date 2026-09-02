@@ -20,6 +20,7 @@
 - `def extract_first_code_block`
 - `def default_generated_rel_path`
 - `def write_project_file_stream`
+- `def _smooth_text_chunks`
 - `def build_iris_terminal_command`
 - `def upsert_iris_run_task`
 - `def wait_for_run_log`
@@ -29,3 +30,7 @@
 - `def run_project_command`
 - `def format_run_log`
 - `def summarize_run`
+
+## 내부 의존성
+
+- [[win_subprocess]]

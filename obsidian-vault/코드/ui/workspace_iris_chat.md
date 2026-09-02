@@ -13,3 +13,4 @@
 - [[activity_privacy]]
 - [[chat_citations]]
 - [[chat_display]]
+- [[chat_image_view]]

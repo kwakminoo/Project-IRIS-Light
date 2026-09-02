@@ -6,15 +6,22 @@ Hermes에 Iris Control MCP + 스킬을 자동 설치·검증.
 
 ## 주요 정의
 
+- `def iris_state_dir`
+- `def sync_state_path`
+- `def _project_root_marker`
+- `def _looks_like_repo`
+- `def _remember_project_root`
+- `def _load_remembered_project_root`
 - `def project_root`
 - `def hermes_home`
 - `def hermes_config_path`
 - `def hermes_skills_iris_control_dir`
 - `def repo_skills_iris_control_dir`
-- `def iris_state_dir`
-- `def sync_state_path`
 - `class SyncReport`
+- `def _is_gui_frozen_exe`
 - `def _python_cmd`
+- `def _install_stable_mcp_entry`
+- `def _mcp_launch_is_unsafe`
 - `def desired_mcp_block`
 - `def desired_mobile_mcp_block`
 - `def _mcp_equivalent`
@@ -33,3 +40,4 @@ Hermes에 Iris Control MCP + 스킬을 자동 설치·검증.
 
 - [[android_emulator]]
 - [[hermes_memory_nudge]]
+- [[hermes_soul_sync]]

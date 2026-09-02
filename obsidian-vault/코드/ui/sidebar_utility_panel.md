@@ -11,4 +11,5 @@
 ## 내부 의존성
 
 - [[system_metrics_panel]]
+- [[voice_hint_panel]]
 - [[workspace_action_panel]]

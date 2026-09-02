@@ -12,13 +12,18 @@
 - `class _CaptureThumbLabel`
 - `class UnifiedMonitorPanel`
 - `def _capture_all_windows`
+- `def _row_value`
 - `def _match_monitor`
+- `def _make_pin_button`
+- `def _make_pin_status_widget`
 - `def _make_card`
 
 ## 내부 의존성
 
 - [[database]]
 - [[glass_panel]]
+- [[pin_store]]
+- [[pinned_monitor]]
 - [[screen_capture]]
 - [[section_header]]
 - [[theme_tokens]]
