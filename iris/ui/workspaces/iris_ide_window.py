@@ -5,9 +5,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QLabel, QMainWindow, QStackedWidget, QVBoxLayout, QWidget
+from PyQt6.QtCore import QEvent, QPoint, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QIcon, QMouseEvent
+from PyQt6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 if TYPE_CHECKING:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -17,6 +26,18 @@ from iris.ui.shared.theme_tokens import TOKENS
 from iris.ui.window.frameless_chrome import suppress_native_window_border
 
 IRIS_IDE_TITLE = "IRIS IDE"
+
+_TITLE_BAR_HEIGHT = 32
+
+
+def _win_ctrl_button(text: str, tooltip: str) -> QPushButton:
+    btn = QPushButton(text)
+    btn.setObjectName("IrisIdeWinCtrl")
+    btn.setToolTip(tooltip)
+    btn.setFixedSize(34, _TITLE_BAR_HEIGHT - 4)
+    btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    return btn
 
 
 def _iris_ide_window_stylesheet() -> str:
@@ -48,7 +69,100 @@ def _iris_ide_window_stylesheet() -> str:
         font-size: 14px;
         font-family: {t.font_family};
     }}
+    QWidget#IrisIdeTitleBar {{
+        background: {t.space_navy};
+        border: none;
+        border-bottom: 1px solid {t.border_subtle};
+    }}
+    QLabel#IrisIdeTitleLabel {{
+        color: {t.text_secondary};
+        font-size: 12px;
+        font-family: {t.font_family};
+        letter-spacing: 0.06em;
+        background: transparent;
+        border: none;
+    }}
+    QPushButton#IrisIdeWinCtrl {{
+        background-color: transparent;
+        border: 1px solid {t.border_subtle};
+        padding: 0;
+        font-size: 13px;
+        font-weight: 400;
+        border-radius: 3px;
+        color: {t.text_secondary};
+    }}
+    QPushButton#IrisIdeWinCtrl:hover {{
+        background-color: {t.accent_primary};
+        border-color: {t.accent_border};
+        color: {t.text_primary};
+    }}
+    QPushButton#IrisIdeWinCtrl:pressed {{
+        background-color: rgba(30, 58, 138, 0.5);
+    }}
     """
+
+
+class _IrisIdeTitleBar(QWidget):
+    """프레임리스 창 — 드래그 이동 + 최소화/최대화/닫기. iris.ui.widgets.drag_tab.DragTab와 동일한 패턴."""
+
+    minimize_clicked = pyqtSignal()
+    maximize_clicked = pyqtSignal()
+    close_clicked = pyqtSignal()
+
+    def __init__(self, win: QMainWindow, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("IrisIdeTitleBar")
+        self._win = win
+        self._drag_pos: QPoint | None = None
+        self.setFixedHeight(_TITLE_BAR_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 0, 6, 0)
+        lay.setSpacing(6)
+
+        self._title = QLabel(IRIS_IDE_TITLE)
+        self._title.setObjectName("IrisIdeTitleLabel")
+        lay.addWidget(self._title, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addStretch(1)
+
+        self._btn_min = _win_ctrl_button("−", "창 내리기")
+        self._btn_max = _win_ctrl_button("□", "전체 화면")
+        self._btn_close = _win_ctrl_button("×", "닫기")
+        for btn in (self._btn_min, self._btn_max, self._btn_close):
+            lay.addWidget(btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._btn_min.clicked.connect(self.minimize_clicked.emit)
+        self._btn_max.clicked.connect(self.maximize_clicked.emit)
+        self._btn_close.clicked.connect(self.close_clicked.emit)
+
+    def set_maximized(self, maximized: bool) -> None:
+        if maximized:
+            self._btn_max.setText("❐")
+            self._btn_max.setToolTip("창 복원")
+        else:
+            self._btn_max.setText("□")
+            self._btn_max.setToolTip("전체 화면")
+
+    def mousePressEvent(self, e: QMouseEvent) -> None:  # noqa: N802
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = e.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_pos is not None and e.buttons() & Qt.MouseButton.LeftButton:
+            if not self._win.isMaximized():
+                self._win.move(e.globalPosition().toPoint() - self._drag_pos)
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e: QMouseEvent) -> None:  # noqa: N802
+        self._drag_pos = None
+        super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e: QMouseEvent) -> None:  # noqa: N802
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.maximize_clicked.emit()
+        super().mouseDoubleClickEvent(e)
 
 
 class IrisIdeWindow(QMainWindow):
@@ -66,8 +180,20 @@ class IrisIdeWindow(QMainWindow):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setStyleSheet(_iris_ide_window_stylesheet())
         self._frameless_chrome_applied = False
-        self._stack = QStackedWidget(self)
-        self.setCentralWidget(self._stack)
+
+        container = QWidget(self)
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self._title_bar = _IrisIdeTitleBar(self, container)
+        self._title_bar.minimize_clicked.connect(self.showMinimized)
+        self._title_bar.maximize_clicked.connect(self._toggle_maximize)
+        self._title_bar.close_clicked.connect(self.close_window)
+        outer.addWidget(self._title_bar)
+
+        self._stack = QStackedWidget(container)
+        outer.addWidget(self._stack, 1)
+        self.setCentralWidget(container)
 
         self._loading = QWidget()
         self._loading.setObjectName("IrisIdeLoading")
@@ -98,6 +224,17 @@ class IrisIdeWindow(QMainWindow):
         super().showEvent(event)
         if not self._frameless_chrome_applied:
             self.apply_frameless_chrome()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._title_bar.set_maximized(self.isMaximized())
+
+    def _toggle_maximize(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
 
     def _ensure_view(self) -> QWebEngineView | None:
         if self._view is not None:

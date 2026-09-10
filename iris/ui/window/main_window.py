@@ -4400,11 +4400,23 @@ class MainWindow(QMainWindow):
             hwnd = session.hwnd
             win = self._iris_ide_window
             alive = bool(win and win.isVisible()) or self._ide_hwnd_alive(hwnd)
+            mgr = shared_iris_ide_runtime()
             if not alive:
-                mgr = shared_iris_ide_runtime()
                 if not mgr.bridge_health():
                     self._clear_ide_session("IDE 창 종료")
                     return
+            # File > Open Folder / Close Folder inside Theia's own UI changes
+            # the workspace without going through _open_iris_ide_folder — sync
+            # the bound session so it stops referencing whatever folder was
+            # open when it was first bound (mgr.workspace/_open reads the
+            # bridge's live state file, not a network call — cheap here).
+            live_open = mgr.workspace_open
+            live_root = mgr.workspace
+            if live_open and live_root and live_root != session.workspace_root:
+                session.workspace_root = live_root
+                session.mode = "workspace"
+            elif not live_open and session.mode != "welcome":
+                session.mode = "welcome"
             session.last_seen_at = time.time()
             self._ide_session = session
             self._ide_hwnd = session.hwnd

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
+
+LOGGER = logging.getLogger(__name__)
 
 
 class IrisIdeClientError(RuntimeError):
@@ -27,19 +31,33 @@ class IrisIdeClient:
         req.add_header("Content-Type", "application/json; charset=utf-8")
         if self.token:
             req.add_header("Authorization", f"Bearer {self.token}")
+        t0 = time.monotonic()
+        LOGGER.debug("iris_ide bridge -> %s (timeout=%.1fs)", command, self.timeout)
         try:
             with urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read().decode("utf-8")
         except (URLError, TimeoutError, OSError) as exc:
+            LOGGER.warning(
+                "iris_ide bridge %s failed after %.2fs: %s", command, time.monotonic() - t0, exc
+            )
             raise IrisIdeClientError(str(exc)) from exc
+        elapsed = time.monotonic() - t0
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
+            LOGGER.warning("iris_ide bridge %s returned invalid JSON after %.2fs", command, elapsed)
             raise IrisIdeClientError("invalid JSON from bridge") from exc
         if not isinstance(data, dict):
             raise IrisIdeClientError("unexpected bridge response")
         if not data.get("ok"):
+            LOGGER.warning(
+                "iris_ide bridge %s returned error after %.2fs: %s",
+                command,
+                elapsed,
+                data.get("error"),
+            )
             raise IrisIdeClientError(str(data.get("error") or "bridge error"))
+        LOGGER.debug("iris_ide bridge <- %s ok in %.2fs", command, elapsed)
         result = data.get("result")
         return result if isinstance(result, dict) else {"value": result}
 

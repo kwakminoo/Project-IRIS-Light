@@ -8,14 +8,21 @@ const http = require('http');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const workspaceRoot = path.resolve(process.env.IRIS_IDE_WORKSPACE || process.cwd());
+let workspaceRoot = path.resolve(process.env.IRIS_IDE_WORKSPACE || process.cwd());
+// Whether Theia currently has a folder open (vs. the "new window" welcome
+// screen). workspaceRoot itself stays populated even when this is false —
+// file-API sandboxing always needs a valid root — so callers must check
+// this flag to tell "no folder open" apart from "folder open at X".
+let workspaceOpen = true;
 const token = (process.env.IRIS_IDE_BRIDGE_TOKEN || '').trim() || crypto.randomBytes(24).toString('hex');
 const wantPort = parseInt(process.env.IRIS_IDE_BRIDGE_PORT || '0', 10);
 const stateFile = (process.env.IRIS_IDE_STATE_FILE || '').trim();
 
 let editorState = null;
+let boundPort = 0;
 
 function writeState(port) {
+    boundPort = port || boundPort;
     if (!stateFile) return;
     let existing = {};
     try {
@@ -25,9 +32,10 @@ function writeState(port) {
     } catch (_) { /* ignore */ }
     const payload = {
         ...existing,
-        bridge_port: port,
+        bridge_port: boundPort,
         token,
         workspace: workspaceRoot,
+        workspace_open: workspaceOpen,
         bridge_pid: process.pid,
     };
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
@@ -69,7 +77,24 @@ async function dispatch(cmd, args) {
         case 'health':
             return { product: 'IRIS IDE', theia: '1.74.0', workspace: workspaceRoot };
         case 'getWorkspace':
-            return { root: workspaceRoot };
+            return { root: workspaceRoot, opened: workspaceOpen };
+        case 'setWorkspace': {
+            // Pushed by the frontend whenever Theia's own File > Open Folder /
+            // Close Folder changes the active workspace — keeps this process
+            // (which outlives a single workspace, unlike the env var it booted
+            // with) from going on reporting whatever folder was open at start.
+            const root = String(args.root || '').trim();
+            if (root) {
+                const abs = path.resolve(root);
+                if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+                    throw new Error(`not a directory: ${root}`);
+                }
+                workspaceRoot = abs;
+            }
+            workspaceOpen = args.opened !== undefined ? Boolean(args.opened) : Boolean(root);
+            writeState(boundPort);
+            return { root: workspaceRoot, opened: workspaceOpen };
+        }
         case 'setEditorState':
             editorState = args && typeof args === 'object' ? args : null;
             return { saved: true };
@@ -174,6 +199,21 @@ async function dispatch(cmd, args) {
 }
 
 const server = http.createServer(async (req, res) => {
+    // The Theia frontend (port THEIA_BACKEND_PORT) calls this bridge (a
+    // different port) directly via fetch() — a real cross-origin request, so
+    // the browser sends a CORS preflight (OPTIONS) before every POST with a
+    // JSON body + Authorization header. Without these headers every such
+    // fetch fails silently in the browser console before it ever reaches
+    // authOk()/dispatch() below, even though curl/Node http clients (which
+    // don't enforce CORS) see nothing wrong.
+    res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+    }
     const send = (code, body) => {
         const raw = JSON.stringify(body);
         res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(raw) });

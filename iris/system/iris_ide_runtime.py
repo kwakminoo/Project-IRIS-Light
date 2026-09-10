@@ -237,7 +237,16 @@ class IrisIdeRuntimeManager:
             root = Path(project_root_path or "").expanduser()
             if project_root_path and not root.is_dir():
                 return False, f"not a directory: {project_root_path}"
-            self._workspace = str(root.resolve()) if root.is_dir() else str(project_root().resolve())
+            # Path("").is_dir() resolves to the cwd (always True) — must check the
+            # original string too, or "no project" would still count as explicit.
+            explicit_workspace = bool(project_root_path) and root.is_dir()
+            # ponytail: project_root_path가 없으면 "새 창"(welcome) 상태 — 예전엔 여기서
+            # project_root()(IRIS-Light 저장소 자체)를 기본 워크스페이스로 잡아 Theia에
+            # 넘겼기 때문에, Theia 입장에서는 항상 폴더가 열려 있는 걸로 보여
+            # IrisIdeStartWidget(새 창 시작 화면)이 절대 뜨지 않았다. self._workspace는
+            # 브릿지 sandbox 루트로는 계속 쓰되(파일 API가 최소한 유효한 폴더를 갖도록),
+            # Theia CLI에는 explicit_workspace일 때만 넘긴다.
+            self._workspace = str(root.resolve()) if explicit_workspace else str(project_root().resolve())
             self._theia_port = _free_port()
             self._bridge_port = _free_port()
         self._token = secrets.token_urlsafe(24)
@@ -270,7 +279,8 @@ class IrisIdeRuntimeManager:
         ]
         if router_config.is_file():
             theia_args.append(f"--ovsx-router-config={router_config}")
-        theia_args.append(self._workspace)
+        if explicit_workspace:
+            theia_args.append(self._workspace)
         kwargs_base: dict[str, Any] = {
             "cwd": str(runtime_install_dir()),
             "env": env,
@@ -341,7 +351,25 @@ class IrisIdeRuntimeManager:
 
     @property
     def workspace(self) -> str:
-        return self._workspace
+        """Current Theia workspace root.
+
+        Prefers the bridge's live state-file value over ``self._workspace``:
+        File > Open Folder inside a running Theia window changes the
+        workspace in place (no process restart), and the bridge rewrites the
+        state file whenever that happens — this stays in sync without an
+        extra network round trip. ``self._workspace`` is the fallback for the
+        brief window before the bridge has confirmed anything.
+        """
+        live = str(self._read_state().get("workspace") or "").strip()
+        return live or self._workspace
+
+    @property
+    def workspace_open(self) -> bool:
+        """Whether Theia currently has a folder open (vs. the welcome screen)."""
+        st = self._read_state()
+        if "workspace_open" in st:
+            return bool(st.get("workspace_open"))
+        return bool(self._workspace)
 
     def health(self) -> bool:
         if is_iris_ide_demo():

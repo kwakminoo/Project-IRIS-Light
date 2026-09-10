@@ -28,6 +28,7 @@ export interface IrisIdeDiagnostic {
 export const IRIS_BRIDGE_COMMANDS = [
     'health',
     'getWorkspace',
+    'setWorkspace',
     'getActiveEditor',
     'getOpenEditors',
     'getCursorPosition',

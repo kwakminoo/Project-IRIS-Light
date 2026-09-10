@@ -5,11 +5,15 @@ ponytail: UI 핸들러를 그대로 감싼다. 새 UX 없음.
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
+
+LOGGER = logging.getLogger(__name__)
 
 from iris.storage.email_accounts import (
     add_email_account,
@@ -219,6 +223,50 @@ def _qt_pump() -> None:
             app.processEvents()
     except Exception:
         pass
+
+
+def _run_off_ui_with_timeout(
+    fn: Callable[[], Any],
+    *,
+    timeout_sec: float,
+    pump: Callable[[], None] | None = None,
+    poll_interval: float = 0.03,
+) -> tuple[Any, BaseException | None, bool]:
+    """Run ``fn`` on a background daemon thread while pumping the Qt event loop.
+
+    ``fn`` typically does blocking network/subprocess I/O (e.g. the IRIS IDE
+    bridge HTTP call). Calling it directly from a Qt slot freezes the whole
+    app ("응답 없음") for as long as it takes to return — which, for a hung
+    bridge or a long-running/never-exiting command, looks like infinite
+    loading to the user.
+
+    This never blocks the caller past ``timeout_sec`` (plus one poll tick),
+    even if ``fn`` itself never returns: on timeout the worker thread is left
+    running in the background (daemonized, so it can't block process exit)
+    and its eventual result/exception is simply discarded.
+
+    Returns ``(result, exception, timed_out)``.
+    """
+    box: dict[str, Any] = {}
+
+    def _target() -> None:
+        try:
+            box["result"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - surfaced to caller, not swallowed
+            box["exc"] = exc
+        finally:
+            box["done"] = True
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + max(0.0, float(timeout_sec))
+    while not box.get("done"):
+        if time.monotonic() >= deadline:
+            return None, None, True
+        if pump is not None:
+            pump()
+        thread.join(timeout=poll_interval)
+    return box.get("result"), box.get("exc"), False
 
 
 def start_control_surface(window: MainWindow) -> ControlSurface | None:
@@ -933,28 +981,61 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         ide_terminal = "failed"
         result: dict[str, Any]
         if session.ide_id == "iris_ide":
+            # ponytail: 예전엔 t0가 이 블록 아래(비-브릿지 경로)에서만 정의돼
+            # 매 브릿지 실행마다 UnboundLocalError → 항상 실패로 보고됐다.
+            # 또한 브릿지 HTTP 호출을 Qt 메인 스레드에서 그대로 blocking 하면
+            # 커맨드가 오래 걸리거나 응답이 없을 때 앱 전체가 "응답 없음"으로
+            # 멈춘 채 로딩이 안 끝난다 — 백그라운드 스레드 + 이벤트 펌프 +
+            # 하드 타임아웃으로 항상 유한 시간 안에 끝나도록 한다.
+            t0 = time.monotonic()
+            LOGGER.info("project.run: dispatching to iris_ide bridge (root=%s)", root_s)
             try:
                 client = window._iris_ide_bridge_client()
-                term = client.run_terminal_command(shell_cmd, cwd=root_s)
-                elapsed = time.monotonic() - t0
-                output = str(term.get("output") or "")
-                payload = {
-                    "ok": True,
-                    "exit_code": 0,
-                    "stdout": output,
-                    "stderr": "",
-                    "elapsed_sec": round(elapsed, 3),
-                    "argv": argv,
-                    "cwd": root_s,
-                    "timed_out": False,
-                    "via": "iris_ide_bridge",
-                    "ide_terminal": "iris_ide_bridge",
-                }
-                payload["summary"] = summarize_run(payload).get("summary") or output[:120]
-                _log(window, "project.run", True)
-                return ok_result("project.run", payload)
             except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("project.run: failed to create bridge client: %s", exc)
+                _log(window, "project.run", False)
                 return err_result("project.run", str(exc))
+            bridge_timeout = max(5.0, min(timeout_sec + 10.0, 300.0))
+            client.timeout = bridge_timeout
+            result_, exc, timed_out = _run_off_ui_with_timeout(
+                lambda: client.run_terminal_command(shell_cmd, cwd=root_s),
+                timeout_sec=bridge_timeout + 2.0,
+                pump=_qt_pump,
+            )
+            elapsed = time.monotonic() - t0
+            if timed_out:
+                LOGGER.warning(
+                    "project.run: iris_ide bridge did not respond within %.1fs", bridge_timeout
+                )
+                _log(window, "project.run", False)
+                return err_result(
+                    "project.run",
+                    f"IDE bridge did not respond within {bridge_timeout:.0f}s "
+                    "(the command may still be running in the IDE terminal)",
+                    {"elapsed_sec": round(elapsed, 3), "timed_out": True},
+                )
+            if exc is not None:
+                LOGGER.warning("project.run: iris_ide bridge raised %s: %s", type(exc).__name__, exc)
+                _log(window, "project.run", False)
+                return err_result("project.run", str(exc) or type(exc).__name__)
+            term = result_ if isinstance(result_, dict) else {}
+            output = str(term.get("output") or "")
+            payload = {
+                "ok": True,
+                "exit_code": 0,
+                "stdout": output,
+                "stderr": "",
+                "elapsed_sec": round(elapsed, 3),
+                "argv": argv,
+                "cwd": root_s,
+                "timed_out": False,
+                "via": "iris_ide_bridge",
+                "ide_terminal": "iris_ide_bridge",
+            }
+            payload["summary"] = summarize_run(payload).get("summary") or output[:120]
+            LOGGER.info("project.run: iris_ide bridge completed ok in %.2fs", elapsed)
+            _log(window, "project.run", True)
+            return ok_result("project.run", payload)
         hwnd = int(session.hwnd) if session and session.hwnd else None
         pid = session.pid if session else None
         t0 = time.monotonic()

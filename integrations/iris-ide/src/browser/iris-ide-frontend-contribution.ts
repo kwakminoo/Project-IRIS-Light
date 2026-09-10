@@ -6,6 +6,8 @@ import { Command, CommandContribution, CommandRegistry, MenuContribution, MenuMo
 import { VSXCommands } from '@theia/vsx-registry/lib/browser/vsx-extensions-contribution';
 
 import { EditorManager } from '@theia/editor/lib/browser';
+import { FileStat } from '@theia/filesystem/lib/common/files';
+import { WorkspaceService } from '@theia/workspace/lib/browser/workspace-service';
 
 import { IrisIdeEditorStateService } from './iris-ide-editor-state';
 
@@ -27,11 +29,15 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
 
     @inject(ThemeService) protected readonly themeService: ThemeService;
 
+    @inject(WorkspaceService) protected readonly workspaceService: WorkspaceService;
+
     protected bridgePort = 0;
 
     protected bridgeToken = '';
 
     protected lastPush = '';
+
+    protected lastWorkspacePush = '';
 
     onStart(): void {
 
@@ -54,6 +60,13 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         window.setInterval(() => this.syncEditor(), 450);
 
         this.syncEditor();
+
+        // File > Open Folder / Close Folder change the workspace in place (no
+        // process restart) — the bridge's own workspaceRoot only ever reflects
+        // whatever IRIS_IDE_WORKSPACE it booted with unless told otherwise.
+        this.workspaceService.onWorkspaceLocationChanged(stat => this.pushWorkspace(stat));
+
+        this.pushWorkspace(this.workspaceService.workspace);
 
     }
 
@@ -146,6 +159,50 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         this.state.update(info);
 
         this.pushBridge(info);
+
+    }
+
+    protected pushWorkspace(stat: FileStat | undefined): void {
+
+        if (!this.bridgePort) {
+
+            return;
+
+        }
+
+        const opened = Boolean(stat && stat.isDirectory);
+
+        const root = stat
+
+            ? stat.resource.path.toString().replace(/^\/([A-Za-z]:)/, '$1').replace(/^\//, '')
+
+            : '';
+
+        const payload = JSON.stringify({ root, opened });
+
+        if (payload === this.lastWorkspacePush) {
+
+            return;
+
+        }
+
+        this.lastWorkspacePush = payload;
+
+        fetch(`http://127.0.0.1:${this.bridgePort}/setWorkspace`, {
+
+            method: 'POST',
+
+            headers: {
+
+                'Content-Type': 'application/json',
+
+                Authorization: `Bearer ${this.bridgeToken}`,
+
+            },
+
+            body: payload,
+
+        }).catch(() => undefined);
 
     }
 

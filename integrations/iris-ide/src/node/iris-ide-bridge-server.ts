@@ -13,6 +13,11 @@ export class IrisIdeBridgeServer {
     protected port = 0;
     protected token = '';
     protected workspaceRoot = '';
+    // Whether Theia currently has a folder open (vs. the "new window" welcome
+    // screen). workspaceRoot itself stays populated even when this is false —
+    // file-API sandboxing always needs a valid root — so callers must check
+    // this flag to tell "no folder open" apart from "folder open at X".
+    protected workspaceOpen = true;
     protected editorState: Json | null = null;
 
     async start(): Promise<void> {
@@ -49,6 +54,7 @@ export class IrisIdeBridgeServer {
                 bridge_port: this.port,
                 token: this.token,
                 workspace: this.workspaceRoot,
+                workspace_open: this.workspaceOpen,
             };
             fs.mkdirSync(path.dirname(statePath), { recursive: true });
             fs.writeFileSync(statePath, JSON.stringify(payload, null, 2));
@@ -104,6 +110,87 @@ export class IrisIdeBridgeServer {
         return target;
     }
 
+    /**
+     * Runs `command` without blocking Node's single event-loop thread (unlike
+     * the previous `execSync`, which stalled every other bridge request —
+     * including the frontend's periodic editor-state push — for as long as
+     * the command ran). Always settles: on timeout the process (and, on
+     * Windows, its full child tree — a plain SIGTERM/kill() often leaves
+     * cmd.exe's grandchild processes running and the stdout pipe open,
+     * which is what let `execSync`'s own timeout hang past its deadline)
+     * is force-killed and the promise rejects with a clear message.
+     */
+    protected execWithTimeout(command: string, cwd: string, timeoutMs: number): Promise<string> {
+        const { exec } = require('child_process') as typeof import('child_process');
+        return new Promise<string>((resolve, reject) => {
+            let settled = false;
+            let killedByUs = false;
+
+            const finish = (fn: () => void): void => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                clearTimeout(killTimer);
+                clearTimeout(hardTimer);
+                fn();
+            };
+
+            // Deliberately NOT using exec()'s own `timeout` option: on Windows it only
+            // signals the direct child (cmd.exe), whose grandchildren (e.g. a dev server
+            // or script cmd.exe launched) survive as orphans — and since node considers
+            // the command "done" the moment cmd.exe exits, our own tree-kill below would
+            // never even run. We drive the timeout ourselves so the full tree is always
+            // killed *before* anything is allowed to settle as timed out.
+            const child = exec(
+                command,
+                { cwd, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 },
+                (error, stdout, stderr) => {
+                    finish(() => {
+                        if (error) {
+                            const timedOut = Boolean(error.killed) || killedByUs;
+                            reject(
+                                new Error(
+                                    timedOut
+                                        ? `command timed out after ${timeoutMs}ms: ${command}`
+                                        : (stderr || error.message).trim(),
+                                ),
+                            );
+                            return;
+                        }
+                        resolve(stdout || stderr || '');
+                    });
+                },
+            );
+
+            const killTimer = setTimeout(() => {
+                if (settled || typeof child.pid !== 'number') {
+                    return;
+                }
+                killedByUs = true;
+                try {
+                    if (process.platform === 'win32') {
+                        // /T kills the whole process tree, not just cmd.exe itself —
+                        // plain child.kill() here would leave grandchildren running.
+                        require('child_process').exec(`taskkill /pid ${child.pid} /T /F`);
+                    } else {
+                        child.kill('SIGKILL');
+                    }
+                } catch {
+                    // best-effort — the hard timeout below still settles this promise
+                }
+            }, timeoutMs);
+
+            // last-resort: if even the force-kill above doesn't make the callback fire
+            // (e.g. the process is unkillable), never leave the caller waiting forever.
+            const hardTimer = setTimeout(() => {
+                finish(() =>
+                    reject(new Error(`command timed out after ${timeoutMs}ms and could not be killed: ${command}`)),
+                );
+            }, timeoutMs + 3000);
+        });
+    }
+
     protected async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         try {
             if (!this.authOk(req)) {
@@ -132,7 +219,24 @@ export class IrisIdeBridgeServer {
                     workspace: this.workspaceRoot,
                 };
             case 'getWorkspace':
-                return { root: this.workspaceRoot };
+                return { root: this.workspaceRoot, opened: this.workspaceOpen };
+            case 'setWorkspace': {
+                // Pushed by the frontend whenever Theia's own File > Open Folder /
+                // Close Folder changes the active workspace — keeps this process
+                // (which outlives a single workspace, unlike the env var it booted
+                // with) from going on reporting whatever folder was open at start.
+                const root = String(args.root || '').trim();
+                if (root) {
+                    const abs = path.resolve(root);
+                    if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+                        throw new Error(`not a directory: ${root}`);
+                    }
+                    this.workspaceRoot = abs;
+                }
+                this.workspaceOpen = args.opened !== undefined ? Boolean(args.opened) : Boolean(root);
+                this.writeStateFile();
+                return { root: this.workspaceRoot, opened: this.workspaceOpen };
+            }
             case 'setEditorState':
                 this.editorState = args;
                 return { saved: true };
@@ -217,10 +321,9 @@ export class IrisIdeBridgeServer {
                 return { items: [] };
             case 'createTerminal':
             case 'runTerminalCommand': {
-                const { execSync } = require('child_process') as typeof import('child_process');
                 const command = String(args.command || args.cmd || 'echo IRIS_IDE_TEST');
                 const cwd = args.cwd ? this.resolvePath(String(args.cwd)) : this.workspaceRoot;
-                const out = execSync(command, { cwd, encoding: 'utf-8', timeout: 30000 });
+                const out = await this.execWithTimeout(command, cwd, 30000);
                 return { command, output: out, cwd };
             }
             case 'getTerminalState':
