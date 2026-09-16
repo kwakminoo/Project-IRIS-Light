@@ -935,6 +935,10 @@ class ChatPanel(QWidget):
         log_pal = self._log.palette()
         log_pal.setColor(QPalette.ColorRole.Base, transparent)
         log_pal.setColor(QPalette.ColorRole.Window, transparent)
+        # 드래그 선택 시 OS 강조색(불투명·과도하게 튀는 사각형) 대신 테마에 맞는
+        # 은은한 톤을 사용 — 실제 선택된 글자 영역만 자연스럽게 강조되어 보인다.
+        log_pal.setColor(QPalette.ColorRole.Highlight, QColor(TOKENS.chat_selection_bg))
+        log_pal.setColor(QPalette.ColorRole.HighlightedText, QColor(TOKENS.chat_selection_fg))
         self._log.setPalette(log_pal)
         # 첫 글자(Iris의 I, 한글 자모 가로획)가 좌측 가장자리에서 잘리지 않게
         # 문서 자체 여백도 확보한다. HTML inline 앞부분은 stylesheet padding만으로는
@@ -953,6 +957,8 @@ class ChatPanel(QWidget):
                 border: none;
                 color: {TOKENS.text_primary};
                 padding: 8px 10px;
+                selection-background-color: {TOKENS.chat_selection_bg};
+                selection-color: {TOKENS.chat_selection_fg};
             }}
             """
         )

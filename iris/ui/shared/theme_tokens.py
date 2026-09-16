@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -88,11 +88,58 @@ class ThemeTokens:
     font_size_micro: str = "10px"
     font_size_input: str = "14px"
 
-    # 채팅 블록 (Cursor식 prose / code / tool)
-    chat_block_bg: str = "#1e293b"
-    chat_block_border: str = "rgba(148, 163, 184, 0.22)"
+    # 채팅 블록 (Cursor식 prose / code / tool) — 채팅창 배경과의 명도 차이를 크게
+    # 벌리지 않는 차분한 다크 네이비, 테두리도 은은하게.
+    chat_block_bg: str = "#141b2e"
+    chat_block_border: str = "rgba(148, 163, 184, 0.14)"
+    # 실측 확인: Qt Rich Text의 border-color 파서는 rgba() 알파를 무시하고 완전
+    # 불투명으로 렌더링한다(반면 background-color의 rgba는 정상적으로 반투명이
+    # 유지된다). 그래서 실제로 그려지는 구분선·테두리에는 처음부터 옅은 톤으로
+    # 만든 불투명 hex 값을 쓴다.
+    chat_block_border_solid: str = "#293251"
     chat_block_radius: int = 8
-    chat_block_mono_font: str = '"Consolas", "Cascadia Mono", "Courier New"'
+    # 주의: 이 값은 항상 큰따옴표(") style="..." 속성 안에 삽입된다. 폰트명을
+    # 큰따옴표로 감싸면 속성이 중간에서 끊겨 뒤따르는 CSS 선언이 모두 유실되므로
+    # 반드시 작은따옴표만 사용한다.
+    chat_block_mono_font: str = "'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace"
+    chat_block_code_weight: int = 500
+    chat_block_line_height: str = "1.6"
+    # 코드 블록 헤더(언어명·복사)용 일반 UI 폰트 — font_family와 동일한 스택이지만
+    # 위와 같은 이유로 작은따옴표를 사용한다.
+    chat_ui_font: str = "'Segoe UI Variable', 'Segoe UI', 'Noto Sans KR', 'Malgun Gothic'"
+
+    # 채팅 인라인 코드 — 배경 대비를 약하게 해 문장 흐름을 방해하지 않도록.
+    chat_inline_code_bg: str = "rgba(148, 163, 184, 0.08)"
+    chat_inline_code_color: str = "#9fb3d9"
+
+    # 채팅 표(table) — border-bottom은 위와 같은 이유로 불투명 hex를 사용한다.
+    chat_table_header_bg: str = "rgba(148, 163, 184, 0.10)"
+    chat_table_row_border: str = "#26314a"
+
+    # 채팅 로그 텍스트 선택(드래그 선택) 색상 — 시스템 강조색 대신 테마에 맞는 은은한 톤
+    chat_selection_bg: str = "#2c5a8c"
+    chat_selection_fg: str = "#f8fafc"
+
+    # 채팅 코드 블록 Syntax Highlighting — Pygments Style에 주입되는 의미별 색상.
+    # 하드코딩 대신 이 dict만 바꾸면 코드 블록 전체 색상 테마가 바뀐다.
+    chat_syntax_colors: dict[str, str] = field(
+        default_factory=lambda: {
+            "keyword": "#c792ea",      # def/return/if/const 등 예약어 — 부드러운 보라/핑크
+            "builtin": "#7ec8e3",      # 내장 함수·타입 (len, print, int, px 단위 등) — 하늘색
+            "string": "#a8cc8c",       # 문자열 — 연한 녹색
+            "number": "#e3a262",       # 숫자 — 연한 주황
+            "constant": "#e3a262",     # true/false/null 등 리터럴 상수
+            "comment": "#6b7280",      # 주석 — 명도를 낮춘 회색 (italic)
+            "function": "#7fb4e0",     # 함수·메서드 이름 — 부드러운 파랑
+            "class_name": "#6ec9c2",   # 클래스 이름 — 청록
+            "decorator": "#6ec9c2",    # @decorator
+            "tag": "#d99aa8",          # HTML 태그 / JSON 키 — 차분한 로즈(과채도 빨강 지양)
+            "attribute": "#7fb4e0",    # HTML·CSS 속성명
+            "variable": "#d8e1f0",     # 변수 — 기본 텍스트와 크게 차이나지 않게
+            "operator": "#9aa8c0",     # 연산자 — 기본 텍스트보다 약간 어두운 회백색
+            "punctuation": "#9aa8c0",  # 구두점 — 기본 텍스트보다 약간 어두운 회백색
+        }
+    )
 
 
 TOKENS = ThemeTokens()

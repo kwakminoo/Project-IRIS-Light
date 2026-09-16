@@ -119,25 +119,33 @@ def _assert_fenced_code() -> None:
     fenced = fenced_code_to_html(block)
     _assert_html_contains(
         fenced,
-        f"border-radius:{t.chat_block_radius}px",
+        f"background-color:{t.chat_block_bg}",
+        f"border-bottom:1px solid {t.chat_block_border_solid}",
         t.chat_block_mono_font,
-        "python",
-        "print(",
+        "Python",
+        ">print<",  # Pygments가 강조한 토큰 — 코드가 span으로 감싸져 있어야 한다
+        "'hi'",
+        t.chat_syntax_colors["builtin"].upper(),  # print → Name.Builtin 색상 적용 확인
         "복사",
         "iris-copy://",
         label="fenced_code_to_html",
     )
+    # 원본 코드(공백·줄바꿈 포함)는 강조와 무관하게 그대로 복사되어야 한다
     assert parse_copy_anchor(copy_anchor_for("print('hi')")) == "print('hi')"
 
     md = render_iris_message(FENCED_SAMPLE)
     _assert_html_contains(
         md,
-        "python",
+        "Python",
         "iris-copy://",
         t.chat_block_mono_font,
-        "print(",
+        ">print<",
         label="render_iris_message fenced",
     )
+
+    # 지원하지 않는 언어는 강조 없이 일반 코드 블록으로 폴백해야 한다
+    fallback = fenced_code_to_html(FencedCodeBlock("mystery(1)", language="not-a-real-lang"))
+    _assert_html_contains(fallback, "mystery(1)", label="fenced_code_to_html unsupported lang")
 
 
 def _assert_tool_shell() -> None:
@@ -190,7 +198,9 @@ def _assert_error_and_user() -> None:
     _assert_html_contains(chip, 'href="https://example.com"', "[1]", label="citation chip")
 
     md = markdown_to_chat_html("**bold** and `code`\n\n```py\nx=1\n```")
-    _assert_html_contains(md, "bold", f"border-radius:{t.chat_block_radius}px", "iris-copy://", label="markdown_to_chat_html")
+    _assert_html_contains(
+        md, "bold", f"background-color:{t.chat_block_bg}", "iris-copy://", label="markdown_to_chat_html"
+    )
 
     iris = iris_message_to_chat_html(
         "See [Docs](https://docs.example.com/a) and https://bare.example.com/x"
@@ -221,7 +231,7 @@ def _assert_file_chips_and_diff() -> None:
     assert path == "src/main.py" and line == 2 and col == 3
 
     diff = diff_block_to_html("--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n")
-    _assert_html_contains(diff, t.success, t.error, ">diff</span>", label="diff block")
+    _assert_html_contains(diff, t.success, t.error, ">diff</td>", label="diff block")
     _assert_mono_in_html(diff, label="diff block mono")
 
     chip = render_file_chip("iris/ui/chat/chat_renderer.py")
@@ -249,10 +259,10 @@ def _assert_wiki_document() -> None:
         "docs.example.com",
         "iris-image:",
         "cdn.example.com/logo.png",
-        "print(",
-        f"border-radius:{t.chat_block_radius}px",
+        ">print<",
+        f"background-color:{t.chat_block_bg}",
         "iris-copy://",
-        "<pre",
+        "<table",
         label="wiki document",
     )
     assert "iris-tts://" not in wiki_html
@@ -277,7 +287,7 @@ def _smoke_chat_panel(app: QApplication) -> None:
         html_doc,
         "font-weight:700",
         "user",
-        "python",
+        "Python",
         "iris-copy://",
         "Smoke shell",
         "iris-collapse://smoke-tool",
@@ -300,9 +310,9 @@ def _smoke_workspace_log(app: QApplication) -> None:
         html_doc,
         "font-weight:700",
         "workspace",
-        "python",
+        "Python",
         "iris-copy://",
-        "print(",
+        ">print<",
         label="WorkspaceIrisChatLog smoke",
     )
     _assert_mono_in_html(html_doc, label="WorkspaceIrisChatLog smoke")
@@ -322,9 +332,9 @@ def _smoke_obsidian_wiki(app: QApplication) -> None:
         html_doc = page._body.toHtml()
         _assert_html_contains(
             html_doc,
-            "python",
+            "Python",
             "iris-copy://",
-            "print(",
+            ">print<",
             "docs.example.com",
             label="ObsidianWorkspacePage smoke",
         )
