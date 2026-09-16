@@ -127,6 +127,7 @@ class ParticleVisualizer(QWidget):
         self._core_r = 60.0
         self._custom_center: tuple[float, float] | None = None
         self._companion_mode = False
+        self._hero_mode = False
         self._size_scale = 1.0
         self._sphere_pts = _fibonacci_sphere(_PARTICLE_COUNT)
         self._core_image = QPixmap(str(_asset_path("visuals/iris_core.png")))
@@ -198,6 +199,11 @@ class ParticleVisualizer(QWidget):
         companion 여부로 크기 계산 방식을 나눈다(고정 반경 vs 창 비례)."""
         self._companion_mode = bool(companion)
         self._recompute_geometry()
+        self.update()
+
+    def set_hero_mode(self, hero: bool) -> None:
+        """IDE 히어로 — 입자망을 그리고 구체를 크게 쓴다."""
+        self._hero_mode = bool(hero)
         self.update()
 
     def set_boot_reveal(self, value: float) -> None:
@@ -297,6 +303,9 @@ class ParticleVisualizer(QWidget):
             tear = int((_BOOT_RNG.random() - 0.5) * 14.0 * self._boot_glitch)
             painter.translate(tear, int((_BOOT_RNG.random() - 0.5) * 4.0 * self._boot_glitch))
 
+        # 랜딩 히어로와 동일 — 코어 뒤 입자 네트워크
+        if self._hero_mode:
+            self._draw_particle_network(painter, cx, cy, accent, energy)
         self._draw_core_image(painter, cx, cy, energy)
         self._draw_front_sheen(painter, cx, cy, accent, energy)
         painter.restore()

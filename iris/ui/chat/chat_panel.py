@@ -115,6 +115,9 @@ _IMAGE_FILTER = (
 )
 _FILE_FILTER = "All Files (*.*)"
 _DEFAULT_INPUT_PLACEHOLDER = "Iris에게 메시지를 입력하세요…"
+# ponytail: prose-only 스트림 UI 갱신 상한 (~20fps). 더 촘촘하면 QTextEdit HTML 재삽입이 UI를 막는다.
+_STREAM_UI_MS = 48
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 # 입력창 placeholder — 푸른색 유지하되 흐릿하게
 _PLACEHOLDER_COLOR = QColor(56, 189, 248, 110)  # neon_blue @ ~43%
 
@@ -138,6 +141,17 @@ def _save_clipboard_image(image: QImage) -> str | None:
     return None
 
 
+def _looks_like_path_line(text: str) -> bool:
+    t = (text or "").strip().strip('"').strip("'")
+    if not t or t.startswith("@"):
+        return False
+    if "/" in t or "\\" in t:
+        return True
+    if len(t) >= 2 and t[1] == ":" and t[0].isalpha():
+        return True
+    return "." in t and not t.startswith(".")
+
+
 def _paths_from_mime(mime) -> list[str]:
     if mime is None:
         return []
@@ -151,15 +165,78 @@ def _paths_from_mime(mime) -> list[str]:
     return out
 
 
+def _uris_from_mime_text(text: str) -> list[str]:
+    out: list[str] = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("file:"):
+            continue
+        from PyQt6.QtCore import QUrl
+
+        local = QUrl(line).toLocalFile().strip()
+        if local:
+            out.append(local)
+    return out
+
+
+def _drop_targets_from_mime(mime) -> list[str]:
+    """드롭/붙여넣기 — 로컬 경로 또는 @참조 토큰."""
+    paths = _paths_from_mime(mime)
+    if paths:
+        return paths
+    if mime is None:
+        return []
+    if mime.hasFormat("text/x-iris-ref"):
+        try:
+            ref = bytes(mime.data("text/x-iris-ref")).decode("utf-8", errors="ignore").strip()
+            if ref.startswith("@"):
+                token = ref.split()[0]
+                return [token] if token else []
+        except Exception:
+            pass
+    if mime.hasFormat("text/uri-list"):
+        try:
+            raw = bytes(mime.data("text/uri-list")).decode("utf-8", errors="ignore")
+            uris = _uris_from_mime_text(raw)
+            if uris:
+                return uris
+        except Exception:
+            pass
+    if not mime.hasText():
+        return []
+    text = (mime.text() or "").strip()
+    if not text:
+        return []
+    uris = _uris_from_mime_text(text)
+    if uris:
+        return uris
+    if text.startswith("@"):
+        token = text.split()[0]
+        return [token] if token else []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("file:"):
+            from PyQt6.QtCore import QUrl
+
+            local = QUrl(line).toLocalFile().strip()
+            if local:
+                return [local]
+        if _looks_like_path_line(line):
+            return [line]
+    return []
+
+
 def _paths_from_clipboard() -> list[str]:
     """클립보드의 파일 URL 또는 이미지를 로컬 경로 목록으로."""
     cb = QGuiApplication.clipboard()
     if cb is None:
         return []
     mime = cb.mimeData()
-    paths = _paths_from_mime(mime)
-    if paths:
-        return paths
+    targets = _drop_targets_from_mime(mime)
+    if targets:
+        return targets
     img = cb.image()
     if not img.isNull():
         saved = _save_clipboard_image(img)
@@ -177,7 +254,9 @@ def _mime_has_attachable(mime) -> bool:
         return False
     if mime.hasUrls():
         return any(u.isLocalFile() for u in mime.urls())
-    return bool(mime.hasImage())
+    if mime.hasImage():
+        return True
+    return bool(_drop_targets_from_mime(mime))
 
 
 class ChatComposerInput(QPlainTextEdit):
@@ -329,7 +408,7 @@ class ChatComposerInput(QPlainTextEdit):
 
     def dropEvent(self, event: QDropEvent) -> None:
         mime = event.mimeData()
-        paths = _paths_from_mime(mime)
+        paths = _drop_targets_from_mime(mime)
         if not paths and mime is not None and mime.hasImage():
             data = mime.imageData()
             if isinstance(data, QImage) and not data.isNull():
@@ -345,11 +424,40 @@ class ChatComposerInput(QPlainTextEdit):
 
 class ChatLogTextEdit(QTextEdit):
     speaker_clicked = pyqtSignal(str)
+    files_attached = pyqtSignal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setAcceptDrops(True)
         self._tool_blocks: dict[str, ToolShellBlock] = {}
         attach_image_loader(self)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if _mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if _mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        mime = event.mimeData()
+        paths = _drop_targets_from_mime(mime)
+        if not paths and mime is not None and mime.hasImage():
+            data = mime.imageData()
+            if isinstance(data, QImage) and not data.isNull():
+                saved = _save_clipboard_image(data)
+                if saved:
+                    paths = [saved]
+        if paths:
+            self.files_attached.emit(paths)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         anchor = self.anchorAt(event.pos())
@@ -621,7 +729,7 @@ class _ChatInputBar(QWidget):
 
     def dropEvent(self, event: QDropEvent) -> None:
         mime = event.mimeData()
-        paths = _paths_from_mime(mime)
+        paths = _drop_targets_from_mime(mime)
         if not paths and mime is not None and mime.hasImage():
             data = mime.imageData()
             if isinstance(data, QImage) and not data.isNull():
@@ -781,7 +889,7 @@ class _ChatInputArea(QWidget):
 
     def dropEvent(self, event: QDropEvent) -> None:
         mime = event.mimeData()
-        paths = _paths_from_mime(mime)
+        paths = _drop_targets_from_mime(mime)
         if not paths and mime is not None and mime.hasImage():
             data = mime.imageData()
             if isinstance(data, QImage) and not data.isNull():
@@ -809,7 +917,9 @@ class ChatPanel(QWidget):
         super().__init__()
         self.setObjectName("ChatPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAcceptDrops(True)
         self._generating = False
+        self._workspace_root = ""
         self._log = ChatLogTextEdit()
         self._log.setObjectName("ChatLog")
         self._log.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -849,6 +959,10 @@ class ChatPanel(QWidget):
         self._typing_timer = QTimer(self)
         self._typing_timer.setInterval(TYPING_INTERVAL_MS)
         self._typing_timer.timeout.connect(self._type_next_chunk)
+        self._stream_ui_timer = QTimer(self)
+        self._stream_ui_timer.setSingleShot(True)
+        self._stream_ui_timer.setInterval(_STREAM_UI_MS)
+        self._stream_ui_timer.timeout.connect(self._flush_stream_ui)
         self._typing_text = ""
         self._typing_index = 0
         self._typing_speech_sync = False
@@ -887,12 +1001,12 @@ class ChatPanel(QWidget):
         self._model_combo.currentIndexChanged.connect(self._on_model_index_changed)
         self._model_combo.popup_requested.connect(self._open_model_picker_menu)
         bar = self._input_area.input_bar
-        bar.files_attached.connect(self.files_attached.emit)
-        bar.files_attached.connect(self._input_area.attachment_strip.add_paths)
-        self._input_area.attachment_strip.changed.connect(self._on_input_changed)
+        bar.files_attached.connect(self._on_composer_drop_paths)
         bar.skill_inserted.connect(self.skill_inserted.emit)
         bar.mcp_inserted.connect(self.mcp_inserted.emit)
+        self._input_area.attachment_strip.changed.connect(self._on_input_changed)
         self._log.speaker_clicked.connect(self.speaker_clicked.emit)
+        self._log.files_attached.connect(self._on_composer_drop_paths)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -903,10 +1017,90 @@ class ChatPanel(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumHeight(self._log.minimumHeight() + self._input_area.minimumHeight() + 8)
 
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if _mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if _mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        mime = event.mimeData()
+        paths = _drop_targets_from_mime(mime)
+        if not paths and mime is not None and mime.hasImage():
+            data = mime.imageData()
+            if isinstance(data, QImage) and not data.isNull():
+                saved = _save_clipboard_image(data)
+                if saved:
+                    paths = [saved]
+        if paths:
+            self._on_composer_drop_paths(paths)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
+
+    def attach_drop_paths(self, paths: list[str]) -> None:
+        """창 전역 드롭 등 — 파일/폴더를 컴포저 칩으로 첨부."""
+        self._on_composer_drop_paths(paths)
+
     @property
     def waveform(self) -> MicWaveformBar:
         """하단 마이크 파형 바 (기동 연출 등)."""
         return self._waveform
+
+    def set_workspace_root(self, root: str) -> None:
+        """IDE Companion 워크스페이스 — 드롭 @참조 상대경로 변환."""
+        self._workspace_root = (root or "").strip()
+        self._input_area.attachment_strip.set_workspace_root(self._workspace_root)
+
+    def _path_to_at_ref(self, raw: str) -> str:
+        token = (raw or "").strip()
+        if not token:
+            return ""
+        if token.startswith("@"):
+            return token.split()[0]
+        try:
+            path = Path(token).expanduser()
+            if not path.is_absolute():
+                path = path.resolve()
+            else:
+                path = path.resolve()
+        except OSError:
+            return f"@{token.replace(chr(92), '/')}"
+        ws = (self._workspace_root or "").strip()
+        if ws:
+            try:
+                rel = path.relative_to(Path(ws).expanduser().resolve())
+                return f"@{rel.as_posix()}"
+            except ValueError:
+                pass
+        return f"@{path.as_posix()}"
+
+    def _on_composer_drop_paths(self, paths: list[str]) -> None:
+        """탭/익스플로러 드롭 — Cursor식 파일·폴더 칩(이름+아이콘)."""
+        clean = [str(p).strip() for p in paths if str(p).strip()]
+        if not clean:
+            return
+        chips: list[str] = []
+        for item in clean:
+            if item.startswith("@"):
+                chips.append(item.split()[0])
+                continue
+            suffix = Path(item).suffix.lower()
+            if suffix in _IMAGE_SUFFIXES:
+                chips.append(item)
+                continue
+            ref = self._path_to_at_ref(item)
+            chips.append(ref if ref else item)
+        if chips:
+            self._input_area.attachment_strip.add_paths(chips)
+        self.files_attached.emit(clean)
+        self._on_input_changed()
 
     def current_model(self) -> str:
         """런타임 모델 id. 상태 문구(빈 data)는 모델명이 아니다."""
@@ -1579,11 +1773,22 @@ class ChatPanel(QWidget):
         has_fixed_block = any(o.kind != RenderOpKind.REPLACE_PROSE for o in ops)
         if not self._typing_speech_sync:
             self._typing_index = prose_char_count(self._typing_text)
-            self._replace_typing_body()
-            self._scroll_log_to_bottom()
+            if has_fixed_block:
+                self._flush_stream_ui()
+            else:
+                self._schedule_stream_ui_flush()
         elif has_fixed_block:
-            self._replace_typing_body()
-            self._scroll_log_to_bottom()
+            self._flush_stream_ui()
+
+    def _schedule_stream_ui_flush(self) -> None:
+        if not self._stream_ui_timer.isActive():
+            self._stream_ui_timer.start()
+
+    def _flush_stream_ui(self) -> None:
+        if not self._stream_active or self._typing_body_start is None:
+            return
+        self._replace_typing_body()
+        self._scroll_log_to_bottom(deferred=True)
 
     def end_stream_message(self, final_text: str | None = None) -> None:
         """스트림 종료 — 정규화 본문으로 버퍼 확정 (화면 재삽입 없음)."""
@@ -1597,6 +1802,8 @@ class ChatPanel(QWidget):
         if final_text is not None:
             self._finalize_typing_buffer(who, final_text)
             self._block_buffer.set_final(self._typing_text)
+        self._stream_ui_timer.stop()
+        self._flush_stream_ui()
         self._stream_active = False
         self._stream_block_start = None
         self._ensure_buffered_typing_fallback()
@@ -1892,9 +2099,24 @@ class ChatPanel(QWidget):
         t = self._input.text().strip()
         if not t and not paths:
             return
+        refs: list[str] = []
+        images: list[str] = []
+        for raw in paths:
+            item = raw.split()[0] if raw.startswith("@") else raw
+            if item.startswith("@"):
+                refs.append(item)
+            elif Path(item).suffix.lower() in _IMAGE_SUFFIXES:
+                images.append(item)
+            else:
+                ref = self._path_to_at_ref(item)
+                if ref:
+                    refs.append(ref)
+        ref_line = " ".join(refs)
+        if ref_line:
+            t = f"{ref_line} {t}".strip() if t else ref_line
         self._input.clear()
         self._input_area.sync_height_to_contents()
-        self.send_clicked.emit(t, paths)
+        self.send_clicked.emit(t, images)
 
 
 if __name__ == "__main__":

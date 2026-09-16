@@ -9,3 +9,7 @@
 - `def rms_to_display_level`
 - `def display_level_to_speech_rms`
 - `def speech_rms_to_display_level`
+
+## 내부 의존성
+
+- [[pcm_convert]]

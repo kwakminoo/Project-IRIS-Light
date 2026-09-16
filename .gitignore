@@ -8,6 +8,7 @@ __pycache__/
 .eggs/
 dist/*
 !dist/IRIS.exe
+installer/payload/
 build/
 IRIS.lnk
 *.egg
@@ -80,3 +81,6 @@ integrations/iris-ide/node_modules/
 integrations/iris-ide/lib/
 integrations/iris-ide/.theia/
 
+
+# 설치 로그 (setup.ps1)
+setup-log*.txt

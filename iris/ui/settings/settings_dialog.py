@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -126,6 +127,66 @@ class _AlohaRuntimeBootstrapWorker(QThread):
             self.failed.emit(str(exc))
 
 
+_SETTINGS_NETWORK_TIMEOUT_SEC = 1.0
+_SETTINGS_MIC_METER_INTERVAL_SEC = 0.08
+
+
+class _DeferredVoiceRefsWorker(QThread):
+    finished_ok = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_sec: float = _SETTINGS_NETWORK_TIMEOUT_SEC,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._base_url = base_url
+        self._timeout_sec = timeout_sec
+
+    def run(self) -> None:
+        try:
+            client = VoiceRuntimeClient(
+                base_url=self._base_url,
+                timeout_sec=self._timeout_sec,
+            )
+            items = client.voice_references(timeout=self._timeout_sec)
+            self.finished_ok.emit(items if isinstance(items, list) else [])
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
+class _DeferredAlohaStatusWorker(QThread):
+    finished_ok = pyqtSignal(object)
+
+    def run(self) -> None:
+        try:
+            self.finished_ok.emit(runtime_status())
+        except Exception as exc:  # noqa: BLE001
+            self.finished_ok.emit({"ok": False, "python": "", "detail": str(exc)[:200]})
+
+
+class _DeferredSetupNetworkWorker(QThread):
+    finished_ok = pyqtSignal(object)
+
+    def __init__(self, proto, parent=None) -> None:
+        super().__init__(parent)
+        self._proto = proto
+
+    def run(self) -> None:
+        try:
+            snap = self._proto.detect_local()
+            snap = self._proto.enrich_detect_network(
+                snap,
+                timeout_sec=_SETTINGS_NETWORK_TIMEOUT_SEC,
+            )
+            self.finished_ok.emit(snap)
+        except Exception as exc:  # noqa: BLE001
+            self.finished_ok.emit({"error": str(exc)[:240]})
+
+
 @dataclass(frozen=True)
 class LightSettingsSelection:
     ollama_base_url: str
@@ -196,10 +257,12 @@ class SettingsDialog(QDialog):
         self._preview_player = PcmPlayer(self)
         self._ref_preview_player = QSoundEffect(self)
         self._microphone = microphone
-        if self._microphone is not None:
-            self._microphone.level_changed.connect(self._on_mic_monitor_level)
-            self._microphone.state_changed.connect(self._on_shared_mic_state)
-            self._microphone.error.connect(self._on_mic_monitor_failed)
+        self._mic_meter_connected = False
+        self._last_mic_meter_ts = 0.0
+        self._deferred_status_started = False
+        self._voice_refs_worker: _DeferredVoiceRefsWorker | None = None
+        self._aloha_status_worker: _DeferredAlohaStatusWorker | None = None
+        self._setup_network_worker: _DeferredSetupNetworkWorker | None = None
         self._verify_worker: EmailVerifyWorker | None = None
         self._api_providers: list[ApiProvider] = (
             load_api_providers(db) if db is not None else []
@@ -291,7 +354,7 @@ class SettingsDialog(QDialog):
         root.addWidget(buttons)
 
         if db is not None:
-            self._sync_ide_selection_ui()
+            self._sync_ide_selection_ui_quick()
             self._reload_account_list()
 
     def _build_api_providers_box(self) -> QGroupBox:
@@ -736,17 +799,12 @@ class SettingsDialog(QDialog):
         row.addWidget(self._aloha_runtime_install_btn)
         row.addStretch(1)
         lay.addLayout(row)
-        self._refresh_aloha_runtime_status()
+        self._aloha_runtime_status.setText("상태 확인 중…")
         return box
 
     def _refresh_aloha_runtime_status(self) -> None:
-        try:
-            st = runtime_status()
-            self._aloha_runtime_status.setText(
-                f"{'준비됨' if st['ok'] else '미설치/불완전'} — {st['python']}\n{st['detail']}"
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._aloha_runtime_status.setText(f"상태 확인 실패: {exc}")
+        self._aloha_runtime_status.setText("상태 확인 중…")
+        self._start_deferred_aloha_status()
 
     def _bootstrap_aloha_runtime(self) -> None:
         worker = getattr(self, "_aloha_runtime_worker", None)
@@ -1121,8 +1179,6 @@ class SettingsDialog(QDialog):
         self._voice_status = QLabel("")
         self._voice_status.setWordWrap(True)
         lay.addWidget(self._voice_status)
-        self._refresh_voice_recommendations_from_runtime(silent=True)
-        QTimer.singleShot(0, self._sync_mic_meter)
         return box
 
     def _selected_mic_device_id(self) -> str:
@@ -1155,6 +1211,10 @@ class SettingsDialog(QDialog):
             self._mic_threshold_bar.set_inactive()
 
     def _on_mic_monitor_level(self, level: float) -> None:
+        now = time.monotonic()
+        if now - self._last_mic_meter_ts < _SETTINGS_MIC_METER_INTERVAL_SEC:
+            return
+        self._last_mic_meter_ts = now
         if self._microphone is not None and not self._microphone.state.is_listening_ui():
             self._mic_threshold_bar.set_inactive()
             return
@@ -1647,7 +1707,7 @@ class SettingsDialog(QDialog):
         iris_row.addStretch(1)
         ide_lay.addLayout(iris_row)
         self._iris_ide_install_worker = None
-        self._refresh_iris_ide_status_label()
+        self._iris_ide_status.setText("IRIS IDE — 확인 중…")
         return ide_box
 
     def _effective_parents_for_ui(self) -> list[str]:
@@ -1758,6 +1818,7 @@ class SettingsDialog(QDialog):
         lay.addWidget(
             make_hint(
                 "Ollama · Hermes · iris-control MCP 등 Core 환경과 IRIS IDE(선택)를 설치하거나 상태를 검사합니다. "
+                "검사는 최소 로컬 모델과 Ollama 클라우드 로그인을 함께 확인합니다. "
                 "미설치면 「시작 프로토콜 가동」, 이미 준비됐으면 「검사」가 표시됩니다."
             )
         )
@@ -1777,8 +1838,151 @@ class SettingsDialog(QDialog):
         lay.addLayout(row)
 
         self._setup_verify_worker = None
-        self._refresh_setup_protocol_ui()
+        self._apply_setup_snap(self._setup_protocol_instance().detect_local())
         return box
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._deferred_status_started:
+            self._deferred_status_started = True
+            QTimer.singleShot(0, self._start_deferred_status_loads)
+        self._connect_mic_meter()
+        QTimer.singleShot(0, self._sync_mic_meter)
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._disconnect_mic_meter()
+        super().hideEvent(event)
+
+    def _connect_mic_meter(self) -> None:
+        if self._microphone is None or self._mic_meter_connected:
+            return
+        self._microphone.level_changed.connect(self._on_mic_monitor_level)
+        self._microphone.state_changed.connect(self._on_shared_mic_state)
+        self._microphone.error.connect(self._on_mic_monitor_failed)
+        self._mic_meter_connected = True
+
+    def _disconnect_mic_meter(self) -> None:
+        if self._microphone is None or not self._mic_meter_connected:
+            return
+        try:
+            self._microphone.level_changed.disconnect(self._on_mic_monitor_level)
+            self._microphone.state_changed.disconnect(self._on_shared_mic_state)
+            self._microphone.error.disconnect(self._on_mic_monitor_failed)
+        except TypeError:
+            pass
+        self._mic_meter_connected = False
+
+    def _cancel_deferred_status_workers(self) -> None:
+        for attr in (
+            "_voice_refs_worker",
+            "_aloha_status_worker",
+            "_setup_network_worker",
+        ):
+            worker = getattr(self, attr, None)
+            if worker is not None and worker.isRunning():
+                worker.requestInterruption()
+                worker.wait(200)
+
+    def _start_deferred_status_loads(self) -> None:
+        if self._db is None:
+            return
+        self._start_deferred_voice_refs()
+        self._start_deferred_aloha_status()
+        self._start_deferred_setup_network()
+        self._refresh_iris_ide_status_label()
+        self._sync_ide_selection_ui()
+
+    def _start_deferred_voice_refs(self) -> None:
+        if not hasattr(self, "_voice_rec_list"):
+            return
+        if self._voice_refs_worker is not None and self._voice_refs_worker.isRunning():
+            return
+        base_url = (
+            self._voice_runtime_url.text().strip()
+            if hasattr(self, "_voice_runtime_url")
+            else self._voice_prefs.voice_runtime_url
+        )
+        worker = _DeferredVoiceRefsWorker(base_url or self._voice_prefs.voice_runtime_url, parent=self)
+        self._voice_refs_worker = worker
+        worker.finished_ok.connect(self._on_deferred_voice_refs_ok)
+        worker.failed.connect(self._on_deferred_voice_refs_failed)
+        worker.finished.connect(lambda: setattr(self, "_voice_refs_worker", None))
+        worker.start()
+
+    def _on_deferred_voice_refs_ok(self, items: object) -> None:
+        recs = items if isinstance(items, list) else []
+        self._voice_recommendations = recs
+        self._populate_recommendation_list(recs)
+
+    def _on_deferred_voice_refs_failed(self, _err: str) -> None:
+        return
+
+    def _start_deferred_aloha_status(self) -> None:
+        if not hasattr(self, "_aloha_runtime_status"):
+            return
+        if self._aloha_status_worker is not None and self._aloha_status_worker.isRunning():
+            return
+        worker = _DeferredAlohaStatusWorker(self)
+        self._aloha_status_worker = worker
+        worker.finished_ok.connect(self._on_deferred_aloha_status)
+        worker.finished.connect(lambda: setattr(self, "_aloha_status_worker", None))
+        worker.start()
+
+    def _on_deferred_aloha_status(self, st_obj: object) -> None:
+        st = st_obj if isinstance(st_obj, dict) else {}
+        self._aloha_runtime_status.setText(
+            f"{'준비됨' if st.get('ok') else '미설치/불완전'} — {st.get('python', '')}\n{st.get('detail', '')}"
+        )
+
+    def _start_deferred_setup_network(self) -> None:
+        if not hasattr(self, "_setup_status"):
+            return
+        if self._setup_network_worker is not None and self._setup_network_worker.isRunning():
+            return
+        worker = _DeferredSetupNetworkWorker(self._setup_protocol_instance(), parent=self)
+        self._setup_network_worker = worker
+        worker.finished_ok.connect(self._on_deferred_setup_network)
+        worker.finished.connect(lambda: setattr(self, "_setup_network_worker", None))
+        worker.start()
+
+    def _on_deferred_setup_network(self, snap_obj: object) -> None:
+        if not isinstance(snap_obj, dict):
+            return
+        if snap_obj.get("error"):
+            self._setup_status.setText(f"상태: 네트워크 확인 실패 — {snap_obj['error']}")
+            return
+        self._apply_setup_snap(snap_obj)
+
+    def _setup_running_suffix(self, running: object) -> str:
+        if running is True:
+            return " · 실행 중"
+        if running is False:
+            return " · 미실행"
+        return ""
+
+    def _apply_setup_snap(self, snap: dict) -> None:
+        from iris.system.setup_protocol import is_core_ready
+
+        needs = self._setup_needs_install(snap)
+        bits = [
+            f"Ollama {'OK' if snap.get('ollama_exe') else '없음'}"
+            + self._setup_running_suffix(snap.get("ollama_running")),
+            f"로컬 모델 {int(snap.get('local_model_count') or 0)}개",
+            f"Hermes {'OK' if snap.get('hermes_exe') else '없음'}"
+            + self._setup_running_suffix(snap.get("hermes_running")),
+            f"venv {'OK' if snap.get('venv_ok') else '없음'}",
+            f"API 키 {'설정됨' if snap.get('api_key_set') else '없음'}",
+            f"core_ready={'예' if is_core_ready() else '아니오'}",
+        ]
+        self._setup_status.setText("상태: " + " · ".join(bits))
+        if needs:
+            self._setup_primary_btn.setText("시작 프로토콜 가동")
+            self._setup_primary_btn.setEnabled(True)
+            self._setup_repair_btn.hide()
+        else:
+            self._setup_primary_btn.setText("검사")
+            self._setup_primary_btn.setEnabled(True)
+            self._setup_repair_btn.show()
 
     def _setup_protocol_instance(self):
         from iris.system.setup_protocol import SetupProtocol
@@ -1804,29 +2008,7 @@ class SettingsDialog(QDialog):
         )
 
     def _refresh_setup_protocol_ui(self) -> None:
-        from iris.system.setup_protocol import is_core_ready
-
-        proto = self._setup_protocol_instance()
-        snap = proto.detect()
-        needs = self._setup_needs_install(snap)
-        bits = [
-            f"Ollama {'OK' if snap.get('ollama_exe') else '없음'}"
-            + (" · 실행 중" if snap.get("ollama_running") else ""),
-            f"Hermes {'OK' if snap.get('hermes_exe') else '없음'}"
-            + (" · Connected" if snap.get("hermes_running") else ""),
-            f"venv {'OK' if snap.get('venv_ok') else '없음'}",
-            f"API 키 {'설정됨' if snap.get('api_key_set') else '없음'}",
-            f"core_ready={'예' if is_core_ready() else '아니오'}",
-        ]
-        self._setup_status.setText("상태: " + " · ".join(bits))
-        if needs:
-            self._setup_primary_btn.setText("시작 프로토콜 가동")
-            self._setup_primary_btn.setEnabled(True)
-            self._setup_repair_btn.hide()
-        else:
-            self._setup_primary_btn.setText("검사")
-            self._setup_primary_btn.setEnabled(True)
-            self._setup_repair_btn.show()
+        self._apply_setup_snap(self._setup_protocol_instance().detect())
 
     def _on_setup_protocol_primary(self) -> None:
         snap = self._setup_protocol_instance().detect()
@@ -1876,18 +2058,22 @@ class SettingsDialog(QDialog):
         self._setup_primary_btn.setEnabled(True)
         self._refresh_setup_protocol_ui()
         text = (detail or "").strip() or ("정상" if ok else "실패")
+        recommend_login = "권장:" in text and "로그인" in text
         if ok:
-            self._setup_status.setText(f"검사 결과: OK — {text}")
-            QMessageBox.information(self, "시작 프로토콜 검사", f"Core 정상\n{text}")
-        else:
-            self._setup_status.setText(f"검사 결과: 실패 — {text}")
-            QMessageBox.warning(
-                self,
-                "시작 프로토콜 검사",
-                f"Core 검사 실패\n{text}\n\n"
-                "「다시 설정」으로 시작 프로토콜을 다시 돌릴 수 있습니다.",
-            )
-            self._setup_repair_btn.show()
+            self._setup_status.setText(f"검사 결과: OK — {text.splitlines()[0]}")
+            title = "시작 프로토콜 검사"
+            if recommend_login:
+                title = "시작 프로토콜 검사 — 로그인 권장"
+            QMessageBox.information(self, title, text)
+            return
+        self._setup_status.setText(f"검사 결과: 실패 — {text.splitlines()[0]}")
+        QMessageBox.warning(
+            self,
+            "시작 프로토콜 검사",
+            f"{text}\n\n"
+            "「다시 설정」에서 Ollama 「로그인」또는 「최소 모델 설치」를 할 수 있습니다.",
+        )
+        self._setup_repair_btn.show()
 
     def _load_sync_status_text(self) -> str:
         return settings_service.load_hermes_sync_status_text()
@@ -1933,6 +2119,23 @@ class SettingsDialog(QDialog):
         self._account_list.clear()
         for acc in self._accounts:
             self._account_list.addItem(QListWidgetItem(acc.display_name))
+
+    def _sync_ide_selection_ui_quick(self) -> None:
+        """열기 직후 — IRIS IDE 설치 여부 네트워크/런타임 검사 없이."""
+        ide_id = self._preferred_ide
+        for key, btn in self._ide_buttons.items():
+            btn.setChecked(key == ide_id)
+        spec = get_ide_spec(ide_id)
+        name = spec.name if spec else ide_id
+        if ide_id == "custom":
+            installed = bool(self._ide_exe_path and Path(self._ide_exe_path).is_file())
+            mark = "설치됨" if installed else "경로 확인 필요"
+        elif ide_id == "iris_ide":
+            mark = "확인 중…"
+        else:
+            installed = is_ide_installed(ide_id, self._ide_exe_path)
+            mark = "설치됨" if installed else "경로 확인 필요"
+        self._ide_selected.setText(f"선택: {name} ({mark})")
 
     def _sync_ide_selection_ui(self) -> None:
         ide_id = self._preferred_ide
@@ -2174,6 +2377,8 @@ class SettingsDialog(QDialog):
         if self._aloha_runtime_busy():
             self._aloha_runtime_status.setText("Runtime 설치가 끝난 뒤 설정을 닫아주세요.")
             return
+        self._cancel_deferred_status_workers()
+        self._disconnect_mic_meter()
         if not self._stop_voice_playback(announce=False, wait=True):
             self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
             return
@@ -2183,6 +2388,8 @@ class SettingsDialog(QDialog):
         super().reject()
 
     def accept(self) -> None:
+        self._cancel_deferred_status_workers()
+        self._disconnect_mic_meter()
         if not self._stop_voice_playback(announce=False, wait=True):
             self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
             return
@@ -2194,6 +2401,8 @@ class SettingsDialog(QDialog):
             self._aloha_runtime_status.setText("Runtime 설치가 끝난 뒤 설정을 닫아주세요.")
             event.ignore()
             return
+        self._cancel_deferred_status_workers()
+        self._disconnect_mic_meter()
         if not self._stop_voice_playback(announce=False, wait=True):
             self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
             event.ignore()

@@ -22,6 +22,9 @@ IDE 경로 해석 · 실행 · 이미 실행 중 탐지 (Windows 우선).
 - `def _target_pids_for_ide`
 - `def _list_ide_windows_macos`
 - `def list_ide_windows`
+- `def is_cursor_agents_title`
+- `def is_generic_ide_title`
+- `def workspace_title_lost_context`
 - `def wait_for_new_ide_window`
 - `def _popen_detached`
 - `def launch_ide`

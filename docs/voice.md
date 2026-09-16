@@ -1,18 +1,31 @@
 # Voice
 
 Iris Light의 음성 기능은 메인 `.venv`와 분리된 `.venv-voice` 런타임을 사용합니다.
-FastAPI 런타임은 **`127.0.0.1:18765`에만** 바인딩됩니다.
+FastAPI 런타임은 **`127.0.0.1:18765`에만** 바인딩됩니다.  
+> Updated-at: 2026-08-25
 
 ## 현재 실제로 되는 것
 
-- 설정창 음성 섹션 저장/로드 (SQLite `voice_prefs_v1`)
-- 마이크 녹음 → STT → 채팅 입력창에 append (자동 전송 없음)
+- 설정창 음성 섹션 저장/로드 (SQLite `voice_prefs_v1`) — 기본 prefs: STT/TTS **off**
+- 마이크 녹음 → STT → **UserTurn으로 채팅 턴 제출** (`UserTurnDispatcher`; 입력창만 append하지 않음)
+- 연속 발화 · barge-in · wake word(설정) · Silero VAD · AEC · STT 큐
 - 답변별 🔊 수동 TTS, `tts_mode=auto` 시 최종 답변 후 자동 TTS
-- 문장 분할 순차 재생 / 중지 / 캐시 정리
+- 알림·전화 상황 낭독 + 규칙 기반 음성 인텐트
+- 문장 분할 순차/스트리밍 재생 / 중지 / 캐시 정리
 - 녹음 폴더 분석 → `~/.iris-light/voice/manifest.jsonl` + `manifest.csv`
-- 추천 참고 음성 top 5 표시, 기준 음성/대본 확정
-- **IRIS 보이스 프로필** — 2차 녹음 150개에서 뽑은 화자 임베딩으로 상황별 톤 자동 전환
+- 추천 참고 음성 top 5, 기준 음성/대본 확정
+- **IRIS 보이스 프로필** — 화자 임베딩으로 상황별 톤 자동 전환
 - **mock 모드**에서 STT/TTS HTTP 경로 검증 (모델 다운로드 없이)
+
+## mock 기본값 (혼동 주의)
+
+| 경로 | 기본 |
+|------|------|
+| 앱 prefs `voice_runtime_mock` | **False** (실모드로 기동 시도) |
+| 환경변수 `VOICE_RUNTIME_MOCK` (런타임 config) | 프로세스에 넘기지 않으면 `"1"` |
+| `setup_voice_runtime` 스모크 | mock=1 권장 |
+
+앱이 런타임을 띄울 때 prefs의 mock 값을 자식 환경에 반영합니다.
 
 ## 아직 제한된 것
 

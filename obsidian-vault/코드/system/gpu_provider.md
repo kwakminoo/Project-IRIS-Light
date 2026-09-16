@@ -10,3 +10,7 @@ GPU 사용률 수집 — nvidia-smi → Windows PDH → N/A.
 - `def _read_nvidia_smi`
 - `def _read_windows_pdh_gpu`
 - `def _pdh_query_avg`
+
+## 내부 의존성
+
+- [[win_subprocess]]

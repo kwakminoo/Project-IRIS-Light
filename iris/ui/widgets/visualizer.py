@@ -19,6 +19,8 @@ _SNAPSHOT_TOLERANCE_PX = 1
 _ORB_CENTER_Y_RATIO = 0.36
 # Companion: 앵커(상단 슬롯) 우선, 폴백 비율은 더 위
 _ORB_CENTER_Y_RATIO_COMPANION = 0.09
+# IDE 히어로 — 큰 구체 상단 잘림 방지 (기본 0.36보다 살짝 아래)
+_ORB_CENTER_Y_RATIO_HERO = 0.42
 
 
 @dataclass(frozen=True)
@@ -62,15 +64,45 @@ class Visualizer(QWidget):
         self._stabilize_timer.timeout.connect(self._continue_stabilized_sync)
         self._center_y_ratio = _ORB_CENTER_Y_RATIO
         self._use_anchor_center = False
+        self._layout_orb = False
+
+    def set_layout_orb_mode(self, enabled: bool) -> None:
+        """Companion A: Visualizer가 orb_spacer 레이아웃 자식 — 자기 rect 중심, 오버레이 아님."""
+        self._layout_orb = bool(enabled)
+        if self._layout_orb:
+            self._use_anchor_center = False
+            self._center_y_ratio = 0.48
+            # 슬롯 안에서는 마우스 통과 불필요(형제 채팅을 덮지 않음)
+            for w in (self, *self.findChildren(QWidget)):
+                w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.request_sync_orb_anchor("layout_orb_mode")
+
+    def is_layout_orb_mode(self) -> bool:
+        return self._layout_orb
 
     def set_companion_orb_placement(self, companion: bool) -> None:
-        """IDE Companion: 구체를 상단 앵커에 붙이고 로그와 겹치게."""
-        self._use_anchor_center = bool(companion)
-        self._center_y_ratio = (
-            _ORB_CENTER_Y_RATIO_COMPANION if companion else _ORB_CENTER_Y_RATIO
-        )
+        """IDE Companion: particle companion 모드. layout_orb면 자기 중심."""
         self._particle.set_companion_mode(companion)
+        if self._layout_orb:
+            self._use_anchor_center = False
+            self._center_y_ratio = 0.48
+        else:
+            self._use_anchor_center = bool(companion)
+            self._center_y_ratio = (
+                _ORB_CENTER_Y_RATIO_COMPANION if companion else _ORB_CENTER_Y_RATIO
+            )
         self.request_sync_orb_anchor("companion_orb_placement")
+
+    def set_hero_orb_placement(self, hero: bool) -> None:
+        """IDE 히어로 — 창 비율 중심을 살짝 내려 상단 잘림 방지."""
+        if hero:
+            self._layout_orb = False
+            self._use_anchor_center = False
+            self._center_y_ratio = _ORB_CENTER_Y_RATIO_HERO
+            self._particle.set_companion_mode(False)
+        else:
+            self._center_y_ratio = _ORB_CENTER_Y_RATIO
+        self.request_sync_orb_anchor("hero_orb_placement")
 
     def set_orb_anchor(self, widget: QWidget | None) -> None:
         """구체 표시 여부·동기화 트리거용 앵커 (위치는 창 콘텐츠 중앙 고정)."""
@@ -112,6 +144,8 @@ class Visualizer(QWidget):
 
     def live_anchor_center_local(self) -> tuple[float, float] | None:
         """디버그·테스트용 — 창(visualizer) 콘텐츠 기준 구체 목표 중심."""
+        if self._layout_orb:
+            return self._window_content_center_local()
         if self._orb_anchor is None:
             return None
         return self._window_content_center_local()
@@ -127,15 +161,16 @@ class Visualizer(QWidget):
         return (eff[0] - target[0], eff[1] - target[1])
 
     def _window_content_center_local(self) -> tuple[float, float]:
-        """Visualizer 기준 구체 목표 중심. Companion에선 상단 앵커 사용."""
+        """Visualizer 기준 구체 목표 중심."""
         vr = self.rect()
         w, h = max(vr.width(), 1), max(vr.height(), 1)
+        # A구조: 슬롯 자식이면 자기 중심 (창 전역/앵커 맵 금지)
+        if self._layout_orb:
+            return (w * 0.5, h * self._center_y_ratio)
         if self._use_anchor_center and self._orb_anchor is not None:
             mapped = self._map_anchor_center_local(self._orb_anchor)
             if mapped is not None:
-                # 수평은 컬럼 폭 기준 정중앙 — 앵커 x는 살짝 어긋날 수 있어 신뢰 안 함.
-                # 수직은 앵커 중심 그대로 — 로그와 살짝 겹쳐도 무방.
-                return (w * 0.5, mapped[1])
+                return (mapped[0], mapped[1])
         return (w * 0.5, h * self._center_y_ratio)
 
     def _map_anchor_center_local(self, anchor: QWidget) -> tuple[float, float] | None:
@@ -164,6 +199,14 @@ class Visualizer(QWidget):
         self._continue_stabilized_sync()
 
     def _continue_stabilized_sync(self) -> None:
+        # layout_orb: 앵커 없이 슬롯 자체 중심 — None 분기(last_center/clear)로 구체 실종 방지
+        if self._layout_orb:
+            cx, cy = self._window_content_center_local()
+            self._last_center = (cx, cy)
+            self._particle.set_custom_center(cx, cy)
+            self._particle.setGeometry(self.rect())
+            self._pending_sync_reason = ""
+            return
         anchor = self._orb_anchor
         if anchor is None:
             if self._last_center is not None:

@@ -2,58 +2,35 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
+from urllib.parse import quote
 
-from PyQt6.QtCore import QEvent, QPoint, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QIcon, QMouseEvent
-from PyQt6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QMainWindow,
-    QPushButton,
-    QSizePolicy,
-    QStackedWidget,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon
+from PyQt6.QtWidgets import QLabel, QMainWindow, QStackedWidget, QVBoxLayout, QWidget
 
 if TYPE_CHECKING:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from iris.assets.branding import load_app_icon
+from iris.ui.ide.iris_ide_welcome_layer import IrisIdeWelcomeLayer
 from iris.ui.shared.theme_tokens import TOKENS
 from iris.ui.window.frameless_chrome import suppress_native_window_border
 
 IRIS_IDE_TITLE = "IRIS IDE"
-
-_TITLE_BAR_HEIGHT = 32
-
-
-def _win_ctrl_button(text: str, tooltip: str) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setObjectName("IrisIdeWinCtrl")
-    btn.setToolTip(tooltip)
-    btn.setFixedSize(34, _TITLE_BAR_HEIGHT - 4)
-    btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    return btn
 
 
 def _iris_ide_window_stylesheet() -> str:
     t = TOKENS
     return f"""
     QMainWindow {{
-        background: {t.background_primary};
+        background: {t.void_black};
         border: none;
     }}
     QWidget#IrisIdeLoading {{
-        background: qlineargradient(
-            x1:0, y1:0, x2:0, y2:1,
-            stop:0 {t.space_navy},
-            stop:0.45 {t.background_primary},
-            stop:1 {t.void_black}
-        );
+        background: {t.void_black};
         border: none;
         border-radius: 0;
     }}
@@ -69,106 +46,15 @@ def _iris_ide_window_stylesheet() -> str:
         font-size: 14px;
         font-family: {t.font_family};
     }}
-    QWidget#IrisIdeTitleBar {{
-        background: {t.space_navy};
-        border: none;
-        border-bottom: 1px solid {t.border_subtle};
-    }}
-    QLabel#IrisIdeTitleLabel {{
-        color: {t.text_secondary};
-        font-size: 12px;
-        font-family: {t.font_family};
-        letter-spacing: 0.06em;
-        background: transparent;
-        border: none;
-    }}
-    QPushButton#IrisIdeWinCtrl {{
-        background-color: transparent;
-        border: 1px solid {t.border_subtle};
-        padding: 0;
-        font-size: 13px;
-        font-weight: 400;
-        border-radius: 3px;
-        color: {t.text_secondary};
-    }}
-    QPushButton#IrisIdeWinCtrl:hover {{
-        background-color: {t.accent_primary};
-        border-color: {t.accent_border};
-        color: {t.text_primary};
-    }}
-    QPushButton#IrisIdeWinCtrl:pressed {{
-        background-color: rgba(30, 58, 138, 0.5);
-    }}
     """
 
 
-class _IrisIdeTitleBar(QWidget):
-    """프레임리스 창 — 드래그 이동 + 최소화/최대화/닫기. iris.ui.widgets.drag_tab.DragTab와 동일한 패턴."""
-
-    minimize_clicked = pyqtSignal()
-    maximize_clicked = pyqtSignal()
-    close_clicked = pyqtSignal()
-
-    def __init__(self, win: QMainWindow, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("IrisIdeTitleBar")
-        self._win = win
-        self._drag_pos: QPoint | None = None
-        self.setFixedHeight(_TITLE_BAR_HEIGHT)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 0, 6, 0)
-        lay.setSpacing(6)
-
-        self._title = QLabel(IRIS_IDE_TITLE)
-        self._title.setObjectName("IrisIdeTitleLabel")
-        lay.addWidget(self._title, 0, Qt.AlignmentFlag.AlignVCenter)
-        lay.addStretch(1)
-
-        self._btn_min = _win_ctrl_button("−", "창 내리기")
-        self._btn_max = _win_ctrl_button("□", "전체 화면")
-        self._btn_close = _win_ctrl_button("×", "닫기")
-        for btn in (self._btn_min, self._btn_max, self._btn_close):
-            lay.addWidget(btn, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        self._btn_min.clicked.connect(self.minimize_clicked.emit)
-        self._btn_max.clicked.connect(self.maximize_clicked.emit)
-        self._btn_close.clicked.connect(self.close_clicked.emit)
-
-    def set_maximized(self, maximized: bool) -> None:
-        if maximized:
-            self._btn_max.setText("❐")
-            self._btn_max.setToolTip("창 복원")
-        else:
-            self._btn_max.setText("□")
-            self._btn_max.setToolTip("전체 화면")
-
-    def mousePressEvent(self, e: QMouseEvent) -> None:  # noqa: N802
-        if e.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = e.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
-        super().mousePressEvent(e)
-
-    def mouseMoveEvent(self, e: QMouseEvent) -> None:  # noqa: N802
-        if self._drag_pos is not None and e.buttons() & Qt.MouseButton.LeftButton:
-            if not self._win.isMaximized():
-                self._win.move(e.globalPosition().toPoint() - self._drag_pos)
-        super().mouseMoveEvent(e)
-
-    def mouseReleaseEvent(self, e: QMouseEvent) -> None:  # noqa: N802
-        self._drag_pos = None
-        super().mouseReleaseEvent(e)
-
-    def mouseDoubleClickEvent(self, e: QMouseEvent) -> None:  # noqa: N802
-        if e.button() == Qt.MouseButton.LeftButton:
-            self.maximize_clicked.emit()
-        super().mouseDoubleClickEvent(e)
-
-
 class IrisIdeWindow(QMainWindow):
-    """Separate top-level window — Theia in QWebEngineView."""
+    """Separate top-level window — welcome / Theia in QWebEngineView."""
 
     theia_load_finished = pyqtSignal(bool)
+    files_dropped = pyqtSignal(list)
+    folder_opened = pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -179,21 +65,10 @@ class IrisIdeWindow(QMainWindow):
         self.setMinimumSize(640, 480)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setStyleSheet(_iris_ide_window_stylesheet())
+        self.setAcceptDrops(True)
         self._frameless_chrome_applied = False
-
-        container = QWidget(self)
-        outer = QVBoxLayout(container)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self._title_bar = _IrisIdeTitleBar(self, container)
-        self._title_bar.minimize_clicked.connect(self.showMinimized)
-        self._title_bar.maximize_clicked.connect(self._toggle_maximize)
-        self._title_bar.close_clicked.connect(self.close_window)
-        outer.addWidget(self._title_bar)
-
-        self._stack = QStackedWidget(container)
-        outer.addWidget(self._stack, 1)
-        self.setCentralWidget(container)
+        self._stack = QStackedWidget(self)
+        self.setCentralWidget(self._stack)
 
         self._loading = QWidget()
         self._loading.setObjectName("IrisIdeLoading")
@@ -210,10 +85,42 @@ class IrisIdeWindow(QMainWindow):
         load_lay.addWidget(self._loading_label)
         self._stack.addWidget(self._loading)
 
+        self._welcome = IrisIdeWelcomeLayer()
+        self._welcome.folder_opened.connect(self.folder_opened.emit)
+        self._stack.addWidget(self._welcome)
+
         self._view: QWebEngineView | None = None
         self._loaded_url = ""
+        self._loaded_workspace = ""
         self._defer_show = False
         self._load_hooked = False
+        # ponytail: "embedded" = Companion에 도킹된 자식 HWND (QWidget 임베드 아님)
+        self._embedded = False
+
+    def set_embedded(self, embedded: bool, *, host: QWidget | None = None) -> None:
+        """Companion 도킹 — 항상 top-level HWND 유지 (Qt.Widget 임베드 금지).
+
+        WA_Translucent 조상 트리 아래 QMainWindow→Widget 재부모는
+        QWebEngine(터미널·단축키·포커스) 입력을 깨뜨린다. 시각적 단일 창은
+        호스트 rect에 geometry만 맞춘 자식 Window로 구현한다.
+        """
+        embedded = bool(embedded)
+        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
+        if embedded:
+            self._embedded = True
+            self.setMinimumSize(0, 0)
+            # setParent(host, flags) — 플래그+부모 원자적 (setWindowFlags만 쓰면 부모 유실)
+            self.setParent(host, flags)
+        else:
+            was = self._embedded
+            self._embedded = False
+            self.setParent(None, flags)
+            self.setMinimumSize(640, 480)
+            if was:
+                self._frameless_chrome_applied = False
+
+    def is_embedded(self) -> bool:
+        return self._embedded
 
     def apply_frameless_chrome(self) -> None:
         """Companion/타일 — Win11 DWM 1px 테두리 숨김 (FramelessWindowHint는 __init__)."""
@@ -225,16 +132,31 @@ class IrisIdeWindow(QMainWindow):
         if not self._frameless_chrome_applied:
             self.apply_frameless_chrome()
 
-    def changeEvent(self, event) -> None:  # noqa: N802
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange:
-            self._title_bar.set_maximized(self.isMaximized())
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        from iris.ui.window.file_drop import mime_has_attachable
 
-    def _toggle_maximize(self) -> None:
-        if self.isMaximized():
-            self.showNormal()
-        else:
-            self.showMaximized()
+        if mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        from iris.ui.window.file_drop import mime_has_attachable
+
+        if mime_has_attachable(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        from iris.ui.window.file_drop import paths_from_mime
+
+        paths = paths_from_mime(event.mimeData())
+        if paths:
+            self.files_dropped.emit(paths)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
 
     def _ensure_view(self) -> QWebEngineView | None:
         if self._view is not None:
@@ -243,8 +165,11 @@ class IrisIdeWindow(QMainWindow):
             from PyQt6.QtWebEngineWidgets import QWebEngineView as _QWebEngineView
         except ImportError:  # pragma: no cover
             return None
+
+        # ponytail: WebEngine AcceptDrops=True면 Chromium이 OS 파일 드롭을 가로챔
         self._view = _QWebEngineView()
-        self._view.setStyleSheet(f"background: {TOKENS.background_primary};")
+        self._view.setAcceptDrops(False)
+        self._view.setStyleSheet(f"background: {TOKENS.void_black};")
         if not self._load_hooked:
             self._view.loadFinished.connect(self._on_theia_load_finished)
             self._load_hooked = True
@@ -258,11 +183,20 @@ class IrisIdeWindow(QMainWindow):
             self.show()
             self.raise_()
 
+    def show_welcome(self, *, show_window: bool = True) -> None:
+        """Companion 진입 기본화면 — 저장된 폴더를 자동으로 열지 않음."""
+        self._welcome.refresh_recent_folders()
+        self._stack.setCurrentWidget(self._welcome)
+        if show_window:
+            self.show()
+            self.raise_()
+
     def show_loading(self, message: str = "IRIS IDE 시작 중…", *, show_window: bool = True) -> None:
         self._loading_label.setText(message)
         self._stack.setCurrentWidget(self._loading)
         if show_window:
             self.show()
+            self.raise_()
 
     def load_theia(
         self,
@@ -270,6 +204,10 @@ class IrisIdeWindow(QMainWindow):
         *,
         bridge_port: int = 0,
         bridge_token: str = "",
+        control_port: int = 0,
+        control_token: str = "",
+        workspace: str = "",
+        force_reload: bool = False,
         defer_show: bool = False,
         on_ready: Callable[[bool], None] | None = None,
     ) -> None:
@@ -284,10 +222,24 @@ class IrisIdeWindow(QMainWindow):
                 f"{url}{sep}iris_bridge_port={int(bridge_port)}"
                 f"&iris_bridge_token={bridge_token}"
             )
+        if control_port and control_token:
+            sep = "&" if "?" in url else "?"
+            url = (
+                f"{url}{sep}iris_control_port={int(control_port)}"
+                f"&iris_control_token={quote(control_token, safe='')}"
+            )
+        ws = (workspace or "").strip()
+        if ws:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}iris_ws={quote(ws, safe='')}"
+        if force_reload or (ws and ws != self._loaded_workspace):
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}iris_reload={int(time.time() * 1000)}"
         if on_ready is not None:
             self.theia_load_finished.connect(on_ready, type=Qt.ConnectionType.SingleShotConnection)
         self._defer_show = defer_show
-        if url == self._loaded_url and self._stack.currentWidget() is view:
+        same_url = url == self._loaded_url and not force_reload
+        if same_url and self._stack.currentWidget() is view:
             if defer_show:
                 self.theia_load_finished.emit(True)
             else:
@@ -295,12 +247,14 @@ class IrisIdeWindow(QMainWindow):
                 self.raise_()
             return
         self._loaded_url = url
+        self._loaded_workspace = ws
         view.load(QUrl(url))
         self._stack.setCurrentWidget(view)
         if defer_show:
             return
         self.show()
         self.raise_()
+        self.focus_theia_view()
 
     def hide_window(self) -> None:
         self.hide()
@@ -308,9 +262,25 @@ class IrisIdeWindow(QMainWindow):
     def close_window(self) -> None:
         """Companion/앱 종료 시 IDE 창을 완전히 닫는다 (hide만 하면 유령 창이 남음)."""
         self._loaded_url = ""
+        self._loaded_workspace = ""
         self._defer_show = False
+        if self._embedded:
+            self.set_embedded(False)
         self.hide()
         self.close()
+
+    def focus_theia_view(self) -> None:
+        """터미널/단축키용 — WebEngine에 포커스 한 번."""
+        if self._view is None:
+            return
+        if self._stack.currentWidget() is not self._view:
+            return
+        self.raise_()
+        self.activateWindow()
+        self._view.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def is_welcome_visible(self) -> bool:
+        return self._stack.currentWidget() is self._welcome
 
     def is_theia_loaded(self) -> bool:
         return bool(self._loaded_url) and self._view is not None and self._stack.currentWidget() is self._view
@@ -330,11 +300,12 @@ def _self_check() -> None:
     app = QApplication(sys.argv)
     w = IrisIdeWindow()
     assert w.windowFlags() & Qt.WindowType.FramelessWindowHint
-    w.show_loading()
+    w.show_welcome()
+    assert w.is_welcome_visible()
     assert w.windowTitle() == IRIS_IDE_TITLE
     icon_path = Path(__file__).resolve().parents[2] / "assets" / "iris_icon.png"
     assert icon_path.is_file()
-    assert TOKENS.background_primary in w.styleSheet()
+    assert TOKENS.void_black in w.styleSheet()
     print("iris_ide_window ok")
 
 

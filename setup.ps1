@@ -31,6 +31,8 @@ $Root = $PSScriptRoot
 Set-Location $Root
 
 $VenvPath = Join-Path $Root ".venv"
+$LogFile = Join-Path $Root "setup-log.txt"
+$PipLog = Join-Path $Root "setup-log-pip.txt"
 $MinMajor = 3
 $MinMinor = 11
 
@@ -45,6 +47,14 @@ function Write-Ok([string]$Message)   { Write-Host "  OK   $Message" -Foreground
 function Write-Info([string]$Message) { Write-Host "  ...  $Message" -ForegroundColor DarkGray }
 function Write-Warn([string]$Message) { Write-Host "  경고 $Message" -ForegroundColor Yellow }
 
+$script:Transcribing = $false
+function Stop-Log {
+    if ($script:Transcribing) {
+        try { Stop-Transcript | Out-Null } catch { }
+        $script:Transcribing = $false
+    }
+}
+
 function Fail([string]$Message, [string[]]$Hints) {
     Write-Host ""
     Write-Host "설치 실패: $Message" -ForegroundColor Red
@@ -54,7 +64,22 @@ function Fail([string]$Message, [string[]]$Hints) {
         foreach ($h in $Hints) { Write-Host "  - $h" }
     }
     Write-Host ""
+    Write-Host "전체 기록: $LogFile" -ForegroundColor DarkGray
+    if (Test-Path $PipLog) { Write-Host "설치 상세: $PipLog" -ForegroundColor DarkGray }
+    Write-Host ""
+    Stop-Log
     exit 1
+}
+
+# 창을 닫으면 화면 기록은 사라진다. 중간에 끊겨도 원인이 남도록 파일로 받아 둔다.
+# 단, PowerShell 5.1 트랜스크립트는 pip 같은 네이티브 출력을 담지 못한다 —
+# 그건 pip 자체 --log 로 $PipLog 에 따로 받는다.
+Remove-Item $PipLog -ErrorAction SilentlyContinue
+try {
+    Start-Transcript -Path $LogFile -Force | Out-Null
+    $script:Transcribing = $true
+} catch {
+    Write-Host "  경고 로그 파일을 열지 못했습니다: $LogFile" -ForegroundColor Yellow
 }
 
 Write-Host ""
@@ -138,14 +163,23 @@ if (Test-Path $VenvPy) {
 
 # ------------------------------------------------------- 3. pip 업그레이드
 Write-Step "pip 업그레이드"
-& $VenvPy -m pip install --upgrade pip --disable-pip-version-check -q
-if (-not $?) { Write-Warn "pip 업그레이드 실패 — 기존 pip으로 계속합니다" } else { Write-Ok "pip 최신" }
+& $VenvPy -m pip install --upgrade pip --disable-pip-version-check --no-input -q
+if ($LASTEXITCODE -ne 0) { Write-Warn "pip 업그레이드 실패 — 기존 pip으로 계속합니다" } else { Write-Ok "pip 최신" }
 
 # ------------------------------------------------------- 4. 의존성 설치
 Write-Step "의존성 설치 (requirements.txt) — 수 분 걸릴 수 있습니다"
 
-& $VenvPy -m pip install -r (Join-Path $Root "requirements.txt") --disable-pip-version-check
-if (-not $?) {
+$Requirements = Join-Path $Root "requirements.txt"
+# 끊긴 다운로드 하나로 설치 전체가 주저앉지 않게 — pip 내부 재시도 + 한 번 더
+$pipRc = 1
+foreach ($attempt in 1..2) {
+    if ($attempt -gt 1) { Write-Warn "재시도 $attempt/2 — 이미 받은 패키지는 건너뜁니다" }
+    & $VenvPy -m pip install -r $Requirements --log $PipLog `
+        --disable-pip-version-check --no-input --retries 5 --timeout 60
+    $pipRc = $LASTEXITCODE
+    if ($pipRc -eq 0) { break }
+}
+if ($pipRc -ne 0) {
     Fail "의존성 설치에 실패했습니다." @(
         "네트워크/프록시 상태를 확인하세요",
         "사내망이라면: $VenvPy -m pip install -r requirements.txt --trusted-host pypi.org --trusted-host files.pythonhosted.org",
@@ -177,7 +211,8 @@ $check = @'
 import importlib, sys
 missing = []
 for mod in ("PyQt6.QtWidgets", "PyQt6.QtWebEngineWidgets", "psutil", "mss",
-            "PIL", "markdown", "dotenv", "yaml", "numpy"):
+            "PIL", "markdown", "dotenv", "yaml", "numpy", "cv2",
+            "onnxruntime", "openai", "pynput"):
     try:
         importlib.import_module(mod)
     except Exception as exc:
@@ -189,11 +224,13 @@ print("OK")
 '@
 $checkFile = Join-Path $env:TEMP "iris_setup_check.py"
 Set-Content -Path $checkFile -Value $check -Encoding utf8
-$result = & $VenvPy $checkFile 2>&1
-$checkOk = $?
+# 검사 결과는 stdout으로만 받는다 — 네이티브 stderr를 2>&1 로 합치면
+# PowerShell 5.1이 성공한 실행도 실패로 표시한다
+$result = & $VenvPy $checkFile
+$checkRc = $LASTEXITCODE
 Remove-Item $checkFile -ErrorAction SilentlyContinue
 
-if (-not $checkOk) {
+if ($checkRc -ne 0) {
     Fail "핵심 패키지 import 검증 실패: $result" @(
         ".\setup.ps1 -Recreate 로 재설치",
         "Visual C++ 재배포 패키지가 없으면 PyQt6 로드가 실패할 수 있습니다: winget install -e --id Microsoft.VCRedist.2015+.x64"
@@ -224,6 +261,11 @@ if (-not $Voice) {
     Write-Host ".\setup.ps1 -Voice" -ForegroundColor DarkGray
     Write-Host ""
 }
+
+Write-Host "설치 기록: " -NoNewline -ForegroundColor DarkGray
+Write-Host "$LogFile · $PipLog" -ForegroundColor DarkGray
+Write-Host ""
+Stop-Log
 
 if ($Run) {
     Write-Host "IRIS 를 실행합니다..." -ForegroundColor Cyan

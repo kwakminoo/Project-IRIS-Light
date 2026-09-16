@@ -210,6 +210,11 @@ def fetch_ollama_quotas() -> list[ApiQuota]:
     return []
 
 
+def ollama_cloud_signed_in() -> bool:
+    """로컬 Ollama 데몬이 ollama.com 계정으로 로그인돼 있으면 True."""
+    return _ollama_signed_in()
+
+
 def _ollama_signed_in() -> bool:
     try:
         req = Request(

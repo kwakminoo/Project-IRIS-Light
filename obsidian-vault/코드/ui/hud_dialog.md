@@ -13,6 +13,8 @@
 - `def make_form_label`
 - `def configure_form`
 - `def make_scroll_body`
+- `def _confirm_qss`
+- `def run_hud_confirm`
 
 ## 내부 의존성
 

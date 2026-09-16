@@ -160,11 +160,11 @@ class HermesClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    def _health_ping_ok(self) -> bool:
+    def _health_ping_ok(self, *, timeout_sec: float = 5.0) -> bool:
         for path in (f"{self.api_root}/health", f"{self.base_url}/health"):
             try:
                 req = Request(path, method="GET", headers=self._headers())
-                with urlopen(req, timeout=5.0) as resp:
+                with urlopen(req, timeout=timeout_sec) as resp:
                     if resp.status != 200:
                         continue
                     body = json.loads(resp.read().decode("utf-8"))
@@ -174,12 +174,12 @@ class HermesClient:
                 continue
         return False
 
-    def health_ok(self) -> bool:
+    def health_ok(self, *, timeout_sec: float = 5.0) -> bool:
         """/health — 프로세스 생존만 (Bearer 불필요)."""
-        return self._health_ping_ok()
+        return self._health_ping_ok(timeout_sec=timeout_sec)
 
     def gateway_ready(self) -> bool:
-        """/health + /v1/models — 채팅과 동일한 Bearer 인증까지 확인."""
+        """/health + /v1/models — 프로세스·키 존재. 채팅 401은 probe_chat_auth()."""
         if not self._health_ping_ok():
             return False
         if not self.api_key:
@@ -189,6 +189,46 @@ class HermesClient:
             return True
         except Exception:
             return False
+
+    def probe_chat_auth(self) -> str:
+        """채팅과 같은 POST /v1/chat/completions 로 Bearer를 검사.
+
+        GET /v1/models 는 키가 틀리거나 없어도 200인 경우가 있어
+        검사·Connected는 통과하고 보내기만 401이 난다.
+        메시지 필드를 빼면 인증 통과 시 보통 400/422로 바로 끝나고,
+        실패 시 401로 끝나도록(추론 호출 최소화) 만든다.
+
+        Returns: 'ok' | 'unauthorized' | 'unreachable'
+        """
+        if not self.api_key:
+            return "unauthorized"
+        payload = json.dumps(
+            {
+                "model": "hermes-agent",
+                "stream": False,
+                "max_tokens": 1,
+            }
+        ).encode("utf-8")
+        req = Request(
+            f"{self.base_url}/chat/completions",
+            data=payload,
+            headers=self._headers(json_body=True),
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=3.0) as resp:
+                resp.read(64)
+            return "ok"
+        except HTTPError as e:
+            try:
+                e.read()
+            except Exception:
+                pass
+            if e.code == 401:
+                return "unauthorized"
+            return "ok"
+        except (URLError, TimeoutError, OSError):
+            return "unreachable"
 
     def list_models(self) -> list[str]:
         try:
@@ -465,21 +505,23 @@ class HermesClient:
                         if isinstance(delta, dict):
                             chunk = delta.get("content")
                             if isinstance(chunk, str) and chunk:
-                                yield {
-                                    "content": chunk,
-                                    "tool_progress": None,
-                                    "done": False,
-                                }
+                                if _should_emit_assistant_content(chunk, choice):
+                                    yield {
+                                        "content": chunk,
+                                        "tool_progress": None,
+                                        "done": False,
+                                    }
                         # 일부 응답은 delta 대신 message.content만 옴
                         message = choice.get("message") or {}
                         if isinstance(message, dict):
                             full = message.get("content")
                             if isinstance(full, str) and full:
-                                yield {
-                                    "content": full,
-                                    "tool_progress": None,
-                                    "done": False,
-                                }
+                                if _should_emit_assistant_content(full, choice):
+                                    yield {
+                                        "content": full,
+                                        "tool_progress": None,
+                                        "done": False,
+                                    }
                     if obj.get("type") == "hermes.tool.progress":
                         msg = _format_tool_progress(obj)
                         if msg:
@@ -487,12 +529,11 @@ class HermesClient:
         except HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:400]
             if e.code == 401:
-                hint = (
-                    "Hermes API 키가 맞지 않습니다. "
-                    "설정 → Hermes API Key가 "
-                    r"%LOCALAPPDATA%\hermes\.env 의 API_SERVER_KEY 와 같아야 합니다."
-                )
-                raise RuntimeError(f"Hermes HTTP 401: {detail or hint}") from e
+                raise RuntimeError(
+                    "Hermes HTTP 401 Unauthorized. "
+                    "시작 프로토콜 「다시 설정」으로 API 키를 맞추고, "
+                    "로컬 최소 모델을 받거나 Ollama 클라우드 로그인을 확인하세요."
+                ) from e
             raise RuntimeError(f"Hermes HTTP {e.code}: {detail or e.reason}") from e
         except URLError as e:
             raise RuntimeError(f"Hermes 연결 실패: {e.reason}") from e
@@ -522,6 +563,56 @@ def _format_tool_progress(obj: dict[str, Any]) -> str:
     return "tool running"
 
 
+def _looks_like_tool_args_json(text: str) -> bool:
+    """Hermes가 tool 인자 dict를 assistant content로 흘리는 경우 채팅에서 숨긴다."""
+    s = (text or "").strip()
+    if not s.startswith("{") or not s.endswith("}"):
+        return False
+    try:
+        obj = json.loads(s)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(obj, dict) or not obj:
+        return False
+    toolish = {
+        "file_glob",
+        "pattern",
+        "path",
+        "target",
+        "command",
+        "query",
+        "glob",
+        "cwd",
+        "limit",
+        "tool",
+        "tool_name",
+    }
+    return bool(toolish & {str(k) for k in obj.keys()})
+
+
+def _delta_has_tool_calls(delta: dict[str, Any]) -> bool:
+    tc = delta.get("tool_calls")
+    return isinstance(tc, list) and bool(tc)
+
+
+def _choice_has_tool_calls(choice: dict[str, Any]) -> bool:
+    delta = choice.get("delta")
+    if isinstance(delta, dict) and _delta_has_tool_calls(delta):
+        return True
+    message = choice.get("message")
+    if isinstance(message, dict) and _delta_has_tool_calls(message):
+        return True
+    return False
+
+
+def _should_emit_assistant_content(chunk: str, choice: dict[str, Any]) -> bool:
+    if _choice_has_tool_calls(choice):
+        return False
+    if _looks_like_tool_args_json(chunk):
+        return False
+    return bool((chunk or "").strip())
+
+
 if __name__ == "__main__":
     assert infer_hermes_provider("gemma4:31b-cloud") == "ollama"
     assert infer_hermes_provider("gemma4:26b") == "ollama"
@@ -539,7 +630,18 @@ if __name__ == "__main__":
         }
     )
     assert _sse_error_message({"choices": [{"delta": {"content": "hi"}}]}) == ""
+    assert _looks_like_tool_args_json(
+        '{"file_glob":"**/node_modules/typescript","path":"C:/Users/kwakm","target":"files"}'
+    )
+    assert not _looks_like_tool_args_json('{"answer":"yes"}')
+    assert not _should_emit_assistant_content(
+        '{"file_glob":"x"}',
+        {"delta": {"content": '{"file_glob":"x"}'}},
+    )
     resolved = resolve_hermes_api_key("")
     client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
     assert client.api_key == resolved
+    empty = HermesClient("http://127.0.0.1:1/v1", api_key="")
+    if not empty.api_key:
+        assert empty.probe_chat_auth() == "unauthorized"
     print("hermes_client self-check ok")

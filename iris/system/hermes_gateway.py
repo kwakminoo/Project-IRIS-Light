@@ -43,11 +43,16 @@ def is_hermes_gateway_running(
     base_url: str,
     *,
     api_key: str = "",
+    timeout_sec: float | None = None,
 ) -> bool:
-    return HermesClient(
+    client = HermesClient(
         base_url,
         api_key=resolve_hermes_api_key(api_key),
-    ).gateway_ready()
+    )
+    if timeout_sec is not None:
+        # 설정창 등 빠른 핑 — /models까지는 보지 않는다.
+        return client.health_ok(timeout_sec=timeout_sec)
+    return client.gateway_ready()
 
 
 def _hermes_agent_dir() -> Path:
@@ -188,13 +193,15 @@ def stop_hermes_gateway(command: str = "hermes", *, wait_sec: float = 20.0) -> b
     exe = hermes_executable(command)
     if exe:
         try:
+            # ponytail: CLI stop이 45s 고정이면 warm/ensure wait_sec를 항상 초과한다.
+            cli_timeout = min(45.0, max(8.0, wait_sec + 5.0))
             subprocess.run(
                 [exe, "gateway", "stop", "--all"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=45,
+                timeout=cli_timeout,
                 check=False,
                 env=_gateway_child_env(),
                 creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -398,18 +405,23 @@ def ensure_hermes_gateway_running(
 ) -> bool:
     """켜져 있으면 즉시 True. 아니면 기동 후 /health 준비까지 대기."""
     key = resolve_hermes_api_key(api_key)
-    if is_hermes_gateway_running(base_url, api_key=key):
+    # ponytail: gateway_ready(/models, 최대 15s) 폴링은 wait_sec를 한 번에 초과함.
+    # ensure는 /health 빠른 핑만 — 채팅 readiness는 부팅 후 HermesHealthWorker.
+    def _up() -> bool:
+        return is_hermes_gateway_running(base_url, api_key=key, timeout_sec=2.0)
+
+    if _up():
         return True
     # 좀비 프로세스/락만 있으면 정리 후 재기동
     if _windows_gateway_procs_alive() or _gateway_lock_path().is_file():
         stop_hermes_gateway(command, wait_sec=min(15.0, wait_sec / 2))
-        if is_hermes_gateway_running(base_url, api_key=key):
+        if _up():
             return True
     if not start_hermes_gateway(command):
         return False
     deadline = time.monotonic() + wait_sec
     while time.monotonic() < deadline:
-        if is_hermes_gateway_running(base_url, api_key=key):
+        if _up():
             return True
         time.sleep(0.5)
     return False

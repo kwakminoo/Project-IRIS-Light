@@ -33,7 +33,8 @@ def main() -> None:
         env["IRIS_IDE_WORKSPACE"] = str(ws)
         env["IRIS_IDE_BRIDGE_TOKEN"] = "test-bridge-token"
         env["IRIS_IDE_BRIDGE_PORT"] = "0"
-        env["IRIS_IDE_STATE_FILE"] = str(state)
+        test_state = state.parent / "iris_ide_bridge_test_state.json"
+        env["IRIS_IDE_STATE_FILE"] = str(test_state)
         kwargs: dict = {
             "cwd": str(runtime_source_dir()),
             "env": env,
@@ -50,10 +51,10 @@ def main() -> None:
                 if proc.poll() is not None:
                     out = proc.stdout.read() if proc.stdout else ""
                     raise AssertionError(f"bridge exited early: {out}")
-                if state.is_file():
+                if test_state.is_file():
                     import json
 
-                    data = json.loads(state.read_text(encoding="utf-8"))
+                    data = json.loads(test_state.read_text(encoding="utf-8"))
                     port = int(data.get("bridge_port") or 0)
                     if port:
                         break
@@ -81,6 +82,11 @@ def main() -> None:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+            try:
+                test_state.unlink(missing_ok=True)  # type: ignore[call-arg]
+            except TypeError:
+                if test_state.is_file():
+                    test_state.unlink()
             if backup is None:
                 try:
                     state.unlink(missing_ok=True)  # type: ignore[call-arg]

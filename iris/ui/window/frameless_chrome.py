@@ -168,6 +168,22 @@ class FramelessShell(QWidget):
         for idx in (0, 3, 5):
             self._grips[idx].setVisible(visible)
 
+    def set_companion_grip_mode(self, active: bool) -> None:
+        """Companion A: 좌·하단 전폭 grip 숨김 — Theia 터미널/채팅 입력 보호.
+
+        indices: 0=TL 1=T 2=TR 3=L 4=R 5=BL 6=B 7=BR
+        """
+        if len(self._grips) < 8:
+            return
+        if active:
+            for idx in (0, 3, 5, 6):
+                self._grips[idx].setVisible(False)
+            for idx in (1, 2, 4, 7):
+                self._grips[idx].setVisible(True)
+        else:
+            for grip in self._grips:
+                grip.setVisible(True)
+
     def _sync_layout(self) -> None:
         if self._content is not None:
             self._content.setGeometry(0, 0, self.width(), self.height())

@@ -427,6 +427,54 @@ def ensure_mcp_in_config(repo: Path | None = None) -> tuple[bool, bool, str]:
     return True, True, msg
 
 
+def ensure_hermes_disabled_terminal() -> tuple[bool, str]:
+    """Hermes built-in terminal toolset 비활성 — 실행은 iris_invoke project.run → IDE 터미널만."""
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return False, "PyYAML missing — cannot set agent.disabled_toolsets"
+
+    path = hermes_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+        except Exception as exc:  # noqa: BLE001
+            return False, f"config.yaml parse error: {exc}"
+        if not isinstance(data, dict):
+            data = {}
+    else:
+        data = {}
+
+    agent = data.get("agent")
+    if not isinstance(agent, dict):
+        agent = {}
+    disabled = agent.get("disabled_toolsets")
+    if not isinstance(disabled, list):
+        disabled = []
+    merged = [str(x).strip() for x in disabled if str(x).strip()]
+    if "terminal" in merged:
+        return False, "hermes disabled_toolsets already includes terminal"
+    merged.append("terminal")
+    agent["disabled_toolsets"] = merged
+    data["agent"] = agent
+
+    bak = path.with_name("config.yaml.bak-iris-terminal")
+    if path.is_file() and not bak.is_file():
+        try:
+            shutil.copy2(path, bak)
+        except OSError:
+            pass
+    try:
+        path.write_text(
+            yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return False, f"config.yaml write failed: {exc}"
+    return True, "hermes disabled_toolsets: terminal (IDE integrated terminal only via project.run)"
+
+
 def ensure_skills_installed(repo: Path | None = None) -> tuple[list[str], list[str], list[str]]:
     """Returns (copied, ok, missing)."""
     repo = repo or project_root()
@@ -692,6 +740,14 @@ def sync_iris_control(
     except Exception as exc:  # noqa: BLE001
         report.ok = False
         report.errors.append(f"mcp sync: {exc}")
+
+    try:
+        term_changed, term_msg = ensure_hermes_disabled_terminal()
+        report.messages.append(term_msg)
+        if term_changed:
+            report.needs_gateway_reload = True
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"terminal policy skip: {exc}")
 
     try:
         dead_patch = ensure_hermes_stdio_dead_check_patch()

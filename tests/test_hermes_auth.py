@@ -53,3 +53,51 @@ class HermesClientAuthTests(TestCase):
         ):
             client = HermesClient("http://127.0.0.1:1/v1", api_key="")
             self.assertFalse(client.gateway_ready())
+
+
+class HermesChatAuthProbeTests(TestCase):
+    def test_probe_unauthorized_without_key(self) -> None:
+        with patch(
+            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            return_value={},
+        ):
+            client = HermesClient("http://127.0.0.1:1/v1", api_key="")
+            self.assertEqual(client.probe_chat_auth(), "unauthorized")
+
+    def test_probe_http_401_is_unauthorized(self) -> None:
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        with patch(
+            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            return_value={"API_SERVER_KEY": "gateway-secret"},
+        ):
+            client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
+            err = HTTPError(
+                "http://127.0.0.1:8642/v1/chat/completions",
+                401,
+                "Unauthorized",
+                None,
+                BytesIO(b"Unauthorized"),
+            )
+            with patch("iris.infrastructure.hermes_client.urlopen", side_effect=err):
+                self.assertEqual(client.probe_chat_auth(), "unauthorized")
+
+    def test_probe_http_400_means_bearer_accepted(self) -> None:
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        with patch(
+            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            return_value={"API_SERVER_KEY": "gateway-secret"},
+        ):
+            client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
+            err = HTTPError(
+                "http://127.0.0.1:8642/v1/chat/completions",
+                400,
+                "Bad Request",
+                None,
+                BytesIO(b"messages required"),
+            )
+            with patch("iris.infrastructure.hermes_client.urlopen", side_effect=err):
+                self.assertEqual(client.probe_chat_auth(), "ok")

@@ -226,6 +226,15 @@ class ControlSurface:
                 q = urlparse(self.path).query
                 return f"token={surface.token}" in q.split("&") if q else False
 
+            def _cors(self) -> None:
+                # Theia(QWebEngine) → control 포트는 cross-origin — ACAO 없으면 askIris 실패
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header(
+                    "Access-Control-Allow-Headers",
+                    "Authorization, Content-Type",
+                )
+
             def _json(self, code: int, body: dict[str, Any]) -> None:
                 raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
                 try:
@@ -233,8 +242,21 @@ class ControlSurface:
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Content-Length", str(len(raw)))
                     self.send_header("Connection", "close")
+                    self._cors()
                     self.end_headers()
                     self.wfile.write(raw)
+                except Exception as exc:  # noqa: BLE001
+                    if _is_client_gone(exc):
+                        return
+                    raise
+
+            def do_OPTIONS(self) -> None:  # noqa: N802
+                try:
+                    self.send_response(204)
+                    self._cors()
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
                 except Exception as exc:  # noqa: BLE001
                     if _is_client_gone(exc):
                         return

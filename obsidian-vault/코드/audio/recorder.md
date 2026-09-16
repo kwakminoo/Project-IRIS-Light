@@ -11,5 +11,8 @@ _설명 없음._
 
 ## 내부 의존성
 
+- [[aec]]
 - [[mic_level]]
+- [[pcm_convert]]
+- [[silero_vad]]
 - [[speech_gate]]

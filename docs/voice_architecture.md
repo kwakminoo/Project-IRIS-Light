@@ -1,9 +1,13 @@
 # Voice Architecture
 
+> Updated-at: 2026-08-25
+
 ## 구성
 
 - `iris/audio/`
-  - UI 쪽 클라이언트, 녹음, 워커, 텍스트 정리
+  - UI 클라이언트, 녹음, 워커, Silero VAD, AEC, alert speech, 텍스트 정리
+- `iris/runtime/`
+  - `UserTurnDispatcher`, voice intents (연속 발화·barge-in·wake word)
 - `services/voice_runtime/`
   - localhost 전용 FastAPI 런타임 (`127.0.0.1:18765`)
 - `iris/storage/voice_prefs.py`
@@ -17,6 +21,7 @@
 - 별도 프로세스 (`.venv-voice`): STT/TTS 모델 로딩 및 추론
 - 워커 스레드 (`QThread`): HTTP 호출과 UI 비동기 연결
 - 앱 종료: `VoiceRuntimeProcessManager.shutdown()` → `POST /shutdown`
+- 포트: **18765** 고정 (구 8765는 Control Surface와 충돌 → prefs 마이그레이션)
 
 ## API
 
@@ -34,11 +39,12 @@
 
 ## STT 흐름
 
-1. 마이크 버튼 → `AudioRecorder` 시작 (레벨 → waveform)
-2. 다시 클릭 → wav 생성 → `STTTranscriptionWorker`
+1. 마이크 버튼 → `AudioRecorder` (+ Silero VAD / AEC, 레벨 → waveform)
+2. 세그먼트 확정 → wav → `STTTranscriptionWorker` (큐)
 3. runtime `/v1/audio/transcriptions`
-4. 결과를 `ChatPanel.insert_input_text`로 append (덮어쓰기/자동전송 없음)
+4. 결과 → `UserTurnDispatcher` / `_submit_voice_turn` 으로 **채팅 턴 제출**
 5. GPU면 float16, 실패/비가용이면 CPU int8
+6. 연속 모드·barge-in·wake word는 prefs / `iris/runtime` 정책 따름
 
 ## TTS 흐름
 

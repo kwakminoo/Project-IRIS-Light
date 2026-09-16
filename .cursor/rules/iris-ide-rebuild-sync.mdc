@@ -1,0 +1,43 @@
+---
+description: IRIS IDE 소스 변경 후 Theia bundle 재빌드·설치본 동기화 필수 (Open Folder/DnD 누락 재발 방지)
+globs: integrations/iris-ide/**/*,iris/system/iris_ide_runtime.py,iris/ui/workspaces/iris_ide_window.py,iris/ui/window/file_drop.py,iris/ui/window/_check_file_drop.py
+alwaysApply: false
+---
+
+# IRIS IDE = 소스 ≠ 실행물 (재빌드·동기화 필수)
+
+## 증상 (2026-09 재발)
+
+- File → Open Folder / Open File이 “없는 것처럼” 보임
+- IDE → Iris 채팅 드래그, `ide.pick_open_folder`가 안 먹음
+- TS/`lib/browser/*.js`에는 있는데 **실행은 구버전 bundle**
+
+## 원인
+
+Theia가 읽는 건 `~/.iris-light/runtimes/iris-ide/lib/frontend/bundle.js`.  
+`lib/browser/*.js`만 고치면 **esbuild 재번들 없이는 반영 안 됨**. `start()`는 번들을 안 만든다.
+
+## 에이전트 의무 (IDE 관련 작업 끝날 때마다)
+
+`integrations/iris-ide/**` 또는 IDE 메뉴/DnD/폴더열기/브리지를 만졌으면 **세션 끝에 반드시**:
+
+```powershell
+.venv\Scripts\python.exe -c "from iris.system.iris_ide_runtime import shared_iris_ide_runtime; ok,m=shared_iris_ide_runtime().sync_workspace_build(print); assert ok, m"
+.venv\Scripts\python.exe -m iris.ui.window._check_file_drop
+```
+
+`sync_workspace_build`가 workspace `tsc` + `patch-theia-build`(필요 시 esbuild) + 설치본 복사를 한 번에 한다.
+
+검증: 워크스페이스·설치본 bundle 모두 `iris.ide.openFolder` / `ide.pick_open_folder` / `installComposerDragBridge` 포함.  
+Iris/IDE가 켜져 있으면 **재시작**해야 새 번들 로드.
+
+## 금지
+
+- `lib/browser/*.js`만 복사하고 번들 재생성 생략
+- 소스 문자열 self-check만 보고 끝 (번들 마커 필수)
+- “install 되어 있으니 소스만 고치면 된다” 가정
+
+## 관련
+
+- `integrations/iris-ide/scripts/patch-theia-build.js` — `iris.ide.openFolder` 없으면 강제 rebundle
+- `IrisIdeRuntimeManager.sync_workspace_build`

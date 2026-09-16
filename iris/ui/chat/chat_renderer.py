@@ -45,6 +45,10 @@ _BARE_FILE_PATH = re.compile(
     rf"(?![/\w.])",
     re.IGNORECASE,
 )
+_AT_PATH_REF = re.compile(
+    r"(?<![`\\w./-])@((?:[\w.-]+/)+[\w.-]+(?:\:\d+(?:\:\d+)?)?)\b",
+    re.IGNORECASE,
+)
 _INLINE_CODE_TAG = re.compile(
     r"<code(?![^>]*style=)[^>]*>([^<]+)</code>",
     re.IGNORECASE,
@@ -180,7 +184,8 @@ def _looks_like_git_diff(text: str) -> bool:
 def _inject_file_chips_in_prose(prose: str) -> str:
     if not prose:
         return prose
-    out = _BACKTICK_FILE_PATH.sub(lambda m: render_file_chip(m.group(1)), prose)
+    out = _AT_PATH_REF.sub(lambda m: render_file_chip(m.group(1)), prose)
+    out = _BACKTICK_FILE_PATH.sub(lambda m: render_file_chip(m.group(1)), out)
 
     def _bare_repl(match: re.Match[str]) -> str:
         start = match.start()

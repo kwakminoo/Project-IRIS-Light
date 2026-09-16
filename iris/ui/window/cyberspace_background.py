@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QPoint, QRect, Qt, QTimer
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QRadialGradient
 from PyQt6.QtWidgets import QLayout, QWidget
 
@@ -20,6 +20,7 @@ class CyberspaceBackground(QWidget):
         self._phase = 0.0
         self._orb_layer: Optional[QWidget] = None
         self._ui_overlay: Optional[QWidget] = None
+        self._orb_host: Optional[QWidget] = None
         self._orb_above_ui = False
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAutoFillBackground(False)
@@ -28,13 +29,20 @@ class CyberspaceBackground(QWidget):
         self._timer.timeout.connect(self._tick)
 
     def set_orb_layer(self, widget: QWidget) -> None:
-        """구체 비주얼라이저 — 창 전체를 채우는 최하단 레이어."""
+        """구체 비주얼라이저 — 기본은 창 전체 레이어(히어로/일반). Companion A는 release 후 슬롯 자식."""
         self._orb_layer = widget
         widget.setParent(self)
         widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         widget.lower()
         widget.show()
         self._sync_layers()
+
+    def release_orb_layer(self) -> QWidget | None:
+        """Companion A: 포인터만 끊음 — setParent(None) 금지(호출측 addWidget이 원자적 reparent)."""
+        w = self._orb_layer
+        self._orb_layer = None
+        self._orb_host = None
+        return w
 
     def set_ui_overlay(self, widget: QWidget) -> None:
         """모든 HUD·패널 — 구체 위 투명 오버레이."""
@@ -45,14 +53,27 @@ class CyberspaceBackground(QWidget):
         widget.show()
         self._sync_layers()
 
+    def set_orb_host(self, host: QWidget | None) -> None:
+        """Companion: Visualizer geometry를 우측 Iris 컬럼(host)으로만 맞춤. None=창 전체."""
+        self._orb_host = host
+        self._sync_layers()
+
+    def orb_host(self) -> QWidget | None:
+        return self._orb_host
+
+    def orb_above_ui(self) -> bool:
+        return self._orb_above_ui
+
     def set_orb_above_ui(self, above: bool) -> None:
-        """Companion 겹침용 — 구체를 HUD 로그 위에 그림 (클릭은 UI로 통과)."""
+        """구체를 HUD 위에 올릴지. Companion/unified에서는 False 고정(입력면 보호)."""
         self._orb_above_ui = bool(above)
         if self._orb_layer is not None:
-            self._orb_layer.setAttribute(
-                Qt.WidgetAttribute.WA_TransparentForMouseEvents,
-                self._orb_above_ui,
-            )
+            # ponytail: above일 때만 Transparent — below면 UI가 위라 불필요
+            for w in (self._orb_layer, *self._orb_layer.findChildren(QWidget)):
+                w.setAttribute(
+                    Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+                    self._orb_above_ui,
+                )
         if self._orb_layer is None or self._ui_overlay is None:
             return
         if self._orb_above_ui:
@@ -64,6 +85,16 @@ class CyberspaceBackground(QWidget):
         super().resizeEvent(event)
         self._sync_layers()
 
+    def _orb_layer_geometry(self) -> QRect:
+        """orb_host가 있으면 그 rect(로컬), 없으면 창 전체."""
+        host = self._orb_host
+        if host is not None and host.isVisible() and host.window() is self.window():
+            top_left = host.mapTo(self, QPoint(0, 0))
+            size = host.size()
+            if size.width() > 0 and size.height() > 0:
+                return QRect(top_left, size)
+        return self.rect()
+
     def _sync_layers(self) -> None:
         rect = self.rect()
         # UI 오버레이·레이아웃을 먼저 확정한 뒤 orb 레이어와 anchor 동기화
@@ -71,7 +102,7 @@ class CyberspaceBackground(QWidget):
             self._ui_overlay.setGeometry(rect)
             self._activate_layout_chain(self._ui_overlay)
         if self._orb_layer is not None:
-            self._orb_layer.setGeometry(rect)
+            self._orb_layer.setGeometry(self._orb_layer_geometry())
             request_sync = getattr(self._orb_layer, "request_sync_orb_anchor", None)
             if callable(request_sync):
                 request_sync("cyberspace_sync_layers")

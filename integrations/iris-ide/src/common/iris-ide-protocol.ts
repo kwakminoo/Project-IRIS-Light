@@ -59,6 +59,8 @@ export const IRIS_BRIDGE_COMMANDS = [
     'continueDebug',
     'getGitStatus',
     'getGitDiff',
+    'pollPendingCommands',
+    'completeCommand',
 ] as const;
 
 export type IrisBridgeCommand = typeof IRIS_BRIDGE_COMMANDS[number];

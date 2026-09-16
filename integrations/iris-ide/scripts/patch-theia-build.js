@@ -103,10 +103,13 @@ if (fs.existsSync(iconIco)) {
 }
 
 const bundlePath = path.join(frontendDir, 'bundle.js');
-const bundleHasIris =
-    fs.existsSync(bundlePath) &&
-    fs.readFileSync(bundlePath, 'utf8').includes('iris-ide-frontend-module');
-if (rebundle || !bundleHasIris) {
+const bundleText = fs.existsSync(bundlePath) ? fs.readFileSync(bundlePath, 'utf8') : '';
+const bundleHasIris = bundleText.includes('iris-ide-frontend-module');
+// ponytail: 예전엔 module 문자열만 보면 스킵 → Open Folder/DnD 없는 구번들 고착
+const bundleHasCurrentExt =
+    bundleText.includes('iris.ide.openFolder') &&
+    bundleText.includes('ide.pick_open_folder');
+if (rebundle || !bundleHasIris || !bundleHasCurrentExt) {
     console.log('patch-theia-build: rebundling frontend (iris extension)...');
     execSync('node esbuild.mjs', { cwd: root, stdio: 'inherit' });
     patchIndexHtml(path.join(frontendDir, 'index.html'));

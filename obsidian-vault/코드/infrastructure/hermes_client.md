@@ -12,3 +12,8 @@ Hermes Agent API Server 클라이언트 — OpenAI 호환 채팅·모델 동기�
 - `class HermesClient`
 - `def host_label_for_hermes`
 - `def _format_tool_progress`
+
+## 내부 의존성
+
+- [[hermes_credentials]]
+- [[win_subprocess]]

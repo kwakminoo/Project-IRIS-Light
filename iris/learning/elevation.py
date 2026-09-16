@@ -5,8 +5,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Win32 ShowWindow — 콘솔 깜빡임 없이 기동
+# Win32 ShowWindow — 콘솔 깜빡임 없이 기동 / UAC 재실행은 정상 표시
 _SW_HIDE = 0
+_SW_SHOWNORMAL = 1
 
 
 def is_elevated() -> bool:
@@ -75,12 +76,19 @@ def _find_iris_exe() -> Path | None:
 def iris_launch_command() -> tuple[str, str]:
     """(executable, parameters) for ShellExecute runas.
 
-    UAC 프로그램명은 실행 파일 기준이므로 IRIS.exe를 우선 사용한다.
-    없을 때만 pythonw -m iris (개발 폴백).
+    UAC·작업표시줄 아이콘은 대상 exe에서 온다. dist\\IRIS.exe(thin launcher)가
+    있으면 그걸 쓴다 — 클릭 시 다시 .venv pythonw -m iris 로 최신 소스를 띄운다.
+    exe가 없을 때만 pythonw 폴백.
     """
     iris_exe = _find_iris_exe()
     if iris_exe is not None:
         return str(iris_exe), ""
+
+    root = _project_root()
+    for name in ("pythonw.exe", "python.exe"):
+        py = root / ".venv" / "Scripts" / name
+        if py.is_file():
+            return str(py), "-m iris"
 
     exe = Path(sys.executable)
     if exe.name.lower() == "python.exe":
@@ -107,7 +115,7 @@ def relaunch_as_admin(*, working_directory: str | None = None) -> bool:
         exe,
         params or None,
         cwd,
-        _SW_HIDE,
+        _SW_SHOWNORMAL,
     )
     return int(rc) > 32
 
@@ -116,7 +124,12 @@ if __name__ == "__main__":
     exe, params = iris_launch_command()
     name = Path(exe).name.lower()
     assert name in {"iris.exe", "python.exe", "pythonw.exe"}, exe
-    if name == "iris.exe":
+    found = _find_iris_exe()
+    if found is not None:
+        assert name == "iris.exe", exe
+        assert params == ""
+        assert Path(exe).resolve() == found.resolve()
+    elif name == "iris.exe":
         assert params == ""
     else:
         assert "-m iris" in params

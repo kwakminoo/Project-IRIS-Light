@@ -123,23 +123,26 @@ def parse_file_chip_location(raw_path: str) -> tuple[str, int, int]:
 
 def file_chip_to_html(rel_path: str, *, enabled: bool = True) -> str:
     t = TOKENS
-    label = html.escape((rel_path or "").strip().replace("\\", "/"))
+    full = (rel_path or "").strip().replace("\\", "/")
+    name = full.rsplit("/", 1)[-1] if full else ""
+    label = html.escape(name or full)
+    title = html.escape(full)
     mono = f"font-family:{t.chat_block_mono_font};"
     base = (
         f"display:inline;font-size:{t.font_size_micro};font-weight:600;"
         f"padding:1px 7px;margin:0 1px;border-radius:7px;{mono}"
     )
     if enabled:
-        href = html.escape(file_anchor_for(rel_path or ""), quote=True)
+        href = html.escape(file_anchor_for(full or ""), quote=True)
         return (
-            f'<a href="{href}" title="IDE에서 열기" '
+            f'<a href="{href}" title="{title}" '
             f'style="{base}'
             f"background-color:rgba(56,189,248,0.14);color:#7dd3fc;"
             f"text-decoration:none;border:1px solid rgba(56,189,248,0.38);"
             f'cursor:pointer;">{label}</a>'
         )
     return (
-        f'<span title="IDE 미연결" '
+        f'<span title="{title}" '
         f'style="{base}'
         f"background-color:rgba(71,85,105,0.18);color:{t.disabled};"
         f'border:1px solid rgba(100,116,139,0.28);cursor:default;">'

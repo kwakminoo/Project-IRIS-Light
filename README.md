@@ -11,6 +11,10 @@ IRIS는 [Ollama](https://ollama.com/)(로컬/클라우드 모델)와 [Hermes Age
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg)](#필요-사양)
 
+🌐 **소개 사이트 — [cjh030906.github.io/iris-light-site](https://cjh030906.github.io/iris-light-site/)**
+시연 영상, 실제 화면, 동작 구조를 한 페이지에서 볼 수 있습니다.
+([저장소](https://github.com/cjh030906/iris-light-site))
+
 ---
 
 ## 🎬 설치·동작 데모 영상
@@ -37,9 +41,9 @@ IRIS는 [Ollama](https://ollama.com/)(로컬/클라우드 모델)와 [Hermes Age
 **파이썬을 처음 써 보는 분도 명령어 입력 없이 설치할 수 있습니다.**
 
 <table>
-<tr><td align="center"><b>1</b></td><td>저장소를 <code>Code → Download ZIP</code> 으로 받아 압축을 풉니다.</td></tr>
-<tr><td align="center"><b>2</b></td><td>폴더 안의 <b><code>setup.bat</code> 을 더블클릭</b>합니다. — 파이썬 확인 · 가상환경 · 패키지 설치 · 검증까지 <b>전부 자동</b></td></tr>
-<tr><td align="center"><b>3</b></td><td><b><code>run.bat</code> 을 더블클릭</b>합니다. 시작 위저드가 Ollama · Hermes 설치를 이어서 안내합니다.</td></tr>
+<tr><td align="center"><b>1</b></td><td><a href="https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup.exe"><b>IRIS-Setup.exe 내려받기</b></a> — Windows 10/11 · 약 23MB</td></tr>
+<tr><td align="center"><b>2</b></td><td><b>실행</b>합니다. 서명 인증서가 없어 Windows가 한 번 막습니다 — <b>추가 정보 → 실행</b>. 파이썬 확인 · 가상환경 · 패키지 설치 · 검증까지 <b>전부 자동</b>이라 몇 분 걸립니다.</td></tr>
+<tr><td align="center"><b>3</b></td><td>바탕화면의 <b><code>IRIS</code></b> 를 실행합니다. 시작 위저드가 Ollama · Hermes 설치를 이어서 안내합니다.</td></tr>
 </table>
 
 끝입니다. 자세한 설치 옵션과 문제 해결은 [설치](#설치) 절을 보세요.
@@ -87,12 +91,15 @@ IRIS는 웹검색·셸·파일 IO를 자체 재구현하지 않습니다.
 | **시작 프로토콜**   | 첫 실행 시 Ollama·최소 모델·Hermes 설치/기동·provider·gateway·MCP 연동을 단계적으로 안내·자동화 |
 | **대화형 HUD**   | 모델 선택, 대화 이력, 사고/도구 로그, 실시간 스트리밍                                       |
 | **에이전트 실행**   | Hermes를 통한 파일·터미널·웹 등 도구 호출 (스킬·MCP 포함)                                |
-| **시스템 모니터**   | 창/리소스 인식, 알림 정책, Live Activity                                         |
+| **Control Surface** | Hermes→UI 역제어 (`:8765`) · iris-control 스킬·MCP                          |
+| **시스템 모니터**   | 창/리소스 인식, 알림 정책, Live Activity, (옵션) 전화/알림 낭독                          |
 | **이메일**       | 다중 계정 메일 워크스페이스                                                        |
+| **캘린더**       | 일정 워크스페이스 + 공휴일·에이전트 연동                                                 |
+| **IDE Companion** | IDE 타일 배치·바이브코딩 연동                                                    |
 | **Iris Wiki** | Obsidian vault 기반 프로젝트 문서 + `~/.iris-light/iris-wiki` 사용자 노트           |
-| **캘린더**       | 일정 워크스페이스 + 에이전트 연동                                                    |
 | **로컬 저장**     | 설정·프로필 등 SQLite (`~/.iris-light/`)                                     |
-| **선택 확장**     | 음성 런타임, 화면 학습(Aloha), Android 에뮬레이터·mobile-mcp 등                       |
+| **선택 확장**     | 음성 런타임(`:18765`), 화면 학습(Aloha), Android 에뮬레이터·mobile-mcp 등             |
+| **준비 중**      | Instagram / Discord / Kakao / Telegram 워크스페이스                         |
 
 
 ---
@@ -128,7 +135,18 @@ IRIS는 기본적으로 **클라우드 모델**로 추론하고, 로컬에는 UI
 
 ## 설치
 
-### 방법 A — 자동 설치 (권장)
+### 방법 A — 설치 프로그램 (권장)
+
+[**IRIS-Setup.exe**](https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup.exe)
+를 받아 실행합니다. `%LOCALAPPDATA%\Programs\IRIS` 에 설치한 뒤, 아래 방법 B와 똑같은
+`setup.ps1` 을 돌려 가상환경과 패키지를 준비합니다.
+
+- 서명 인증서가 없어 Windows SmartScreen이 한 번 경고합니다 — **추가 정보 → 실행**
+- 패키지를 받는 데 몇 분 걸립니다. 진행 기록은 설치 폴더의 `setup-log.txt` ·
+  `setup-log-pip.txt` 에 남습니다
+- 설치가 중간에 끊겼다면 설치 폴더의 `setup.bat` 을 다시 실행하면 이어서 복구합니다
+
+### 방법 B — 소스에서 자동 설치
 
 저장소 폴더에서 **`setup.bat` 을 더블클릭**하면 끝입니다.
 터미널을 열 필요도, 명령어를 외울 필요도 없습니다.
@@ -163,7 +181,7 @@ chmod +x setup.sh
 > 실행 정책(`ExecutionPolicy`) 때문에 `.ps1` 이 막히는 환경에서도 `setup.bat` 은
 > 정상 동작합니다. 내부에서 `-ExecutionPolicy Bypass` 로 우회합니다.
 
-### 방법 B — 수동 설치
+### 방법 C — 수동 설치
 
 ```powershell
 git clone https://github.com/kwakminoo/Project-IRIS-Light.git
@@ -184,6 +202,7 @@ copy .env.example .env
 | 가상환경 생성 실패 | Microsoft Store 버전 Python은 문제가 잦습니다. [python.org](https://www.python.org/downloads/) 배포판 권장. Debian 계열은 `sudo apt install python3-venv` |
 | 패키지 설치 중 네트워크 오류 | 사내망/프록시. `pip install -r requirements.txt --trusted-host pypi.org --trusted-host files.pythonhosted.org` |
 | PyQt6 import 실패 | Windows: `winget install -e --id Microsoft.VCRedist.2015+.x64` · Linux: `sudo apt install libgl1 libegl1 libxkbcommon-x11-0 libxcb-cursor0` |
+| 설치는 끝났는데 앱이 안 뜸 | 의존성 설치가 중간에 끊긴 경우입니다. 실행하면 이유를 창으로 알려 주고 `%LOCALAPPDATA%\iris-light\launcher.log` 에 남깁니다. 설치 폴더의 `setup.bat` 을 다시 실행하세요 |
 | 그래도 안 될 때 | `.\setup.ps1 -Recreate` 로 가상환경을 통째로 다시 만들기 |
 
 ---
@@ -191,11 +210,24 @@ copy .env.example .env
 ## 실행
 
 ```powershell
-# 권장: run.bat (dist\IRIS.exe 또는 venv pythonw)
+# 권장: 소스(.venv)로 최신 코드 실행 — 로컬 수정이 즉시 반영됩니다
 .\run.bat
 
 # 또는
 python -m iris
+```
+
+`run.bat`은 **`.venv`의 `python -m iris`를 기본**으로 씁니다.  
+`dist\IRIS.exe`는 예전 스냅샷일 수 있어, 더 이상 기본 경로가 아닙니다.
+
+- 패키지 EXE만 쓰려면: `set IRIS_USE_EXE=1` 후 `.\run.bat`
+- EXE를 더블클릭해도 저장소에 `.venv`가 있으면 **최신 소스로 자동 전환**합니다 (한 번 `scripts\build_iris_exe.ps1`로 새 EXE를 빌드한 뒤부터).
+- EXE 본체로만 돌리려면: `set IRIS_FORCE_FROZEN=1`
+
+바로가기(바탕화면/시작메뉴)도 소스 우선입니다.
+
+```powershell
+.\scripts\install_iris_shortcuts.ps1
 ```
 
 Linux/macOS:
@@ -222,14 +254,17 @@ chmod +x run.sh
 
 ```text
 iris/                 # 앱 본체
-  ui/                 # PyQt6 HUD (채팅, 모니터, 위키, 메일, 설정…)
-  system/             # setup_protocol, ollama_server, hermes_gateway
-  infrastructure/     # Ollama/Hermes HTTP 클라이언트
+  ui/                 # PyQt6 HUD (채팅, 모니터, 위키, 메일, 캘린더, IDE, 설정…)
+  system/             # setup_protocol, ollama_server, hermes_gateway, control_surface
+  infrastructure/     # Ollama/Hermes/email/calendar HTTP 클라이언트
+  runtime/            # UserTurnDispatcher · voice intents
   knowledge/          # Iris Wiki · Obsidian vault
   storage/            # SQLite 설정·프로필·메일 계정 등
-  monitoring/         # 모니터·알림
-  learning/           # (선택) 화면 학습
-  audio/              # (선택) 음성
+  monitoring/         # 모니터·알림·콜
+  learning/           # (선택) 화면 학습 Aloha
+  audio/              # (선택) 음성 클라이언트 · VAD/AEC
+  mcp/                # iris-control stdio
+services/voice_runtime/  # (선택) FastAPI STT/TTS :18765
 integrations/         # Hermes 스킬·플러그인, Aloha 등
 docs/                 # 도메인·IA·API·음성 설계
 obsidian-vault/       # 프로젝트 지식 베이스 (Wiki docs 소스)
@@ -276,8 +311,10 @@ LICENSE.md            # 라이선스 근거·서드파티 인벤토리
 | 문서                                                                             | 설명                                 |
 | ------------------------------------------------------------------------------ | ---------------------------------- |
 | `[docs/domain.md](docs/domain.md)`                                             | 바운디드 컨텍스트·Runtime Gateway 설계       |
-| `[docs/ia/IA.md](docs/ia/IA.md)`                                               | 정보 구조·요청 경로                        |
+| `[docs/ia/IA.md](docs/ia/IA.md)`                                               | 정보 구조·요청 경로·아키텍처 다이어그램              |
 | `[docs/api/](docs/api/)`                                                       | API 관련 문서                          |
+| `[docs/voice.md](docs/voice.md)`                                               | 음성 STT/TTS · 보이스 프로필               |
+| `[docs/voice_architecture.md](docs/voice_architecture.md)`                     | 음성 런타임 경계·흐름                       |
 | `[integrations/hermes-skills/README.md](integrations/hermes-skills/README.md)` | Iris Control Surface (Hermes ↔ UI) |
 | `[LICENSE.md](LICENSE.md)`                                                     | 라이선스 근거 · 서드파티 인벤토리      |
 | `[docs/demo-video-script.md](docs/demo-video-script.md)`                       | 데모 영상 촬영 대본 · 업로드 절차     |

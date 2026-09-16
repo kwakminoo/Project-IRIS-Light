@@ -196,7 +196,9 @@ class IrisIdeRuntimeManager:
         for rel in (
             "lib/browser/iris-ide-frontend-contribution.js",
             "lib/browser/iris-ide-frontend-module.js",
+            "lib/browser/iris-ide-bridge-poller.js",
             "lib/frontend/bundle.js",
+            "bridge/standalone-bridge.js",
         ):
             s = src / rel
             if s.is_file():
@@ -218,35 +220,99 @@ class IrisIdeRuntimeManager:
                 timeout=180.0,
             )
 
+    def sync_workspace_build(
+        self,
+        progress: ProgressFn | None = None,
+        *,
+        run_streamed: Callable[..., Any] | None = None,
+    ) -> tuple[bool, str]:
+        """워크스페이스 tsc+번들 재생성 후 설치본에 복사.
+
+        ponytail: start()는 번들을 안 만듦. IDE 확장 고친 뒤 반드시 호출.
+        """
+        if is_iris_ide_demo():
+            return True, "[demo] sync skipped"
+        src = runtime_source_dir()
+        if not (src / "package.json").is_file():
+            return False, f"소스 없음: {src}"
+        if not self.is_installed():
+            return False, "IRIS IDE 미설치 — install/repair 먼저"
+        node = node_executable()
+        tsc = src / "node_modules" / "typescript" / "bin" / "tsc"
+        if not tsc.is_file():
+            return False, "workspace typescript 없음 — integrations/iris-ide 에서 yarn install"
+        self._emit(progress, "workspace tsc…")
+        ok_tsc, tsc_msg = self._run_cmd(
+            [node, str(tsc)],
+            cwd=str(src),
+            progress=progress,
+            run_streamed=run_streamed,
+            timeout=120.0,
+        )
+        if not ok_tsc:
+            return False, tsc_msg
+        patch = src / "scripts" / "patch-theia-build.js"
+        if not patch.is_file():
+            return False, "patch-theia-build.js 없음"
+        self._emit(progress, "workspace theia rebundle…")
+        ok_patch, patch_msg = self._run_cmd(
+            [node, str(patch)],
+            cwd=str(src),
+            progress=progress,
+            run_streamed=run_streamed,
+            timeout=300.0,
+        )
+        if not ok_patch:
+            return False, patch_msg
+        self._sync_build_patch(runtime_install_dir(), progress=progress, run_streamed=run_streamed)
+        bundle = runtime_install_dir() / "lib" / "frontend" / "bundle.js"
+        if not bundle.is_file():
+            return False, "설치본 bundle.js 없음"
+        text = bundle.read_text(encoding="utf-8", errors="ignore")
+        if "iris.ide.openFolder" not in text or "ide.pick_open_folder" not in text:
+            return False, "번들에 Open Folder 확장 미포함 — rebundle 실패"
+        return True, "workspace build synced to install"
+
     def start(self, project_root_path: str = "") -> tuple[bool, str]:
+        # 이전 Iris 세션 orphan Theia가 있으면 포트/워크스페이스 고착
+        if not is_iris_ide_demo():
+            st = self._read_state()
+            tracked = self._proc is not None and self._proc.poll() is None
+            if not tracked and int(st.get("pid") or 0):
+                self.stop()
+        running = False
         with self._lock:
             if is_iris_ide_demo():
                 self._theia_port = 3000
                 self._bridge_port = 3001
                 self._token = "demo-token"
-                self._workspace = project_root_path or str(project_root())
+                self._workspace = project_root_path or ""
                 self._write_state({"pid": 0, "port": 3000, "bridge_port": 3001, "token": self._token})
                 return True, "demo"
             ok, msg = self.verify_installation()
             if not ok:
                 return False, msg
-            if self._proc is not None and self._proc.poll() is None:
-                if project_root_path:
-                    self.open_project(project_root_path)
-                return True, "already running"
+            running = self._proc is not None and self._proc.poll() is None
+            if running:
+                if not project_root_path:
+                    return True, "already running"
+                root = Path(project_root_path).expanduser()
+                if not root.is_dir():
+                    return False, f"not a directory: {project_root_path}"
+                target = str(root.resolve())
+                if self._workspace == target:
+                    return True, target
+
+        if running and project_root_path:
+            self.stop()
+            return self.start(project_root_path)
+
+        with self._lock:
             root = Path(project_root_path or "").expanduser()
             if project_root_path and not root.is_dir():
                 return False, f"not a directory: {project_root_path}"
-            # Path("").is_dir() resolves to the cwd (always True) — must check the
-            # original string too, or "no project" would still count as explicit.
-            explicit_workspace = bool(project_root_path) and root.is_dir()
-            # ponytail: project_root_path가 없으면 "새 창"(welcome) 상태 — 예전엔 여기서
-            # project_root()(IRIS-Light 저장소 자체)를 기본 워크스페이스로 잡아 Theia에
-            # 넘겼기 때문에, Theia 입장에서는 항상 폴더가 열려 있는 걸로 보여
-            # IrisIdeStartWidget(새 창 시작 화면)이 절대 뜨지 않았다. self._workspace는
-            # 브릿지 sandbox 루트로는 계속 쓰되(파일 API가 최소한 유효한 폴더를 갖도록),
-            # Theia CLI에는 explicit_workspace일 때만 넘긴다.
-            self._workspace = str(root.resolve()) if explicit_workspace else str(project_root().resolve())
+            # ponytail: 빈 경로면 project_root()로 폴백하지 않음 — 웰컴 모드
+            self._workspace = str(root.resolve()) if (project_root_path and root.is_dir()) else ""
             self._theia_port = _free_port()
             self._bridge_port = _free_port()
         self._token = secrets.token_urlsafe(24)
@@ -279,7 +345,7 @@ class IrisIdeRuntimeManager:
         ]
         if router_config.is_file():
             theia_args.append(f"--ovsx-router-config={router_config}")
-        if explicit_workspace:
+        if self._workspace:
             theia_args.append(self._workspace)
         kwargs_base: dict[str, Any] = {
             "cwd": str(runtime_install_dir()),
@@ -351,25 +417,7 @@ class IrisIdeRuntimeManager:
 
     @property
     def workspace(self) -> str:
-        """Current Theia workspace root.
-
-        Prefers the bridge's live state-file value over ``self._workspace``:
-        File > Open Folder inside a running Theia window changes the
-        workspace in place (no process restart), and the bridge rewrites the
-        state file whenever that happens — this stays in sync without an
-        extra network round trip. ``self._workspace`` is the fallback for the
-        brief window before the bridge has confirmed anything.
-        """
-        live = str(self._read_state().get("workspace") or "").strip()
-        return live or self._workspace
-
-    @property
-    def workspace_open(self) -> bool:
-        """Whether Theia currently has a folder open (vs. the welcome screen)."""
-        st = self._read_state()
-        if "workspace_open" in st:
-            return bool(st.get("workspace_open"))
-        return bool(self._workspace)
+        return self._workspace
 
     def health(self) -> bool:
         if is_iris_ide_demo():
@@ -400,39 +448,46 @@ class IrisIdeRuntimeManager:
         except (URLError, TimeoutError, OSError):
             return False
 
-    def open_project(self, project_root_path: str) -> tuple[bool, str]:
+    def switch_workspace(self, project_root_path: str) -> tuple[bool, str]:
+        """다른 폴더로 전환 — 실행 중이면 Theia·브리지 재기동."""
+        ok, detail = self.start(project_root_path)
+        if not ok:
+            return False, detail
         root = Path(project_root_path).expanduser()
-        if not root.is_dir():
-            return False, f"not a directory: {project_root_path}"
-        self._workspace = str(root.resolve())
-        from iris.infrastructure.iris_ide_client import IrisIdeClient
+        return True, str(root.resolve()) if root.is_dir() else self._workspace
 
-        client = IrisIdeClient(base_url=self.bridge_base_url(), token=self.bridge_token())
-        try:
-            client.get_workspace()
-            return True, self._workspace
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+    def open_project(self, project_root_path: str) -> tuple[bool, str]:
+        return self.switch_workspace(project_root_path)
 
     def stop(self) -> None:
         with self._lock:
+            st = self._read_state()
+            pids: list[int] = []
             for proc in (self._proc, self._bridge_proc):
                 if proc is not None and proc.poll() is None:
-                    if sys.platform == "win32":
-                        flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                        subprocess.run(
-                            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                            capture_output=True,
-                            creationflags=flags,
-                            timeout=8,
-                            check=False,
-                        )
-                    else:
-                        try:
-                            proc.terminate()
-                            proc.wait(timeout=5)
-                        except (OSError, subprocess.TimeoutExpired):
-                            proc.kill()
+                    pids.append(int(proc.pid))
+            for key in ("pid", "bridge_pid"):
+                try:
+                    pid = int(st.get(key) or 0)
+                except (TypeError, ValueError):
+                    pid = 0
+                if pid > 0 and pid not in pids:
+                    pids.append(pid)
+            for pid in pids:
+                if sys.platform == "win32":
+                    flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
+                        capture_output=True,
+                        creationflags=flags,
+                        timeout=8,
+                        check=False,
+                    )
+                else:
+                    try:
+                        os.kill(pid, 15)
+                    except OSError:
+                        pass
             self._proc = None
             self._bridge_proc = None
             self._clear_state()

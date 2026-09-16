@@ -13,19 +13,19 @@ description: >
 
 ## Steps
 
-1. `iris_get_state` — note `project_root`, `project_parents`, `ui_mode`. Do **not** treat Hermes cwd as Iris work path.
-2. If user named a project vaguely (e.g. "AI guitar tab"):
-   `iris_invoke` → `project.open_similar` with `args.query`
+1. `mcp__iris_control__iris_get_state` — note `project_root`, `project_parents`, `ui_mode`. Do **not** treat Hermes cwd as Iris work path.
+2. If user named a project vaguely (e.g. "AI guitar tab" / "자료구조"):
+   `mcp__iris_control__iris_invoke` → action=`project.open_similar` args=`{query}`
 3. Else if user said only "아이리스 라이트 작업 시작" / start Iris work (no other project name):
-   `iris_invoke` → `project.open_similar` with `args.query` = `iris light`
+   `mcp__iris_control__iris_invoke` → action=`project.open_similar` args=`{query: iris light}`
    (prefer **Project-IRIS-Light-main** under configured parents — not the old `IRIS` / Project---IRIS repo)
 4. Else if user gave an absolute path:
-   `iris_invoke` → `ide.open_folder` with `args.path`
+   `mcp__iris_control__iris_invoke` → action=`ide.open_folder` args=`{path}`
 5. Else if user only asked to open IDE / Companion (no folder):
-   `iris_invoke` → `ide.enter_companion`
+   `mcp__iris_control__iris_invoke` → action=`ide.enter_companion`
    (Iris opens IDE first, then tiles IDE 70% + Iris 30% companion — do not use terminal `cursor`)
 6. Else if creating new work (구구단 테스트 등):
-   `iris_invoke` → `project.create_scaffold` with `name`, `template` (`gugudan`|`python-hello`), `open=true`
+   `mcp__iris_control__iris_invoke` → action=`project.create_scaffold` with `name`, `template` (`gugudan`|`python-hello`), `open=true`
    (scaffold opens the folder in Companion and reveals the first source file in the editor)
 7. If `project.open_similar` fails with `reason=ambiguous` or `low_score`:
    show `matches` to the user → then `ide.open_folder` with the chosen `path`

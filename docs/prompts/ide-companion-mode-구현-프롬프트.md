@@ -1,6 +1,7 @@
 # 구현 프롬프트: Iris IDE Companion Mode (창 타일 80:20)
 
-> 이 문서를 Agent에게 그대로 넘기면 된다.  
+> **상태 (2026-08-25): 구현 완료.** 이 문서는 역사적 구현 프롬프트로 보관한다.  
+> 현재 사이드바 툴팁은 `"IDE Companion"`, 페이지는 `iris/ui/workspaces/ide_companion_page.py`.  
 > Ask/설계 대화(2026-07-23) 합의안 기준.  
 > **임베드 금지** — IDE는 별도 창이며, 화면 work area의 약 80% 크기로 **배치**한다.
 
@@ -11,8 +12,8 @@
 - 프로젝트: Project-IRIS-Light (PyQt6 HUD)
 - AI 백엔드: Hermes gateway + Ollama (이미 연동·자동 기동됨)
 - 기존 창 유틸: `iris/automation/window_controller.py` (`list_visible_windows`, `focus_and_place` 등)
-- 프로필: `iris/storage/user_profile.py`, `iris/ui/user_profile_dialog.py`
-- 사이드바 IDE 아이콘: `main_window.py` — 현재 `"IDE (준비 중)"`
+- 프로필: `iris/storage/user_profile.py`, `iris/ui/settings/user_profile_dialog.py`
+- 사이드바 IDE 아이콘: `main_window.py` — **구현됨** (`"IDE Companion"`)
 - Live Activity 로그는 이모지 제거됨 (`activity_privacy.strip_emoji`) — 유지
 - 코딩 AI는 **항상 Iris → Hermes → Ollama**. IDE 내장 AI(Cursor Composer 등)를 대체/제어하지 않음. UX 문구만 “바이브코딩은 Iris 채팅으로” 통일.
 

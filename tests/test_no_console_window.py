@@ -106,3 +106,19 @@ class HotPathTests(TestCase):
             snap = read_call_state()
         self.assertTrue(snap.error)
         self.assertEqual(snap.state.value, "unknown")
+
+
+class VoiceRuntimeGuardTests(TestCase):
+    def test_voice_runtime_manager_resolves_cross_platform_venv(self) -> None:
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "iris"
+            / "audio"
+            / "voice_runtime_manager.py"
+        )
+        body = path.read_text(encoding="utf-8")
+        self.assertIn('Scripts" / "python.exe"', body)
+        self.assertIn('bin" / "python"', body)
+        self.assertIn("_bootstrap_venv", body)
+        self.assertIn("_resolve_python", body)
+        self.assertIn("_no_window_kwargs()", body)

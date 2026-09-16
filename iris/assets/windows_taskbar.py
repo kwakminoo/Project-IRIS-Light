@@ -10,6 +10,7 @@ Chrome/Cursor/Explorer 등 타 앱 .lnk 는 절대 수정하지 않는다.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -52,11 +53,25 @@ def _start_menu_lnk() -> Path:
     return start / _START_MENU_NAME
 
 
+def _all_users_start_menu_lnk() -> Path:
+    """관리자 권한 프로세스는 All Users 시작 메뉴 .lnk 아이콘을 본다."""
+    base = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+    return Path(base) / "Microsoft/Windows/Start Menu/Programs" / _START_MENU_NAME
+
+
 def _pinned_taskbar_dirs() -> list[Path]:
     home = Path.home()
     return [
         home / "AppData/Roaming/Microsoft/Internet Explorer/Quick Launch/User Pinned/TaskBar",
     ]
+
+
+_HICON_KEEPALIVE: list[int] = []
+_WM_SETICON = 0x0080
+_ICON_SMALL = 0
+_ICON_BIG = 1
+_IMAGE_ICON = 1
+_LR_LOADFROMFILE = 0x0010
 
 
 def apply_windows_app_id() -> None:
@@ -68,6 +83,55 @@ def apply_windows_app_id() -> None:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
     except Exception:
         pass
+
+
+def _send_window_icons(hwnd: int, icon: Path) -> None:
+    if not hwnd or not icon.is_file():
+        return
+    try:
+        import ctypes
+
+        path = str(icon.resolve())
+        user32 = ctypes.windll.user32
+        for size, which in ((32, _ICON_BIG), (16, _ICON_SMALL)):
+            handle = user32.LoadImageW(None, path, _IMAGE_ICON, size, size, _LR_LOADFROMFILE)
+            if not handle:
+                continue
+            _HICON_KEEPALIVE.append(int(handle))
+            user32.SendMessageW(hwnd, _WM_SETICON, which, handle)
+    except Exception:
+        pass
+
+
+def apply_hwnd_branding(hwnd: int) -> None:
+    """작업표시줄 버튼에 IRIS 아이콘·재실행 명령을 고정 (관리자 권한 포함)."""
+    if sys.platform != "win32" or not hwnd:
+        return
+    apply_windows_app_id()
+    icon = app_icon_path()
+    root = _project_root()
+    target, _work, arguments = _canonical_launch_target(root)
+    quoted = f'"{target.resolve()}"'
+    cmd = f"{quoted} {arguments}".strip() if arguments else quoted
+    try:
+        from win32com.propsys import propsys, pscon
+
+        store = propsys.SHGetPropertyStoreForWindow(int(hwnd))
+        store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType(APP_USER_MODEL_ID))
+        store.SetValue(pscon.PKEY_AppUserModel_RelaunchCommand, propsys.PROPVARIANTType(cmd))
+        store.SetValue(
+            pscon.PKEY_AppUserModel_RelaunchDisplayNameResource,
+            propsys.PROPVARIANTType("IRIS"),
+        )
+        if icon.is_file():
+            store.SetValue(
+                pscon.PKEY_AppUserModel_RelaunchIconResource,
+                propsys.PROPVARIANTType(f"{icon.resolve()},0"),
+            )
+        store.Commit()
+    except Exception:
+        pass
+    _send_window_icons(int(hwnd), icon)
 
 
 def _read_shell_link(lnk_path: Path) -> dict[str, str]:
@@ -288,6 +352,7 @@ def ensure_windows_taskbar_branding() -> None:
     if sys.platform != "win32":
         return
     write_branded_shortcut(_start_menu_lnk())
+    write_branded_shortcut(_all_users_start_menu_lnk())
     repair_pinned_taskbar_shortcuts()
 
 
@@ -300,6 +365,7 @@ def install_all_shortcuts() -> list[Path]:
     paths = [
         Path.home() / "Desktop" / _START_MENU_NAME,
         _start_menu_lnk(),
+        _all_users_start_menu_lnk(),
         root / _START_MENU_NAME,
     ]
     for p in paths:
@@ -322,6 +388,7 @@ def _self_check() -> None:
         "app_id": "",
     }
     assert _is_iris_owned_shortcut(fake2, root=root), "iris.exe must match"
+    assert _all_users_start_menu_lnk().name == _START_MENU_NAME
     ensure_windows_taskbar_branding()
     assert _start_menu_lnk().is_file()
     print("windows_taskbar ok", APP_USER_MODEL_ID, "pinned_dirs", len(_pinned_taskbar_dirs()))

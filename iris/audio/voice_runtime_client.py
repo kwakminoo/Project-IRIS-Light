@@ -202,8 +202,8 @@ class VoiceRuntimeClient:
         }
         return self._post_json("/v1/voice/analyze", payload, timeout=max(self._timeout, 600.0))
 
-    def voice_references(self) -> list[dict[str, Any]]:
-        res = self._get_json("/v1/voice/references")
+    def voice_references(self, *, timeout: float | None = None) -> list[dict[str, Any]]:
+        res = self._get_json("/v1/voice/references", timeout=timeout)
         items = res.get("items") or []
         return items if isinstance(items, list) else []
 

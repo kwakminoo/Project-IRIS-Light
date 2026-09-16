@@ -21,6 +21,7 @@ class WorkspaceAction:
     icon_kind: str
     tooltip: str
     callback: Callable[[], None] | None
+    reclick_returns: bool = True
 
 
 class WorkspaceActionPanel(QWidget):
@@ -52,7 +53,14 @@ class WorkspaceActionPanel(QWidget):
 
     def _invoke_icon_action(self, action_id: str, callback: Callable[[], None]) -> None:
         btn = self._buttons.get(action_id)
-        if btn is not None and btn.property("active") is True and self._default_callback is not None:
+        action = self._actions.get(action_id)
+        # IDE처럼 토글 액션은 재클릭이 기본화면 복귀가 아니라 콜백(종료)이어야 함
+        if (
+            btn is not None
+            and btn.property("active") is True
+            and self._default_callback is not None
+            and (action is None or action.reclick_returns)
+        ):
             self._default_callback()
             return
         callback()
@@ -64,10 +72,13 @@ class WorkspaceActionPanel(QWidget):
         icon_kind: str,
         tooltip: str,
         callback: Callable[[], None] | None = None,
+        reclick_returns: bool = True,
     ) -> None:
         if action_id in self._buttons:
             self.update_action(action_id, icon_kind=icon_kind, tooltip=tooltip)
-            self._actions[action_id] = WorkspaceAction(action_id, icon_kind, tooltip, callback)
+            self._actions[action_id] = WorkspaceAction(
+                action_id, icon_kind, tooltip, callback, reclick_returns
+            )
             return
 
         btn = QPushButton()
@@ -90,7 +101,9 @@ class WorkspaceActionPanel(QWidget):
         self._grid.addWidget(btn, row, col)
 
         self._buttons[action_id] = btn
-        self._actions[action_id] = WorkspaceAction(action_id, icon_kind, tooltip, callback)
+        self._actions[action_id] = WorkspaceAction(
+            action_id, icon_kind, tooltip, callback, reclick_returns
+        )
 
     def update_action(
         self,
@@ -121,6 +134,7 @@ class WorkspaceActionPanel(QWidget):
                 kind,
                 tooltip or action.tooltip,
                 action.callback,
+                action.reclick_returns,
             )
 
     def set_action_active(self, action_id: str, active: bool) -> None:

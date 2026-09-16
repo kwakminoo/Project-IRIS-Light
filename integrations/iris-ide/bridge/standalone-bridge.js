@@ -8,21 +8,17 @@ const http = require('http');
 const path = require('path');
 const { execSync } = require('child_process');
 
-let workspaceRoot = path.resolve(process.env.IRIS_IDE_WORKSPACE || process.cwd());
-// Whether Theia currently has a folder open (vs. the "new window" welcome
-// screen). workspaceRoot itself stays populated even when this is false —
-// file-API sandboxing always needs a valid root — so callers must check
-// this flag to tell "no folder open" apart from "folder open at X".
-let workspaceOpen = true;
+const workspaceRoot = path.resolve(process.env.IRIS_IDE_WORKSPACE || process.cwd());
 const token = (process.env.IRIS_IDE_BRIDGE_TOKEN || '').trim() || crypto.randomBytes(24).toString('hex');
 const wantPort = parseInt(process.env.IRIS_IDE_BRIDGE_PORT || '0', 10);
 const stateFile = (process.env.IRIS_IDE_STATE_FILE || '').trim();
 
 let editorState = null;
-let boundPort = 0;
+let pendingCommands = [];
+let commandResults = {};
+let nextCommandId = 1;
 
 function writeState(port) {
-    boundPort = port || boundPort;
     if (!stateFile) return;
     let existing = {};
     try {
@@ -32,10 +28,9 @@ function writeState(port) {
     } catch (_) { /* ignore */ }
     const payload = {
         ...existing,
-        bridge_port: boundPort,
+        bridge_port: port,
         token,
         workspace: workspaceRoot,
-        workspace_open: workspaceOpen,
         bridge_pid: process.pid,
     };
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
@@ -44,7 +39,13 @@ function writeState(port) {
 
 function resolvePath(rel) {
     const root = workspaceRoot;
-    const target = path.resolve(root, rel || '.');
+    const raw = String(rel || '').trim();
+    if (path.isAbsolute(raw)) {
+        const abs = path.resolve(raw);
+        if (!abs.startsWith(root)) throw new Error('path escapes workspace');
+        return abs;
+    }
+    const target = path.resolve(root, raw || '.');
     if (!target.startsWith(root)) throw new Error('path escapes workspace');
     return target;
 }
@@ -72,32 +73,56 @@ function authOk(req) {
     return url.searchParams.get('token') === token;
 }
 
+function waitForFrontendCommand(id, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+        const deadline = Date.now() + timeoutMs;
+        const tick = () => {
+            const slot = commandResults[id];
+            if (slot) {
+                delete commandResults[id];
+                if (slot.error) reject(new Error(slot.error));
+                else resolve(slot.result || {});
+                return;
+            }
+            if (Date.now() > deadline) {
+                reject(new Error('frontend command timeout'));
+                return;
+            }
+            setTimeout(tick, 80);
+        };
+        setTimeout(tick, 80);
+    });
+}
+
+function enqueueFrontend(cmd, args, timeoutMs = 30000) {
+    const id = nextCommandId++;
+    pendingCommands.push({ id, cmd, args: args || {} });
+    return waitForFrontendCommand(id, timeoutMs);
+}
+
 async function dispatch(cmd, args) {
     switch (cmd) {
         case 'health':
             return { product: 'IRIS IDE', theia: '1.74.0', workspace: workspaceRoot };
         case 'getWorkspace':
-            return { root: workspaceRoot, opened: workspaceOpen };
-        case 'setWorkspace': {
-            // Pushed by the frontend whenever Theia's own File > Open Folder /
-            // Close Folder changes the active workspace — keeps this process
-            // (which outlives a single workspace, unlike the env var it booted
-            // with) from going on reporting whatever folder was open at start.
-            const root = String(args.root || '').trim();
-            if (root) {
-                const abs = path.resolve(root);
-                if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
-                    throw new Error(`not a directory: ${root}`);
-                }
-                workspaceRoot = abs;
-            }
-            workspaceOpen = args.opened !== undefined ? Boolean(args.opened) : Boolean(root);
-            writeState(boundPort);
-            return { root: workspaceRoot, opened: workspaceOpen };
-        }
+            return { root: workspaceRoot };
         case 'setEditorState':
             editorState = args && typeof args === 'object' ? args : null;
             return { saved: true };
+        case 'pollPendingCommands': {
+            const limit = Math.min(parseInt(String(args.limit || 8), 10) || 8, 20);
+            const batch = pendingCommands.splice(0, limit);
+            return { commands: batch };
+        }
+        case 'completeCommand': {
+            const id = parseInt(String(args.id || 0), 10);
+            if (!id) throw new Error('completeCommand: id required');
+            commandResults[id] = {
+                result: args.result && typeof args.result === 'object' ? args.result : { value: args.result },
+                error: args.error ? String(args.error) : '',
+            };
+            return { ok: true };
+        }
         case 'getActiveEditor':
             return { editor: editorState };
         case 'getOpenEditors':
@@ -113,8 +138,12 @@ async function dispatch(cmd, args) {
             const rel = String(args.path || '');
             const abs = resolvePath(rel);
             if (!fs.existsSync(abs)) throw new Error(`file not found: ${rel}`);
-            editorState = { uri: abs, path: rel, line: args.line || 1, column: args.column || 1 };
-            return { path: abs, opened: true };
+            try {
+                return await enqueueFrontend(cmd, { path: rel, abs, line: args.line || 1, column: args.column || 1 }, 3500);
+            } catch {
+                editorState = { uri: abs, path: rel, line: args.line || 1, column: args.column || 1 };
+                return { path: abs, opened: true, via: 'bridge_fallback' };
+            }
         }
         case 'saveFile':
         case 'saveAll':
@@ -163,14 +192,22 @@ async function dispatch(cmd, args) {
         case 'findReferences':
             return { items: [] };
         case 'createTerminal':
+            try {
+                return await enqueueFrontend('createTerminal', { name: String(args.name || 'IRIS') }, 3500);
+            } catch {
+                return { name: String(args.name || 'IRIS'), created: false, via: 'bridge_fallback' };
+            }
         case 'runTerminalCommand': {
-            const command = String(args.command || args.cmd || 'echo IRIS_IDE_TEST');
-            const cwd = args.cwd ? resolvePath(String(args.cwd)) : workspaceRoot;
-            const out = execSync(command, { cwd, encoding: 'utf8', timeout: 30000 });
-            return { command, output: out, cwd };
+            const command = String(args.command || args.cmd || '').trim();
+            if (!command) {
+                throw new Error('runTerminalCommand: empty command');
+            }
+            const cwd = args.cwd ? String(args.cwd) : workspaceRoot;
+            // ponytail: execSync 폴백 금지 — Hermes/브릿지 셸이 아니라 Theia 통합 터미널만.
+            return await enqueueFrontend('runTerminalCommand', { command, cwd }, 15000);
         }
         case 'getTerminalState':
-            return { active: false };
+            return { active: pendingCommands.some(c => c.cmd === 'runTerminalCommand') };
         case 'runTask':
             return { started: false };
         case 'getTaskState':
@@ -188,8 +225,8 @@ async function dispatch(cmd, args) {
         case 'getGitDiff':
             try {
                 const rel = String(args.path || '');
-                const cmd = rel ? `git diff -- ${rel}` : 'git diff';
-                return { diff: execSync(cmd, { cwd: workspaceRoot, encoding: 'utf8' }) };
+                const gitCmd = rel ? `git diff -- ${rel}` : 'git diff';
+                return { diff: execSync(gitCmd, { cwd: workspaceRoot, encoding: 'utf8' }) };
             } catch {
                 return { diff: '' };
             }
@@ -199,21 +236,6 @@ async function dispatch(cmd, args) {
 }
 
 const server = http.createServer(async (req, res) => {
-    // The Theia frontend (port THEIA_BACKEND_PORT) calls this bridge (a
-    // different port) directly via fetch() — a real cross-origin request, so
-    // the browser sends a CORS preflight (OPTIONS) before every POST with a
-    // JSON body + Authorization header. Without these headers every such
-    // fetch fails silently in the browser console before it ever reaches
-    // authOk()/dispatch() below, even though curl/Node http clients (which
-    // don't enforce CORS) see nothing wrong.
-    res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    if (req.method === 'OPTIONS') {
-        res.writeHead(204);
-        res.end();
-        return;
-    }
     const send = (code, body) => {
         const raw = JSON.stringify(body);
         res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(raw) });
