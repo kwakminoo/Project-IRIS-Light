@@ -2632,9 +2632,62 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         return ok_result("chat.set_model", {"model": model})
 
     def chat_clear_history(_a: dict[str, Any]) -> dict[str, Any]:
-        window._history.clear()
+        window.reset_current_conversation()
         _log(window, "chat.clear_history", True)
-        return ok_result("chat.clear_history", {"history_len": 0})
+        return ok_result(
+            "chat.clear_history",
+            {"history_len": 0, "conversation_id": window._conversation_id},
+        )
+
+    def chat_new_session(_a: dict[str, Any]) -> dict[str, Any]:
+        window._on_new_chat_requested()
+        _log(window, "chat.new_session", True)
+        return ok_result(
+            "chat.new_session",
+            {"conversation_id": window._conversation_id},
+        )
+
+    def chat_list_sessions(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.storage.conversations import list_conversations
+
+        try:
+            limit = int(args.get("limit") or 20)
+        except (TypeError, ValueError):
+            limit = 20
+        items = list_conversations(
+            window._db,
+            limit=max(1, min(limit, 100)),
+            include_empty_id=window._conversation_id,
+        )
+        return ok_result(
+            "chat.list_sessions",
+            {
+                "active_id": window._conversation_id,
+                "sessions": [
+                    {
+                        "id": c.id,
+                        "title": c.title,
+                        "message_count": c.message_count,
+                        "updated_at": c.updated_at,
+                    }
+                    for c in items
+                ],
+            },
+        )
+
+    def chat_open_session(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.storage.conversations import get_conversation
+
+        raw = args.get("id") if args.get("id") is not None else args.get("conversation_id")
+        try:
+            cid = int(raw)
+        except (TypeError, ValueError):
+            return err_result("chat.open_session", "id required")
+        if get_conversation(window._db, cid) is None:
+            return err_result("chat.open_session", f"conversation {cid} not found")
+        window._on_conversation_selected(cid)
+        _log(window, "chat.open_session", True)
+        return ok_result("chat.open_session", {"conversation_id": cid})
 
     def chat_stop(_a: dict[str, Any]) -> dict[str, Any]:
         window._on_chat_stop()
@@ -2712,9 +2765,27 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     reg.register(
         "chat.clear_history",
         chat_clear_history,
-        summary="Clear Iris assistant chat history (not UI transcript)",
+        summary="Clear the current chat session (context, transcript and stored messages)",
         risk="medium",
         confirm_required=True,
+    )
+    reg.register(
+        "chat.new_session",
+        chat_new_session,
+        summary="Start a new chat session (same as sidebar CHATS +)",
+        risk="low",
+    )
+    reg.register(
+        "chat.list_sessions",
+        chat_list_sessions,
+        summary="List saved chat sessions (id, title, message_count)",
+        risk="low",
+    )
+    reg.register(
+        "chat.open_session",
+        chat_open_session,
+        summary="Switch to a saved chat session by id (args.id)",
+        risk="low",
     )
     reg.register(
         "chat.stop",

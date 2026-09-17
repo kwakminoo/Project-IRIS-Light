@@ -120,6 +120,21 @@ class ThemeTokens:
     chat_selection_bg: str = "#2c5a8c"
     chat_selection_fg: str = "#f8fafc"
 
+    # 답변 전체보기(Reading Mode) — 반투명 모달이 아니라 "문서를 읽는 화면".
+    # 스크림은 뒤쪽 채팅 글씨가 읽히지 않을 만큼 거의 불옵명하게(≈96%) 덮고,
+    # 리딩 패널은 스크림보다 한 단계 밝은 다크 네이비로 명도 차이를 만든다.
+    chat_reading_scrim: str = "#01030a"
+    chat_reading_scrim_alpha: int = 246  # 0–255 → ≈96.5% 불투명
+    chat_reading_panel_bg: str = "#0b1120"
+    chat_reading_panel_border: str = "rgba(148, 163, 184, 0.10)"
+    chat_reading_panel_radius: int = 14
+    chat_reading_title_fg: str = "rgba(147, 197, 253, 0.72)"
+    chat_reading_scrollbar: str = "rgba(148, 163, 184, 0.26)"
+    # 긴 답변 hover — 클릭 가능함을 아주 미세하게만 알린다 (테두리·버튼 없음).
+    # QColor로 직접 쓰이므로 CSS 문자열이 아니라 (r, g, b, a) 성분으로 둔다
+    # (QColor는 소수 알파를 가진 rgba() 문자열을 파싱하지 못한다).
+    chat_reading_hover_rgba: tuple[int, int, int, int] = (148, 163, 184, 14)
+
     # 채팅 코드 블록 Syntax Highlighting — Pygments Style에 주입되는 의미별 색상.
     # 하드코딩 대신 이 dict만 바꾸면 코드 블록 전체 색상 테마가 바뀐다.
     chat_syntax_colors: dict[str, str] = field(

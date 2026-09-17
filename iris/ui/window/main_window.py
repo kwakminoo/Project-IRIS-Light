@@ -54,6 +54,19 @@ from iris.storage.api_providers import (
     parse_runtime_model_id,
     runtime_model_id,
 )
+from iris.storage.conversations import (
+    append_message as append_chat_message,
+    clear_conversation_messages,
+    delete_conversation,
+    ensure_active_conversation,
+    get_conversation,
+    history_dicts,
+    list_conversations,
+    pop_last_user_message,
+    rename_conversation,
+    set_active_conversation_id,
+    start_new_conversation,
+)
 from iris.storage.email_accounts import EmailAccount, find_account, load_email_accounts
 from iris.monitoring.notification_policy import NotificationPolicy
 from iris.audio.alert_speech import (
@@ -216,7 +229,8 @@ class MainWindow(QMainWindow):
         self._state = StateMachine()
         self._state.state_changed.connect(self._on_app_state)
         self._voice_prefs: VoicePreferences = load_voice_preferences(self._db)
-        self._history: list[dict[str, str]] = []
+        self._conversation_id = ensure_active_conversation(self._db)
+        self._history: list[dict[str, str]] = history_dicts(self._db, self._conversation_id)
         self._last_assistant_text = ""
         self._pending_local_vibe_prompt = ""
         self._live_vibe: dict | None = None
@@ -536,6 +550,14 @@ class MainWindow(QMainWindow):
         self._chat.mic_clicked.connect(self._on_chat_mic_clicked)
         self._chat.speaker_clicked.connect(self._on_chat_speaker_clicked)
         left_lay.addWidget(self._chat, 3)
+
+        history_panel = self._left_sidebar.chat_history
+        history_panel.new_chat_requested.connect(self._on_new_chat_requested)
+        history_panel.conversation_selected.connect(self._on_conversation_selected)
+        history_panel.conversation_delete_requested.connect(self._on_conversation_deleted)
+        history_panel.conversation_rename_requested.connect(self._on_conversation_renamed)
+        self._chat.restore_messages(self._history)
+        self._refresh_chat_history_panel()
 
         self._monitor = UnifiedMonitorPanel()
         self._monitor.set_database(self._db)
@@ -1186,6 +1208,123 @@ class MainWindow(QMainWindow):
         self._chat.set_context_usage(used, limit)
 
     # ------------------------------------------------------------------
+    # 대화 세션 (CHATS)
+    # ------------------------------------------------------------------
+
+    def _record_history(self, role: str, content: str) -> None:
+        """메인 채팅 턴을 메모리 히스토리 + 현재 세션 DB에 기록."""
+        item = {"role": role, "content": content}
+        self._history.append(item)
+        try:
+            append_chat_message(self._db, self._conversation_id, role, content)
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(f"chat 저장 실패: {exc}")
+            return
+        if role == "user":
+            self._refresh_chat_history_panel()
+
+    def _drop_last_user_history(self) -> None:
+        """실패한 턴 되돌리기 — 메모리·DB 모두."""
+        if self._history and self._history[-1].get("role") == "user":
+            self._history.pop()
+        try:
+            pop_last_user_message(self._db, self._conversation_id)
+        except Exception:
+            pass
+
+    def _refresh_chat_history_panel(self) -> None:
+        panel = getattr(self._left_sidebar, "chat_history", None)
+        if panel is None:
+            return
+        try:
+            items = list_conversations(self._db, include_empty_id=self._conversation_id)
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(f"chat 목록 실패: {exc}")
+            return
+        panel.set_conversations(items, active_id=self._conversation_id)
+
+    def _load_conversation(self, conversation_id: int) -> None:
+        """세션 전환 — 진행 중 턴은 끊고 트랜스크립트를 다시 그린다."""
+        if self._busy:
+            self._cancel_current_turn(
+                reason="conversation_switch",
+                preserve_partial_response=True,
+            )
+        self._conversation_id = int(conversation_id)
+        set_active_conversation_id(self._db, self._conversation_id)
+        self._history = history_dicts(self._db, self._conversation_id)
+        self._last_assistant_text = ""
+        self._pending_local_vibe_prompt = ""
+        self._live_vibe = None
+        self._chat.restore_messages(self._history)
+        self._refresh_context_gauge()
+        self._refresh_chat_history_panel()
+
+    def reset_current_conversation(self) -> None:
+        """현재 세션의 대화 내용만 비운다 (세션 자체는 유지)."""
+        if self._busy:
+            self._cancel_current_turn(
+                reason="conversation_reset",
+                preserve_partial_response=False,
+            )
+        clear_conversation_messages(self._db, self._conversation_id)
+        self._history = []
+        self._last_assistant_text = ""
+        self._chat.clear_transcript()
+        self._refresh_context_gauge()
+        self._refresh_chat_history_panel()
+
+    def _on_new_chat_requested(self) -> None:
+        cid = start_new_conversation(self._db)
+        if cid == self._conversation_id and not self._history:
+            self._refresh_chat_history_panel()
+            return
+        self._load_conversation(cid)
+        self._live_activity.append_instant_line("새 채팅 시작")
+
+    def _on_conversation_selected(self, conversation_id: int) -> None:
+        cid = int(conversation_id)
+        if cid == self._conversation_id:
+            return
+        self._load_conversation(cid)
+
+    def _on_conversation_renamed(self, conversation_id: int, title: str) -> None:
+        cid = int(conversation_id)
+        try:
+            rename_conversation(self._db, cid, title)
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(f"채팅 제목 저장 실패: {exc}")
+            return
+        self._refresh_chat_history_panel()
+
+    def _on_conversation_deleted(self, conversation_id: int) -> None:
+        from iris.ui.settings.hud_dialog import run_hud_confirm
+        from iris.ui.shared.theme_tokens import TOKENS
+
+        cid = int(conversation_id)
+        conv = get_conversation(self._db, cid)
+        shown = (conv.title if conv else "").strip() or "이 채팅"
+        if not run_hud_confirm(
+            self,
+            title="채팅 삭제",
+            eyebrow="CHATS",
+            badge="DELETE",
+            accent=TOKENS.error,
+            body="이 채팅을 삭제하시겠습니까?",
+            hint=shown,
+            ok_text="삭제",
+            cancel_text="취소",
+            default_ok=False,
+            destructive=True,
+        ):
+            return
+        delete_conversation(self._db, cid)
+        if cid != self._conversation_id:
+            self._refresh_chat_history_panel()
+            return
+        self._load_conversation(ensure_active_conversation(self._db))
+
+    # ------------------------------------------------------------------
     # 고정 창 AI 감시
     # ------------------------------------------------------------------
 
@@ -1516,7 +1655,7 @@ class MainWindow(QMainWindow):
             panel.end_iris(msg)
         else:
             self._chat.append_message_instant("Iris", msg)
-        self._history.append({"role": "assistant", "content": msg})
+        self._record_history("assistant", msg)
         self._refresh_context_gauge()
         self._live_activity.append_instant_line(f"wiki.import ok {result.get('rel_path')}")
 
@@ -1582,7 +1721,7 @@ class MainWindow(QMainWindow):
         self._chat.set_generating(False)
         msg = f"위키 저장 실패: {err}"
         self._chat.append_message_instant("Iris", msg)
-        self._history.append({"role": "assistant", "content": msg})
+        self._record_history("assistant", msg)
         self._refresh_context_gauge()
         self._finish_current_turn(turn_id)
 
@@ -1599,7 +1738,7 @@ class MainWindow(QMainWindow):
             panel.append_user(display)
         else:
             self._chat.append_message_instant("You", display)
-        self._history.append({"role": "user", "content": display})
+        self._record_history("user", display)
         if req.mode == "summarize":
             self._start_wiki_import_async(turn, req)
             return True
@@ -1617,7 +1756,7 @@ class MainWindow(QMainWindow):
                 panel.end_iris(msg)
             else:
                 self._chat.append_message_instant("Iris", msg)
-            self._history.append({"role": "assistant", "content": msg})
+            self._record_history("assistant", msg)
             self._finish_current_turn(turn.id)
             return True
         self._present_wiki_import_success(turn, result)
@@ -1689,9 +1828,7 @@ class MainWindow(QMainWindow):
                 self._chat.append_message_instant("You", self._format_user_turn_content(turn))
         else:
             self._chat.append_message_instant("You", self._format_user_turn_content(turn))
-        self._history.append(
-            {"role": "user", "content": self._format_user_turn_content(turn)}
-        )
+        self._record_history("user", self._format_user_turn_content(turn))
         self._refresh_context_gauge()
         self._busy = True
         self._ignore_chat_result = False
@@ -1725,8 +1862,7 @@ class MainWindow(QMainWindow):
             except Exception as exc:  # noqa: BLE001
                 self._busy = False
                 self._chat.set_generating(False)
-                if self._history and self._history[-1].get("role") == "user":
-                    self._history.pop()
+                self._drop_last_user_history()
                 self._chat.append_message_instant("Iris", str(exc))
                 self._finish_current_turn(turn.id, open_followup=False)
                 return
@@ -1749,8 +1885,7 @@ class MainWindow(QMainWindow):
             if provider is None or not provider.base_url:
                 self._busy = False
                 self._chat.set_generating(False)
-                if self._history and self._history[-1].get("role") == "user":
-                    self._history.pop()
+                self._drop_last_user_history()
                 self._chat.append_message_instant(
                     "Iris",
                     "선택한 API가 설정에서 삭제되었거나 Base URL이 없습니다. 설정을 확인하세요.",
@@ -1832,7 +1967,7 @@ class MainWindow(QMainWindow):
         if getattr(self._chat, "_stream_active", False):
             self._chat.end_stream_message(partial or None)
             if preserve_partial_response and partial:
-                self._history.append({"role": "assistant", "content": partial})
+                self._record_history("assistant", partial)
                 self._last_assistant_text = partial
                 self._refresh_context_gauge()
         # speech_sync 스트림은 end 후에도 타이핑이 남을 수 있음 → setHtml 전 확정
@@ -2018,7 +2153,7 @@ class MainWindow(QMainWindow):
         else:
             self._chat.append_message_instant("Iris", "(빈 응답)")
         if text:
-            self._history.append({"role": "assistant", "content": text})
+            self._record_history("assistant", text)
             self._last_assistant_text = text
             self._try_reveal_local_vibe_code(text)
         self._refresh_context_gauge()
@@ -3515,8 +3650,7 @@ class MainWindow(QMainWindow):
         if getattr(self._chat, "_stream_active", False):
             self._chat.end_stream_message(None)
         # 실패한 user turn은 히스토리에서 제거 (재시도 깔끔하게)
-        if self._history and self._history[-1].get("role") == "user":
-            self._history.pop()
+        self._drop_last_user_history()
         self._refresh_context_gauge()
         self._live_activity.append_instant_line(f"Error: {err}")
         self._chat.append_message_instant(
@@ -4262,27 +4396,27 @@ class MainWindow(QMainWindow):
         for pat in enter_patterns:
             if re.match(pat, normalized, flags=re.IGNORECASE):
                 self._chat.append_message_instant("You", text)
-                self._history.append({"role": "user", "content": text})
+                self._record_history("user", text)
                 if self._ui_mode == "ide_companion":
                     reply = "이미 IDE Companion 모드입니다."
                 else:
                     self._enter_ide_companion()
                     reply = "IDE Companion을 켰습니다. (사이드바 IDE 아이콘과 동일)"
                 self._chat.append_message_instant("Iris", reply)
-                self._history.append({"role": "assistant", "content": reply})
+                self._record_history("assistant", reply)
                 self._refresh_context_gauge()
                 return True
         for pat in exit_patterns:
             if re.match(pat, normalized, flags=re.IGNORECASE):
                 self._chat.append_message_instant("You", text)
-                self._history.append({"role": "user", "content": text})
+                self._record_history("user", text)
                 if self._ui_mode != "ide_companion":
                     reply = "지금은 Companion 모드가 아닙니다."
                 else:
                     self._exit_ide_companion()
                     reply = "IDE Companion을 종료했습니다."
                 self._chat.append_message_instant("Iris", reply)
-                self._history.append({"role": "assistant", "content": reply})
+                self._record_history("assistant", reply)
                 self._refresh_context_gauge()
                 return True
         return False
@@ -4419,10 +4553,10 @@ class MainWindow(QMainWindow):
             action()
             return
         self._chat.append_message_instant("You", text)
-        self._history.append({"role": "user", "content": text})
+        self._record_history("user", text)
         action()
         self._chat.append_message_instant("Iris", reply_ok)
-        self._history.append({"role": "assistant", "content": reply_ok})
+        self._record_history("assistant", reply_ok)
         self._refresh_context_gauge()
 
     def _chat_messages_with_project_context(self) -> list[dict[str, str]]:

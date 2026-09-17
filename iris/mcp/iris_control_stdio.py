@@ -148,6 +148,7 @@ TOOLS = [
             "NOT for opening folders via terminal — use Iris actions so Companion tiling works. "
             "High-risk actions require args.confirm=true (email.send, email.add_account, "
             "email.remove_account, chat.clear_history). "
+            "Chat sessions: chat.new_session / chat.list_sessions / chat.open_session args={id}. "
             "Examples: action=project.open_similar args={query}; action=ide.open_folder args={path}; "
             "action=ide.open_file args={path|rel_path}; "
             "action=project.write_file args={rel_path,content,open,stream}; "

@@ -5,6 +5,7 @@ cyberspace_theme 의 전역 규칙이 `QPushButton { padding: 6px 12px }` 라서
 글리프가 버튼 밖으로 밀려나 **아무것도 안 보인다**.
 
 RUNNING WINDOWS 목록의 `×` 닫기 버튼이 실제로 이 문제로 보이지 않았다.
+CHATS 목록의 `×` / Edit 아이콘 버튼이 같은 함정에 빠지지 않게 지킨다.
 """
 
 from __future__ import annotations
@@ -52,28 +53,44 @@ class IconButtonPaddingTests(TestCase):
             )
         self.assertGreater(checked, 0, "고정 크기 아이콘 버튼을 하나도 찾지 못했다")
 
-    def test_window_list_close_button_has_padding(self) -> None:
-        from iris.automation.window_controller import WindowInfo
-        from iris.ui.monitor.window_list_panel import _make_row
+    def test_chat_row_icon_buttons_have_padding(self) -> None:
+        from iris.storage.conversations import ChatConversation
+        from iris.ui.monitor.chat_history_panel import ChatHistoryPanel
 
-        row = _make_row(
-            WindowInfo(title="테스트 창", left=0, top=0, width=800, height=600, hwnd=1),
-            lambda _info: None,
-            lambda _info: None,
+        panel = ChatHistoryPanel()
+        panel.set_conversations(
+            [
+                ChatConversation(
+                    id=1,
+                    title="테스트 채팅",
+                    created_at="",
+                    updated_at="",
+                    message_count=1,
+                )
+            ],
+            active_id=1,
         )
-        self._assert_icon_buttons_reset_padding(row)
+        self._assert_icon_buttons_reset_padding(panel)
 
     def test_close_button_glyph_fits_inside_button(self) -> None:
         """padding 을 뺀 안쪽 폭이 글리프 폭보다 넓어야 한다."""
-        from iris.automation.window_controller import WindowInfo
-        from iris.ui.monitor.window_list_panel import _make_row
+        from iris.storage.conversations import ChatConversation
+        from iris.ui.monitor.chat_history_panel import ChatHistoryPanel
 
-        row = _make_row(
-            WindowInfo(title="테스트 창", left=0, top=0, width=800, height=600, hwnd=1),
-            lambda _info: None,
-            lambda _info: None,
+        panel = ChatHistoryPanel()
+        panel.set_conversations(
+            [
+                ChatConversation(
+                    id=1,
+                    title="테스트 채팅",
+                    created_at="",
+                    updated_at="",
+                    message_count=1,
+                )
+            ],
+            active_id=1,
         )
-        close_buttons = [b for b in row.findChildren(QPushButton) if b.text() == "×"]
+        close_buttons = [b for b in panel.findChildren(QPushButton) if b.text() == "×"]
         self.assertEqual(len(close_buttons), 1)
         btn = close_buttons[0]
         self.assertEqual((btn.width(), btn.height()), (20, 20))
