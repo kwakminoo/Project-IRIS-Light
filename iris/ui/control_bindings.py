@@ -6,10 +6,11 @@ ponytail: UI 핸들러를 그대로 감싼다. 새 UX 없음.
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 
 from iris.storage.email_accounts import (
     add_email_account,
@@ -96,29 +97,54 @@ def _iris_ide_client(window: MainWindow):
         return None
 
 
+_IDE_CONTEXT_BUDGET = 1.5
+_IDE_CONTEXT_TTL = 1.0
+# ponytail: get_state는 Hermes 툴 사이클마다 불린다 — 같은 1초 안의 재조회는 브리지 왕복 없이 돌려준다.
+_ide_context_cache: dict[str, Any] = {"at": 0.0, "value": {}}
+
+
 def _iris_ide_context(window: MainWindow) -> dict[str, Any]:
+    if time.monotonic() - float(_ide_context_cache["at"]) < _IDE_CONTEXT_TTL:
+        return dict(_ide_context_cache["value"])
+    out = _iris_ide_context_uncached(window)
+    _ide_context_cache["at"] = time.monotonic()
+    _ide_context_cache["value"] = out
+    return out
+
+
+def _iris_ide_context_uncached(window: MainWindow) -> dict[str, Any]:
     client = _iris_ide_client(window)
     if client is None:
         return {}
     # ponytail: get_state 핫패스 — bridge 미기동 시 30s×N 연쇄 대기로 UI가 멈춘다.
-    fast = type(client)(base_url=client.base_url, token=client.token, timeout=1.5)
+    # 도달성 확인 1회로 미기동을 즉시 걸러내고, 도달 가능할 때만 호출을 개별 격리한다.
+    # 호출들은 _IDE_CONTEXT_BUDGET 예산을 공유하므로 최악 소요는 항상 그 값 이하다.
+    fast = type(client)(base_url=client.base_url, token=client.token, timeout=_IDE_CONTEXT_BUDGET)
+    deadline = time.monotonic() + _IDE_CONTEXT_BUDGET
     try:
-        editor = fast.get_active_editor().get("editor")
-        selection = fast.get_selection().get("selection")
-        cursor = fast.get_cursor_position()
-        diagnostics = fast.get_diagnostics().get("diagnostics") or []
-        workspace = fast.get_workspace().get("root") or ""
-        return {
-            "iris_ide": {
-                "workspace": workspace,
-                "active_editor": editor,
-                "cursor": cursor,
-                "selection": selection,
-                "diagnostics": diagnostics,
-            }
-        }
+        fast.health()
     except Exception as exc:  # noqa: BLE001
         return {"iris_ide": {"error": str(exc)}}
+
+    def part(call: Callable[[], Any], default: Any) -> Any:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return default
+        fast.timeout = remaining
+        try:
+            return call()
+        except Exception:  # noqa: BLE001
+            return default
+
+    return {
+        "iris_ide": {
+            "workspace": part(lambda: fast.get_workspace().get("root") or "", ""),
+            "active_editor": part(lambda: fast.get_active_editor().get("editor"), None),
+            "cursor": part(fast.get_cursor_position, None),
+            "selection": part(lambda: fast.get_selection().get("selection"), None),
+            "diagnostics": part(lambda: fast.get_diagnostics().get("diagnostics") or [], []),
+        }
+    }
 
 
 def _ide_open_file_path(
@@ -147,7 +173,7 @@ def _ide_open_file_path(
                     rel = str(Path(path).resolve().relative_to(Path(session.workspace_root).resolve()))
                 except ValueError:
                     rel = path
-            out = client.open_file(rel, line=line, column=column)
+            out = _bridge_call_pumping(lambda: client.open_file(rel, line=line, column=column))
             return {
                 "ok": True,
                 "path": path,
@@ -202,7 +228,8 @@ def _ide_open_file_path(
 
 
 def _bound_session(window: MainWindow, *, require_workspace: bool = False) -> tuple[Any, str]:
-    session = window._get_bound_ide_session(refresh=True)
+    # refresh는 IDE 창 위젯 상태를 읽는다 — 오프-UI 액션에서도 안전하도록 마샬
+    session = _call_on_ui(window, lambda: window._get_bound_ide_session(refresh=True))
     if session is None:
         return None, "bound IDE session required"
     if require_workspace and (session.mode != "workspace" or not session.workspace_root):
@@ -211,14 +238,43 @@ def _bound_session(window: MainWindow, *, require_workspace: bool = False) -> tu
 
 
 def _qt_pump() -> None:
+    """processEvents는 GUI 스레드 전용 — 오프-UI 액션에서 부르면 no-op."""
     try:
         from PyQt6.QtWidgets import QApplication
 
         app = QApplication.instance()
-        if app is not None:
+        if app is not None and app.thread() is QThread.currentThread():
             app.processEvents()
     except Exception:
         pass
+
+
+def _bridge_call_pumping(call: Callable[[], Any], *, timeout: float = 20.0) -> Any:
+    """프런트엔드 왕복이 필요한 브리지 호출을 UI 스레드를 막지 않고 기다린다.
+
+    IRIS IDE는 같은 프로세스의 QWebEngineView다. UI 스레드에서 응답을 기다리면
+    QtWebEngine의 in-process 네트워크 서비스가 멈춰 Theia가 폴링·응답을 못 하고,
+    브리지는 3.5초 뒤 bridge_fallback으로 이탈한다 (파일은 나중에야 열린다).
+    """
+    box: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            box["value"] = call()
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + timeout
+    while worker.is_alive() and time.monotonic() < deadline:
+        _qt_pump()
+        time.sleep(0.02)
+    if "error" in box:
+        raise box["error"]
+    if "value" not in box:
+        raise TimeoutError("iris_ide bridge call timeout")
+    return box["value"]
 
 
 def start_control_surface(window: MainWindow) -> ControlSurface | None:
@@ -277,6 +333,24 @@ def mark_control_ready(window: MainWindow) -> None:
 def _log(window: MainWindow, action: str, ok: bool) -> None:
     status = "ok" if ok else "fail"
     _append_activity(window, f"Iris control: {action} {status}")
+
+
+def _first_class_ide_trigger(
+    window: MainWindow, action: Callable[[dict[str, Any]], dict[str, Any]]
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """액션 성공을 이번 턴의 IDE 개방 트리거로 확정한다 (연번 11).
+
+    project_write_file이 197줄이라 그 안에 표시를 덧붙이지 않고 등록 시점에 감싼다
+    (성공 반환 지점이 4곳이므로 래퍼가 더 짧다).
+    """
+
+    def _wrapped(args: dict[str, Any]) -> dict[str, Any]:
+        result = action(args)
+        if result.get("ok"):
+            window._note_tool_file_write()
+        return result
+
+    return _wrapped
 
 
 def _append_activity(window: MainWindow, line: str) -> None:
@@ -453,6 +527,44 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         window._on_ide_icon()
         _log(window, "ide.toggle_companion", True)
         return ok_result("ide.toggle_companion", {"ui_mode": window._ui_mode})
+
+    def chat_attach(args: dict[str, Any]) -> dict[str, Any]:
+        """IDE 탭/탐색기 컨텍스트 메뉴 → 컴포저 칩."""
+        path = str(args.get("path") or "").strip()
+        if not path:
+            return err_result("chat.attach", "path required")
+        if not window._attach_os_drop_paths([path]):
+            return err_result("chat.attach", "chat panel unavailable")
+        return ok_result("chat.attach", {"attached": path})
+
+    def chat_drag_start(args: dict[str, Any]) -> dict[str, Any]:
+        """IDE→채팅 companion DnD — OS OLE 대신 경로만 넘긴다 (WebEngine 경계 우회)."""
+        raw = args.get("paths") or args.get("path") or []
+        if isinstance(raw, str):
+            paths = [raw]
+        elif isinstance(raw, list):
+            paths = [str(p).strip() for p in raw if str(p).strip()]
+        else:
+            paths = []
+        if not paths:
+            return err_result("chat.drag_start", "paths required")
+        window._begin_ide_companion_drag(paths)
+        return ok_result("chat.drag_start", {"paths": paths, "count": len(paths)})
+
+    def chat_drag_end(args: dict[str, Any]) -> dict[str, Any]:
+        # drag_start fetch가 drag_end보다 늦을 수 있어 args.paths를 우선 사용.
+        raw = args.get("paths") or args.get("path") or []
+        if isinstance(raw, str) and raw.strip():
+            paths = [raw.strip()]
+        elif isinstance(raw, list):
+            paths = [str(p).strip() for p in raw if str(p).strip()]
+        else:
+            paths = []
+        attached = window._finish_ide_companion_drag(paths or None)
+        return ok_result(
+            "chat.drag_end",
+            {"attached": attached, "count": len(attached)},
+        )
 
     def ide_pick_open_folder(_a: dict[str, Any]) -> dict[str, Any]:
         from PyQt6.QtWidgets import QFileDialog
@@ -651,6 +763,28 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         _log(window, "project.create_scaffold", True)
         return ok_result("project.create_scaffold", result)
 
+    def project_list_files(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.project_ops import list_workspace_files
+
+        root = str(args.get("project_root") or args.get("root") or "").strip()
+        if not root:
+            session = window._get_bound_ide_session(refresh=False)
+            root = (session.workspace_root if session is not None else "") or (
+                load_user_profile(window._db).project_root or ""
+            )
+        if not root:
+            return err_result("project.list_files", "project_root required (no bound IDE workspace)")
+        try:
+            listed = list_workspace_files(
+                root,
+                query=str(args.get("query") or args.get("name") or ""),
+                limit=int(args.get("limit") or 200),
+            )
+        except (NotADirectoryError, OSError, ValueError) as exc:
+            return err_result("project.list_files", str(exc))
+        _log(window, "project.list_files", True)
+        return ok_result("project.list_files", listed)
+
     def project_write_file(args: dict[str, Any]) -> dict[str, Any]:
         from iris.automation.ide_input import (
             open_file_in_workspace,
@@ -699,12 +833,13 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                     _log(window, "project.write_file", True)
                     return ok_result("project.write_file", written)
                 abs_path.parent.mkdir(parents=True, exist_ok=True)
+                end = max(len(text) + 1, 999999)
                 if abs_path.is_file():
-                    client.open_file(norm_rel)
-                    client.replace_range(text, path=norm_rel, start=0, end=max(len(text) + 1, 999999))
+                    _bridge_call_pumping(lambda: client.open_file(norm_rel))
+                    _bridge_call_pumping(lambda: client.replace_range(text, path=norm_rel, start=0, end=end))
                 else:
-                    client.create_file(norm_rel, text)
-                    client.open_file(norm_rel)
+                    _bridge_call_pumping(lambda: client.create_file(norm_rel, text))
+                    _bridge_call_pumping(lambda: client.open_file(norm_rel))
                 written = {
                     "path": path_s,
                     "rel_path": norm_rel,
@@ -849,6 +984,36 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         _log(window, "project.write_file", True)
         return ok_result("project.write_file", written)
 
+    def diagram_render(args: dict[str, Any]) -> dict[str, Any]:
+        import json
+
+        from iris.system.archify_render import render_diagram
+        from iris.ui.window.diagram_preview import open_diagram_preview
+
+        kind = str(args.get("kind") or "").strip().lower()
+        ir = args.get("ir")
+        if isinstance(ir, str):
+            try:
+                ir = json.loads(ir)
+            except json.JSONDecodeError as exc:
+                return err_result("diagram.render", f"ir is not valid JSON: {exc}")
+        title = str(args.get("title") or "")
+        # ponytail: node 서브프로세스를 UI 스레드에서 기다리지 않는다 (연번 17과 동일 사유).
+        rendered = _bridge_call_pumping(
+            lambda: render_diagram(kind, ir if isinstance(ir, dict) else {}, title=title),
+            timeout=150.0,
+        )
+        if not rendered.get("ok"):
+            _log(window, "diagram.render", False)
+            return err_result(
+                "diagram.render",
+                str(rendered.get("error") or "render failed"),
+                {"diagnostics": rendered.get("diagnostics") or [], "stage": rendered.get("stage")},
+            )
+        rendered["opened"] = open_diagram_preview(window, str(rendered["html_path"]))
+        _log(window, "diagram.render", True)
+        return ok_result("diagram.render", rendered)
+
     def ide_open_file(args: dict[str, Any]) -> dict[str, Any]:
         path = str(args.get("path") or "").strip()
         if not path:
@@ -942,7 +1107,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 "summary": f"opened in browser · {Path(file_arg).name}",
                 "ide_terminal": "skipped",
             }
-            window._live_activity.append_instant_line(f"미리보기: {uri}")
+            _append_activity(window, f"미리보기: {uri}")
             return ok_result("project.run", payload)
 
         timeout_sec = float(args.get("timeout_sec") or 60)
@@ -974,9 +1139,12 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         if session.ide_id == "iris_ide":
             try:
                 client = window._iris_ide_bridge_client()
-                term = client.run_terminal_command(shell_cmd, cwd=root_s)
-                elapsed = time.monotonic() - t0
-                output = str(term.get("output") or "")
+                # 브리지는 Theia 통합 터미널 완료를 15s까지 기다린다 — UI 스레드를 막으면
+                # 프런트엔드 폴러가 그 사이 fetch를 못 해 반드시 타임아웃(400)으로 끝난다.
+                term = _bridge_call_pumping(
+                    lambda: client.run_terminal_command(shell_cmd, cwd=root_s),
+                    timeout=18.0,
+                )
                 via = str(term.get("via") or "iris_ide_bridge")
                 queued = bool(term.get("queued"))
                 if via == "bridge_fallback":
@@ -991,21 +1159,45 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                         "IDE integrated terminal did not accept command",
                         {"via": via, "command": shell_cmd},
                     )
+                # 큐 적재는 「실행됨」이 아니다 — tee 로그(.iris/last_run.log)로 실제 결과를 받는다.
+                waited = wait_for_run_log(
+                    log_p,
+                    timeout_sec=timeout_sec,
+                    stable_sec=0.8,
+                    pump=_qt_pump,
+                )
+                elapsed = time.monotonic() - t0
+                if not waited.get("found"):
+                    return err_result(
+                        "project.run",
+                        "IDE 통합 터미널에 명령을 보냈으나 실행 로그가 수집되지 않음",
+                        {"via": via, "command": shell_cmd, "log_path": str(log_p)},
+                    )
+                result = result_from_terminal_log(
+                    str(waited.get("text") or ""),
+                    argv=argv,
+                    cwd=root_s,
+                    elapsed_sec=elapsed,
+                )
                 payload = {
-                    "ok": True,
-                    "exit_code": 0,
-                    "stdout": output,
-                    "stderr": "",
-                    "elapsed_sec": round(elapsed, 3),
-                    "argv": argv,
-                    "cwd": root_s,
-                    "timed_out": False,
+                    **result,
+                    **summarize_run(result),
                     "via": via,
-                    "ide_terminal": "ok" if queued or via == "theia_terminal" else "iris_ide_bridge",
+                    "ide_terminal": "ok",
+                    "log_path": str(log_p),
+                    "stdout_len": len(result.get("stdout") or ""),
                 }
-                payload["summary"] = summarize_run(payload).get("summary") or output[:120]
-                _log(window, "project.run", True)
-                return ok_result("project.run", payload)
+                payload.pop("stdout", None)
+                payload.pop("stderr", None)
+                ok = int(result.get("exit_code") or 0) == 0 and not result.get("timed_out")
+                _log(window, "project.run", ok)
+                if ok:
+                    return ok_result("project.run", payload)
+                return err_result(
+                    "project.run",
+                    payload.get("summary") or f"exit {result.get('exit_code')}",
+                    payload,
+                )
             except Exception as exc:  # noqa: BLE001
                 return err_result("project.run", str(exc))
         hwnd = int(session.hwnd) if session and session.hwnd else None
@@ -1070,7 +1262,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 time.sleep(1.2)
                 browser_status = "ok" if open_preview_in_browser(preview_url) else "failed"
                 if browser_status == "ok":
-                    window._live_activity.append_instant_line(f"미리보기: {preview_url}")
+                    _append_activity(window, f"미리보기: {preview_url}")
 
         summary_bits = summarize_run(result)
         if ide_terminal == "ok":
@@ -1155,6 +1347,21 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         risk="medium",
     )
     reg.register(
+        "chat.attach",
+        chat_attach,
+        summary="Attach a file path to the IRIS chat composer as an @reference chip",
+    )
+    reg.register(
+        "chat.drag_start",
+        chat_drag_start,
+        summary="Begin IDE→chat companion drag (path list; OS DnD bypass for QWebEngine)",
+    )
+    reg.register(
+        "chat.drag_end",
+        chat_drag_end,
+        summary="Finish IDE→chat companion drag — attach if cursor is over Iris",
+    )
+    reg.register(
         "project.list_parents",
         project_list_parents,
         summary="List project search parent folders (settings project_parents or built-in defaults)",
@@ -1177,10 +1384,27 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         risk="medium",
     )
     reg.register(
+        "project.list_files",
+        project_list_files,
+        summary="List files in the bound IDE workspace (query = case-insensitive substring) — use this before open_file/run when the path is unknown",
+    )
+    reg.register(
         "project.write_file",
-        project_write_file,
+        _first_class_ide_trigger(window, project_write_file),
         summary="Write file under the bound IDE workspace; open=true reveals tab then streams chunks",
         risk="medium",
+    )
+    reg.register(
+        "diagram.render",
+        diagram_render,
+        summary=(
+            "Render a typed JSON IR into an interactive diagram and show it "
+            "(kind = architecture|workflow|sequence|dataflow|lifecycle). "
+            "Read integrations/archify/schemas/<kind>.schema.json for the IR shape "
+            "(architecture needs explicit placement: layout {mode:\"grid\",cols:n} with 0-based "
+            "row/col per component, or pos/size per component); "
+            "on failure the error data carries archify diagnostics[] — fix the IR and retry"
+        ),
     )
     reg.register(
         "project.run",
@@ -2135,9 +2359,13 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
             if model:
                 window._apply_selected_model(model, persist=True)
                 changed.append("ollama_model")
-        if "hermes_enabled" in args:
-            s.hermes_enabled = bool(args["hermes_enabled"])
-            changed.append("hermes_enabled")
+        # Hermes는 도구 호출의 유일한 경로이므로 끌 수 없음. 조용히 무시하면
+        # 모델이 자기 도구를 잃은 채 성공했다고 답하게 됨.
+        if "hermes_enabled" in args and not bool(args["hermes_enabled"]):
+            return err_result(
+                "settings.set",
+                "hermes_enabled cannot be disabled — Hermes is required for tool calls",
+            )
         if "hermes_command" in args:
             s.hermes_command = str(args["hermes_command"] or "").strip() or s.hermes_command
             changed.append("hermes_command")

@@ -140,8 +140,17 @@ class FramelessShell(QWidget):
         self._host = host
         self._margin = margin
         self.setObjectName("FramelessShell")
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setStyleSheet("background: transparent; border: none;")
+        # ponytail: WA_TranslucentBackground면 Win32가 알파0 픽셀로 DnD 히트테스트를
+        # 통과시켜 탐색기 드롭이 금지 커서만 보인다. 불투명 배경으로 OLE 타겟 유지.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAutoFillBackground(True)
+        pal = self.palette()
+        pal.setColor(self.backgroundRole(), QColor(TOKENS.void_black))
+        self.setPalette(pal)
+        self.setStyleSheet(
+            f"QWidget#FramelessShell {{ background-color: {TOKENS.void_black}; border: none; }}"
+        )
         self._content: QWidget | None = None
         self._grips: list[_ResizeGrip] = []
 

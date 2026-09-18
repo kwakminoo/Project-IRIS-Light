@@ -13,12 +13,20 @@ from __future__ import annotations
 import os
 
 
+DEFAULT_CHROMIUM_FLAGS = "--disable-gpu-compositing"
+
+
 def _apply_chromium_flags() -> None:
-    # ponytail: Windows GPU Chromium init can freeze the GUI for minutes on first paint.
-    extra = "--disable-gpu --disable-gpu-compositing"
-    cur = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
-    if "--disable-gpu" not in cur:
-        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{cur} {extra}".strip() if cur else extra
+    """설정이 있으면 그대로 두고, 없으면 기본값만 심는다.
+
+    `--disable-gpu`는 GPU 프로세스를 막지 못하고 공유 컨텍스트 생성만 실패시킨다
+    (실측: 기동마다 `ContextResult::kFatalFailure` 3건 + 컨텍스트 생성 실패 6건).
+    합성만 끄면 오류 0건이고 첫 표시 시간도 동일했다(0.92s vs 0.99s).
+    검은 화면이 남으면 `QTWEBENGINE_CHROMIUM_FLAGS`로 재빌드 없이 A/B 할 것.
+    """
+    if os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip():
+        return
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = DEFAULT_CHROMIUM_FLAGS
 
 
 def ensure_qt_webengine_ready() -> bool:
@@ -36,6 +44,16 @@ def _self_check() -> None:
     import sys
 
     from PyQt6.QtWidgets import QApplication
+
+    os.environ.pop("QTWEBENGINE_CHROMIUM_FLAGS", None)
+    _apply_chromium_flags()
+    flags = os.environ["QTWEBENGINE_CHROMIUM_FLAGS"]
+    assert flags == DEFAULT_CHROMIUM_FLAGS, flags
+    assert "--disable-gpu " not in f"{flags} ", f"GPU 전면 차단 재도입: {flags}"
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
+    _apply_chromium_flags()
+    assert os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] == "--disable-gpu", "사용자 지정 플래그가 덮였음"
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = DEFAULT_CHROMIUM_FLAGS
 
     ensure_qt_webengine_ready()
     app = QApplication.instance() or QApplication(sys.argv)

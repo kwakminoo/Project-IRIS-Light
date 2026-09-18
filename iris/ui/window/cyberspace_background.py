@@ -48,7 +48,10 @@ class CyberspaceBackground(QWidget):
         """모든 HUD·패널 — 구체 위 투명 오버레이."""
         self._ui_overlay = widget
         widget.setParent(self)
-        widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # 시각은 투명, OLE 히트는 창 안에 머무르게 — Translucent만 끄고 스타일로 투명.
+        widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        widget.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        widget.setStyleSheet("background: transparent; border: none;")
         widget.raise_()
         widget.show()
         self._sync_layers()

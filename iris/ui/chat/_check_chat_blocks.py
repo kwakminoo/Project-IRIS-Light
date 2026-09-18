@@ -232,6 +232,10 @@ def _assert_file_chips_and_diff() -> None:
     assert "iris/ui/chat/chat_blocks.py" in md
     assert "iris-file://" in md or t.disabled in md
 
+    # 절대경로 중간부터 칩으로 잘리면 안 된다 (C:/U + <a>sers/...</a>)
+    win = render_iris_message("경로는 C:/Users/kwakm/Desktop/Iris_adt.py 입니다")
+    assert "iris-file://sers" not in win and "C:/U<" not in win, win
+
     diff_md = render_diff_block("--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n")
     _assert_html_contains(diff_md, t.success, t.error, label="render_diff_block")
     fenced = render_iris_message(

@@ -15,13 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from iris.infrastructure.api_model_meta import (
-    card_blurb,
-    describe_api_model,
-    is_multi_model_brand,
-    is_nvidia_provider,
-    is_single_brand_provider,
-)
+from iris.infrastructure.api_model_meta import tool_support_label
 from iris.infrastructure.model_descriptions import describe_model
 from iris.storage.api_providers import is_api_runtime_model, parse_runtime_model_id
 from iris.ui.chat.composer_plus_menu import _MenuRow
@@ -33,6 +27,10 @@ from iris.ui.shared.theme_tokens import TOKENS
 _COLOR_MODEL_DEFAULT = "#38bdf8"
 _COLOR_MODEL_NO_TOOLS = "#9ca3af"
 _COLOR_MODEL_PRO = "#fca5a5"
+_COLOR_MODEL_UNKNOWN = "#fbbf24"  # 도구지원 미확인 — 선택 시 1회 프로브함
+
+# 이 수 이상 모델을 가진 제공자는 하위 목록 창으로 묶음 (제공자 이름과 무관)
+BRAND_MIN_MODELS = 6
 
 
 @dataclass(frozen=True)
@@ -44,14 +42,17 @@ class PickerModel:
     provider_name: str = ""
     provider_base: str = ""
     is_api: bool = False
+    tool_support: str = ""  # 커스텀 API 전용 — yes | no | unknown
 
 
 def picker_tier_color(m: PickerModel) -> str:
-    """유료=빨강, 도구 미지원=회색, 그 외=시안."""
+    """유료=빨강, 도구 미지원=회색, 도구 미확인=주황, 그 외=시안."""
     if m.requires_subscription:
         return _COLOR_MODEL_PRO
     if not m.supports_tools:
         return _COLOR_MODEL_NO_TOOLS
+    if m.tool_support == "unknown":
+        return _COLOR_MODEL_UNKNOWN
     return _COLOR_MODEL_DEFAULT
 
 
@@ -70,8 +71,10 @@ def _ollama_blurb(m: PickerModel) -> str:
 def _api_blurb(m: PickerModel) -> str:
     parsed = parse_runtime_model_id(m.runtime)
     model_id = parsed[1] if parsed else m.runtime
-    meta = describe_api_model(m.provider_name or "API", model_id, base_url=m.provider_base)
-    return card_blurb(meta)
+    bits = [model_id, tool_support_label(m.tool_support)]
+    if m.tool_support == "unknown":
+        bits.append("선택하면 1회 확인함")
+    return " · ".join(bits)
 
 
 class ModelBrandDialog(QDialog):
@@ -85,7 +88,6 @@ class ModelBrandDialog(QDialog):
         models: list[PickerModel],
         parent: QWidget | None = None,
         *,
-        categorize: bool = False,
         hint: str = "",
     ) -> None:
         super().__init__(parent)
@@ -111,32 +113,9 @@ class ModelBrandDialog(QDialog):
             empty = QLabel("표시할 모델이 없습니다.")
             empty.setObjectName("HudDialogHint")
             self._list_lay.addWidget(empty)
-        elif categorize:
-            groups: dict[str, list[PickerModel]] = defaultdict(list)
-            for m in models:
-                parsed = parse_runtime_model_id(m.runtime)
-                mid = parsed[1] if parsed else m.runtime
-                cat = describe_api_model(m.provider_name or title, mid, base_url=m.provider_base).category
-                groups[cat].append(m)
-            order = (
-                "LLM/에이전트",
-                "비전/멀티모달",
-                "이미지 생성",
-                "임베딩/검색",
-                "음성/TTS",
-                "LLM/기타",
-                "특수",
-                "LLM",
-            )
-            keys = [k for k in order if k in groups] + sorted(k for k in groups if k not in order)
-            for cat in keys:
-                sec = QLabel(cat.upper())
-                sec.setObjectName("ModelPickerSection")
-                self._list_lay.addWidget(sec)
-                for m in sorted(groups[cat], key=lambda x: x.label.lower()):
-                    self._add_card(m)
         else:
-            for m in models:
+            # 도구 확인된 모델을 앞에 — 근거 없는 카테고리 분류는 쓰지 않음
+            for m in sorted(models, key=lambda x: (x.tool_support != "yes", x.label.lower())):
                 self._add_card(m)
         self._list_lay.addStretch(1)
 
@@ -166,19 +145,17 @@ def _section_qss() -> str:
 
 
 class ModelPickerMenu(QFrame):
-    """입력창 모델명 클릭용 팝업 — Ollama/NVIDIA › + 단일 모델 행."""
+    """입력창 모델명 클릭용 팝업 — 제공자 › (모델 다수) + 단일 모델 행."""
 
     open_ollama = pyqtSignal()
-    open_nvidia = pyqtSignal()
-    open_brand = pyqtSignal(str)  # provider display name for multi non-nvidia
+    open_brand = pyqtSignal(str)  # provider id
     model_chosen = pyqtSignal(str)
 
     def __init__(
         self,
         *,
         has_ollama: bool,
-        nvidia_label: str = "",
-        multi_brands: list[tuple[str, str]] | None = None,
+        brands: list[tuple[str, str, int]] | None = None,  # (provider_id, 표시명, 모델수)
         singles: list[PickerModel] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -228,13 +205,9 @@ class ModelPickerMenu(QFrame):
             row.clicked.connect(self._on_ollama)
             root.addWidget(row)
 
-        if nvidia_label:
-            row = _MenuRow("NV", nvidia_label, "무료 엔드포인트", show_arrow=True)
-            row.clicked.connect(self._on_nvidia)
-            root.addWidget(row)
-
-        for brand_id, brand_name in multi_brands or ():
-            row = _MenuRow("API", brand_name, "모델 목록", show_arrow=True)
+        for brand_id, brand_name, count in brands or ():
+            badge = (brand_name[:2] or "AP").upper()
+            row = _MenuRow(badge, brand_name, f"모델 {count}개", show_arrow=True)
             row.clicked.connect(lambda _=False, bid=brand_id: self._on_brand(bid))
             root.addWidget(row)
 
@@ -261,7 +234,7 @@ class ModelPickerMenu(QFrame):
                 row.clicked.connect(lambda _=False, rt=m.runtime: self._pick(rt))
                 root.addWidget(row)
 
-        if not has_ollama and not nvidia_label and not (multi_brands or []) and not singles:
+        if not has_ollama and not (brands or []) and not singles:
             empty = _MenuRow("—", "모델 없음", "설정에서 API/Ollama 확인")
             empty.setEnabled(False)
             root.addWidget(empty)
@@ -271,10 +244,6 @@ class ModelPickerMenu(QFrame):
     def _on_ollama(self) -> None:
         self.hide()
         self.open_ollama.emit()
-
-    def _on_nvidia(self) -> None:
-        self.hide()
-        self.open_nvidia.emit()
 
     def _on_brand(self, brand_id: str) -> None:
         self.hide()
@@ -295,21 +264,20 @@ class ModelPickerMenu(QFrame):
         self.activateWindow()
 
 
-def split_picker_groups(models: list[PickerModel]) -> tuple[
-    list[PickerModel],
-    list[PickerModel],
-    dict[str, list[PickerModel]],
-    list[PickerModel],
-]:
-    """(ollama, nvidia, other_multi_by_provider_id, singles)."""
-    ollama: list[PickerModel] = []
-    nvidia: list[PickerModel] = []
-    multi: dict[str, list[PickerModel]] = defaultdict(list)
-    singles: list[PickerModel] = []
-    # provider_id → models for grouping API
-    by_pid: dict[str, list[PickerModel]] = defaultdict(list)
-    meta_by_pid: dict[str, tuple[str, str]] = {}
+def brand_label(items: list[PickerModel], fallback: str = "API") -> str:
+    return next((m.provider_name for m in items if m.provider_name), fallback)
 
+
+def split_picker_groups(
+    models: list[PickerModel],
+) -> tuple[list[PickerModel], dict[str, list[PickerModel]], list[PickerModel]]:
+    """(ollama, api_brands_by_provider_id, singles).
+
+    제공자 이름 철자가 아니라 **실제 모델 수**로만 분기함. 모델이 많은 제공자는
+    하위 목록 창(`ModelBrandDialog`)으로 묶고, 적은 제공자는 팝업에 바로 노출함.
+    """
+    ollama: list[PickerModel] = []
+    by_pid: dict[str, list[PickerModel]] = defaultdict(list)
     for m in models:
         if not m.is_api:
             ollama.append(m)
@@ -317,23 +285,18 @@ def split_picker_groups(models: list[PickerModel]) -> tuple[
         parsed = parse_runtime_model_id(m.runtime)
         pid = parsed[0] if parsed else m.provider_name or m.runtime
         by_pid[pid].append(m)
-        meta_by_pid[pid] = (m.provider_name, m.provider_base)
 
+    brands: dict[str, list[PickerModel]] = {}
+    singles: list[PickerModel] = []
     for pid, items in by_pid.items():
-        pname, pbase = meta_by_pid[pid]
-        if is_nvidia_provider(pname, pbase):
-            nvidia.extend(items)
-            continue
-        if is_multi_model_brand(pname, pbase, len(items)) and not is_single_brand_provider(pname):
-            multi[pid] = items
-            continue
-        # 단일 브랜드/소수 모델 → 메뉴에 바로 노출
-        singles.extend(items)
+        if len(items) >= BRAND_MIN_MODELS:
+            brands[pid] = sorted(items, key=lambda x: x.label.lower())
+        else:
+            singles.extend(items)
 
     ollama.sort(key=lambda x: x.label.lower())
-    nvidia.sort(key=lambda x: x.label.lower())
     singles.sort(key=lambda x: x.label.lower())
-    return ollama, nvidia, dict(multi), singles
+    return ollama, brands, singles
 
 
 if __name__ == "__main__":
@@ -361,8 +324,22 @@ if __name__ == "__main__":
         is_api=True,
     )
     pro = PickerModel("cloud:pro", "pro", True, requires_subscription=True)
-    ol, nv, mu, si = split_picker_groups([o, n, g])
-    assert len(ol) == 1 and len(nv) == 1 and len(si) == 1
+    # 모델 2개인 제공자는 그대로 노출, BRAND_MIN_MODELS 이상이면 브랜드로 묶음
+    ol, brands, si = split_picker_groups([o, n, g])
+    assert len(ol) == 1 and brands == {} and len(si) == 2
+    many = [
+        PickerModel(
+            f"api:gm:models/gemini-{i}",
+            f"Gemini · gemini-{i}",
+            provider_name="Gemini",
+            is_api=True,
+        )
+        for i in range(BRAND_MIN_MODELS)
+    ]
+    ol, brands, si = split_picker_groups([o, *many])
+    assert list(brands) == ["gm"] and len(brands["gm"]) == BRAND_MIN_MODELS
+    assert si == [] and len(ol) == 1
+    assert brand_label(brands["gm"]) == "Gemini"
     assert is_api_runtime_model(n.runtime)
     assert picker_tier_color(n) == _COLOR_MODEL_DEFAULT
     assert picker_tier_color(no_tools) == _COLOR_MODEL_NO_TOOLS

@@ -50,6 +50,13 @@ function resolvePath(rel) {
     return target;
 }
 
+/** 식별자(path|uri) 없는 상태는 「편집기 없음」이다 — 프런트엔드는 편집기가 닫히면 {}를 보낸다. */
+function normalizeEditorState(info) {
+    if (!info || typeof info !== 'object' || Array.isArray(info)) return null;
+    const hasId = Boolean(String(info.path || '').trim() || String(info.uri || '').trim());
+    return hasId ? info : null;
+}
+
 function readBody(req) {
     return new Promise((resolve) => {
         const chunks = [];
@@ -107,7 +114,7 @@ async function dispatch(cmd, args) {
         case 'getWorkspace':
             return { root: workspaceRoot };
         case 'setEditorState':
-            editorState = args && typeof args === 'object' ? args : null;
+            editorState = normalizeEditorState(args);
             return { saved: true };
         case 'pollPendingCommands': {
             const limit = Math.min(parseInt(String(args.limit || 8), 10) || 8, 20);
@@ -235,13 +242,30 @@ async function dispatch(cmd, args) {
     }
 }
 
+// Theia(QWebEngine) 페이지는 브리지와 포트가 달라 cross-origin — ACAO 없으면 프런트엔드의
+// setEditorState / pollPendingCommands fetch가 전부 차단된다 (control_surface와 동일 처리).
+const CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+};
+
 const server = http.createServer(async (req, res) => {
     const send = (code, body) => {
         const raw = JSON.stringify(body);
-        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(raw) });
+        res.writeHead(code, {
+            ...CORS_HEADERS,
+            'Content-Type': 'application/json; charset=utf-8',
+            'Content-Length': Buffer.byteLength(raw),
+        });
         res.end(raw);
     };
     try {
+        // preflight에는 Authorization이 실려오지 않는다 — 인증 앞에서 응답할 것.
+        if (req.method === 'OPTIONS') {
+            res.writeHead(204, { ...CORS_HEADERS, 'Content-Length': '0' });
+            return res.end();
+        }
         if (!authOk(req)) return send(401, { ok: false, error: 'unauthorized' });
         const url = new URL(req.url || '/', 'http://127.0.0.1');
         const cmd = url.pathname.replace(/^\/+/, '').split('/')[0] || 'health';

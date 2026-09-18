@@ -85,6 +85,7 @@ from iris.ui.chat.model_picker_menu import (
     ModelBrandDialog,
     ModelPickerMenu,
     PickerModel,
+    brand_label,
     split_picker_groups,
 )
 from iris.ui.chat.skill_mcp_dialogs import McpDialog, SkillsDialog
@@ -256,6 +257,16 @@ def _mime_has_attachable(mime) -> bool:
         return any(u.isLocalFile() for u in mime.urls())
     if mime.hasImage():
         return True
+    # Windows Explorer: DragEnter 시점에 urls()가 비고 CF_HDROP/uri-list만 있는 경우
+    try:
+        for fmt in mime.formats():
+            f = str(fmt)
+            if f in ("text/uri-list", "text/x-iris-ref"):
+                return True
+            if "FileName" in f or "CF_HDROP" in f or "text/uri-list" in f:
+                return True
+    except Exception:
+        pass
     return bool(_drop_targets_from_mime(mime))
 
 
@@ -394,15 +405,38 @@ class ChatComposerInput(QPlainTextEdit):
             return
         super().paste()
 
+    def canInsertFromMimeData(self, source) -> bool:  # noqa: N802
+        if _mime_has_attachable(source):
+            return True
+        return super().canInsertFromMimeData(source)
+
+    def insertFromMimeData(self, source) -> None:  # noqa: N802
+        paths = _drop_targets_from_mime(source)
+        if not paths and source is not None and source.hasImage():
+            data = source.imageData()
+            if isinstance(data, QImage) and not data.isNull():
+                saved = _save_clipboard_image(data)
+                if saved:
+                    paths = [saved]
+        if paths:
+            self.files_attached.emit(paths)
+            return
+        super().insertFromMimeData(source)
+
+    def _accept_copy_drag(self, event) -> bool:
+        if not _mime_has_attachable(event.mimeData()):
+            return False
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        return True
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if _mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+        if self._accept_copy_drag(event):
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:
-        if _mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+        if self._accept_copy_drag(event):
             return
         super().dragMoveEvent(event)
 
@@ -417,7 +451,8 @@ class ChatComposerInput(QPlainTextEdit):
                     paths = [saved]
         if paths:
             self.files_attached.emit(paths)
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dropEvent(event)
 
@@ -434,13 +469,15 @@ class ChatLogTextEdit(QTextEdit):
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if _mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:
         if _mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dragMoveEvent(event)
 
@@ -455,7 +492,8 @@ class ChatLogTextEdit(QTextEdit):
                     paths = [saved]
         if paths:
             self.files_attached.emit(paths)
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dropEvent(event)
 
@@ -717,13 +755,15 @@ class _ChatInputBar(QWidget):
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if _mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:
         if _mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dragMoveEvent(event)
 
@@ -738,7 +778,8 @@ class _ChatInputBar(QWidget):
                     paths = [saved]
         if paths:
             self._on_paths_attached(paths)
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dropEvent(event)
 
@@ -877,13 +918,15 @@ class _ChatInputArea(QWidget):
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if _mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:
         if _mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dragMoveEvent(event)
 
@@ -898,7 +941,8 @@ class _ChatInputArea(QWidget):
                     paths = [saved]
         if paths:
             self.input_bar._on_paths_attached(paths)
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dropEvent(event)
 
@@ -1019,13 +1063,15 @@ class ChatPanel(QWidget):
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if _mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:
         if _mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dragMoveEvent(event)
 
@@ -1040,7 +1086,8 @@ class ChatPanel(QWidget):
                     paths = [saved]
         if paths:
             self._on_composer_drop_paths(paths)
-            event.acceptProposedAction()
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
             return
         super().dropEvent(event)
 
@@ -1210,8 +1257,8 @@ class ChatPanel(QWidget):
         from iris.infrastructure.model_descriptions import describe_model
         from iris.storage.api_providers import is_api_runtime_model
 
-        # label, runtime, supports_tools, requires_subscription, provider_name
-        entries: list[tuple[str, str, bool, bool, str]] = []
+        # label, runtime, supports_tools, requires_subscription, provider_name, tool_support
+        entries: list[tuple[str, str, bool, bool, str, str]] = []
         for item in models:
             if isinstance(item, OllamaModelInfo):
                 label = item.catalog_name or display_name_from_runtime(item.name)
@@ -1225,15 +1272,20 @@ class ChatPanel(QWidget):
                         bool(item.supports_tools),
                         bool(item.requires_subscription),
                         provider,
+                        item.tool_support,
                     )
                 )
             else:
                 runtime = str(item).strip()
                 if runtime:
-                    entries.append((display_name_from_runtime(runtime), runtime, True, False, ""))
+                    entries.append(
+                        (display_name_from_runtime(runtime), runtime, True, False, "", "")
+                    )
 
         self._picker_models = []
-        for i, (label, runtime, supports_tools, requires_sub, provider) in enumerate(entries):
+        for i, (label, runtime, supports_tools, requires_sub, provider, tool_state) in enumerate(
+            entries
+        ):
             self._model_combo.addItem(label, runtime)
             self._model_combo.setItemData(i, supports_tools, _ROLE_SUPPORTS_TOOLS)
             self._model_combo.setItemData(i, requires_sub, _ROLE_REQUIRES_SUB)
@@ -1248,12 +1300,12 @@ class ChatPanel(QWidget):
                 tip_extra = " (도구 호출 미지원)"
             self._model_combo.setItemData(i, QBrush(color), Qt.ItemDataRole.ForegroundRole)
             if is_api_runtime_model(runtime):
-                from iris.infrastructure.api_model_meta import card_blurb, describe_api_model
+                from iris.infrastructure.api_model_meta import tool_support_label
                 from iris.storage.api_providers import parse_runtime_model_id
 
                 parsed = parse_runtime_model_id(runtime)
                 mid = parsed[1] if parsed else runtime
-                tip = card_blurb(describe_api_model(provider or "API", mid)) + tip_extra
+                tip = f"{provider or 'API'} · {mid} · {tool_support_label(tool_state)}" + tip_extra
             else:
                 desc = describe_model(runtime)
                 tip = (desc or runtime) + tip_extra
@@ -1266,13 +1318,14 @@ class ChatPanel(QWidget):
                     requires_subscription=requires_sub,
                     provider_name=provider,
                     is_api=is_api_runtime_model(runtime),
+                    tool_support=tool_state,
                 )
             )
 
         pick = selected.strip()
         idx = 0
         if pick:
-            for i, (label, runtime, _t, _s, _p) in enumerate(entries):
+            for i, (label, runtime, _t, _s, _p, _ts) in enumerate(entries):
                 if pick in (runtime, label):
                     idx = i
                     break
@@ -1308,17 +1361,14 @@ class ChatPanel(QWidget):
 
     def _update_model_tooltip(self) -> None:
         """콤보 툴팁을 현재 선택 모델의 설명으로 갱신(없으면 기본 안내)."""
-        from iris.infrastructure.api_model_meta import card_blurb, describe_api_model
         from iris.infrastructure.model_descriptions import describe_model
-        from iris.storage.api_providers import is_api_runtime_model, parse_runtime_model_id
+        from iris.storage.api_providers import is_api_runtime_model
 
         runtime = self.current_model()
         if is_api_runtime_model(runtime):
             idx = self._model_combo.currentIndex()
-            provider = str(self._model_combo.itemData(idx, _ROLE_PROVIDER_NAME) or "API")
-            parsed = parse_runtime_model_id(runtime)
-            mid = parsed[1] if parsed else runtime
-            self._model_combo.setToolTip(card_blurb(describe_api_model(provider, mid)))
+            tip = self._model_combo.itemData(idx, Qt.ItemDataRole.ToolTipRole)
+            self._model_combo.setToolTip(str(tip or "모델 선택"))
             return
         desc = describe_model(runtime)
         self._model_combo.setToolTip(desc or "모델 선택")
@@ -1353,57 +1403,42 @@ class ChatPanel(QWidget):
         return True
 
     def _open_model_picker_menu(self) -> None:
-        """+ 메뉴와 동일한 팝업 — Ollama/NVIDIA › + 단일 모델."""
+        """+ 메뉴와 동일한 팝업 — 제공자 › (모델 다수) + 단일 모델."""
         if self._model_picker_menu is not None:
             self._model_picker_menu.hide()
             self._model_picker_menu.deleteLater()
             self._model_picker_menu = None
-        ollama, nvidia, multi, singles = split_picker_groups(self._picker_models)
-        nvidia_label = ""
-        if nvidia:
-            nvidia_label = next((m.provider_name for m in nvidia if m.provider_name), "NVIDIA")
-        multi_brands = []
-        for pid, items in multi.items():
-            name = next((m.provider_name for m in items if m.provider_name), pid)
-            multi_brands.append((pid, name))
+        ollama, brands, singles = split_picker_groups(self._picker_models)
+        brand_rows = [
+            (pid, brand_label(items, pid), len(items)) for pid, items in brands.items()
+        ]
         menu = ModelPickerMenu(
             has_ollama=bool(ollama),
-            nvidia_label=nvidia_label,
-            multi_brands=multi_brands,
+            brands=brand_rows,
             singles=singles,
             parent=self,
         )
         menu.open_ollama.connect(
-            lambda: QTimer.singleShot(0, lambda: self._show_brand_dialog("Ollama", ollama, False))
+            lambda: QTimer.singleShot(0, lambda: self._show_brand_dialog("Ollama", ollama))
         )
-        menu.open_nvidia.connect(
-            lambda: QTimer.singleShot(
-                0, lambda: self._show_brand_dialog(nvidia_label or "NVIDIA", nvidia, True)
-            )
-        )
-        menu.open_brand.connect(self._on_open_multi_brand)
+        menu.open_brand.connect(self._on_open_brand)
         menu.model_chosen.connect(self._select_model_runtime)
         self._model_picker_menu = menu
         menu.popup_above(self._input_area.input_bar._model_shell)
 
-    def _on_open_multi_brand(self, brand_id: str) -> None:
-        _ollama, _nvidia, multi, _singles = split_picker_groups(self._picker_models)
-        items = multi.get(brand_id) or []
-        title = next((m.provider_name for m in items if m.provider_name), brand_id)
-        QTimer.singleShot(0, lambda: self._show_brand_dialog(title, items, False))
+    def _on_open_brand(self, brand_id: str) -> None:
+        _ollama, brands, _singles = split_picker_groups(self._picker_models)
+        items = brands.get(brand_id) or []
+        title = brand_label(items, brand_id)
+        QTimer.singleShot(0, lambda: self._show_brand_dialog(title, items))
 
-    def _show_brand_dialog(self, title: str, models: list[PickerModel], categorize: bool) -> None:
+    def _show_brand_dialog(self, title: str, models: list[PickerModel]) -> None:
         dlg = ModelBrandDialog(
             title,
             models,
             self.window(),
-            categorize=categorize,
             hint=(
-                "무료 Public API 엔드포인트에서 호출 가능한 NIM만 표시합니다. "
-                "시안=도구 가능 · 회색=도구 미지원(Hermes 부적합) · 붉음=유료/구독. "
-                "특징·장단점·한도는 카드에 요약되어 있습니다."
-                if categorize
-                else "시안=도구 가능 · 회색=도구 미지원 · 붉음=유료/구독. "
+                "시안=도구 가능 · 회색=도구 미지원 · 주황=미확인(선택 시 1회 확인) · 붉음=유료/구독. "
                 "모델을 고른 뒤 「사용」을 누르세요."
             ),
         )

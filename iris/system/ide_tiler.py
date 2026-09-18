@@ -312,6 +312,18 @@ def is_ide_maximized(hwnd: int, rect: QRect | None, work: QRect) -> bool:
     return rect.width() >= work.width() * 0.92 and rect.height() >= work.height() * 0.85
 
 
+def rects_differ(a: QRect | None, b: QRect | None, *, tol: int = 1) -> bool:
+    """±tol 픽셀 이내는 같은 것으로 본다 — DPI 반올림 오차로 sync가 영원히 재배치하는 것을 막는다."""
+    if a is None or b is None:
+        return True
+    return (
+        abs(a.left() - b.left()) > tol
+        or abs(a.top() - b.top()) > tol
+        or abs(a.width() - b.width()) > tol
+        or abs(a.height() - b.height()) > tol
+    )
+
+
 def place_qt_window(window: QWidget, rect: QRect) -> None:
     """Qt 위젯 배치 — setGeometry만 (Qt DIP). Win32 SetWindowPos 금지 — ide-companion-tile-8020."""
     if window.isMaximized() or window.isFullScreen():
@@ -422,4 +434,8 @@ if __name__ == "__main__":
     t2 = compute_tile_rects(w2)
     assert t2.ide.width() + t2.iris.width() == w2.width()
     assert tiles_are_flush(t2.ide, t2.iris)
+    base = QRect(0, 0, 800, 600)
+    assert not rects_differ(base, QRect(1, 0, 799, 601))
+    assert rects_differ(base, QRect(0, 0, 798, 600))
+    assert rects_differ(base, None)
     print("ide_tiler ok")

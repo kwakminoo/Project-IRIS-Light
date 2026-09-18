@@ -42,7 +42,7 @@ def build_cyberspace_qss() -> str:
             background-color: {t.void_black};
         }}
         QWidget#FramelessShell {{
-            background: transparent;
+            background-color: {t.void_black};
             border: none;
         }}
         CyberspaceBackground {{

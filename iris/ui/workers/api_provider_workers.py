@@ -18,9 +18,9 @@ def _host_label(base_url: str) -> str:
 
 
 class ApiProbeWorker(QThread):
-    """연결 테스트 — (provider_id, ok, detail, models)."""
+    """연결 테스트 — (provider_id, oai.ProbeResult)."""
 
-    finished_probe = pyqtSignal(str, bool, str, object)  # id, ok, detail, models list
+    finished_probe = pyqtSignal(str, object)
 
     def __init__(self, provider: ApiProvider, parent=None) -> None:
         super().__init__(parent)
@@ -30,21 +30,66 @@ class ApiProbeWorker(QThread):
         p = self._provider
         model_hint = p.models[0] if p.models else ""
         try:
-            ok, detail, models = oai.probe(
-                p.base_url,
-                p.api_key,
-                model=model_hint,
-            )
-            # 수동 목록이 있으면 병합
-            merged = list(models)
-            for m in p.models:
-                if m not in merged:
-                    merged.append(m)
-            if not merged and p.models:
-                merged = list(p.models)
-            self.finished_probe.emit(p.id, ok, detail, merged)
+            result = oai.probe(p.base_url, p.api_key, model=model_hint)
         except Exception as exc:
-            self.finished_probe.emit(p.id, False, str(exc)[:300], [])
+            result = oai.ProbeResult("error", detail=str(exc)[:300])
+        self.finished_probe.emit(p.id, result)
+
+
+class ApiModelVerifyWorker(QThread):
+    """모델 1건 실측 — (provider_id, model, state, tool_support, detail)."""
+
+    finished_verify = pyqtSignal(str, str, str, str, str)
+
+    def __init__(self, provider: ApiProvider, model: str, parent=None) -> None:
+        super().__init__(parent)
+        self._provider = provider
+        self._model = model
+
+    def run(self) -> None:
+        from iris.infrastructure.api_model_meta import verify_model
+
+        p = self._provider
+        try:
+            state, tools, detail = verify_model(
+                p.base_url, p.api_key, self._model, auth_style=p.auth_style
+            )
+        except Exception as exc:  # noqa: BLE001 — 판정 불가는 미확정으로 남김
+            state, tools, detail = "unverified", "unknown", str(exc)[:200]
+        self.finished_verify.emit(p.id, self._model, state, tools, detail)
+
+
+class ApiModelsVerifyWorker(QThread):
+    """제공자의 모든 모델을 순차 실측 — 목록 정리용. 중간 취소 가능."""
+
+    verified_one = pyqtSignal(str, str, str, str)  # provider_id, model, state, tool_support
+    progress = pyqtSignal(int, int, int)  # done, total, usable
+    finished_all = pyqtSignal(str, int, int)  # provider_id, usable, total
+
+    def __init__(self, provider: ApiProvider, parent=None) -> None:
+        super().__init__(parent)
+        self._provider = provider
+
+    def run(self) -> None:
+        from iris.infrastructure.api_model_meta import verify_model
+
+        p = self._provider
+        models = list(p.models)
+        usable = 0
+        for i, model in enumerate(models, start=1):
+            if self.isInterruptionRequested():
+                break
+            try:
+                state, tools, _detail = verify_model(
+                    p.base_url, p.api_key, model, auth_style=p.auth_style
+                )
+            except Exception:  # noqa: BLE001 — 판정 불가는 미확정
+                state, tools = "unverified", "unknown"
+            if state != "unavailable":
+                usable += 1
+            self.verified_one.emit(p.id, model, state, tools)
+            self.progress.emit(i, len(models), usable)
+        self.finished_all.emit(p.id, usable, len(models))
 
 
 class OpenAICompatChatWorker(QThread):
@@ -66,11 +111,13 @@ class OpenAICompatChatWorker(QThread):
         messages: list[dict[str, str]],
         *,
         display_model: str = "",
+        auth_style: str = "bearer",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._base_url = base_url
         self._api_key = api_key
+        self._auth_style = auth_style
         self._model = model
         self._messages = messages
         self._display = display_model or model
@@ -89,6 +136,7 @@ class OpenAICompatChatWorker(QThread):
                 self._api_key,
                 self._model,
                 self._messages,
+                auth_style=self._auth_style,
             ):
                 if self._cancel:
                     break

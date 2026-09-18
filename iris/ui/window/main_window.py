@@ -40,11 +40,6 @@ from iris.audio.workers import (
 from iris.config.settings import load_settings
 from iris.core.activity_sink import register_activity_sink
 from iris.core.state_machine import AppState, StateMachine
-from iris.infrastructure.api_model_meta import (
-    api_model_supports_tools,
-    filter_nvidia_free_endpoint_models,
-    is_nvidia_provider,
-)
 from iris.infrastructure.ollama_client import OllamaModelInfo
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.storage.api_providers import (
@@ -52,7 +47,9 @@ from iris.storage.api_providers import (
     is_api_runtime_model,
     load_api_providers,
     parse_runtime_model_id,
+    record_model_probe,
     runtime_model_id,
+    usable_models,
 )
 from iris.storage.email_accounts import EmailAccount, find_account, load_email_accounts
 from iris.monitoring.notification_policy import NotificationPolicy
@@ -93,6 +90,7 @@ from iris.system.ide_tiler import (
     enforce_hwnd_companion_flush,
     enforce_qt_companion_flush,
     place_qt_window,
+    rects_differ,
     tile_ide_and_iris,
     tile_iris_ide_and_iris,
     work_area_for,
@@ -203,6 +201,7 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAcceptDrops(True)
         self._drop_armed: WeakSet = WeakSet()
+        self._pending_ide_drag: list[str] = []
 
         self._env_path = Path(__file__).resolve().parents[3] / ".env"
         self._settings = load_settings(self._env_path)
@@ -230,6 +229,7 @@ class MainWindow(QMainWindow):
         self._tts_runtime_ready = False
         self._tts_bootstrap_worker: TTSRuntimeBootstrapWorker | None = None
         self._model_worker: OllamaModelListWorker | None = None
+        self._api_verify_worker: QThread | None = None
         self._hermes_health_worker: HermesHealthWorker | None = None
         self._hermes_model_worker: HermesModelSyncWorker | None = None
         self._email_inbox_worker: EmailInboxWorker | None = None
@@ -271,8 +271,6 @@ class MainWindow(QMainWindow):
         self._hermes_online = False
         self._busy = False
         self._ignore_chat_result = False
-        self._api_fallback_pending = False  # 직접 호출 실패 → Hermes 폴백 1회
-        self._api_fallback_model = ""  # Hermes에 넘길 모델 id
         self._quota_by_key: dict[str, object] = {}
         self._last_ollama_quota_refresh = 0.0
         self._workspace_mode = "assistant"
@@ -975,23 +973,20 @@ class MainWindow(QMainWindow):
                 continue
             if p.status != "ok" and not p.models:
                 continue
-            model_ids = list(p.models)
-            if is_nvidia_provider(p.name, p.base_url):
-                # 카탈로그 전체가 아니라 무료 Public API 엔드포인트만
-                model_ids = filter_nvidia_free_endpoint_models(model_ids)
-            for model in model_ids:
+            # 프로브가 거부한 모델(은퇴·권한없음·비채팅)은 제외 — 하드코딩 목록 없음
+            for model in usable_models(p):
                 rid = runtime_model_id(p.id, model)
                 if rid in seen:
                     continue
                 seen.add(rid)
+                tool_state = p.tool_support.get(model, "unknown")
                 out.append(
                     OllamaModelInfo(
                         name=rid,
                         catalog_name=f"{p.name} · {model}",
-                        supports_tools=api_model_supports_tools(
-                            p.name, model, base_url=p.base_url
-                        ),
+                        supports_tools=tool_state != "no",
                         requires_subscription=False,
+                        tool_support=tool_state,
                     )
                 )
         return out
@@ -1124,6 +1119,62 @@ class MainWindow(QMainWindow):
             self._sync_hermes_model(model)
         self._refresh_context_gauge()
         self._api_quota_worker.set_cloud_polling(self._is_cloud_model(model))
+        self._verify_api_model_once(model)
+
+    def _verify_api_model_once(self, runtime: str) -> None:
+        """커스텀 API 모델을 처음 선택할 때만 1회 실측 (사용가능·도구지원)."""
+        parsed = parse_runtime_model_id(runtime)
+        if parsed is None or self._db is None:
+            return
+        provider_id, model = parsed
+        provider = get_api_provider(self._db, provider_id)
+        if provider is None:
+            return
+        if provider.model_states.get(model) == "ok" and provider.tool_support.get(model) in (
+            "yes",
+            "no",
+        ):
+            return
+        if self._api_verify_worker is not None and self._api_verify_worker.isRunning():
+            return
+        from iris.ui.workers.api_provider_workers import ApiModelVerifyWorker
+
+        worker = ApiModelVerifyWorker(provider, model, parent=self)
+        worker.finished_verify.connect(self._on_api_model_verified)
+        self._api_verify_worker = worker
+        worker.start()
+
+    def _mark_api_model_unavailable_on_4xx(self, err: str) -> None:
+        """실제 대화가 404/400으로 거부되면 그 실측을 캐시에 남겨 목록에서 뺌."""
+        runtime = self._chat.current_model()
+        parsed = parse_runtime_model_id(runtime)
+        if parsed is None or self._db is None:
+            return
+        text = err or ""
+        if not any(f"HTTP {code}" in text for code in (400, 403, 404, 422)):
+            return
+        provider_id, model = parsed
+        record_model_probe(
+            self._db, provider_id, model, state="unavailable", tool_support="unknown"
+        )
+        self._refresh_models()
+
+    def _on_api_model_verified(
+        self, provider_id: str, model: str, state: str, tool_support: str, detail: str
+    ) -> None:
+        self._api_verify_worker = None
+        if self._db is None:
+            return
+        record_model_probe(self._db, provider_id, model, state=state, tool_support=tool_support)
+        if state == "unavailable":
+            self._chat.append_message_instant(
+                "Iris",
+                f"이 모델은 현재 계정에서 사용할 수 없어 목록에서 제외합니다: {model}\n{detail[:200]}",
+            )
+            self._refresh_models()
+            return
+        if tool_support == "no":
+            self._live_activity.append_instant_line(f"모델 {model}: 도구 호출 미지원으로 확인됨")
 
     @staticmethod
 
@@ -1373,15 +1424,82 @@ class MainWindow(QMainWindow):
         self._chat.attach_drop_paths(clean)
         return True
 
+    def _begin_ide_companion_drag(self, paths: list[str]) -> None:
+        """Theia dragstart — QWebEngine OLE DnD가 Qt로 안 넘어오므로 경로만 보관."""
+        clean = [str(p).strip() for p in paths if str(p).strip()]
+        self._pending_ide_drag = clean
+        # 탭 제스처: WebEngine 밖 pointerup이 유실되므로 앱 전역 release로 첨부.
+        app = QApplication.instance()
+        if app is not None and app != self:
+            app.installEventFilter(self)
+        # ponytail: 포기한 드래그 pending 고착 방지. 천장 20s — 필요 시 drag_end가 갱신.
+        token = list(clean)
+        QTimer.singleShot(20_000, lambda t=token: self._expire_ide_companion_drag(t))
+
+    def _expire_ide_companion_drag(self, expected: list[str]) -> None:
+        if self._pending_ide_drag == expected:
+            self._pending_ide_drag = []
+
+    def _finish_ide_companion_drag(self, paths: list[str] | None = None) -> list[str]:
+        """Theia dragend — 커서가 Iris 창 안이면 첨부.
+
+        창 밖이면 pending을 유지한다. 탭 드래그는 IDE 위에서 조기 drag_end/pointerup이
+        먼저 와 pending을 지워 버리면, 이후 Iris 위 릴리즈가 무동작이 된다.
+        """
+        if paths:
+            clean = [str(p).strip() for p in paths if str(p).strip()]
+        else:
+            clean = list(self._pending_ide_drag)
+        if not clean:
+            return []
+        try:
+            from PyQt6.QtGui import QCursor
+
+            # Companion 타일: Iris 본체 또는 채팅 영역. frameGeometry는 Qt DIP.
+            if not self.frameGeometry().contains(QCursor.pos()):
+                self._pending_ide_drag = clean
+                return []
+        except Exception:
+            self._pending_ide_drag = clean
+            return []
+        self._pending_ide_drag = []
+        if self._attach_os_drop_paths(clean):
+            return clean
+        return []
+
+    def _accept_file_drag(self, event: object) -> bool:
+        """탐색기/IDE companion — Copy 커서로 수락. filter는 삼키지 않고 False 반환용."""
+        from iris.ui.window.file_drop import mime_has_attachable
+
+        if not (mime_has_attachable(getattr(event, "mimeData", lambda: None)()) or self._pending_ide_drag):
+            return False
+        try:
+            from PyQt6.QtCore import Qt
+
+            event.setDropAction(Qt.DropAction.CopyAction)
+        except Exception:
+            pass
+        if hasattr(event, "acceptProposedAction"):
+            # proposed가 Move여도 첨부는 Copy UX (Cursor/GPT와 동일).
+            try:
+                from PyQt6.QtCore import Qt
+
+                event.setDropAction(Qt.DropAction.CopyAction)
+                event.accept()
+            except Exception:
+                event.acceptProposedAction()
+        else:
+            event.accept()
+        return True
+
     def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
-        from iris.ui.window.file_drop import drop_event_types, mime_has_attachable, paths_from_mime
+        from iris.ui.window.file_drop import drop_event_types, paths_from_mime
 
         et = event.type()
         if et == QEvent.Type.ChildAdded:
             child = getattr(event, "child", lambda: None)()
             if isinstance(child, QWidget):
                 hero = getattr(self, "_ide_hero", None)
-                # 히어로 칩 deleteLater 레이스로 삭제된 위젯 arm → RuntimeError → 종료
                 if hero is not None:
                     try:
                         if child is hero or hero.isAncestorOf(child):
@@ -1389,44 +1507,50 @@ class MainWindow(QMainWindow):
                     except RuntimeError:
                         return False
                 QTimer.singleShot(0, lambda w=child: self._arm_file_drops(w))
+        elif self._pending_ide_drag and et == QEvent.Type.MouseButtonRelease:
+            # 탭→Iris: WebEngine이 포인터를 잃어도 전역 release로 첨부.
+            if self._finish_ide_companion_drag():
+                return False
         elif et in drop_event_types():
+            from iris.ui.window.file_drop import log_drop_event
+
             if et == QEvent.Type.Drop:
+                log_drop_event("Drop", event.mimeData(), watched=watched)
                 paths = paths_from_mime(event.mimeData())
+                if not paths and self._pending_ide_drag:
+                    paths = list(self._pending_ide_drag)
+                    self._pending_ide_drag = []
                 if self._attach_os_drop_paths(paths):
-                    if hasattr(event, "acceptProposedAction"):
-                        event.acceptProposedAction()
-                    else:
-                        event.accept()
+                    self._accept_file_drag(event)
                     return True
-            elif mime_has_attachable(event.mimeData()):
-                if hasattr(event, "acceptProposedAction"):
-                    event.acceptProposedAction()
-                else:
-                    event.accept()
-                return True
+            else:
+                # DragEnter만 로그 (Move는 스팸)
+                if et == QEvent.Type.DragEnter:
+                    log_drop_event("DragEnter", event.mimeData(), watched=watched)
+                if self._accept_file_drag(event):
+                    # True: 자식 QWidget 기본 dragEnter가 ignore()로 수락을 뒤집지 않게.
+                    return True
         return super().eventFilter(watched, event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
-        from iris.ui.window.file_drop import mime_has_attachable
-
-        if mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+        if self._accept_file_drag(event):
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802
-        from iris.ui.window.file_drop import mime_has_attachable
-
-        if mime_has_attachable(event.mimeData()):
-            event.acceptProposedAction()
+        if self._accept_file_drag(event):
             return
         super().dragMoveEvent(event)
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
         from iris.ui.window.file_drop import paths_from_mime
 
-        if self._attach_os_drop_paths(paths_from_mime(event.mimeData())):
-            event.acceptProposedAction()
+        paths = paths_from_mime(event.mimeData())
+        if not paths and self._pending_ide_drag:
+            paths = list(self._pending_ide_drag)
+            self._pending_ide_drag = []
+        if self._attach_os_drop_paths(paths):
+            self._accept_file_drag(event)
             return
         super().dropEvent(event)
 
@@ -1697,8 +1821,6 @@ class MainWindow(QMainWindow):
         self._ignore_chat_result = False
         self._stop_tts_playback()
         self._begin_auto_tts_response()
-        self._api_fallback_pending = False
-        self._api_fallback_model = ""
         self._chat.set_generating(True)
         self._sync_voice_conversation_state()
 
@@ -1763,6 +1885,7 @@ class MainWindow(QMainWindow):
                 api_model,
                 messages,
                 display_model=f"{provider.name}/{api_model}",
+                auth_style=provider.auth_style,
                 parent=self,
             )
             self._start_chat_worker(worker, turn.id)
@@ -2022,7 +2145,6 @@ class MainWindow(QMainWindow):
             self._last_assistant_text = text
             self._try_reveal_local_vibe_code(text)
         self._refresh_context_gauge()
-        self._api_fallback_pending = False
         if self._use_hermes_backend() and not self._hermes_online:
             self._hermes_online = True
             self._status_header.refresh_backend_status(
@@ -2058,6 +2180,20 @@ class MainWindow(QMainWindow):
                 self._chat.set_speaker_status(self._tts_active_msg_id, status)
         self._finish_current_turn(open_followup=True)
 
+    def _note_tool_file_write(self) -> None:
+        """project.write_file 성공 = 이번 턴의 1급 IDE 개방 트리거.
+
+        도구 경로로 이미 IDE 탭이 열리고 코드가 들어갔으므로, 펜스 감지는
+        폴백으로 격하한다 — 라이브 타이핑도 사후 재생도 같은 턴에 파일을
+        또 열지 않는다(중복 개방 방지). control_bindings의 project.write_file
+        래퍼가 성공 시 호출한다.
+        """
+        state = self._live_vibe
+        if state is None:
+            state = self._live_vibe = {"raw": "", "started": False, "closed": False}
+        state["closed"] = True  # _feed_live_vibe_stream 진입 차단
+        state["tool_written"] = True
+
     def _feed_live_vibe_stream(self, chunk: str) -> None:
         """AI 응답이 스트리밍되는 도중 코드블록을 감지해 IDE에 실시간으로 흘려쓴다.
 
@@ -2065,6 +2201,7 @@ class MainWindow(QMainWindow):
         재생하는 게 아니라 코드가 만들어지는 것과 동시에 타이핑처럼 보인다.
         어떤 이유로든 실패하면 조용히 포기하고, 턴이 끝날 때
         _try_reveal_local_vibe_code가 기존(사후 재생) 방식으로 폴백한다.
+        _note_tool_file_write가 선 턴에서는 state["closed"]로 진입하지 않는다.
         """
         if not chunk or not self._pending_local_vibe_prompt:
             return
@@ -2201,6 +2338,8 @@ class MainWindow(QMainWindow):
         self._live_vibe = None
         if not prompt:
             return
+        if state is not None and state.get("tool_written"):
+            return  # 도구가 이미 열었다 — 사후 재생 폴백 불필요
         surface = getattr(self, "_control_surface", None)
         if surface is None:
             self._chat.append_message_instant("Iris", "IDE 제어면이 아직 준비되지 않았습니다.")
@@ -3504,12 +3643,9 @@ class MainWindow(QMainWindow):
             self._chat_worker = None
             self._stop_tts_playback()
             self._tts_pump = None
-            self._api_fallback_pending = False
             self._finish_current_turn(open_followup=False)
             return
-        # 커스텀 API 직접 호출 실패 → Hermes online이면 1회 폴백
-        if self._try_hermes_fallback_after_api_fail(err):
-            return
+        self._mark_api_model_unavailable_on_4xx(err)
         self._stop_tts_playback()
         self._tts_pump = None
         if getattr(self._chat, "_stream_active", False):
@@ -3524,60 +3660,10 @@ class MainWindow(QMainWindow):
             f"{self._backend_label()} 오류: {err}",
         )
         self._chat_worker = None
-        self._api_fallback_pending = False
         self._maybe_refresh_ollama_quota()
         self._finish_current_turn(open_followup=False)
         self._state.set_state(AppState.ERROR)
         QTimer.singleShot(800, self._sync_voice_conversation_state)
-
-    def _try_hermes_fallback_after_api_fail(self, err: str) -> bool:
-        """직접 API 실패 시 Hermes 경유 재시도(Hermes OFF→ON 과도기용).
-
-        Hermes가 켜진 채팅은 처음부터 Hermes 경로라 여기로 거의 안 온다.
-        """
-        if not self._api_fallback_pending:
-            return False
-        self._api_fallback_pending = False
-        if not self._settings.hermes_enabled or not self._hermes_online:
-            return False
-        model = (
-            self._chat.current_model()
-            or self._api_fallback_model
-            or self._saved_model
-            or ""
-        ).strip()
-        if not model:
-            return False
-        try:
-            from iris.infrastructure.hermes_client import resolve_hermes_inference
-
-            target = resolve_hermes_inference(
-                model,
-                db=self._db,
-                ollama_base_url=self._settings.ollama_base_url,
-            )
-        except Exception:
-            return False
-        if getattr(self._chat, "_stream_active", False):
-            self._chat.end_stream_message(None)
-        self._live_activity.append_instant_line(
-            f"API 직접 호출 실패 → Hermes 폴백: {err[:120]}"
-        )
-        self._stop_tts_playback()
-        self._begin_auto_tts_response()
-        self._chat_worker = None
-        messages = self._chat_messages_with_project_context()
-        worker = HermesChatWorker(
-            self._settings.hermes_base_url,
-            target.label,
-            messages,
-            api_key=self._settings.hermes_api_key,
-            command=self._settings.hermes_command,
-            target=target,
-            parent=self,
-        )
-        self._start_chat_worker(worker, self._active_turn_id)
-        return True
 
     def _on_app_state(self, state: object) -> None:
         if isinstance(state, AppState):
@@ -4719,6 +4805,16 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(4000, _retile)
 
     def _sync_companion_split(self) -> None:
+        # UI 스레드가 멈춘 뒤 밀린 타이머가 겹쳐 발화하면 geometry 폭주 → WebEngine 검은 잔상.
+        if getattr(self, "_syncing_split", False):
+            return
+        self._syncing_split = True
+        try:
+            self._sync_companion_split_once()
+        finally:
+            self._syncing_split = False
+
+    def _sync_companion_split_once(self) -> None:
         """IDE/Iris 중 하나가 사용자에 의해 드래그되면 반대쪽을 맞춰 따라가게 한다.
 
         AXObserver 같은 실시간 알림 대신 짧은 폴링으로 근사— 두 창 다 우리가
@@ -4760,12 +4856,8 @@ class MainWindow(QMainWindow):
             self._record_synced_rects()
             return
 
-        ide_changed = (
-            self._last_synced_ide_rect is None or current_ide != self._last_synced_ide_rect
-        )
-        iris_changed = (
-            self._last_synced_iris_rect is None or current_iris != self._last_synced_iris_rect
-        )
+        ide_changed = rects_differ(current_ide, self._last_synced_ide_rect)
+        iris_changed = rects_differ(current_iris, self._last_synced_iris_rect)
         if not ide_changed and not iris_changed:
             return
 
@@ -6186,7 +6278,6 @@ class MainWindow(QMainWindow):
                 return
             self._settings.ollama_base_url = sel.ollama_base_url
             self._settings.ollama_model = sel.ollama_model
-            self._settings.hermes_enabled = sel.hermes_enabled
             self._settings.hermes_command = sel.hermes_command
             self._settings.hermes_base_url = sel.hermes_base_url
             self._settings.hermes_api_key = sel.hermes_api_key
@@ -6284,13 +6375,27 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         suppress_native_window_border(self)
         self._arm_file_drops(self)
+        if sys.platform == "win32":
+            QTimer.singleShot(0, self._arm_win_shell_drop)
         if sys.platform == "win32" and not self._test_mode:
-            try:
-                from iris.assets.windows_taskbar import apply_hwnd_branding
+            QTimer.singleShot(0, self._apply_hwnd_branding_safe)
 
-                apply_hwnd_branding(int(self.winId()))
-            except Exception:
-                pass
+    def _arm_win_shell_drop(self) -> None:
+        try:
+            from iris.ui.window.win_shell_drop import enable_shell_file_drop
+
+            enable_shell_file_drop(int(self.winId()))
+        except Exception:
+            pass
+
+    def _apply_hwnd_branding_safe(self) -> None:
+        try:
+            from iris.assets.windows_taskbar import apply_hwnd_branding
+
+            apply_hwnd_branding(int(self.winId()))
+        except Exception:
+            pass
+
 
     def changeEvent(self, event: QEvent) -> None:  # noqa: N802
         super().changeEvent(event)

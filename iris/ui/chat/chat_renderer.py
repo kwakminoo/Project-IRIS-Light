@@ -40,13 +40,13 @@ _BACKTICK_FILE_PATH = re.compile(
     re.IGNORECASE,
 )
 _BARE_FILE_PATH = re.compile(
-    rf"(?<![`#/\\w])(?<!://)"
+    rf"(?<![`#/\w])(?<!://)"
     rf"((?:[\w.-]+/)+[\w.-]+\.{_FILE_EXT}(?:\:\d+(?:\:\d+)?)?)"
     rf"(?![/\w.])",
     re.IGNORECASE,
 )
 _AT_PATH_REF = re.compile(
-    r"(?<![`\\w./-])@((?:[\w.-]+/)+[\w.-]+(?:\:\d+(?:\:\d+)?)?)\b",
+    r"(?<![`\w./-])@((?:[\w.-]+/)+[\w.-]+(?:\:\d+(?:\:\d+)?)?)\b",
     re.IGNORECASE,
 )
 _INLINE_CODE_TAG = re.compile(

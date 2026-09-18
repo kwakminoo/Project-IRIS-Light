@@ -28,6 +28,8 @@ _OFF_UI_ACTIONS = frozenset(
     {
         "email.list_messages",
         "email.read_message",
+        # 터미널 로그 폴링·브리지 왕복이 최대 90초 — UI 스레드면 Windows "응답 없음"
+        "project.run",
     }
 )
 
@@ -331,11 +333,9 @@ class ControlSurface:
                             return err_result(action or "invoke", "Iris is still booting")
                         return surface.registry.invoke(action, args)
 
-                    # ponytail: live file stream / project.run 은 메인스레드에서 길어질 수 있음
+                    # ponytail: live file stream 은 메인스레드에서 길어질 수 있음
                     timeout = 15.0
-                    if action == "project.run":
-                        timeout = float(args.get("timeout_sec") or 60) + 30.0
-                    elif action == "project.write_file":
+                    if action == "project.write_file":
                         # open+live stream 기본 — 작성 연출 대기
                         if bool(args.get("open", True)) and bool(
                             args.get("typewriter", args.get("stream", True))
@@ -433,6 +433,10 @@ def _self_check() -> None:
     assert denied["ok"] is False
     allowed = high.invoke("email.send", {"confirm": True})
     assert allowed["ok"] is True
+    # 긴 액션이 UI 스레드로 돌아가면 Windows "응답 없음"
+    assert runs_off_ui_thread("project.run")
+    assert runs_off_ui_thread("emulator.start")
+    assert not runs_off_ui_thread("project.write_file")
     print("control_surface self-check ok")
 
 

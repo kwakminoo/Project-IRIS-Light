@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -30,6 +30,14 @@ class IrisIdeClient:
         try:
             with urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read().decode("utf-8")
+        except HTTPError as exc:
+            # 브리지는 실패 사유를 본문 JSON에만 담는다 — 버리면 "HTTP Error 400"만 남아 진단이 끊긴다.
+            try:
+                body = json.loads(exc.read().decode("utf-8"))
+                detail = str(body.get("error") or "") if isinstance(body, dict) else ""
+            except (ValueError, OSError, UnicodeDecodeError):
+                detail = ""
+            raise IrisIdeClientError(f"{command}: {detail}" if detail else str(exc)) from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise IrisIdeClientError(str(exc)) from exc
         try:

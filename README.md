@@ -1,42 +1,155 @@
+<div align="center">
+
+**🇰🇷 한국어** · [🇺🇸 English](README.en.md) · [🇯🇵 日本語](README.ja.md) · [🇨🇳 中文](README.zh.md)
+
+</div>
+
 # IRIS
 
-**유료 AI 구독·복잡한 설치 없이, 내 PC에서 바로 쓰는 오픈소스 데스크톱 AI 에이전트.**
+**Open Source Desktop AI Agent Runtime**
 
-IRIS는 [Ollama](https://ollama.com/)(로컬/클라우드 모델)와 [Hermes Agent](https://hermes-agent.nousresearch.com/)(도구·스킬)를 자동으로 준비하고, 대화형 HUD로 묶는 **Python · PyQt6** 데스크톱 앱입니다.  
-사용자는 자연어로 요청하고, IRIS는 Runtime Gateway를 통해 모델 응답과 파일·터미널·웹 도구 실행을 스트리밍으로 보여 줍니다.
+IRIS는 LLM · MCP · Voice Runtime · Local/Cloud Model을 연결해 **내 PC에서 실행되는 AI Agent Runtime**입니다.
+유료 구독이나 복잡한 수동 연동 없이, 설치 프로그램 하나로 [Ollama](https://ollama.com/)(모델 추론)와 [Hermes Agent](https://hermes-agent.nousresearch.com/)(도구·스킬)를 준비하고 대화형 HUD로 묶습니다.
 
-> 버전 `0.1.0-light` · 표시 이름 **IRIS** · 코드/패키지명 Iris Light
+단순 챗봇이 아니라 다음을 목표로 합니다.
+
+- **Agent Runtime** — 멀티스텝 요청 처리
+- **Tool Execution** — 파일 · 터미널 · 웹 실행
+- **MCP Integration** — 외부 도구 연동
+- **Voice Interaction** — STT/TTS 독립 서비스
+- **Runtime Gateway** — 실행 경계 분리
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/downloads/)
-[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg)](#필요-사양)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6.svg)](#설치)
+[![Release](https://img.shields.io/github/v/release/kwakminoo/Project-IRIS-Light?label=release)](https://github.com/kwakminoo/Project-IRIS-Light/releases/latest)
 
-🌐 **소개 사이트 — [cjh030906.github.io/iris-light-site](https://cjh030906.github.io/iris-light-site/)**
-시연 영상, 실제 화면, 동작 구조를 한 페이지에서 볼 수 있습니다.
-([저장소](https://github.com/cjh030906/iris-light-site))
+> 표시 이름 **IRIS** · 코드/패키지명 Iris Light · 앱 버전 `0.1.0-light`
+
+🌐 **소개 사이트 — [cjh030906.github.io/iris-light-site](https://cjh030906.github.io/iris-light-site/)** ([저장소](https://github.com/cjh030906/iris-light-site))
 
 ---
 
-## 🎬 설치·동작 데모 영상
+## Demo
 
-**설치부터 실제 동작까지 3분** — 썸네일을 누르면 유튜브로 이동합니다.
+**설치부터 실제 동작까지 3분** — 영상 준비 중입니다. 촬영 대본과 업로드 절차는 [`docs/demo-video-script.md`](docs/demo-video-script.md)에 있습니다.
 
 <!-- DEMO_VIDEO:START -->
 <!--
-  ⚠ 영상 업로드 후 아래 두 줄의 주석을 풀고 VIDEO_ID 를 실제 값으로 바꾸세요.
+  ⚠ 영상 업로드 후 아래 줄의 주석을 풀고 VIDEO_ID 를 실제 값으로 바꾸세요.
      VIDEO_ID = https://youtu.be/여기11자리
-     대본·업로드 가이드: docs/demo-video-script.md
--->
-<!--
 [![IRIS 설치·동작 데모](https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg)](https://youtu.be/VIDEO_ID)
 -->
-
-> 📹 **영상 준비 중입니다.** 촬영 대본과 업로드 절차는 [`docs/demo-video-script.md`](docs/demo-video-script.md)에 있습니다.
 <!-- DEMO_VIDEO:END -->
+
+아래 4개 GIF는 녹화 예정입니다. 파일이 준비되면 각 항목의 주석만 풀면 됩니다.
+스펙(길이·해상도·촬영 순서)은 [`assets/demo/README.md`](assets/demo/README.md)에 정리돼 있습니다.
+
+### 1. Agent Execution
+
+```text
+사용자 명령 입력 → IRIS HUD → Agent Runtime → Tool 실행
+```
+
+<!-- ![Agent Execution](assets/demo/agent.gif) -->
+
+### 2. Voice Interaction
+
+```text
+STT → UserTurnDispatcher → Agent Runtime → TTS
+```
+
+<!-- ![Voice Interaction](assets/demo/voice.gif) -->
+
+### 3. Runtime Architecture
+
+```text
+GUI → Runtime Gateway → Hermes → Ollama
+```
+
+<!-- ![Runtime Architecture](assets/demo/runtime.gif) -->
+
+### 4. Installation
+
+```text
+IRIS-Setup.exe → 가상환경·패키지 자동 설치 → 시작 위저드
+```
+
+<!-- ![Installation](assets/demo/setup.gif) -->
 
 ---
 
-## ⚡ 3분 만에 시작하기
+## Why IRIS?
+
+기존 AI Assistant는 특정 서비스에 종속되거나, 대화 인터페이스 하나에 머무릅니다.
+반대로 로컬 모델은 "모델만 돌리기"에서 멈추고, 실제 PC에서 코딩·문서·파일 작업을 시키는 단계까지 가려면 직접 연동해야 할 것이 많습니다.
+
+IRIS는 그 간격을 다음 방식으로 좁힙니다.
+
+| 문제 | IRIS의 해결 방식 |
+|------|------|
+| 특정 벤더에 종속 | Ollama · OpenAI 호환 provider를 골라 연결 |
+| Agent 로직이 UI에 섞임 | Runtime Gateway로 실행 경계를 분리 |
+| GPU 없으면 못 씀 | 클라우드 모델을 기본으로, 로컬 모델은 선택 |
+| 음성이 앱에 묶임 | Voice Runtime을 별도 FastAPI 서비스(`:18765`)로 분리 |
+| 도구 확장이 막힘 | Hermes 스킬 · MCP로 확장 |
+| 설치·연동이 복잡 | 설치 프로그램이 Python·venv·패키지·런타임까지 자동 처리 |
+
+IRIS는 웹검색·셸·파일 IO를 자체 재구현하지 않습니다.
+**세션·권한·스트리밍 UI·시작 프로토콜**을 담당하고, 실행은 Ollama/Hermes에 위임합니다.
+
+<details>
+<summary><b>기대 효과 (프로젝트 배경)</b></summary>
+
+- **접근성**: 구독료·복잡한 에이전트 셋업이 부담인 학생·취준생·초보 개발자의 진입 장벽을 낮춥니다.
+- **실습형 AI**: 답만 받는 소비를 넘어, 코딩·문서·파일 작업을 로컬 PC에서 직접 수행하며 활용 역량을 키웁니다.
+- **격차 완화**: PC 사양에 맞는 모델을 연결해, 경제적·디지털 격차로 인한 AI 경험 불평등을 줄이는 데 기여합니다.
+- **프라이버시·자립**: 로컬 실행으로 민감 정보 외부 전송을 줄이고, 특정 벤더에만 의존하지 않는 사용이 가능합니다.
+
+</details>
+
+---
+
+## Features
+
+| Feature | Description |
+|---|---|
+| **LLM Agent** | Hermes를 통한 멀티스텝 도구 호출 (파일·터미널·웹) |
+| **MCP** | `iris-control` stdio MCP · Hermes MCP 연동 |
+| **Voice Runtime** | STT/TTS를 별도 FastAPI 서비스(`:18765`)로 분리 (선택 설치) |
+| **Runtime Gateway** | 세션·권한·스트리밍을 담당하는 실행 경계 |
+| **Local Model** | Ollama 로컬 모델 (`:11434`) |
+| **Cloud Model** | GPU 없는 PC를 위한 OpenAI 호환 provider |
+| **시작 프로토콜** | 첫 실행 시 Ollama·모델·Hermes·provider·gateway·MCP를 단계적으로 자동화 |
+| **대화형 HUD** | 모델 선택, 대화 이력, 사고/도구 로그, 실시간 스트리밍 |
+| **Control Surface** | Hermes → UI 역제어 (`:8765`) · `iris-control` 스킬 |
+| **워크스페이스** | 시스템 모니터 · 이메일(다중 계정) · 캘린더 · IDE Companion · Iris Wiki |
+| **로컬 저장** | 설정·프로필 등 SQLite (`~/.iris-light/`) |
+| **선택 확장** | 화면 학습(Aloha) · Android 에뮬레이터 · mobile-mcp |
+
+준비 중: Instagram / Discord / Kakao / Telegram 워크스페이스.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TD
+    U["사용자 자연어"] --> HUD
+    HUD["IRIS HUD · PyQt6<br/>Chat · Monitor · Wiki · Email · Calendar · Settings"] --> GW
+    GW["Runtime Gateway<br/>ollama_client · hermes_client · setup_protocol"] --> OL["Ollama :11434<br/>모델 추론 (로컬/클라우드)"]
+    GW --> HM["Hermes :8642<br/>도구 · 스킬"]
+    HM --> T["파일 · 터미널 · 웹 · MCP"]
+    HM -. "Control Surface :8765" .-> HUD
+    VR["Voice Runtime :18765 (선택)<br/>STT / TTS · FastAPI"] <--> HUD
+```
+
+전체 해상도 다이어그램: [`docs/ia/iris-system-architecture.png`](docs/ia/iris-system-architecture.png)
+설계 문서: [도메인·Runtime Gateway](docs/domain.md) · [정보 구조·요청 경로](docs/ia/IA.md)
+
+---
+
+## Quick Start
 
 **파이썬을 처음 써 보는 분도 명령어 입력 없이 설치할 수 있습니다.**
 
@@ -46,90 +159,14 @@ IRIS는 [Ollama](https://ollama.com/)(로컬/클라우드 모델)와 [Hermes Age
 <tr><td align="center"><b>3</b></td><td>바탕화면의 <b><code>IRIS</code></b> 를 실행합니다. 시작 위저드가 Ollama · Hermes 설치를 이어서 안내합니다.</td></tr>
 </table>
 
-끝입니다. 자세한 설치 옵션과 문제 해결은 [설치](#설치) 절을 보세요.
+### 첫 실행
 
----
+1. 앱이 **시작 위저드**를 띄웁니다.
+2. Core 단계: Ollama 공식 설치·기동 → 최소 모델 pull → Hermes 설치 → API/provider 연결 → gateway 기동.
+3. Optional(STT 음성·Full TTS·업무학습 Aloha·에뮬레이터·Node/mobile-mcp·클라우드 로그인 등)은 「설치」또는 「나중에」.
+4. HUD 채팅에서 자연어 요청을 보내면, Hermes/Ollama가 응답·도구 실행을 스트리밍합니다.
 
-## 문제 정의
-
-- 최신 AI 도구는 **구독비**와 **설치·연동 복잡도** 때문에 학생·취준생·초보 개발자에게 진입 장벽이 큽니다.
-- “모델만 돌리기”와 “실제 PC에서 코딩·문서·파일 작업을 시키는 에이전트” 사이에는 여전히 큰 간격이 있습니다.
-- IRIS는 **Ollama + Hermes를 PC 환경에 맞게 자동 설치·연결**해, 비용 부담 없이 코딩 학습·프로젝트·업무 자동화를 경험할 수 있는 **로컬 우선 오픈소스 환경**을 목표로 합니다.
-
----
-
-## 한눈에 보는 구조
-
-```text
-[사용자 자연어]
-       │
-       ▼
-[IRIS HUD — PyQt6]
-  Chat · Monitor · Wiki · Email · Calendar · Settings
-       │
-       ▼
-[Runtime Gateway]
-  ollama_client · hermes_client · setup_protocol
-       │
-       ├──────────────► [Ollama :11434]   모델 추론 (로컬/클라우드)
-       │
-       └──────────────► [Hermes :8642]    도구·스킬 (파일·터미널·웹·MCP…)
-```
-
-IRIS는 웹검색·셸·파일 IO를 자체 재구현하지 않습니다.  
-**세션·권한·스트리밍 UI·시작 프로토콜**을 담당하고, 실행은 Ollama/Hermes에 위임합니다.
-
-자세한 IA: `[docs/ia/IA.md](docs/ia/IA.md)` · 도메인: `[docs/domain.md](docs/domain.md)`
-
----
-
-## 주요 기능
-
-
-| 영역            | 내용                                                                     |
-| ------------- | ---------------------------------------------------------------------- |
-| **시작 프로토콜**   | 첫 실행 시 Ollama·최소 모델·Hermes 설치/기동·provider·gateway·MCP 연동을 단계적으로 안내·자동화 |
-| **대화형 HUD**   | 모델 선택, 대화 이력, 사고/도구 로그, 실시간 스트리밍                                       |
-| **에이전트 실행**   | Hermes를 통한 파일·터미널·웹 등 도구 호출 (스킬·MCP 포함)                                |
-| **Control Surface** | Hermes→UI 역제어 (`:8765`) · iris-control 스킬·MCP                          |
-| **시스템 모니터**   | 창/리소스 인식, 알림 정책, Live Activity, (옵션) 전화/알림 낭독                          |
-| **이메일**       | 다중 계정 메일 워크스페이스                                                        |
-| **캘린더**       | 일정 워크스페이스 + 공휴일·에이전트 연동                                                 |
-| **IDE Companion** | IDE 타일 배치·바이브코딩 연동                                                    |
-| **Iris Wiki** | Obsidian vault 기반 프로젝트 문서 + `~/.iris-light/iris-wiki` 사용자 노트           |
-| **로컬 저장**     | 설정·프로필 등 SQLite (`~/.iris-light/`)                                     |
-| **선택 확장**     | 음성 런타임(`:18765`), 화면 학습(Aloha), Android 에뮬레이터·mobile-mcp 등             |
-| **준비 중**      | Instagram / Discord / Kakao / Telegram 워크스페이스                         |
-
-
----
-
-## 필요 사양
-
-### 소프트웨어
-
-- **Windows 10/11** 권장 (시작 프로토콜·winget/Hermes 설치 스크립트 기준)
-- Python **3.11+** 권장
-- **안정적인 인터넷** 필수 (클라우드 모델·도구 호출)
-
-### 하드웨어 (클라우드 모델 위주)
-
-IRIS는 기본적으로 **클라우드 모델**로 추론하고, 로컬에는 UI·Hermes 게이트웨이·도구 실행만 둡니다.  
-로컬 LLM용 GPU/VRAM은 필요하지 않습니다. 아래 저장 공간은 **IRIS 관련 설치분**(앱·venv·Ollama/Hermes 런타임, 대용량 로컬 모델·에뮬레이터 제외) 기준입니다.
-
-| 구분 | 최소 | 권장 |
-|------|------|------|
-| **OS** | Windows 10/11 64bit | Windows 11 |
-| **CPU** | 듀얼~쿼드코어 (사무용 i3 / Ryzen 3 이상) | i5 / Ryzen 5 이상 |
-| **RAM** | **8GB** (가능하나 도구·브라우저 병행 시 빡쁨) | **16GB** |
-| **GPU** | **불필요** | 불필요 |
-| **저장 (IRIS만)** | 여유 **약 20GB** | 여유 **약 30GB** |
-| **네트워크** | 인터넷 연결 | 지연 낮은 안정 회선 |
-
-**참고**
-
-- OS·다른 프로그램용 SSD 용량은 별도입니다. PC 구매 시에는 보통 256GB 이상을 권합니다.
-- Android 에뮬레이터·화면 학습·로컬 대용량 모델을 쓰면 저장·RAM이 추가로 필요합니다.
+> 데모만 보려면: `IRIS_SETUP_DEMO=1` (실제 설치 없음) · UI 미리보기: `IRIS_SETUP_DRY_RUN=1`
 
 ---
 
@@ -142,27 +179,12 @@ IRIS는 기본적으로 **클라우드 모델**로 추론하고, 로컬에는 UI
 `setup.ps1` 을 돌려 가상환경과 패키지를 준비합니다.
 
 - 서명 인증서가 없어 Windows SmartScreen이 한 번 경고합니다 — **추가 정보 → 실행**
-- 패키지를 받는 데 몇 분 걸립니다. 진행 기록은 설치 폴더의 `setup-log.txt` ·
-  `setup-log-pip.txt` 에 남습니다
+- 패키지를 받는 데 몇 분 걸립니다. 진행 기록은 설치 폴더의 `setup-log.txt` · `setup-log-pip.txt` 에 남습니다
 - 설치가 중간에 끊겼다면 설치 폴더의 `setup.bat` 을 다시 실행하면 이어서 복구합니다
 
 ### 방법 B — 소스에서 자동 설치
 
-저장소 폴더에서 **`setup.bat` 을 더블클릭**하면 끝입니다.
-터미널을 열 필요도, 명령어를 외울 필요도 없습니다.
-
-`setup.bat` → `setup.ps1` 이 다음을 순서대로 처리합니다.
-
-| 단계 | 하는 일 | 실패하면 |
-|:---:|------|------|
-| 1 | Python 3.11+ 탐색 (`py -3.13/-3.12/-3.11` → `python`) | 설치 링크와 `winget` 명령을 화면에 안내 |
-| 2 | 가상환경 `.venv` 생성 (이미 있으면 재사용) | `venv` 모듈 설치 방법 안내 |
-| 3 | `pip` 업그레이드 | 경고만 남기고 기존 pip으로 계속 |
-| 4 | `requirements.txt` 전체 설치 | 프록시·사내망용 대체 명령 안내 |
-| 5 | `.env.example` → `.env` 복사 | 기존 `.env` 는 절대 덮어쓰지 않음 |
-| 6 | PyQt6 등 핵심 패키지 **import 검증** | VC++ 재배포 패키지 설치 명령 안내 |
-
-터미널에서 옵션을 주고 싶다면:
+저장소 폴더에서 **`setup.bat` 을 더블클릭**하면 끝입니다. 터미널을 열 필요도, 명령어를 외울 필요도 없습니다.
 
 ```powershell
 .\setup.ps1              # 기본 설치
@@ -193,7 +215,22 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
-### 설치가 잘 안 될 때
+<details>
+<summary><b>setup.ps1 이 처리하는 단계</b></summary>
+
+| 단계 | 하는 일 | 실패하면 |
+|:---:|------|------|
+| 1 | Python 3.11+ 탐색 (`py -3.13/-3.12/-3.11` → `python`) | 설치 링크와 `winget` 명령을 화면에 안내 |
+| 2 | 가상환경 `.venv` 생성 (이미 있으면 재사용) | `venv` 모듈 설치 방법 안내 |
+| 3 | `pip` 업그레이드 | 경고만 남기고 기존 pip으로 계속 |
+| 4 | `requirements.txt` 전체 설치 | 프록시·사내망용 대체 명령 안내 |
+| 5 | `.env.example` → `.env` 복사 | 기존 `.env` 는 절대 덮어쓰지 않음 |
+| 6 | PyQt6 등 핵심 패키지 **import 검증** | VC++ 재배포 패키지 설치 명령 안내 |
+
+</details>
+
+<details>
+<summary><b>설치가 잘 안 될 때 (증상별 해결)</b></summary>
 
 | 증상 | 원인 · 해결 |
 |------|------|
@@ -204,6 +241,36 @@ copy .env.example .env
 | PyQt6 import 실패 | Windows: `winget install -e --id Microsoft.VCRedist.2015+.x64` · Linux: `sudo apt install libgl1 libegl1 libxkbcommon-x11-0 libxcb-cursor0` |
 | 설치는 끝났는데 앱이 안 뜸 | 의존성 설치가 중간에 끊긴 경우입니다. 실행하면 이유를 창으로 알려 주고 `%LOCALAPPDATA%\iris-light\launcher.log` 에 남깁니다. 설치 폴더의 `setup.bat` 을 다시 실행하세요 |
 | 그래도 안 될 때 | `.\setup.ps1 -Recreate` 로 가상환경을 통째로 다시 만들기 |
+
+</details>
+
+<details>
+<summary><b>필요 사양</b></summary>
+
+### 소프트웨어
+
+- **Windows 10/11** 권장 (시작 프로토콜·winget/Hermes 설치 스크립트 기준)
+- Python **3.11+** 권장
+- **안정적인 인터넷** 필수 (클라우드 모델·도구 호출)
+
+### 하드웨어 (클라우드 모델 위주)
+
+IRIS는 기본적으로 **클라우드 모델**로 추론하고, 로컬에는 UI·Hermes 게이트웨이·도구 실행만 둡니다.
+로컬 LLM용 GPU/VRAM은 필요하지 않습니다. 아래 저장 공간은 **IRIS 관련 설치분**(앱·venv·Ollama/Hermes 런타임, 대용량 로컬 모델·에뮬레이터 제외) 기준입니다.
+
+| 구분 | 최소 | 권장 |
+|------|------|------|
+| **OS** | Windows 10/11 64bit | Windows 11 |
+| **CPU** | 듀얼~쿼드코어 (사무용 i3 / Ryzen 3 이상) | i5 / Ryzen 5 이상 |
+| **RAM** | **8GB** (가능하나 도구·브라우저 병행 시 빡쁨) | **16GB** |
+| **GPU** | **불필요** | 불필요 |
+| **저장 (IRIS만)** | 여유 **약 20GB** | 여유 **약 30GB** |
+| **네트워크** | 인터넷 연결 | 지연 낮은 안정 회선 |
+
+- OS·다른 프로그램용 SSD 용량은 별도입니다. PC 구매 시에는 보통 256GB 이상을 권합니다.
+- Android 에뮬레이터·화면 학습·로컬 대용량 모델을 쓰면 저장·RAM이 추가로 필요합니다.
+
+</details>
 
 ---
 
@@ -217,7 +284,18 @@ copy .env.example .env
 python -m iris
 ```
 
-`run.bat`은 **`.venv`의 `python -m iris`를 기본**으로 씁니다.  
+Linux/macOS:
+
+```bash
+chmod +x run.sh
+./run.sh
+# 또는: python3 -m iris
+```
+
+<details>
+<summary><b>EXE·바로가기 동작 방식</b></summary>
+
+`run.bat`은 **`.venv`의 `python -m iris`를 기본**으로 씁니다.
 `dist\IRIS.exe`는 예전 스냅샷일 수 있어, 더 이상 기본 경로가 아닙니다.
 
 - 패키지 EXE만 쓰려면: `set IRIS_USE_EXE=1` 후 `.\run.bat`
@@ -230,27 +308,61 @@ python -m iris
 .\scripts\install_iris_shortcuts.ps1
 ```
 
-Linux/macOS:
-
-```bash
-chmod +x run.sh
-./run.sh
-# 또는: python3 -m iris
-```
-
-### 첫 실행
-
-1. 앱이 **시작 위저드**를 띄웁니다.
-2. Core 단계: Ollama 공식 설치·기동 → 최소 모델 pull → Hermes 설치 → API/provider 연결 → gateway 기동.
-3. Optional(STT 음성·Full TTS·업무학습 Aloha·에뮬레이터·Node/mobile-mcp·클라우드 로그인 등)은 「설치」또는 「나중에」.
-4. HUD 채팅에서 바로 자연어 요청을 보내면, Hermes/Ollama가 응답·도구 실행을 스트리밍합니다.
-
-> 데모만 보려면: `IRIS_SETUP_DEMO=1` (실제 설치 없음)  
-> UI 미리보기: `IRIS_SETUP_DRY_RUN=1`
+</details>
 
 ---
 
-## 프로젝트 구조
+## Roadmap
+
+구현 완료:
+
+- [x] LLM Agent Runtime (Hermes 도구 호출 · 멀티스텝)
+- [x] Voice Runtime (STT/TTS FastAPI 서비스 · 선택 설치)
+- [x] MCP Integration (`iris-control` stdio · Hermes MCP)
+- [x] Local/Cloud Model Support (Ollama · OpenAI 호환 provider)
+- [x] Installation System (`IRIS-Setup.exe` · `setup.ps1` / `setup.sh`)
+
+계획:
+
+- [ ] Plugin Marketplace
+- [ ] Community Agent Skills
+- [ ] Multi-Agent Collaboration
+- [ ] Cloud Runtime
+- [ ] Docker Deployment *(Optional — 데스크톱 앱이 주 실행 형태이므로 필수 아님)*
+
+---
+
+## Releases
+
+최신: [**IRIS Light v2026.08.27**](https://github.com/kwakminoo/Project-IRIS-Light/releases/latest) (앱 버전 `0.1.0-light`)
+
+포함 범위:
+
+- Agent Runtime (Hermes 연동 · 도구 실행)
+- Voice Runtime (STT/TTS · 선택 설치)
+- MCP Integration
+- Installation System (`IRIS-Setup.exe` · 자동 setup 스크립트)
+
+배포 절차는 [`docs/installer-release.md`](docs/installer-release.md)에 있습니다.
+
+---
+
+## 문서
+
+| 문서 | 설명 |
+|------|------|
+| [docs/domain.md](docs/domain.md) | 바운디드 컨텍스트 · Runtime Gateway 설계 |
+| [docs/ia/IA.md](docs/ia/IA.md) | 정보 구조 · 요청 경로 · 아키텍처 다이어그램 |
+| [docs/api/](docs/api/) | API 관련 문서 |
+| [docs/voice.md](docs/voice.md) | 음성 STT/TTS · 보이스 프로필 |
+| [docs/voice_architecture.md](docs/voice_architecture.md) | 음성 런타임 경계 · 흐름 |
+| [docs/installer-release.md](docs/installer-release.md) | 설치 프로그램 빌드 · 릴리스 절차 |
+| [docs/demo-video-script.md](docs/demo-video-script.md) | 데모 영상 촬영 대본 · 업로드 절차 |
+| [integrations/hermes-skills/README.md](integrations/hermes-skills/README.md) | Iris Control Surface (Hermes ↔ UI) |
+| [LICENSE.md](LICENSE.md) | 라이선스 근거 · 서드파티 인벤토리 |
+
+<details>
+<summary><b>프로젝트 구조 · 기술 스택</b></summary>
 
 ```text
 iris/                 # 앱 본체
@@ -279,46 +391,17 @@ LICENSE               # GPL v3 전문
 LICENSE.md            # 라이선스 근거·서드파티 인벤토리
 ```
 
----
+| 구분 | 기술 |
+|------|------|
+| UI | Python, PyQt6, PyQt6-WebEngine |
+| 모델 | Ollama (OpenAI 호환 `/v1`) |
+| 에이전트 | Hermes Agent (gateway API, skills, MCP) |
+| 음성 | FastAPI (`services/voice_runtime`) |
+| 저장 | SQLite (`~/.iris-light/`) |
+| 지식 | Obsidian 호환 Markdown vault |
+| 기타 | psutil, mss, openai/anthropic SDK 등 (`requirements.txt`) |
 
-## 기술 스택
-
-
-| 구분   | 기술                                                       |
-| ---- | -------------------------------------------------------- |
-| UI   | Python, PyQt6, PyQt6-WebEngine                           |
-| 모델   | Ollama (OpenAI 호환 `/v1`)                                 |
-| 에이전트 | Hermes Agent (gateway API, skills, MCP)                  |
-| 저장   | SQLite (`~/.iris-light/`)                                |
-| 지식   | Obsidian 호환 Markdown vault                               |
-| 기타   | psutil, mss, openai/anthropic SDK 등 (`requirements.txt`) |
-
-
----
-
-## 기대 효과
-
-- **접근성**: 구독료·복잡한 에이전트 셋업이 부담인 학생·취준생·초보 개발자의 진입 장벽을 낮춥니다.
-- **실습형 AI**: 답만 받는 소비를 넘어, 코딩·문서·파일 작업을 **로컬 PC에서 직접 수행**하며 활용 역량을 키웁니다.
-- **격차 완화**: PC 사양에 맞는 모델을 연결해, 경제적·디지털 격차로 인한 AI 경험 불평등을 줄이는 데 기여합니다.
-- **프라이버시·자립**: 로컬 실행으로 민감 정보 외부 전송을 줄이고, 네트워크·특정 벤더에만 의존하지 않는 사용이 가능합니다.
-
----
-
-## 문서
-
-
-| 문서                                                                             | 설명                                 |
-| ------------------------------------------------------------------------------ | ---------------------------------- |
-| `[docs/domain.md](docs/domain.md)`                                             | 바운디드 컨텍스트·Runtime Gateway 설계       |
-| `[docs/ia/IA.md](docs/ia/IA.md)`                                               | 정보 구조·요청 경로·아키텍처 다이어그램              |
-| `[docs/api/](docs/api/)`                                                       | API 관련 문서                          |
-| `[docs/voice.md](docs/voice.md)`                                               | 음성 STT/TTS · 보이스 프로필               |
-| `[docs/voice_architecture.md](docs/voice_architecture.md)`                     | 음성 런타임 경계·흐름                       |
-| `[integrations/hermes-skills/README.md](integrations/hermes-skills/README.md)` | Iris Control Surface (Hermes ↔ UI) |
-| `[LICENSE.md](LICENSE.md)`                                                     | 라이선스 근거 · 서드파티 인벤토리      |
-| `[docs/demo-video-script.md](docs/demo-video-script.md)`                       | 데모 영상 촬영 대본 · 업로드 절차     |
-
+</details>
 
 ---
 
@@ -341,7 +424,8 @@ py -3 -m iris.ui._check_ide_companion_windows
 
 `Copyright (C) 2026 IRIS Project Contributors`
 
-### 왜 GPLv3인가
+<details>
+<summary><b>왜 GPLv3인가</b></summary>
 
 IRIS의 UI 전체는 **PyQt6** 위에 올라가 있고, PyQt6는 상업 라이선스를 구매하지 않는 한
 **GPL-3.0-only** 입니다 (`License-Expression: GPL-3.0-only`). 저장소는 PyQt6를 번들한
@@ -359,9 +443,11 @@ pynput·soxr(LGPL), ShowUI-Aloha(Apache-2.0, 벤더링), 그 외 MIT/BSD/Apache/
 > 간주합니다. 새 의존성 추가 시 GPL-3.0 비호환 라이선스(독점, GPL-2.0-**only**,
 > CC BY-**NC**, 비상업용 커스텀)는 받을 수 없습니다.
 
+</details>
+
 ---
 
 ## 면책
 
-IRIS는 Hermes 도구를 통해 로컬 파일·터미널에 영향을 줄 수 있습니다.  
+IRIS는 Hermes 도구를 통해 로컬 파일·터미널에 영향을 줄 수 있습니다.
 중요한 작업 전에는 권한 설정과 확인 다이얼로그를 확인하세요. 프로덕션 자동화·무인 실행은 사용자 책임 하에 진행하세요.
