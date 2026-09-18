@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout, QWidget
 
-from iris.ui.chat.chat_panel import ChatPanel, _MIN_TOP_PX
+from iris.ui.chat.chat_panel import ChatPanel
 
 
 def _host(app: QApplication) -> tuple[QWidget, QWidget, ChatPanel]:
@@ -51,6 +51,7 @@ def main() -> int:
     app.processEvents()
     extra = panel._extra_h
     assert extra == 180, extra
+    assert not panel._is_fully_expanded()
     assert panel.height() > h0, (h0, panel.height())
     assert panel._log.height() > log0, (log0, panel._log.height())
     assert above.height() < a0, (a0, above.height())
@@ -65,12 +66,14 @@ def main() -> int:
     panel._apply_chat_extra(10_000)
     app.processEvents()
     max_h = panel.height()
-    assert max_h >= int(host.height() * 0.7), max_h
-    assert above.height() <= _MIN_TOP_PX + 20, above.height()
+    assert max_h >= host.height() - 4, (max_h, host.height())
+    assert panel._is_fully_expanded()
+    assert (not above.isVisible()) or above.height() == 0, (above.isVisible(), above.height())
 
     panel._apply_chat_extra(0)
     app.processEvents()
     assert panel._extra_h == 0
+    assert above.isVisible()
 
     print("chat resize ok", h0, "-> extra 180 / max", max_h)
     return 0

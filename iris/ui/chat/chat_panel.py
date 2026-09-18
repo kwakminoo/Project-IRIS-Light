@@ -20,6 +20,7 @@ from PyQt6.QtGui import (
     QMouseEvent,
     QPainter,
     QPalette,
+    QPen,
     QTextBlockFormat,
     QTextCursor,
     QTextOption,
@@ -483,7 +484,6 @@ class ChatLogTextEdit(QTextEdit):
 
 
 _HANDLE_H = 10
-_MIN_TOP_PX = 40
 
 
 class _ChatHeightHandle(QWidget):
@@ -1313,12 +1313,20 @@ class ChatPanel(QWidget):
                 out.append(widget)
         return out
 
+    def _above_spacing(self) -> int:
+        parent = self.parentWidget()
+        layout = parent.layout() if parent is not None else None
+        if layout is None:
+            return 0
+        count = len(self._above_snap) if self._above_snap else len(self._widgets_above())
+        return max(0, layout.spacing()) * count
+
     def _max_extra(self) -> int:
         if self._above_snap:
             stealable = sum(height for _, height, _, _ in self._above_snap)
         else:
             stealable = sum(widget.height() for widget in self._widgets_above())
-        return max(0, stealable - _MIN_TOP_PX)
+        return max(0, stealable + self._above_spacing())
 
     def _ensure_height_snap(self) -> None:
         if self._above_snap:
@@ -1333,6 +1341,7 @@ class ChatPanel(QWidget):
         for widget, _rest, omin, omax in self._above_snap:
             widget.setMinimumHeight(omin)
             widget.setMaximumHeight(omax)
+            widget.show()
 
     def _begin_height_drag(self, global_y: int) -> None:
         self._drag_y0 = global_y
@@ -1370,18 +1379,29 @@ class ChatPanel(QWidget):
         remaining = extra
         for widget, rest, _omin, _omax in self._above_snap:
             take = min(remaining, max(0, rest))
+            new_h = max(0, rest - take)
             widget.setMinimumHeight(0)
-            widget.setMaximumHeight(max(0, rest - take))
+            widget.setMaximumHeight(new_h)
+            widget.setVisible(new_h > 0)
             remaining -= take
         self.setMinimumHeight(max(self._natural_min_height(), self._rest_h + extra))
         if prev <= 0:
             self._apply_log_fill(True)
         self._activate_parent()
 
+    def _is_fully_expanded(self) -> bool:
+        return self._extra_h > 0 and self._extra_h >= self._max_extra()
+
     def paintEvent(self, event) -> None:  # noqa: N802
         if self._extra_h > 0:
             painter = QPainter(self)
             painter.fillRect(self.rect(), QColor(TOKENS.space_navy))
+            if self._is_fully_expanded():
+                pen = QPen(QColor(56, 189, 248, 90))
+                pen.setWidth(1)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
             painter.end()
         super().paintEvent(event)
 
