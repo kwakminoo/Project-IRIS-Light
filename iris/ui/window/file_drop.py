@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import time
+from pathlib import Path
 from weakref import WeakSet
 
 from PyQt6.QtWidgets import QWidget
@@ -37,6 +40,36 @@ def drop_event_types():
     from PyQt6.QtCore import QEvent
 
     return (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop)
+
+
+def log_drop_event(phase: str, mime, *, watched: object | None = None) -> None:
+    """탐색기 DnD 진단 — ~/.iris-light/logs/dnd.log (항상 1줄, 용량 작음)."""
+    try:
+        log_dir = Path.home() / ".iris-light" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        fmts: list[str] = []
+        urls: list[str] = []
+        if mime is not None:
+            try:
+                fmts = [str(f) for f in mime.formats()][:12]
+            except Exception:
+                pass
+            try:
+                if mime.hasUrls():
+                    urls = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()][:4]
+            except Exception:
+                pass
+        name = type(watched).__name__ if watched is not None else "-"
+        line = (
+            f"{time.strftime('%H:%M:%S')} {phase} widget={name} "
+            f"urls={urls!r} formats={fmts!r}\n"
+        )
+        with (log_dir / "dnd.log").open("a", encoding="utf-8") as fh:
+            fh.write(line)
+        if os.environ.get("IRIS_DROP_DEBUG", "").strip() in ("1", "true", "yes"):
+            print(f"[iris-dnd] {line}", end="", flush=True)
+    except Exception:
+        pass
 
 
 def mime_has_attachable(mime) -> bool:

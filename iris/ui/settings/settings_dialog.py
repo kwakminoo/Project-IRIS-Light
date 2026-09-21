@@ -60,9 +60,9 @@ from iris.storage.learning_prefs import (
     save_learning_preferences,
 )
 from iris.storage.api_providers import (
+    BASE_URL_PRESETS,
     ApiProvider,
     delete_api_provider,
-    guess_base_url,
     load_api_providers,
     mask_api_key,
     parse_models_text,
@@ -90,20 +90,21 @@ from iris.ui.shared.theme_tokens import TOKENS
 
 
 class _StatusDot(QWidget):
-    """API 연결 상태 원 — ok=초록, error=빨강, unknown=회색."""
+    """API 연결 상태 원 — ok=초록, partial=주황, error=빨강, unknown=회색."""
 
     def __init__(self, status: str = "unknown", parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._status = status if status in ("ok", "error", "unknown") else "unknown"
+        self._status = status if status in ("ok", "partial", "error", "unknown") else "unknown"
         self.setFixedSize(10, 10)
 
     def set_status(self, status: str) -> None:
-        self._status = status if status in ("ok", "error", "unknown") else "unknown"
+        self._status = status if status in ("ok", "partial", "error", "unknown") else "unknown"
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         colors = {
             "ok": QColor("#22c55e"),
+            "partial": QColor("#f59e0b"),
             "error": QColor("#ef4444"),
             "unknown": QColor("#94a3b8"),
         }
@@ -191,7 +192,6 @@ class _DeferredSetupNetworkWorker(QThread):
 class LightSettingsSelection:
     ollama_base_url: str
     ollama_model: str
-    hermes_enabled: bool
     hermes_command: str
     hermes_base_url: str
     hermes_api_key: str
@@ -268,6 +268,7 @@ class SettingsDialog(QDialog):
             load_api_providers(db) if db is not None else []
         )
         self._api_probe_worker = None
+        self._api_models_worker: QThread | None = None
         self._api_row_dots: dict[str, _StatusDot] = {}
         profile = load_user_profile(db) if db is not None else UserProfile()
         self._preferred_ide = (profile.preferred_ide or "cursor").strip().lower() or "cursor"
@@ -296,7 +297,8 @@ class SettingsDialog(QDialog):
         conn_lay.setSpacing(TOKENS.spacing_sm)
         conn_lay.addWidget(
             make_hint(
-                "Hermes 사용 시 채팅은 Hermes API로 전달되며, 선택한 모델이 Hermes에도 동기화됩니다."
+                "채팅은 항상 Hermes API로 전달되며, 선택한 모델이 Hermes에도 동기화됩니다. "
+                "Hermes는 도구 호출의 필수 경로이므로 끌 수 없습니다."
             )
         )
         form = QFormLayout()
@@ -313,8 +315,6 @@ class SettingsDialog(QDialog):
             hermes_key_default = settings.hermes_api_key
         self._hermes_key = QLineEdit(hermes_key_default)
         self._hermes_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._hermes_on = QCheckBox("Hermes Agent 사용 (채팅을 Hermes API로 전달)")
-        self._hermes_on.setChecked(settings.hermes_enabled)
         for edit in (
             self._ollama_url,
             self._ollama_model,
@@ -328,7 +328,6 @@ class SettingsDialog(QDialog):
         form.addRow(make_form_label("Hermes API URL"), self._hermes_url)
         form.addRow(make_form_label("Hermes API Key"), self._hermes_key)
         form.addRow(make_form_label("Hermes 명령"), self._hermes_cmd)
-        form.addRow(make_form_label(""), self._hermes_on)
         conn_lay.addLayout(form)
         content_lay.addWidget(conn_box)
 
@@ -363,9 +362,9 @@ class SettingsDialog(QDialog):
         lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
             make_hint(
-                "이름·API Key·Base URL을 채운 뒤 「추가」를 누르세요. "
-                "추가된 API는 아래에 ●이름·키(마스킹)로 표시됩니다. "
-                "초록=연결 정상(채팅 모델에 표시), 빨강=실패, 회색=미검사."
+                "이름·API Key·Base URL을 채운 뒤 「추가」를 누르세요. Base URL은 "
+                "테스트가 실제로 접속해 확정합니다(프리셋은 입력란을 채워줄 뿐입니다). "
+                "초록=정상(채팅 모델에 표시), 주황=목록만 성공·대화 실패, 빨강=실패, 회색=미검사."
             )
         )
 
@@ -373,17 +372,23 @@ class SettingsDialog(QDialog):
         configure_form(form)
         self._api_name = QLineEdit()
         self._api_name.setPlaceholderText("예: NVIDIA, OpenAI, OpenRouter")
+        self._api_preset = QComboBox()
+        for label, url in BASE_URL_PRESETS:
+            self._api_preset.addItem(label, url)
+        self._api_preset.currentIndexChanged.connect(self._on_api_preset_changed)
         self._api_base = QLineEdit()
-        self._api_base.setPlaceholderText("비우면 이름으로 추정 (NVIDIA→integrate.api.nvidia.com/v1)")
+        self._api_base.setPlaceholderText("예: https://generativelanguage.googleapis.com/v1beta/openai")
         self._api_key = QLineEdit()
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._api_key.setPlaceholderText("API Key")
+        self._api_key.setPlaceholderText("API Key (로컬 서버면 비워도 됩니다)")
         self._api_models = QLineEdit()
-        self._api_models.setPlaceholderText("선택: 모델 id (콤마 구분). 비우면 /v1/models 조회")
+        self._api_models.setPlaceholderText("선택: 모델 id (콤마 구분). 비우면 {base}/models 조회")
         for edit in (self._api_name, self._api_base, self._api_key, self._api_models):
             edit.setMinimumHeight(32)
+        self._api_preset.setMinimumHeight(32)
         form.addRow(make_form_label("이름"), self._api_name)
         form.addRow(make_form_label("API Key"), self._api_key)
+        form.addRow(make_form_label("제공자 프리셋"), self._api_preset)
         form.addRow(make_form_label("Base URL"), self._api_base)
         form.addRow(make_form_label("모델 목록"), self._api_models)
         lay.addLayout(form)
@@ -448,10 +453,18 @@ class SettingsDialog(QDialog):
             btn_test = QPushButton("테스트")
             btn_test.setFixedWidth(64)
             btn_test.clicked.connect(lambda _=False, pid=p.id: self._on_api_test(pid))
+            btn_verify = QPushButton("모델 정리")
+            btn_verify.setFixedWidth(74)
+            btn_verify.setToolTip(
+                "등록된 모델을 하나씩 호출해 사용 가능 여부와 도구 지원을 확인하고, "
+                "쓸 수 없는 모델을 목록에서 제외합니다."
+            )
+            btn_verify.clicked.connect(lambda _=False, pid=p.id: self._on_api_verify_models(pid))
             btn_del = QPushButton("삭제")
             btn_del.setFixedWidth(52)
             btn_del.clicked.connect(lambda _=False, pid=p.id: self._on_api_delete(pid))
             row.addWidget(btn_test)
+            row.addWidget(btn_verify)
             row.addWidget(btn_del)
             self._api_list_host.addWidget(row_w)
 
@@ -462,76 +475,68 @@ class SettingsDialog(QDialog):
         self._flush_api_form_to_providers(silent=True)
         save_api_providers(self._db, self._api_providers)
 
+    def _on_api_preset_changed(self, index: int) -> None:
+        """프리셋은 Base URL 입력란을 채워줄 뿐 — 확정은 테스트 프로브가 함."""
+        url = str(self._api_preset.itemData(index) or "")
+        if url:
+            self._api_base.setText(url)
+        if not self._api_name.text().strip() and index > 0:
+            self._api_name.setText(self._api_preset.itemText(index))
+
     def _flush_api_form_to_providers(self, *, silent: bool = False) -> ApiProvider | None:
-        """이름+키가 채워져 있으면 목록에 추가(저장 버튼만 누른 경우 대비)."""
+        """이름+URL이 채워져 있으면 목록에 추가(저장 버튼만 누른 경우 대비)."""
         if self._db is None or not hasattr(self, "_api_name"):
             return None
         name = self._api_name.text().strip()
         key = self._api_key.text().strip()
-        if not name or not key:
-            return None
-        base = guess_base_url(name, self._api_base.text())
-        if not base:
-            if not silent:
+        base = self._api_base.text().strip().rstrip("/")
+        if not name or not base:
+            if not silent and not base:
                 QMessageBox.warning(
                     self,
                     "API 추가",
-                    "Base URL이 필요합니다. NVIDIA/OpenAI 등이면 이름을 맞추거나 URL을 입력하세요.",
+                    "Base URL을 입력하세요. 프리셋에서 고르거나 직접 입력할 수 있습니다.",
                 )
             return None
         models = parse_models_text(self._api_models.text())
         # 같은 이름+url이면 키만 갱신
         for existing in self._api_providers:
-            if existing.name == name and existing.base_url.rstrip("/") == base.rstrip("/"):
-                existing.api_key = key
+            if existing.name == name and existing.base_url.rstrip("/") == base:
+                if key:
+                    existing.api_key = key
                 if models:
                     existing.models = models
                 upsert_api_provider(self._db, existing)
                 self._api_providers = load_api_providers(self._db)
-                self._api_name.clear()
-                self._api_base.clear()
-                self._api_key.clear()
-                self._api_models.clear()
+                self._clear_api_form()
                 self._reload_api_provider_rows()
                 return existing
         provider = ApiProvider(
             name=name,
-            base_url=base.rstrip("/"),
+            base_url=base,
             api_key=key,
             models=models,
             status="unknown",
         )
         upsert_api_provider(self._db, provider)
         self._api_providers = load_api_providers(self._db)
+        self._clear_api_form()
+        self._reload_api_provider_rows()
+        return provider
+
+    def _clear_api_form(self) -> None:
         self._api_name.clear()
         self._api_base.clear()
         self._api_key.clear()
         self._api_models.clear()
-        self._reload_api_provider_rows()
-        return provider
+        self._api_preset.setCurrentIndex(0)
 
     def _on_api_add(self) -> None:
         if self._db is None:
             return
-        name = self._api_name.text().strip()
-        key = self._api_key.text().strip()
-        if not name:
+        if not self._api_name.text().strip():
             QMessageBox.warning(self, "API 추가", "이름을 입력하세요.")
             return
-        if not key:
-            QMessageBox.warning(self, "API 추가", "API Key를 입력하세요.")
-            return
-        base = guess_base_url(name, self._api_base.text())
-        if not base:
-            QMessageBox.warning(
-                self,
-                "API 추가",
-                "Base URL을 입력하세요.\n예: https://integrate.api.nvidia.com/v1",
-            )
-            return
-        # 폼에 추정 URL 반영
-        if not self._api_base.text().strip():
-            self._api_base.setText(base)
         provider = self._flush_api_form_to_providers(silent=False)
         if provider is None:
             return
@@ -563,48 +568,86 @@ class SettingsDialog(QDialog):
         worker.finished_probe.connect(self._on_api_probe_done)
         worker.start()
 
-    def _on_api_probe_done(
-        self, provider_id: str, ok: bool, detail: str, models: object
+    def _on_api_verify_models(self, provider_id: str) -> None:
+        """모델 전량을 순차 실측해 목록을 정리 — 하드코딩 목록 없이 실제 계정 기준."""
+        if self._db is None:
+            return
+        provider = next((p for p in self._api_providers if p.id == provider_id), None)
+        if provider is None or not provider.models:
+            self._api_status.setText("정리할 모델이 없습니다. 먼저 「테스트」로 목록을 받으세요.")
+            return
+        worker = getattr(self, "_api_models_worker", None)
+        if worker is not None and worker.isRunning():
+            self._api_status.setText("다른 모델 정리가 진행 중입니다…")
+            return
+        from iris.ui.workers.api_provider_workers import ApiModelsVerifyWorker
+
+        self._api_status.setText(f"{provider.name}: 모델 {len(provider.models)}개 확인 중…")
+        worker = ApiModelsVerifyWorker(provider, parent=self)
+        worker.verified_one.connect(self._on_api_model_verified_one)
+        worker.progress.connect(
+            lambda done, total, usable: self._api_status.setText(
+                f"{provider.name}: 확인 {done}/{total} · 사용 가능 {usable}"
+            )
+        )
+        worker.finished_all.connect(self._on_api_models_verified_all)
+        self._api_models_worker = worker
+        worker.start()
+
+    def _on_api_model_verified_one(
+        self, provider_id: str, model: str, state: str, tool_support: str
     ) -> None:
+        if self._db is None:
+            return
+        from iris.storage.api_providers import record_model_probe
+
+        record_model_probe(
+            self._db, provider_id, model, state=state, tool_support=tool_support
+        )
+
+    def _on_api_models_verified_all(self, provider_id: str, usable: int, total: int) -> None:
+        self._api_models_worker = None
+        if self._db is None:
+            return
+        self._api_providers = load_api_providers(self._db)
+        self._reload_api_provider_rows()
+        name = next((p.name for p in self._api_providers if p.id == provider_id), provider_id)
+        self._api_status.setText(
+            f"{name}: 정리 완료 — 사용 가능 {usable} / 전체 {total} (제외 {total - usable})"
+        )
+
+    def _on_api_probe_done(self, provider_id: str, result: object) -> None:
         self._api_probe_worker = None
         if self._db is None:
             return
+        from iris.infrastructure.openai_compat_client import ProbeResult
         from iris.storage.api_providers import mark_provider_status
 
-        model_list = [str(m) for m in models] if isinstance(models, list) else []
-        status = "ok" if ok else "error"
-        # ok이지만 모델이 없고 수동 목록도 없으면 피커에 못 올림 → error로
+        if not isinstance(result, ProbeResult):
+            return
+        status = result.status
+        detail = result.detail
         p = next((x for x in self._api_providers if x.id == provider_id), None)
-        manual = list(p.models) if p else []
-        merged = list(model_list)
-        for m in manual:
+        merged = list(result.models)
+        for m in list(p.models) if p else []:
             if m not in merged:
                 merged.append(m)
-        if p is not None:
-            from iris.infrastructure.api_model_meta import (
-                filter_nvidia_free_endpoint_models,
-                is_nvidia_provider,
-            )
-
-            if is_nvidia_provider(p.name, p.base_url):
-                # /v1/models 전체(100+) 대신 무료 엔드포인트만 저장·표시
-                merged = filter_nvidia_free_endpoint_models(merged)
-        if ok and not merged:
+        if status == "ok" and not merged:
             status = "error"
-            detail = (detail or "") + " · 사용 가능한 모델이 없습니다. 모델 목록을 입력하세요."
-            ok = False
+            detail = f"{detail} · 사용 가능한 모델이 없습니다. 모델 목록을 입력하세요."
         mark_provider_status(
             self._db,
             provider_id,
             status=status,
-            error="" if ok else detail,
+            error="" if status == "ok" else detail,
             models=merged if merged else None,
+            resolved_base_url=result.base_url,
+            auth_style=result.auth_style,
         )
         self._api_providers = load_api_providers(self._db)
         self._reload_api_provider_rows()
-        self._api_status.setText(
-            f"{'정상' if ok else '실패'}: {detail[:200]}"
-        )
+        label = {"ok": "정상", "partial": "부분 성공", "error": "실패"}.get(status, status)
+        self._api_status.setText(f"{label}: {detail[:200]}")
 
     def _build_permission_box(self) -> QGroupBox:
         box = QGroupBox("권한 (업무 학습 · Computer-Use)")
@@ -1877,6 +1920,7 @@ class SettingsDialog(QDialog):
             "_voice_refs_worker",
             "_aloha_status_worker",
             "_setup_network_worker",
+            "_api_models_worker",
         ):
             worker = getattr(self, attr, None)
             if worker is not None and worker.isRunning():
@@ -2325,7 +2369,6 @@ class SettingsDialog(QDialog):
         self._result = LightSettingsSelection(
             ollama_base_url=self._ollama_url.text().strip() or "http://127.0.0.1:11434/v1",
             ollama_model=self._ollama_model.text().strip(),
-            hermes_enabled=self._hermes_on.isChecked(),
             hermes_command=self._hermes_cmd.text().strip() or "hermes",
             hermes_base_url=self._hermes_url.text().strip() or "http://127.0.0.1:8642/v1",
             hermes_api_key=hermes_api_key,

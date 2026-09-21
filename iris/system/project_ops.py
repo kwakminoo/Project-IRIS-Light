@@ -708,6 +708,53 @@ def format_run_log(result: dict) -> str:
     return "\n".join(lines)
 
 
+_LIST_SKIP_DIRS = frozenset({"node_modules", "__pycache__", "venv", "dist", "build", "out", "target"})
+
+# ponytail: 5만 항목이면 query를 좁히라는 뜻 — 트리 전체 인덱싱은 천장 밖이다.
+_LIST_SCAN_CAP = 50_000
+
+
+def list_workspace_files(
+    project_root: str | Path,
+    *,
+    query: str = "",
+    limit: int = 200,
+) -> dict:
+    """워크스페이스 파일 상대경로 목록. query는 부분일치(대소문자 무시)."""
+    import os
+
+    root = Path(project_root).expanduser()
+    if not root.is_dir():
+        raise NotADirectoryError(str(project_root))
+    needle = (query or "").strip().lower().replace("\\", "/")
+    cap = max(1, min(int(limit), 1000))
+    files: list[str] = []
+    scanned = 0
+    truncated = False
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in _LIST_SKIP_DIRS]
+        for name in filenames:
+            scanned += 1
+            rel = os.path.relpath(os.path.join(dirpath, name), root).replace("\\", "/")
+            if needle and needle not in rel.lower():
+                continue
+            files.append(rel)
+            if len(files) >= cap:
+                truncated = True
+                break
+        if truncated or scanned >= _LIST_SCAN_CAP:
+            truncated = True
+            break
+    return {
+        "root": str(root.resolve()),
+        "query": needle,
+        "files": files,
+        "count": len(files),
+        "scanned": scanned,
+        "truncated": truncated,
+    }
+
+
 def summarize_run(result: dict, *, max_tail_lines: int = 12) -> dict:
     """채팅용 짧은 요약 + tail (전문은 log/터미널)."""
     stdout = result.get("stdout") or ""
@@ -754,4 +801,11 @@ if __name__ == "__main__":
         assert _smooth_text_chunks("abc def\nghi", 8) == ["abc def\n", "ghi"]
         cmd = build_run_command(file="hello.py")
         assert cmd[0] == "python"
+        (parent / "pkg").mkdir()
+        (parent / "pkg" / "Iris_adt.py").write_text("x", encoding="utf-8")
+        (parent / "node_modules").mkdir()
+        (parent / "node_modules" / "Iris_adt.py").write_text("x", encoding="utf-8")
+        listed = list_workspace_files(parent, query="iris_adt")
+        assert listed["files"] == ["pkg/Iris_adt.py"], listed
+        assert list_workspace_files(parent, limit=1)["truncated"] is True
     print("project_ops ok", hits[0]["name"], hits[0]["score"], reason)

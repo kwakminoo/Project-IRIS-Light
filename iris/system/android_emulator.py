@@ -193,7 +193,9 @@ def _scan_processes(*, force: bool = False) -> list[tuple[str, int, int, str]]:
         return []
 
     try:
-        for proc in psutil.process_iter(["pid", "ppid", "name", "cmdline"]):
+        # cmdline은 프로세스마다 원격 메모리를 읽어 Windows에서 전체 수집 시 수 초가 걸린다.
+        # 값싼 name으로 먼저 거르고, 매칭된 소수만 cmdline을 읽는다 (get_state 핫패스).
+        for proc in psutil.process_iter(["pid", "ppid", "name"]):
             try:
                 info = proc.info
                 name = str(info.get("name") or "")
@@ -201,7 +203,7 @@ def _scan_processes(*, force: bool = False) -> list[tuple[str, int, int, str]]:
                     continue
                 pid = int(info["pid"])
                 ppid = int(info.get("ppid") or 0)
-                raw_cmd = info.get("cmdline") or []
+                raw_cmd = proc.cmdline() or []
                 if isinstance(raw_cmd, (list, tuple)):
                     cmdline = " ".join(str(p) for p in raw_cmd)
                 else:

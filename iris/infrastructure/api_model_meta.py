@@ -1,180 +1,90 @@
-"""커스텀 API(NVIDIA 등) 모델 메타 — 도구·카테고리·장단점 휴리스틱.
+"""커스텀 API 모델 실측 — 사용가능 여부 + 도구지원 3-상태.
 
-ponytail: NVIDIA /models 목록에 capability 필드가 없어 이름 패턴으로 분류.
-천장: 새 모델군은 키워드만 추가. 정확 프로브가 필요하면 OpenAI tools 스모크로 업그레이드.
+모델·제공자 **이름 문자열로 능력을 추정하지 않음.** 판정 근거는 제공자 `/models`
+응답 메타이거나 실제 HTTP 프로브뿐이며, 판정 불가는 `unknown`으로 남김.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Any
+
+from iris.infrastructure import openai_compat_client as oai
+
+TOOL_SUPPORT_VALUES = ("yes", "no", "unknown")
+MODEL_STATES = ("ok", "unverified", "unavailable")
+
+# 프로브 없이도 정확한 판정 — 인증·과금 없이 목록 응답에서 읽음
+_LISTING_TOOL_KEYS = ("supports_tools", "supports_function_calling", "tool_use")
 
 
-@dataclass(frozen=True)
-class ApiModelMeta:
-    category: str
-    supports_tools: bool
-    feature: str
-    pros: str
-    cons: str
-    limit: str
+def tool_support_from_listing(entry: dict[str, Any] | None) -> str:
+    """`/models` 항목 메타에서 도구지원 판정. 근거 없으면 "unknown"."""
+    if not isinstance(entry, dict):
+        return "unknown"
+    params = entry.get("supported_parameters")
+    if isinstance(params, list):  # OpenRouter
+        return "yes" if any(str(p).strip() == "tools" for p in params) else "no"
+    for key in _LISTING_TOOL_KEYS:  # Hugging Face Router 등
+        if key in entry:
+            return "yes" if bool(entry[key]) else "no"
+    return "unknown"
 
 
-# (부분키, 카테고리, tools?, 특징, 장점, 단점, 한도) — 위가 우선
-_NVIDIA_RULES: tuple[tuple[str, str, bool, str, str, str, str], ...] = (
-    ("flux", "이미지 생성", False, "텍스트→이미지", "고품질 생성", "에이전트/도구 불가", "이미지 전용"),
-    ("stable-diffusion", "이미지 생성", False, "SD 계열 생성", "빠른 생성", "도구 불가", "이미지 전용"),
-    ("sdxl", "이미지 생성", False, "SDXL 생성", "고해상도", "도구 불가", "이미지 전용"),
-    ("imagen", "이미지 생성", False, "이미지 생성", "품질", "도구 불가", "이미지 전용"),
-    ("whisper", "음성/TTS", False, "음성→텍스트", "인식 정확", "채팅/도구 불가", "오디오 전용"),
-    ("tts", "음성/TTS", False, "텍스트→음성", "자연스러운 음성", "채팅/도구 불가", "오디오 전용"),
-    ("riva", "음성/TTS", False, "음성 AI", "실시간성", "채팅 에이전트 부적합", "오디오 전용"),
-    ("embed", "임베딩/검색", False, "벡터 임베딩", "검색·RAG", "대화/도구 불가", "임베딩 전용"),
-    ("rerank", "임베딩/검색", False, "재순위화", "검색 품질", "대화 불가", "rerank 전용"),
-    ("nemotron", "LLM/에이전트", True, "에이전트·도구 추론", "효율·도구", "NIM 쿼터", "채팅+tools"),
-    ("llama", "LLM/에이전트", True, "범용 대화·코딩", "생태계·도구", "컨텍스트/쿼터", "채팅+tools"),
-    ("qwen", "LLM/에이전트", True, "다국어·코딩", "도구·비전(모델별)", "쿼터", "채팅+tools"),
-    ("mistral", "LLM/에이전트", True, "범용·코딩", "빠름·도구", "쿼터", "채팅+tools"),
-    ("deepseek", "LLM/에이전트", True, "추론·코딩", "가성비·도구", "쿼터", "채팅+tools"),
-    ("gemma", "LLM/에이전트", True, "경량 멀티모달", "로컬친화", "대형 대비 한계", "채팅"),
-    ("phi-", "LLM/에이전트", True, "경량 추론", "작음·빠름", "긴 과제 약함", "채팅"),
-    ("gpt-oss", "LLM/에이전트", True, "오픈웨이트 추론", "도구·에이전트", "쿼터", "채팅+tools"),
-    ("cosmos", "비전/멀티모달", False, "월드/비전 모델", "시각 이해", "일반 채팅 도구 제한", "비전 특화"),
-    ("vila", "비전/멀티모달", True, "비전-언어", "이미지+텍스트", "텍스트만 작업엔 과함", "VLM"),
-    ("nvclip", "비전/멀티모달", False, "비전 임베딩", "이미지 검색", "대화 불가", "임베딩"),
-)
-
-_SINGLE_BRAND_HINTS = ("openai", "gpt", "chatgpt", "anthropic", "claude", "google", "gemini", "gemini")
-
-# ponytail: integrate.api.nvidia.com 무료 Public API에서 chat 스모크 통과한 모델만.
-# 천장: NVIDIA가 모델을 열거나 닫으면 목록이 어긋남 → 스모크 재실행 후 이 튜플만 갱신.
-_NVIDIA_FREE_ENDPOINT_MODELS: tuple[str, ...] = (
-    "google/diffusiongemma-26b-a4b-it",
-    "google/gemma-4-31b-it",
-    "meta/llama-3.1-70b-instruct",
-    "meta/llama-3.1-8b-instruct",
-    "meta/llama-3.2-11b-vision-instruct",
-    "minimaxai/minimax-m3",
-    "mistralai/mistral-nemotron",
-    "nvidia/ising-calibration-1.5-31b",
-    "nvidia/llama-3.1-nemoguard-8b-content-safety",
-    "nvidia/llama-3.1-nemoguard-8b-topic-control",
-    "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
-    "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
-    "nvidia/llama-3.3-nemotron-super-49b-v1",
-    "nvidia/nemotron-3-nano-30b-a3b",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-    "nvidia/nemotron-3-super-120b-a12b",
-    "nvidia/nemotron-3-ultra-550b-a55b",
-    "nvidia/nemotron-3.5-content-safety",
-    "nvidia/nemotron-mini-4b-instruct",
-    "nvidia/nvidia-nemotron-nano-9b-v2",
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-    "stepfun-ai/step-3.7-flash",
-    "thinkingmachines/inkling",
-)
-_NVIDIA_FREE_ENDPOINT_SET = frozenset(_NVIDIA_FREE_ENDPOINT_MODELS)
+def _mentions_tools(detail: str) -> bool:
+    """제공자가 돌려준 오류 본문에 tool/function 언급이 있는지 — 모델명 추정 아님."""
+    text = (detail or "").lower()
+    return "tool" in text or "function" in text
 
 
-def is_nvidia_provider(name: str, base_url: str = "") -> bool:
-    blob = f"{name} {base_url}".lower()
-    return "nvidia" in blob or "nim" in blob or "integrate.api.nvidia" in blob
+def _state_from_status(status: int) -> str:
+    # 401/403/429/5xx·네트워크는 모델 탓이 아님 → 미확정으로 남김
+    if status in (401, 403, 429) or status == 0 or status >= 500:
+        return "unverified"
+    return "unavailable"
 
 
-def is_nvidia_free_endpoint_model(model: str) -> bool:
-    return (model or "").strip() in _NVIDIA_FREE_ENDPOINT_SET
-
-
-def filter_nvidia_free_endpoint_models(models: list[str] | None) -> list[str]:
-    """피커/저장용 — 무료 엔드포인트 모델만. 교집합이 없으면 무료 목록 전체."""
-    seen = {(m or "").strip() for m in (models or []) if (m or "").strip()}
-    if not seen:
-        return list(_NVIDIA_FREE_ENDPOINT_MODELS)
-    hit = [m for m in _NVIDIA_FREE_ENDPOINT_MODELS if m in seen]
-    return hit if hit else list(_NVIDIA_FREE_ENDPOINT_MODELS)
-
-
-def is_multi_model_brand(name: str, base_url: str = "", model_count: int = 0) -> bool:
-    """브랜드 하위 모델 선택 창을 쓸지 — NVIDIA 허브 또는 다수 모델."""
-    if is_nvidia_provider(name, base_url):
-        return True
-    if model_count >= 3 and not is_single_brand_provider(name):
-        return True
-    return False
-
-
-def is_single_brand_provider(name: str) -> bool:
-    n = (name or "").strip().lower()
-    return any(h in n for h in _SINGLE_BRAND_HINTS)
-
-
-def api_model_supports_tools(provider_name: str, model: str, *, base_url: str = "") -> bool:
-    return describe_api_model(provider_name, model, base_url=base_url).supports_tools
-
-
-def nvidia_category(model: str) -> str:
-    return describe_api_model("NVIDIA", model).category
-
-
-def describe_api_model(provider_name: str, model: str, *, base_url: str = "") -> ApiModelMeta:
-    m = (model or "").strip().lower()
-    nvidia = is_nvidia_provider(provider_name, base_url)
-    if nvidia:
-        for key, cat, tools, feat, pros, cons, lim in _NVIDIA_RULES:
-            if key in m:
-                return ApiModelMeta(cat, tools, feat, pros, cons, lim)
-        # 기본: NIM chat 계열로 간주 (도구 가능) — 예전처럼 전부 False 고정하지 않음
-        return ApiModelMeta(
-            "LLM/기타",
-            True,
-            "OpenAI 호환 채팅",
-            "NIM 다양성",
-            "모델별 능력 확인 필요",
-            "쿼터·엔드포인트",
+def verify_model(
+    base_url: str,
+    api_key: str,
+    model: str,
+    *,
+    auth_style: str = "bearer",
+    timeout: float = 20.0,
+) -> tuple[str, str, str]:
+    """(model_state, tool_support, detail). tools 실은 1토큰 요청 1회로 판정함."""
+    try:
+        oai.chat_smoke(
+            base_url, api_key, model, auth_style=auth_style, tools=True, timeout=timeout
         )
+        return "ok", "yes", "tools 200"
+    except oai.HttpFail as exc:
+        if exc.status in (400, 422) and _mentions_tools(exc.detail):
+            # 도구만 거부 — 도구 없이 대화가 되는지 재확인
+            try:
+                oai.chat_smoke(
+                    base_url, api_key, model, auth_style=auth_style, timeout=timeout
+                )
+                return "ok", "no", f"tools 거부: {exc.detail[:120]}"
+            except oai.HttpFail as plain:
+                return _state_from_status(plain.status), "unknown", str(plain)
+        return _state_from_status(exc.status), "unknown", str(exc)
 
-    # 비-NVIDIA 커스텀 API
-    if any(x in m for x in ("embed", "whisper", "tts", "dall-e", "imagen", "flux")):
-        return ApiModelMeta("특수", False, "비채팅 모달리티", "특화 작업", "에이전트 부적합", "모달리티 전용")
-    # GPT/Claude/Gemini 등 — 도구 지원으로 표시
-    return ApiModelMeta(
-        "LLM",
-        True,
-        "대화·에이전트",
-        "익숙한 API",
-        "키·과금 필요",
-        "제공자 한도",
-    )
 
-
-def card_blurb(meta: ApiModelMeta) -> str:
-    """MCP 카드 desc 자리에 넣을 한 줄 요약."""
-    bits = [
-        f"특징 {meta.feature}",
-        f"장점 {meta.pros}",
-        f"단점 {meta.cons}",
-        f"한도 {meta.limit}",
-    ]
-    if meta.supports_tools:
-        bits.append("도구·추론 가능")
-    else:
-        bits.append("도구 호출 미지원")
-    return " · ".join(bits)
+def tool_support_label(state: str) -> str:
+    return {"yes": "도구 가능", "no": "도구 미지원"}.get(state, "도구 미확인")
 
 
 if __name__ == "__main__":
-    assert api_model_supports_tools("NVIDIA", "meta/llama-3.1-70b-instruct") is True
-    assert api_model_supports_tools("NVIDIA", "black-forest-labs/flux.1-dev") is False
-    assert api_model_supports_tools("NVIDIA", "nvidia/nv-embedqa-e5-v5") is False
-    assert api_model_supports_tools("NVIDIA", "nvidia/nemotron-3-nano") is True
-    assert nvidia_category("meta/llama-3.3-70b-instruct") == "LLM/에이전트"
-    assert nvidia_category("black-forest-labs/flux.1-dev") == "이미지 생성"
-    assert is_nvidia_provider("NVIDIA", "https://integrate.api.nvidia.com/v1")
-    assert is_single_brand_provider("OpenAI GPT")
-    assert is_nvidia_free_endpoint_model("meta/llama-3.1-8b-instruct")
-    assert not is_nvidia_free_endpoint_model("deepseek-ai/deepseek-coder-6.7b-instruct")
-    assert filter_nvidia_free_endpoint_models(
-        ["deepseek-ai/deepseek-coder-6.7b-instruct", "meta/llama-3.1-8b-instruct"]
-    ) == ["meta/llama-3.1-8b-instruct"]
-    assert len(filter_nvidia_free_endpoint_models([])) == len(_NVIDIA_FREE_ENDPOINT_MODELS)
+    assert tool_support_from_listing({"supported_parameters": ["tools", "temperature"]}) == "yes"
+    assert tool_support_from_listing({"supported_parameters": ["temperature"]}) == "no"
+    assert tool_support_from_listing({"supports_tools": True}) == "yes"
+    assert tool_support_from_listing({"id": "x"}) == "unknown"
+    assert tool_support_from_listing(None) == "unknown"
+    assert _state_from_status(404) == "unavailable"
+    assert _state_from_status(429) == "unverified"
+    assert _state_from_status(0) == "unverified"
+    assert _state_from_status(503) == "unverified"
+    assert _mentions_tools('{"error":"Function calling is not enabled"}')
+    assert not _mentions_tools('{"error":"quota exceeded"}')
+    assert tool_support_label("unknown") == "도구 미확인"
     print("api_model_meta self-check ok")

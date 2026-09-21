@@ -27,6 +27,8 @@ class OllamaModelInfo:
     # probe 전/실패 시 True — 숨기지 않고 기본(도구 지원) 스타일로 표시
     supports_tools: bool = True
     requires_subscription: bool = False
+    # 커스텀 API 전용 3-상태 (yes|no|unknown). 빈 문자열이면 supports_tools를 씀
+    tool_support: str = ""
 
     def __post_init__(self) -> None:
         if not self.catalog_name:

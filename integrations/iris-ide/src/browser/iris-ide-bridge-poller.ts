@@ -6,6 +6,7 @@ import { FileUri } from '@theia/core/lib/common/file-uri';
 import { EditorManager } from '@theia/editor/lib/browser';
 import { TerminalService } from '@theia/terminal/lib/browser/base/terminal-service';
 import { WorkspaceService } from '@theia/workspace/lib/browser';
+import { resolveBridgeIdentity } from './iris-ide-bridge-identity';
 
 interface PendingCommand {
     id: number;
@@ -31,12 +32,8 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
     protected pollTimer: number | undefined;
 
     onStart(): void {
-        const params = new URLSearchParams(window.location.search);
-        this.bridgePort = parseInt(params.get('iris_bridge_port') || '0', 10) || 0;
-        this.bridgeToken = params.get('iris_bridge_token') || '';
-        if (!this.bridgePort) {
-            return;
-        }
+        // 포트 미해결이어도 타이머는 건다 — onStart에서 포기하면 복구 기회가 영구히 없다.
+        this.resolveBridge();
         this.pollTimer = window.setInterval(() => this.poll(), 320);
         window.setTimeout(() => this.poll(), 120);
     }
@@ -48,7 +45,21 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
         }
     }
 
+    /** 미해결 상태면 매 tick 재시도 — sessionStorage 조회뿐이라 비용이 없다. */
+    protected resolveBridge(): boolean {
+        if (this.bridgePort && this.bridgeToken) {
+            return true;
+        }
+        const identity = resolveBridgeIdentity();
+        this.bridgePort = identity.port;
+        this.bridgeToken = identity.token;
+        return !!this.bridgePort;
+    }
+
     protected async poll(): Promise<void> {
+        if (!this.resolveBridge()) {
+            return;
+        }
         try {
             const data = await this.bridgeRequest('pollPendingCommands', { limit: 8 });
             const commands = Array.isArray(data.commands) ? data.commands as PendingCommand[] : [];
@@ -113,7 +124,7 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
     protected async createTerminal(args: Record<string, unknown>): Promise<Record<string, unknown>> {
         const name = String(args.name || 'IRIS');
         const terminal = await this.terminalService.newTerminal({ title: name });
-        terminal.start();
+        await terminal.start();
         this.terminalService.open(terminal);
         return { name, created: true };
     }
@@ -123,12 +134,18 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
         if (!command) {
             throw new Error('runTerminalCommand: empty command');
         }
-        const terminal = await this.terminalService.newTerminal({ title: 'IRIS' });
-        terminal.start();
+        // cwd는 URI 문자열로 해석된다 (TerminalWidgetImpl.createTerminal) — 로컬 경로는 file:// 로 변환.
+        const cwd = String(args.cwd || '').trim();
+        const terminal = await this.terminalService.newTerminal(
+            cwd ? { title: 'IRIS', cwd: FileUri.create(cwd) } : { title: 'IRIS' },
+        );
+        // start()를 await 해야 sendText가 연결을 기다린다 — 안 하면 명령이 조용히 버려진다
+        // (TerminalWidgetImpl.sendText는 waitForConnection이 없으면 아무 일도 하지 않는다).
+        await terminal.start();
         this.terminalService.open(terminal);
         // ponytail: Theia 1.74 sendText is (text) only — append \n for Enter
         terminal.sendText(command.endsWith('\n') ? command : `${command}\n`);
-        return { command, queued: true, via: 'theia_terminal' };
+        return { command, queued: true, via: 'theia_terminal', cwd };
     }
 
     protected async bridgeRequest(command: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {

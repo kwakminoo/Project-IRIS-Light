@@ -7,6 +7,14 @@ import { IRIS_IDE_PRODUCT_NAME } from '../common/iris-ide-protocol';
 
 type Json = Record<string, unknown>;
 
+// Theia(QWebEngine) 페이지는 브리지와 포트가 달라 cross-origin — ACAO 없으면 프런트엔드의
+// setEditorState / pollPendingCommands fetch가 전부 차단된다 (control_surface와 동일 처리).
+const CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+};
+
 @injectable()
 export class IrisIdeBridgeServer {
     protected server: http.Server | null = null;
@@ -89,6 +97,7 @@ export class IrisIdeBridgeServer {
     protected json(res: http.ServerResponse, code: number, body: Json): void {
         const raw = JSON.stringify(body);
         res.writeHead(code, {
+            ...CORS_HEADERS,
             'Content-Type': 'application/json; charset=utf-8',
             'Content-Length': Buffer.byteLength(raw),
         });
@@ -104,8 +113,23 @@ export class IrisIdeBridgeServer {
         return target;
     }
 
+    /** 식별자(path|uri) 없는 상태는 「편집기 없음」이다 — 프런트엔드는 편집기가 닫히면 {}를 보낸다. */
+    protected normalizeEditorState(info: Json | null): Json | null {
+        if (!info || typeof info !== 'object' || Array.isArray(info)) {
+            return null;
+        }
+        const hasId = Boolean(String(info.path || '').trim() || String(info.uri || '').trim());
+        return hasId ? info : null;
+    }
+
     protected async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         try {
+            // preflight에는 Authorization이 실려오지 않는다 — 인증 앞에서 응답할 것.
+            if (req.method === 'OPTIONS') {
+                res.writeHead(204, { ...CORS_HEADERS, 'Content-Length': '0' });
+                res.end();
+                return;
+            }
             if (!this.authOk(req)) {
                 this.json(res, 401, { ok: false, error: 'unauthorized' });
                 return;
@@ -134,7 +158,7 @@ export class IrisIdeBridgeServer {
             case 'getWorkspace':
                 return { root: this.workspaceRoot };
             case 'setEditorState':
-                this.editorState = args;
+                this.editorState = this.normalizeEditorState(args);
                 return { saved: true };
             case 'getActiveEditor':
                 return { editor: this.editorState || null };
