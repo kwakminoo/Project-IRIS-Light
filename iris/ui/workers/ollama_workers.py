@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import threading
+
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from iris.infrastructure.ollama_client import OllamaClient, OllamaModelInfo, host_label_for_model
 from iris.system.ollama_server import ensure_ollama_running, is_ollama_running
+
+# ponytail: 클라우드 프로브가 네트워크에 묶여 인트로/상태줄을 영원히 잡지 않게.
+_MODEL_LIST_TIMEOUT_S = 18.0
 
 
 class OllamaModelListWorker(QThread):
@@ -15,26 +20,64 @@ class OllamaModelListWorker(QThread):
     failed = pyqtSignal(str)
     notice = pyqtSignal(str)  # 서버 기동 등 상태 메시지
 
-    def __init__(self, base_url: str, parent=None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        parent=None,
+        *,
+        probe_cloud: bool = True,
+        timeout_s: float = _MODEL_LIST_TIMEOUT_S,
+    ) -> None:
         super().__init__(parent)
         self._base_url = base_url
+        self._probe_cloud = probe_cloud
+        self._timeout_s = float(timeout_s)
 
     def run(self) -> None:
-        try:
-            if not is_ollama_running(self._base_url):
-                self.notice.emit("Ollama 서버가 꺼져 있습니다. 서버를 시작합니다…")
-                if ensure_ollama_running(self._base_url):
-                    self.notice.emit("Ollama 서버 시작됨.")
-                else:
-                    self.failed.emit(
-                        "Ollama 서버를 시작할 수 없습니다. Ollama가 설치되어 있는지 확인하세요."
-                    )
-                    return
-            client = OllamaClient(self._base_url)
-            models = client.list_chat_models(probe_cloud=True)
-            self.finished_ok.emit(models)
-        except Exception as e:
-            self.failed.emit(str(e))
+        # ponytail: StartupHealthWorker와 같이 daemon+join — urlopen hang에 전역 묶임 금지.
+        box: dict[str, object] = {"models": None, "err": None, "done": False}
+
+        def work() -> None:
+            try:
+                if not is_ollama_running(self._base_url):
+                    self.notice.emit("Ollama 서버가 꺼져 있습니다. 서버를 시작합니다…")
+                    if ensure_ollama_running(self._base_url):
+                        self.notice.emit("Ollama 서버 시작됨.")
+                    else:
+                        box["err"] = (
+                            "Ollama 서버를 시작할 수 없습니다. "
+                            "Ollama가 설치되어 있는지 확인하세요."
+                        )
+                        return
+                client = OllamaClient(self._base_url)
+                box["models"] = client.list_chat_models(probe_cloud=self._probe_cloud)
+            except Exception as e:
+                box["err"] = str(e)
+            finally:
+                box["done"] = True
+
+        t = threading.Thread(target=work, name="iris-ollama-model-list", daemon=True)
+        t.start()
+        t.join(timeout=self._timeout_s)
+        if box["done"]:
+            err = box["err"]
+            if err:
+                self.failed.emit(str(err))
+                return
+            models = box["models"]
+            self.finished_ok.emit(models if isinstance(models, list) else [])
+            return
+        # 타임아웃 — 클라우드 프로브였으면 로컬만 짧게 재시도
+        if self._probe_cloud:
+            try:
+                self.notice.emit("클라우드 모델 확인 시간 초과 — 로컬 목록만 사용")
+                client = OllamaClient(self._base_url)
+                self.finished_ok.emit(client.list_chat_models(probe_cloud=False))
+                return
+            except Exception as e:
+                self.failed.emit(f"모델 목록 시간 초과: {e}")
+                return
+        self.failed.emit("모델 목록 조회 시간 초과")
 
 
 class OllamaChatWorker(QThread):

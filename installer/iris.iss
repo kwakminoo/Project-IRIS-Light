@@ -1,6 +1,6 @@
 ; IRIS Windows installer — payload is staged next to this file by build_iris_setup.ps1
 #define MyAppName "IRIS"
-#define MyAppVersion "0.1.1"
+#define MyAppVersion "0.1.2"
 #define MyAppPublisher "IRIS"
 #define MyAppURL "https://github.com/kwakminoo/Project-IRIS-Light"
 #define MyAppExeName "IRIS.exe"
@@ -134,13 +134,15 @@ begin
   if CurStep <> ssPostInstall then
     Exit;
 
+  { SW_HIDE + -WindowStyle Hidden: 콘솔/Windows Terminal 창을 띄우지 않는다.
+    진행 안내는 StatusLabel 만. 로그는 setup.ps1 의 Transcript / pip --log 에 남는다. }
   WizardForm.StatusLabel.Caption := 'Creating Python venv and installing packages (needs internet)...';
   WizardForm.Refresh();
 
   Launched := Exec(
     ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    ExpandConstant('-NoProfile -ExecutionPolicy Bypass -File "{app}\setup.ps1"'),
-    ExpandConstant('{app}'), SW_SHOW, ewWaitUntilTerminated, ResultCode);
+    ExpandConstant('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{app}\setup.ps1"'),
+    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
   if not Launched then
   begin

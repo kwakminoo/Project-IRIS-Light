@@ -1644,10 +1644,10 @@ class SettingsDialog(QDialog):
         if wait:
             for active in workers:
                 if active.isRunning():
-                    active.wait(1500)
+                    active.wait(300)
             for active in bootstraps:
                 if active.isRunning():
-                    active.wait(1500)
+                    active.wait(300)
         self._preview_player.stop()
         if announce:
             self._voice_status.setText("재생 중지")
@@ -2422,9 +2422,10 @@ class SettingsDialog(QDialog):
             return
         self._cancel_deferred_status_workers()
         self._disconnect_mic_meter()
-        if not self._stop_voice_playback(announce=False, wait=True):
-            self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
-            return
+        try:
+            self._stop_voice_playback(announce=False, wait=False)
+        except Exception:
+            pass
         self._stop_mic_monitor()
         if self._microphone is not None:
             self._microphone.set_device(self._voice_prefs.stt_device_id)
@@ -2433,9 +2434,10 @@ class SettingsDialog(QDialog):
     def accept(self) -> None:
         self._cancel_deferred_status_workers()
         self._disconnect_mic_meter()
-        if not self._stop_voice_playback(announce=False, wait=True):
-            self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
-            return
+        try:
+            self._stop_voice_playback(announce=False, wait=False)
+        except Exception:
+            pass
         self._stop_mic_monitor()
         super().accept()
 
@@ -2446,10 +2448,10 @@ class SettingsDialog(QDialog):
             return
         self._cancel_deferred_status_workers()
         self._disconnect_mic_meter()
-        if not self._stop_voice_playback(announce=False, wait=True):
-            self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
-            event.ignore()
-            return
+        try:
+            self._stop_voice_playback(announce=False, wait=False)
+        except Exception:
+            pass
         self._stop_mic_monitor()
         super().closeEvent(event)
 

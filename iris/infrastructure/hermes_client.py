@@ -22,6 +22,53 @@ def api_root_from_base(base_url: str) -> str:
     return raw or "http://127.0.0.1:8642"
 
 
+# Hermes /health 정상 본문: {"status":"ok","platform":"hermes-agent",...}
+_HEALTH_OK_STATUSES = frozenset({"ok", "healthy", "up", "ready", "running"})
+
+
+@dataclass(frozen=True)
+class HealthProbeResult:
+    """/health · /v1/health 한 번의 진단 결과 (생존만 — API 키와 무관)."""
+
+    ok: bool
+    code: str  # ok | http_error | bad_body | connection_refused | timeout | unreachable
+    url: str = ""
+    http_status: int | None = None
+    body_summary: str = ""
+    looks_like_hermes: bool = False
+    detail: str = ""
+
+
+def _summarize_health_body(raw: str, *, limit: int = 120) -> str:
+    text = (raw or "").replace("\n", " ").strip()
+    if len(text) > limit:
+        return text[: limit - 1] + "…"
+    return text
+
+
+def parse_health_payload(body: Any) -> tuple[bool, bool, str]:
+    """(alive_ok, looks_like_hermes, summary).
+
+    ponytail: Hermes 0.20은 status==\"ok\". 다른 빌드가 healthy/ok:true 를
+    쓸 수 있어 느슨히 판정. 본문 전체는 UI에 넣지 말고 summary만.
+    """
+    if isinstance(body, dict):
+        status = str(body.get("status") or "").strip().lower()
+        platform = str(body.get("platform") or body.get("service") or "").strip().lower()
+        looks = ("hermes" in platform) if platform else False
+        if status in _HEALTH_OK_STATUSES:
+            return True, looks or (not platform), _summarize_health_body(json.dumps(body, ensure_ascii=False))
+        if body.get("ok") is True or body.get("healthy") is True:
+            return True, looks or (not platform), _summarize_health_body(json.dumps(body, ensure_ascii=False))
+        return False, looks, _summarize_health_body(json.dumps(body, ensure_ascii=False))
+    if isinstance(body, str):
+        low = body.strip().lower()
+        if low in _HEALTH_OK_STATUSES:
+            return True, False, _summarize_health_body(body)
+        return False, False, _summarize_health_body(body)
+    return False, False, _summarize_health_body(str(body))
+
+
 def is_iris_api_runtime_model(model: str) -> bool:
     """Iris 커스텀 API runtime id (`api:{provider_id}:{model}`) 여부."""
     return (model or "").strip().lower().startswith("api:")
@@ -160,19 +207,87 @@ class HermesClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    def _health_ping_ok(self, *, timeout_sec: float = 5.0) -> bool:
+    def probe_health(self, *, timeout_sec: float = 5.0) -> HealthProbeResult:
+        """/health 와 /v1/health 를 순서대로 프로브 — 연결거부·timeout·본문을 구분.
+
+        Bearer 없이 호출 (생존 체크와 API 키 문제를 분리 — G10).
+        """
+        last = HealthProbeResult(ok=False, code="unreachable", detail="no endpoint tried")
         for path in (f"{self.api_root}/health", f"{self.base_url}/health"):
             try:
-                req = Request(path, method="GET", headers=self._headers())
+                # 생존만 — Authorization 헤더를 붙이지 않음
+                req = Request(path, method="GET", headers={})
                 with urlopen(req, timeout=timeout_sec) as resp:
-                    if resp.status != 200:
+                    raw = resp.read().decode("utf-8", errors="replace")
+                    http_status = int(resp.status)
+                    if http_status != 200:
+                        last = HealthProbeResult(
+                            ok=False,
+                            code="http_error",
+                            url=path,
+                            http_status=http_status,
+                            body_summary=_summarize_health_body(raw),
+                            detail=f"HTTP {http_status}",
+                        )
                         continue
-                    body = json.loads(resp.read().decode("utf-8"))
-                    if isinstance(body, dict) and str(body.get("status", "")).lower() == "ok":
-                        return True
-            except Exception:
-                continue
-        return False
+                    try:
+                        body: Any = json.loads(raw) if raw.strip() else {}
+                    except json.JSONDecodeError:
+                        body = raw
+                    alive, looks, summary = parse_health_payload(body)
+                    if alive:
+                        return HealthProbeResult(
+                            ok=True,
+                            code="ok",
+                            url=path,
+                            http_status=http_status,
+                            body_summary=summary,
+                            looks_like_hermes=looks,
+                            detail="health ok",
+                        )
+                    last = HealthProbeResult(
+                        ok=False,
+                        code="bad_body",
+                        url=path,
+                        http_status=http_status,
+                        body_summary=summary,
+                        looks_like_hermes=looks,
+                        detail="unexpected health body",
+                    )
+            except TimeoutError:
+                last = HealthProbeResult(
+                    ok=False, code="timeout", url=path, detail="request timeout"
+                )
+            except URLError as exc:
+                reason = str(getattr(exc, "reason", exc) or exc)
+                low = reason.lower()
+                if "refused" in low or "10061" in low:
+                    code = "connection_refused"
+                elif "timed out" in low or "timeout" in low:
+                    code = "timeout"
+                else:
+                    code = "unreachable"
+                last = HealthProbeResult(
+                    ok=False, code=code, url=path, detail=reason[:160]
+                )
+            except OSError as exc:
+                msg = str(exc)
+                code = (
+                    "connection_refused"
+                    if "refused" in msg.lower() or "10061" in msg
+                    else "unreachable"
+                )
+                last = HealthProbeResult(
+                    ok=False, code=code, url=path, detail=msg[:160]
+                )
+            except Exception as exc:  # noqa: BLE001
+                last = HealthProbeResult(
+                    ok=False, code="unreachable", url=path, detail=str(exc)[:160]
+                )
+        return last
+
+    def _health_ping_ok(self, *, timeout_sec: float = 5.0) -> bool:
+        return self.probe_health(timeout_sec=timeout_sec).ok
 
     def health_ok(self, *, timeout_sec: float = 5.0) -> bool:
         """/health — 프로세스 생존만 (Bearer 불필요)."""

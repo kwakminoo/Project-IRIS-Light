@@ -419,13 +419,87 @@ def is_cloud_runtime_name(name: str) -> bool:
     return bool(n) and OllamaModelInfo(name=n).is_cloud
 
 
+# 임베딩·비채팅 모델 이름 휴리스틱 (Ollama tags에 capability가 없을 때).
+_NON_CHAT_MODEL_RE = re.compile(
+    r"(?:^|[:/\-_])(?:bge|e5|gte|ember|nomic-?embed|embed|embedding|rerank|"
+    r"clip|whisper|tts|stt|coder-?embed)(?:$|[:/\-_.])",
+    re.IGNORECASE,
+)
+
+
+def is_non_chat_model_name(name: str) -> bool:
+    """임베딩·STT/TTS 등 채팅 불가로 보이는 로컬 모델명."""
+    n = (name or "").strip()
+    if not n:
+        return True
+    return bool(_NON_CHAT_MODEL_RE.search(n))
+
+
 def local_inference_models(names: list[str]) -> list[str]:
-    """로컬 가중치 모델만. 클라우드 스텁(gemma4:31b-cloud 등)은 제외."""
-    return [n for n in names if str(n).strip() and not is_cloud_runtime_name(str(n))]
+    """채팅 가능한 로컬 가중치만. 클라우드 스텁·임베딩 계열 제외."""
+    out: list[str] = []
+    for raw in names:
+        n = str(raw).strip()
+        if not n or is_cloud_runtime_name(n) or is_non_chat_model_name(n):
+            continue
+        out.append(n)
+    return out
+
+
+def prefer_chat_model(names: list[str], *, preferred: str = "") -> str | None:
+    """설치·게이트용 채팅 모델 선택. preferred → DEFAULT_MIN_MODEL → 목록 첫 항목."""
+    local = local_inference_models(names)
+    if not local:
+        return None
+    for want in ((preferred or "").strip(), DEFAULT_MIN_MODEL):
+        if want and want in local:
+            return want
+    return local[0]
+
+
+def refresh_process_path() -> None:
+    """설치 직후 동일 프로세스에서 새 PATH(예: Ollama)를 다시 읽는다."""
+    if sys.platform != "win32":
+        return
+    try:
+        import winreg
+    except ImportError:
+        return
+    chunks: list[str] = []
+    for hive, subkey in (
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+        (winreg.HKEY_CURRENT_USER, "Environment"),
+    ):
+        try:
+            with winreg.OpenKey(hive, subkey) as key:
+                val, _ = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            continue
+        if isinstance(val, str) and val.strip():
+            chunks.append(val.strip())
+    if not chunks:
+        return
+    # 시스템 → 사용자 → 기존 프로세스 PATH (중복은 앞쪽 우선)
+    merged: list[str] = []
+    seen: set[str] = set()
+    for part in (*chunks, os.environ.get("PATH", "")):
+        for item in part.split(os.pathsep):
+            p = item.strip()
+            if not p:
+                continue
+            key = p.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(p)
+    os.environ["PATH"] = os.pathsep.join(merged)
 
 
 def has_usable_inference_backend(names: list[str], *, cloud_signed_in: bool) -> bool:
-    """채팅이 실제로 돌 수 있는지 — 로컬 모델 또는 클라우드 로그인."""
+    """채팅이 실제로 돌 수 있는지 — 로컬 채팅 모델 또는 클라우드 로그인."""
     if local_inference_models(names):
         return True
     return bool(cloud_signed_in)
@@ -797,8 +871,16 @@ class SetupProtocol:
         )
         return out
 
-    def _record_step(self, step_id: str, status: str, message: str = "") -> SetupStepResult:
+    def _record_step(
+        self,
+        step_id: str,
+        status: str,
+        message: str = "",
+        *,
+        action_hint: str = "",
+    ) -> SetupStepResult:
         message = redact_secrets(message)
+        action_hint = redact_secrets(action_hint)
         steps = self._state.setdefault("steps", {})
         steps[step_id] = {
             "status": status,
@@ -812,6 +894,7 @@ class SetupProtocol:
             step_id=step_id,
             status=status,
             message=message,
+            action_hint=action_hint,
             label=CORE_STEP_LABELS.get(step_id, step_id),
         )
 
@@ -868,7 +951,16 @@ class SetupProtocol:
             return False, report or "사용 가능한 Ollama 모델이 없습니다"
         key = resolve_hermes_api_key()
         if not is_hermes_gateway_running(self.hermes_base_url, api_key=key, timeout_sec=3.0):
-            return False, "Hermes gateway /health 실패"
+            from iris.system.hermes_gateway import get_last_gateway_diagnosis
+
+            diag = get_last_gateway_diagnosis()
+            if diag and not diag.ok:
+                return False, diag.user_message()
+            return False, (
+                "[HEALTH] Hermes gateway /health 실패\n"
+                "조치: 시작 프로토콜을 다시 실행하거나 "
+                "%LOCALAPPDATA%\\hermes\\logs\\iris-gateway 로그를 확인하세요."
+            )
         return True, "Ollama·Hermes 정상"
 
     def verify_core(self) -> tuple[bool, str]:
@@ -883,14 +975,22 @@ class SetupProtocol:
             return False, report
         key = resolve_hermes_api_key()
         if not is_hermes_gateway_running(self.hermes_base_url, api_key=key):
-            return False, "Hermes gateway /health 실패\n" + report
+            from iris.system.hermes_gateway import get_last_gateway_diagnosis
+
+            diag = get_last_gateway_diagnosis()
+            health_msg = diag.user_message() if diag and not diag.ok else (
+                "[HEALTH] Hermes gateway /health 실패"
+            )
+            return False, health_msg + "\n" + report
         from iris.infrastructure.hermes_client import HermesClient
 
         auth = HermesClient(self.hermes_base_url, api_key=key).probe_chat_auth()
         if auth == "unauthorized":
             return False, (
-                "Hermes 채팅 401 Unauthorized. "
-                "API 키가 게이트웨이와 다르거나, 클라우드 모델인데 미로그인입니다.\n"
+                "[API_KEY] Hermes 채팅 401 Unauthorized "
+                "(gateway /health 생존과는 별개).\n"
+                "API 키가 게이트웨이(.env API_SERVER_KEY)와 다르거나, "
+                "클라우드 모델인데 미로그인입니다.\n"
                 + report
             )
         if auth == "unreachable":
@@ -1668,6 +1768,7 @@ class SetupProtocol:
                 can_install=True,
             )
         time.sleep(2)
+        refresh_process_path()
         if self._ollama_ready(wait_sec=25.0):
             return self._record_step("ollama_install", "done", "공식 스크립트로 Ollama 설치됨")
         if proc.returncode == 0:
@@ -1717,6 +1818,7 @@ class SetupProtocol:
                 can_install=True,
             )
         time.sleep(2)
+        refresh_process_path()
         if self._ollama_ready(wait_sec=25.0):
             return self._record_step("ollama_install", "done", "winget으로 Ollama 설치됨")
         if proc.returncode == 0:
@@ -1793,9 +1895,8 @@ class SetupProtocol:
                 label=CORE_STEP_LABELS.get(step_id, OPTIONAL_LABELS.get(step_id, step_id)),
             )
         names = _list_ollama_model_names(self.ollama_base_url)
-        local = local_inference_models(names)
-        if local:
-            chosen = local[0]
+        chosen = prefer_chat_model(names, preferred=self._local_min_model())
+        if chosen:
             self.min_model = chosen
             self._persist_iris_model(chosen)
             return self._record_step(step_id, "done", f"로컬 모델 준비됨 ({chosen})")
@@ -1806,15 +1907,16 @@ class SetupProtocol:
         if pulled is not None:
             return pulled
         names = _list_ollama_model_names(self.ollama_base_url)
-        local = local_inference_models(names)
-        if not local:
+        chosen = prefer_chat_model(names, preferred=model)
+        if not chosen:
             return self._record_step(
                 step_id,
                 "failed",
-                "로컬 모델이 없습니다. pull 실패이거나 클라우드 스텁만 있습니다.",
+                "채팅용 로컬 모델이 없습니다. pull 실패이거나 임베딩·클라우드 스텁만 있습니다.",
             )
-        self._persist_iris_model(model)
-        return self._record_step(step_id, "done", f"{model} 준비됨")
+        self.min_model = chosen
+        self._persist_iris_model(chosen)
+        return self._record_step(step_id, "done", f"{chosen} 준비됨")
 
     def _step_ollama_model(self) -> SetupStepResult:
         if not ensure_ollama_running(self.ollama_base_url, wait_sec=20.0):
@@ -1975,6 +2077,7 @@ class SetupProtocol:
                 hidden=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
+            refresh_process_path()
             if hermes_executable(self.hermes_command):
                 return self._record_step(
                     "hermes_install", "done", "시간 초과 후 Hermes 사용 가능 확인"
@@ -1988,6 +2091,7 @@ class SetupProtocol:
                 action_url=HERMES_INSTALL_URL,
                 can_install=True,
             )
+        refresh_process_path()
         if hermes_executable(self.hermes_command):
             return self._record_step("hermes_install", "done", "Hermes 설치됨")
         if proc.returncode != 0:
@@ -2066,48 +2170,121 @@ class SetupProtocol:
         return self._record_step("hermes_provider", "done", "provider → Ollama(custom) 설정")
 
     def _step_iris_control_sync(self) -> SetupStepResult:
+        if self._abort:
+            return self._record_step("iris_control_sync", "failed", "사용자가 중단함")
+        self._emit_stream("iris-control MCP·스킬 동기화…", None, replace=False)
         try:
-            report = sync_iris_control(reconnect_gateway=True)
+            # 시작 프로토콜 중에는 Control Surface가 아직 없음 — 강제 gateway 재기동 표시만
+            # 하고 실제 restart는 hermes_gateway 단계에서 수행한다.
+            report = sync_iris_control(reconnect_gateway=False)
         except Exception as exc:  # noqa: BLE001
             return self._record_step("iris_control_sync", "failed", str(exc)[:240])
+        if self._abort:
+            return self._record_step("iris_control_sync", "failed", "사용자가 중단함")
         if not report.mcp_installed:
             err = (report.errors[0] if report.errors else "MCP 미설치")[:200]
             return self._record_step("iris_control_sync", "failed", err)
+        self._emit_stream(report.summary_line(), None, replace=False)
         return self._record_step("iris_control_sync", "done", report.summary_line())
 
     def _step_hermes_gateway(self) -> SetupStepResult:
+        if self._abort:
+            return self._record_step("hermes_gateway", "failed", "사용자가 중단함")
         key = resolve_hermes_api_key()
-        from iris.system.hermes_gateway import restart_hermes_gateway
-
-        # sync가 reload를 요구하면 완전 재기동, 아니면 ensure
-        ok = restart_hermes_gateway(
-            self.hermes_base_url,
-            api_key=key,
-            command=self.hermes_command,
-            wait_sec=60.0,
+        from iris.system.hermes_gateway import (
+            ensure_hermes_gateway_running,
+            get_last_gateway_diagnosis,
+            is_hermes_gateway_running,
+            restart_hermes_gateway,
         )
-        if not ok:
+
+        def _aborting() -> bool:
+            return bool(self._abort)
+
+        def _progress(msg: str) -> None:
+            self._emit_stream(msg, None, replace=False)
+
+        _progress("Hermes gateway 상태 확인…")
+        already = is_hermes_gateway_running(
+            self.hermes_base_url, api_key=key, timeout_sec=2.0
+        )
+        ok = False
+        if already and not _aborting():
+            # ponytail: 매 설치마다 무조건 restart하면 stop CLI + 재기동으로
+            # 1~2분 무응답처럼 보인다. 살아 있으면 ensure만.
+            _progress("gateway 이미 실행 중 — 유지")
+            ok = True
+        elif not _aborting():
+            _progress("gateway 기동…")
             ok = ensure_hermes_gateway_running(
                 self.hermes_base_url,
                 api_key=key,
                 command=self.hermes_command,
-                wait_sec=45.0,
+                wait_sec=55.0,
+                should_abort=_aborting,
+                on_progress=_progress,
             )
+            if not ok and not _aborting():
+                diag = get_last_gateway_diagnosis()
+                if diag:
+                    _progress(f"기동 실패 스냅샷: [{diag.code}] {diag.message}")
+                _progress("gateway 재기동 시도…")
+                ok = restart_hermes_gateway(
+                    self.hermes_base_url,
+                    api_key=key,
+                    command=self.hermes_command,
+                    wait_sec=60.0,
+                    should_abort=_aborting,
+                    on_progress=_progress,
+                )
+        if _aborting():
+            return self._record_step("hermes_gateway", "failed", "사용자가 중단함")
         if not ok:
-            return self._record_step("hermes_gateway", "failed", "gateway /health 실패")
-        mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self.hermes_command)
+            diag = get_last_gateway_diagnosis()
+            if diag is not None:
+                hint = (
+                    "「진단 정보 복사」로 지원용 요약을 복사할 수 있습니다. "
+                    "API 키 문제는 /health 생존과 별개입니다."
+                )
+                return self._record_step(
+                    "hermes_gateway",
+                    "failed",
+                    diag.user_message()[:500],
+                    action_hint=hint,
+                )
+            return self._record_step(
+                "hermes_gateway",
+                "failed",
+                "[HEALTH] gateway /health 실패 — 로그: %LOCALAPPDATA%\\hermes\\logs\\iris-gateway",
+                action_hint="다시 시도하거나 로그 폴더를 확인하세요.",
+            )
+        _progress("MCP iris-control 검증…")
+        mcp_ok, mcp_detail = verify_iris_mcp_tools(
+            command=self.hermes_command, timeout_sec=25.0
+        )
+        if _aborting():
+            return self._record_step("hermes_gateway", "failed", "사용자가 중단함")
         if not mcp_ok:
-            return self._record_step("hermes_gateway", "failed", f"MCP: {mcp_detail}")
+            # 설치 중 Control Surface 미기동 등으로 stdio 검증이 실패할 수 있음 —
+            # /health 통과면 Core는 진행하고, 상세는 메시지에 남긴다.
+            soft = f"gateway OK · MCP 검증 보류: {mcp_detail}"
+            _progress(soft)
+            return self._record_step("hermes_gateway", "done", soft[:240])
         return self._record_step("hermes_gateway", "done", mcp_detail)
 
     def _step_core_smoke(self) -> SetupStepResult:
+        if self._abort:
+            return self._record_step("core_smoke", "failed", "사용자가 중단함")
+        self._emit_stream("Core 연결 검증 중…", None, replace=False)
         self._record_step("core_smoke", "verifying", "연결 검증 중…")
         ok, detail = self.verify_core()
-        if not ok and "401" in (detail or ""):
+        if not ok and "401" in (detail or "") and not self._abort:
             self._emit_stream("채팅 401 — API 키 재동기화 후 gateway 재기동…", None, replace=False)
             self._step_hermes_env()
             self._step_hermes_gateway()
             ok, detail = self.verify_core()
+        if self._abort:
+            return self._record_step("core_smoke", "failed", "사용자가 중단함")
         if not ok:
             return self._record_step("core_smoke", "failed", detail)
         return self._record_step("core_smoke", "done", detail)
@@ -2633,6 +2810,9 @@ def _self_check() -> None:
     # 키 마스킹: 메시지에 raw key 넣지 않는지 상수만 검사
     assert "token_urlsafe" not in DEFAULT_MIN_MODEL
     assert local_inference_models(["gemma4:31b-cloud", "gemma4:e2b"]) == ["gemma4:e2b"]
+    assert local_inference_models(["bge-m3:latest", "gemma4:e2b"]) == ["gemma4:e2b"]
+    assert prefer_chat_model(["bge-m3:latest", "gemma4:e2b"]) == "gemma4:e2b"
+    assert not has_usable_inference_backend(["bge-m3:latest"], cloud_signed_in=False)
     assert not has_usable_inference_backend(["gemma4:31b-cloud"], cloud_signed_in=False)
     assert has_usable_inference_backend(["gemma4:31b-cloud"], cloud_signed_in=True)
     assert has_usable_inference_backend(["gemma4:e2b"], cloud_signed_in=False)

@@ -459,6 +459,7 @@ class ChatComposerInput(QPlainTextEdit):
 
 class ChatLogTextEdit(QTextEdit):
     speaker_clicked = pyqtSignal(str)
+    update_action_clicked = pyqtSignal(str)  # apply | later
     files_attached = pyqtSignal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -505,6 +506,12 @@ class ChatLogTextEdit(QTextEdit):
                 return
         if anchor.startswith("iris-tts://"):
             self.speaker_clicked.emit(anchor.removeprefix("iris-tts://"))
+            event.accept()
+            return
+        if anchor.startswith("iris-update://"):
+            action = anchor.removeprefix("iris-update://").strip().lower()
+            if action in ("apply", "later"):
+                self.update_action_clicked.emit(action)
             event.accept()
             return
         if anchor.startswith("iris-stt://"):
@@ -956,6 +963,7 @@ class ChatPanel(QWidget):
     mcp_inserted = pyqtSignal(str)
     mic_clicked = pyqtSignal()
     speaker_clicked = pyqtSignal(str)
+    update_action_clicked = pyqtSignal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -1050,6 +1058,7 @@ class ChatPanel(QWidget):
         bar.mcp_inserted.connect(self.mcp_inserted.emit)
         self._input_area.attachment_strip.changed.connect(self._on_input_changed)
         self._log.speaker_clicked.connect(self.speaker_clicked.emit)
+        self._log.update_action_clicked.connect(self.update_action_clicked.emit)
         self._log.files_attached.connect(self._on_composer_drop_paths)
 
         root = QVBoxLayout(self)
@@ -1230,6 +1239,48 @@ class ChatPanel(QWidget):
             f' <a href="iris-tts://{html.escape(msg_id)}" '
             f'style="color:#7dd3fc;text-decoration:none;">[재생]</a>'
         )
+
+    def append_update_prompt(self, *, detail: str = "") -> None:
+        """GitHub 업데이트 안내 + Update / Late 링크."""
+        self.finish_typing()
+        self._typing_anchor_y = None
+        text = "업데이트가 가능합니다. 업데이트를 하시겠습니까?"
+        extra = (detail or "").strip()
+        if extra:
+            text = f"{text} ({extra})"
+        btn_style = (
+            "color:#e2e8f0;background:#0f172a;border:1px solid #38bdf8;"
+            "border-radius:4px;padding:2px 10px;text-decoration:none;margin-left:6px;"
+        )
+        buttons = (
+            f' <a href="iris-update://apply" style="{btn_style}">Update</a>'
+            f' <a href="iris-update://later" style="{btn_style}">Late</a>'
+        )
+        cursor = self._begin_chat_message_cursor()
+        cursor.insertHtml(f"<b>Iris</b>: {html.escape(text)}{buttons}")
+        self._log.setTextCursor(cursor)
+        self._append_trailing_blank_line()
+        self._scroll_log_to_bottom()
+
+    def dismiss_update_prompt(self, note: str = "") -> None:
+        """Update/Late 클릭 후 버튼 제거."""
+        import re
+
+        html_doc = self._log.toHtml()
+        if "iris-update://" in html_doc:
+            # Qt가 <a> 안에 style span을 넣으므로 중첩 태그까지 허용
+            updated = re.sub(
+                r'\s*<a[^>]*href="iris-update://(?:apply|later)"[^>]*>.*?</a>',
+                "",
+                html_doc,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            bar = self._log.verticalScrollBar()
+            pos = bar.value()
+            self._log.setHtml(updated)
+            bar.setValue(pos)
+        if (note or "").strip():
+            self.append_message_instant("Iris", note.strip())
 
     def set_mic_recording(self, recording: bool) -> None:
         self._waveform.set_listening(recording)

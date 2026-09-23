@@ -232,6 +232,10 @@ class MainWindow(QMainWindow):
         self._api_verify_worker: QThread | None = None
         self._hermes_health_worker: HermesHealthWorker | None = None
         self._hermes_model_worker: HermesModelSyncWorker | None = None
+        self._app_update_check_worker: QThread | None = None
+        self._app_update_apply_worker: QThread | None = None
+        self._update_prompt_deferred = False
+        self._pending_update_remote_sha = ""
         self._email_inbox_worker: EmailInboxWorker | None = None
         self._email_message_worker: EmailMessageWorker | None = None
         self._email_send_worker: EmailSendWorker | None = None
@@ -533,6 +537,7 @@ class MainWindow(QMainWindow):
         self._chat.mcp_inserted.connect(self._on_composer_mcp)
         self._chat.mic_clicked.connect(self._on_chat_mic_clicked)
         self._chat.speaker_clicked.connect(self._on_chat_speaker_clicked)
+        self._chat.update_action_clicked.connect(self._on_chat_update_action)
         left_lay.addWidget(self._chat, 3)
 
         self._monitor = UnifiedMonitorPanel()
@@ -670,7 +675,15 @@ class MainWindow(QMainWindow):
         from iris.ui.workers.startup_health_worker import StartupHealthWorker
 
         self._live_activity.append_instant_line("환경 확인 중…")
+        self._startup_gate_t0 = time.monotonic()
+        tick = getattr(self, "_startup_gate_tick", None)
+        if tick is None:
+            tick = QTimer(self)
+            tick.timeout.connect(self._on_startup_gate_tick)
+            self._startup_gate_tick = tick
+        tick.start(5000)
         if is_setup_preview():
+            tick.stop()
             QTimer.singleShot(40, self._show_first_run_setup)
             return
         if self._startup_health_worker is not None and self._startup_health_worker.isRunning():
@@ -686,7 +699,20 @@ class MainWindow(QMainWindow):
         worker.finished_ok.connect(self._on_startup_health_ready)
         worker.start()
 
+    def _on_startup_gate_tick(self) -> None:
+        worker = self._startup_health_worker
+        if worker is None or not worker.isRunning():
+            tick = getattr(self, "_startup_gate_tick", None)
+            if tick is not None:
+                tick.stop()
+            return
+        elapsed = int(time.monotonic() - getattr(self, "_startup_gate_t0", time.monotonic()))
+        self._live_activity.append_instant_line(f"환경 확인 중… ({elapsed}s)")
+
     def _on_startup_health_ready(self, core_ready: bool) -> None:
+        tick = getattr(self, "_startup_gate_tick", None)
+        if tick is not None:
+            tick.stop()
         self._startup_health_worker = None
         if core_ready:
             self._start_runtime_boot()
@@ -728,10 +754,10 @@ class MainWindow(QMainWindow):
         """Core Ready 이후(또는 이미 완료된 환경) 기존 부팅 흐름."""
         if self._runtime_boot_started:
             return
-        self._runtime_boot_started = True
         self._schedule_core_warm()
         # ponytail: IDE 히어로/Companion 중이면 인트로를 가로채지 않는다 —
         # prepare_hidden이 복귀 연출을 죽이고, 사용자는 '시작 안 됨'으로 본다.
+        # early-return 시 _runtime_boot_started를 올리지 않아 hero/companion 종료 후 재진입 가능.
         if (
             self._ui_mode != "normal"
             or self._hero_enter_pending
@@ -755,6 +781,7 @@ class MainWindow(QMainWindow):
             self._intro.finished.connect(self._on_intro_finished)
             QTimer.singleShot(900, self._schedule_tts_runtime_bootstrap)
             return
+        self._runtime_boot_started = True
         # ponytail: control/Hermes는 intro 끝난 뒤(_on_intro_finished) — MCP→/v1/state가
         # UI 스레드를 붙잡아 Windows「응답하지 않음」이 나던 경로를 피한다.
         self._intro = StartupIntroAnimator(self)
@@ -804,7 +831,9 @@ class MainWindow(QMainWindow):
             self._intro.prepare_hidden()
             self._intro.start()
         QTimer.singleShot(1500, self._start_boot_checks)
-        self._refresh_models()
+        # ponytail: 클라우드 확인이 끝나야 인트로 finished → 준비완료 텍스트.
+        # 무한 대기는 OllamaModelListWorker 하드 타임아웃이 끊는다.
+        self._refresh_models(probe_cloud=True)
 
     def _ready_status_message(self) -> str:
         model = (
@@ -832,6 +861,8 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(15000, self._repair_taskbar_pins)
         QTimer.singleShot(200, self._seed_demo_alert)
         QTimer.singleShot(500, self._maybe_restore_mic_listen)
+        if not self._test_mode:
+            QTimer.singleShot(2500, self._begin_app_update_check)
 
     @staticmethod
     def _repair_taskbar_pins() -> None:
@@ -851,6 +882,71 @@ class MainWindow(QMainWindow):
             message="Ollama 모델 목록이 연결되었습니다. Hermes gateway는 자동으로 기동됩니다.",
             focus_hint="",
             event_id=0,
+        )
+
+    def _begin_app_update_check(self) -> None:
+        if self._update_prompt_deferred:
+            return
+        if self._app_update_check_worker is not None and self._app_update_check_worker.isRunning():
+            return
+        from iris.ui.workers.app_update_worker import AppUpdateCheckWorker
+
+        worker = AppUpdateCheckWorker(parent=self)
+        self._app_update_check_worker = worker
+        worker.finished_ok.connect(self._on_app_update_status)
+        worker.failed.connect(self._on_app_update_check_failed)
+        worker.start()
+
+    def _on_app_update_check_failed(self, _message: str) -> None:
+        self._app_update_check_worker = None
+
+    def _on_app_update_status(self, status: object) -> None:
+        self._app_update_check_worker = None
+        available = bool(getattr(status, "available", False))
+        if not available or self._update_prompt_deferred:
+            return
+        remote = str(getattr(status, "remote_sha", "") or "").strip()
+        detail = str(getattr(status, "detail", "") or "").strip()
+        self._pending_update_remote_sha = remote
+        self._chat.append_update_prompt(detail=detail)
+
+    def _on_chat_update_action(self, action: str) -> None:
+        kind = (action or "").strip().lower()
+        if kind == "later":
+            self._update_prompt_deferred = True
+            self._chat.dismiss_update_prompt(
+                "업데이트를 미뤘습니다. Iris를 다시 시작하면 안내합니다."
+            )
+            return
+        if kind != "apply":
+            return
+        if self._app_update_apply_worker is not None and self._app_update_apply_worker.isRunning():
+            return
+        from iris.ui.workers.app_update_worker import AppUpdateApplyWorker
+
+        self._chat.dismiss_update_prompt("업데이트를 적용하는 중…")
+        worker = AppUpdateApplyWorker(
+            remote_sha=self._pending_update_remote_sha,
+            parent=self,
+        )
+        self._app_update_apply_worker = worker
+        worker.finished_ok.connect(self._on_app_update_applied)
+        worker.failed.connect(self._on_app_update_apply_failed)
+        worker.start()
+
+    def _on_app_update_applied(self, message: str) -> None:
+        self._app_update_apply_worker = None
+        self._pending_update_remote_sha = ""
+        self._chat.append_message_instant(
+            "Iris",
+            f"{(message or '업데이트 완료').strip()} Iris를 다시 시작하면 반영됩니다.",
+        )
+
+    def _on_app_update_apply_failed(self, message: str) -> None:
+        self._app_update_apply_worker = None
+        self._chat.append_message_instant(
+            "Iris",
+            f"업데이트 실패: {(message or '알 수 없는 오류').strip()}",
         )
 
     def _refresh_hermes_health(self) -> None:
@@ -948,11 +1044,18 @@ class MainWindow(QMainWindow):
         self._live_activity.append_instant_line(f"Hermes model sync failed: {err[:160]}")
         self._hermes_model_worker = None
 
-    def _refresh_models(self) -> None:
+    def _refresh_models(self, *, probe_cloud: bool = True) -> None:
         if self._model_worker is not None and self._model_worker.isRunning():
             return
-        self._chat.set_model_status("(클라우드 모델 확인 중…)")
-        worker = OllamaModelListWorker(self._settings.ollama_base_url, parent=self)
+        if probe_cloud:
+            self._chat.set_model_status("(클라우드 모델 확인 중…)")
+        else:
+            self._chat.set_model_status("(모델 확인 중…)")
+        worker = OllamaModelListWorker(
+            self._settings.ollama_base_url,
+            parent=self,
+            probe_cloud=probe_cloud,
+        )
         self._model_worker = worker
         worker.notice.connect(self._live_activity.append_instant_line)
         worker.finished_ok.connect(self._on_models_loaded)
@@ -5161,6 +5264,8 @@ class MainWindow(QMainWindow):
         self._ide_pid = None
         if animate_panels and self._intro is not None:
             self._intro.start_enter_from_void()
+        if not self._runtime_boot_started:
+            QTimer.singleShot(0, self._start_runtime_boot)
 
     def _run_companion_panels_intro(self) -> None:
         """Companion 장착 직후 — 기동 인트로와 같은 로그/채팅/파형 등장."""
@@ -5353,6 +5458,8 @@ class MainWindow(QMainWindow):
         self._drag.set_ide_companion_active(False)
         self._set_workspace_icon_active(None)
         self._viz.request_sync_orb_anchor("ide_companion_exit")
+        if not self._runtime_boot_started:
+            QTimer.singleShot(0, self._start_runtime_boot)
 
     def _enter_iris_ide_companion(self, *, source: str = "icon") -> None:
         """IRIS IDE 진입 — 단일 창 히어로 (폴더 열기 전 Companion 타일 없음)."""
@@ -6232,6 +6339,8 @@ class MainWindow(QMainWindow):
         self._drag.set_ide_companion_active(False)
         self._set_workspace_icon_active(None)
         self._viz.request_sync_orb_anchor("ide_companion_exit")
+        if not self._runtime_boot_started:
+            QTimer.singleShot(0, self._start_runtime_boot)
 
     def _on_mobile_icon(self) -> None:
         if self._emu_launch_worker is not None and self._emu_launch_worker.isRunning():
@@ -6271,7 +6380,18 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _open_settings_dialog(self) -> None:
-        dlg = SettingsDialog(self._settings, self._db, self, microphone=self._mic)
+        # ponytail: SetupWizard와 동일 — frameless MainWindow + modal child가
+        # Windows에서 0xC0000409 크래시 유발. 설정은 독립 top-level로 연다.
+        dlg = SettingsDialog(self._settings, self._db, None, microphone=self._mic)
+        try:
+            fg = self.frameGeometry()
+            dlg.adjustSize()
+            dlg.move(
+                fg.x() + max(0, (fg.width() - dlg.width()) // 2),
+                fg.y() + max(0, (fg.height() - dlg.height()) // 2),
+            )
+        except Exception:
+            pass
         if dlg.exec():
             sel = dlg.selection()
             if sel is None:
@@ -6498,3 +6618,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         super().closeEvent(event)
+        # QuitOnLastWindowClosed(False) — 메인이 실제로 닫힐 때만 앱 종료
+        if event.isAccepted():
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()

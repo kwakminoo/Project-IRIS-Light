@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices, QPainter, QPen, QTextCursor
+from PyQt6.QtGui import QColor, QDesktopServices, QGuiApplication, QPainter, QPen, QTextCursor
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -395,6 +395,10 @@ class SetupWizard(QDialog):
         self._retry_btn.hide()
         self._retry_btn.clicked.connect(self._start_worker)
         btn_row.addWidget(self._retry_btn)
+        self._copy_diag_btn = QPushButton("진단 정보 복사")
+        self._copy_diag_btn.hide()
+        self._copy_diag_btn.clicked.connect(self._copy_gateway_diagnosis)
+        btn_row.addWidget(self._copy_diag_btn)
         btn_row.addStretch(1)
         self._enter_btn = QPushButton("메인으로 들어가기")
         self._enter_btn.hide()
@@ -411,6 +415,7 @@ class SetupWizard(QDialog):
         if self._worker is not None and self._worker.isRunning():
             return
         self._retry_btn.hide()
+        self._copy_diag_btn.hide()
         self._enter_btn.hide()
         self._card.hide()
         self._core_phase = True
@@ -473,14 +478,17 @@ class SetupWizard(QDialog):
             if self._card.is_installing():
                 self._card.end_install()
                 self._card.hide()
+        if result.status == "installing":
+            self._current.setText(f"{result.label}: {result.message or '진행 중…'}")
         if result.step_id in self._step_status:
             self._step_status[result.step_id] = result.status
             self._refresh_list()
             done_n = sum(1 for s in CORE_STEP_IDS if self._step_status.get(s) == "done")
             if self._core_phase:
                 self._progress.setValue(done_n)
-            self._current.setText(f"{result.label}: {result.message or result.status}")
-        elif result.status != "needs_user":
+            if result.status != "installing":
+                self._current.setText(f"{result.label}: {result.message or result.status}")
+        elif result.status not in ("needs_user", "installing"):
             self._current.setText(f"{result.label}: {result.message or result.status}")
 
     def _refresh_list(self) -> None:
@@ -519,13 +527,44 @@ class SetupWizard(QDialog):
 
     def _on_install_chunk(self, text: str, percent: object, replace: bool) -> None:
         pct = percent if isinstance(percent, int) else None
-        self._card.set_install_chunk(text, pct, bool(replace))
+        line = (text or "").strip()
+        if line and not replace:
+            self._append_log(line)
+            self._current.setText(line)
+        elif line and replace:
+            self._current.setText(line if pct is None else f"{line} ({pct}%)")
+        if self._card.is_installing() or self._card.isVisible():
+            self._card.set_install_chunk(text, pct, bool(replace))
+
+    def _copy_gateway_diagnosis(self) -> None:
+        try:
+            from iris.system.hermes_gateway import (
+                get_last_gateway_diagnosis,
+                gateway_diagnosis_path,
+            )
+
+            diag = get_last_gateway_diagnosis()
+            if diag is not None:
+                text = diag.copy_text()
+            else:
+                path = gateway_diagnosis_path()
+                text = path.read_text(encoding="utf-8") if path.is_file() else ""
+            if not text:
+                text = self._current.text() or "진단 정보 없음"
+            QGuiApplication.clipboard().setText(text)
+            self._append_log("진단 정보를 클립보드에 복사했습니다.")
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(f"진단 복사 실패: {exc}")
 
     def _on_failed(self, err: str) -> None:
         self._card.end_install()
         self._append_log(f"실패: {err}")
         self._current.setText(f"실패 — {err}")
         self._retry_btn.show()
+        # gateway 진단 코드가 있으면 복사 버튼 표시
+        low = (err or "").lower()
+        if "[" in (err or "") or "gateway" in low or "health" in low or "hermes" in low:
+            self._copy_diag_btn.show()
 
     def _on_finished(self, ok: bool) -> None:
         self._worker = None
@@ -534,10 +573,12 @@ class SetupWizard(QDialog):
             self._finished = True
             self._current.setText("Core Ready — 메인 HUD로 들어갈 수 있습니다.")
             self._enter_btn.show()
+            self._copy_diag_btn.hide()
             self.setup_finished.emit(True)
             # 자동 진입은 하지 않음 — 사용자가 확인
         else:
             self._retry_btn.show()
+            self._copy_diag_btn.show()
             self.setup_finished.emit(False)
 
     def _accept_ok(self) -> None:
@@ -546,12 +587,16 @@ class SetupWizard(QDialog):
     def _is_install_running(self) -> bool:
         if self._card.is_installing():
             return True
-        return bool(self._worker is not None and self._worker.is_install_running())
+        # gateway 재기동 등은 _active_proc 이 없어도 워커가 바쁘다
+        if self._worker is not None and self._worker.isRunning():
+            return True
+        return False
 
     def _abort_worker(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             self._worker.request_abort()
-            self._worker.wait(5000)
+            # ponytail: UI 스레드에서 수 초 wait 하면 응답없음. 짧게만 양보.
+            self._worker.wait(500)
 
     def allow_close(self) -> bool:
         """설치 중이면 확인창. True면 닫기 허용."""
@@ -580,14 +625,8 @@ class SetupWizard(QDialog):
         if not self.allow_close():
             return
         self._abort_worker()
-        if self._mode == "repair" and not is_core_ready() and not is_setup_preview():
-            from iris.system.setup_protocol import mark_core_ready_if_healthy
-
-            mark_core_ready_if_healthy(
-                ollama_base_url=self._settings.ollama_base_url,
-                hermes_base_url=self._settings.hermes_base_url,
-                hermes_command=self._settings.hermes_command,
-            )
+        # ponytail: mark_core_ready_if_healthy 를 UI 스레드에서 돌리면
+        # Ollama/Hermes warm 으로 응답없음이 난다 — 닫기 경로에서는 생략.
         super().reject()
 
     def closeEvent(self, event) -> None:  # noqa: N802
@@ -595,12 +634,4 @@ class SetupWizard(QDialog):
             event.ignore()
             return
         self._abort_worker()
-        if self._mode == "repair" and not is_core_ready() and not is_setup_preview():
-            from iris.system.setup_protocol import mark_core_ready_if_healthy
-
-            mark_core_ready_if_healthy(
-                ollama_base_url=self._settings.ollama_base_url,
-                hermes_base_url=self._settings.hermes_base_url,
-                hermes_command=self._settings.hermes_command,
-            )
         super().closeEvent(event)
