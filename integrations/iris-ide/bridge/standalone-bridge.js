@@ -8,7 +8,10 @@ const http = require('http');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const workspaceRoot = path.resolve(process.env.IRIS_IDE_WORKSPACE || process.cwd());
+const envWorkspace = (process.env.IRIS_IDE_WORKSPACE || '').trim();
+let workspaceRoot = path.resolve(envWorkspace || process.cwd());
+// Welcome vs folder-open — sandbox root may stay populated even when closed.
+let workspaceOpen = Boolean(envWorkspace);
 const token = (process.env.IRIS_IDE_BRIDGE_TOKEN || '').trim() || crypto.randomBytes(24).toString('hex');
 const wantPort = parseInt(process.env.IRIS_IDE_BRIDGE_PORT || '0', 10);
 const stateFile = (process.env.IRIS_IDE_STATE_FILE || '').trim();
@@ -17,8 +20,11 @@ let editorState = null;
 let pendingCommands = [];
 let commandResults = {};
 let nextCommandId = 1;
+let boundPort = 0;
+let lastFrontendPollAt = 0;
 
 function writeState(port) {
+    boundPort = port || boundPort;
     if (!stateFile) return;
     let existing = {};
     try {
@@ -28,9 +34,10 @@ function writeState(port) {
     } catch (_) { /* ignore */ }
     const payload = {
         ...existing,
-        bridge_port: port,
+        bridge_port: boundPort,
         token,
         workspace: workspaceRoot,
+        workspace_open: workspaceOpen,
         bridge_pid: process.pid,
     };
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
@@ -92,7 +99,11 @@ function waitForFrontendCommand(id, timeoutMs = 30000) {
                 return;
             }
             if (Date.now() > deadline) {
-                reject(new Error('frontend command timeout'));
+                const age = lastFrontendPollAt ? (Date.now() - lastFrontendPollAt) : -1;
+                const hint = lastFrontendPollAt
+                    ? `last frontend poll ${age}ms ago`
+                    : 'no frontend poll yet — is IRIS IDE Theia loaded?';
+                reject(new Error(`frontend command timeout (${hint})`));
                 return;
             }
             setTimeout(tick, 80);
@@ -112,11 +123,26 @@ async function dispatch(cmd, args) {
         case 'health':
             return { product: 'IRIS IDE', theia: '1.74.0', workspace: workspaceRoot };
         case 'getWorkspace':
-            return { root: workspaceRoot };
+            return { root: workspaceRoot, opened: workspaceOpen };
+        case 'setWorkspace': {
+            // Frontend pushes File > Open/Close Folder changes so bridge state stays live.
+            const root = String(args.root || '').trim();
+            if (root) {
+                const abs = path.resolve(root);
+                if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+                    throw new Error(`not a directory: ${root}`);
+                }
+                workspaceRoot = abs;
+            }
+            workspaceOpen = args.opened !== undefined ? Boolean(args.opened) : Boolean(root);
+            writeState(boundPort);
+            return { root: workspaceRoot, opened: workspaceOpen };
+        }
         case 'setEditorState':
             editorState = normalizeEditorState(args);
             return { saved: true };
         case 'pollPendingCommands': {
+            lastFrontendPollAt = Date.now();
             const limit = Math.min(parseInt(String(args.limit || 8), 10) || 8, 20);
             const batch = pendingCommands.splice(0, limit);
             return { commands: batch };

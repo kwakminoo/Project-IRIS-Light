@@ -9,6 +9,7 @@ import { FileUri } from '@theia/core/lib/common/file-uri';
 import { VSXCommands } from '@theia/vsx-registry/lib/browser/vsx-extensions-contribution';
 import { FileDialogService } from '@theia/filesystem/lib/browser';
 import { FileService } from '@theia/filesystem/lib/browser/file-service';
+import { FileStat } from '@theia/filesystem/lib/common/files';
 import { WorkspaceOpenHandlerContribution, WorkspaceService } from '@theia/workspace/lib/browser';
 
 import { EditorManager } from '@theia/editor/lib/browser';
@@ -78,6 +79,8 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
 
     protected lastPush = '';
 
+    protected lastWorkspacePush = '';
+
     /** 탭 합성 드래그 — Lumino가 pointerdown에서 preventDefault 해서 HTML5 dragstart가 안 뜬다. */
     protected tabDrag: {
         uri: URI;
@@ -103,6 +106,8 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         this.editorManager.onCurrentEditorChanged(() => this.syncEditor());
         window.setInterval(() => this.syncEditor(), 450);
         this.syncEditor();
+        this.workspaceService.onWorkspaceLocationChanged(stat => this.pushWorkspace(stat));
+        this.pushWorkspace(this.workspaceService.workspace);
         this.installComposerDragBridge();
     }
 
@@ -569,6 +574,29 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         this.controlPort = identity.port;
         this.controlToken = identity.token;
         return !!this.controlPort && !!this.controlToken;
+    }
+
+    protected pushWorkspace(stat: FileStat | undefined): void {
+        if (!this.bridgePort) {
+            return;
+        }
+        const opened = Boolean(stat && stat.isDirectory);
+        const root = stat
+            ? stat.resource.path.toString().replace(/^\/([A-Za-z]:)/, '$1').replace(/^\//, '')
+            : '';
+        const payload = JSON.stringify({ root, opened });
+        if (payload === this.lastWorkspacePush) {
+            return;
+        }
+        this.lastWorkspacePush = payload;
+        fetch(`http://127.0.0.1:${this.bridgePort}/setWorkspace`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${this.bridgeToken}`,
+            },
+            body: payload,
+        }).catch(() => undefined);
     }
 
     protected pushBridge(info: IrisIdeEditorInfo | null): void {

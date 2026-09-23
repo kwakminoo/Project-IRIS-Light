@@ -24,6 +24,8 @@ def main() -> None:
     w = IrisIdeWindow()
     assert w.windowFlags() & Qt.WindowType.FramelessWindowHint
     w.show_loading()
+    assert w.is_opening()
+    assert not w.is_theia_loaded()
     assert w.windowTitle() == IRIS_IDE_TITLE
     app.quit()
     print("iris_ide_window check ok")

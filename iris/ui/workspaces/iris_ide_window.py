@@ -81,6 +81,7 @@ class IrisIdeWindow(QMainWindow):
         self._loading_label = QLabel("IRIS IDE 시작 중…")
         self._loading_label.setObjectName("IrisIdeLoadingHint")
         self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_label.setWordWrap(True)
         load_lay.addWidget(title)
         load_lay.addWidget(self._loading_label)
         self._stack.addWidget(self._loading)
@@ -281,6 +282,10 @@ class IrisIdeWindow(QMainWindow):
 
     def is_welcome_visible(self) -> bool:
         return self._stack.currentWidget() is self._welcome
+
+    def is_opening(self) -> bool:
+        """Theia 기동/로드 대기 — Opening… 화면."""
+        return self._stack.currentWidget() is self._loading
 
     def is_theia_loaded(self) -> bool:
         return bool(self._loaded_url) and self._view is not None and self._stack.currentWidget() is self._view

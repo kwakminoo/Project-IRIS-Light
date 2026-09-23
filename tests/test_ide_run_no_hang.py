@@ -93,14 +93,24 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
         """정상 실행되는 경우: t0 UnboundLocalError 없이 성공 결과가 반환돼야 한다."""
 
         def run_terminal_command(command, *, cwd, client):
-            return {"command": command, "output": "hello from bridge\n", "cwd": cwd}
+            # project.run이 시작 때 로그를 지우므로, 브리지 응답 시점에 다시 쓴다.
+            log = Path(cwd) / ".iris" / "last_run.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text("hello from bridge\n", encoding="utf-8")
+            return {
+                "command": command,
+                "queued": True,
+                "via": "theia_terminal",
+                "cwd": cwd,
+            }
 
         result = _invoke_project_run(self.root, run_terminal_command)
         self.assertTrue(result.get("ok"), result)
         payload = result.get("result") or {}
-        self.assertEqual(payload.get("via"), "iris_ide_bridge")
-        self.assertIn("hello from bridge", payload.get("stdout", ""))
+        self.assertEqual(payload.get("via"), "theia_terminal")
+        self.assertEqual(payload.get("ide_terminal"), "ok")
         self.assertFalse(payload.get("timed_out"))
+        self.assertFalse(payload.get("running"))
 
     def test_bridge_exception_returns_clean_error_not_unboundlocalerror(self) -> None:
         """IDE 실행 중 오류 발생: 예전엔 t0 UnboundLocalError로 원인이 가려졌다."""
@@ -157,9 +167,13 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
         elapsed = time.monotonic() - t0
         self.assertTrue(started.wait(1.0), "worker thread never started")
         self.assertFalse(result.get("ok"))
-        self.assertIn("did not respond", str(result.get("error")))
-        # 전체 응답이 유한 시간 안에 끝나야 한다 (bridge_timeout(11s) + 2s 여유 이내)
-        self.assertLess(elapsed, 15.0, "project.run must not hang past its own timeout budget")
+        err = str(result.get("error") or "")
+        self.assertTrue(
+            "did not respond" in err or "bridge call timeout" in err,
+            err,
+        )
+        # bridge_call_pumping timeout=18s + 여유
+        self.assertLess(elapsed, 22.0, "project.run must not hang past its own timeout budget")
         release.set()  # 백그라운드 스레드 정리
 
 

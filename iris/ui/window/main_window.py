@@ -215,6 +215,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self._drop_armed: WeakSet = WeakSet()
         self._pending_ide_drag: list[str] = []
+        self._explorer_drop_guard = None
 
         self._env_path = Path(__file__).resolve().parents[3] / ".env"
         self._settings = load_settings(self._env_path)
@@ -1653,8 +1654,9 @@ class MainWindow(QMainWindow):
         elif et in drop_event_types():
             from iris.ui.window.file_drop import log_drop_event
 
+            pos = getattr(event, "position", lambda: None)()
             if et == QEvent.Type.Drop:
-                log_drop_event("Drop", event.mimeData(), watched=watched)
+                log_drop_event("Drop", event.mimeData(), watched=watched, pos=pos)
                 paths = paths_from_mime(event.mimeData())
                 if not paths and self._pending_ide_drag:
                     paths = list(self._pending_ide_drag)
@@ -1665,7 +1667,7 @@ class MainWindow(QMainWindow):
             else:
                 # DragEnter만 로그 (Move는 스팸)
                 if et == QEvent.Type.DragEnter:
-                    log_drop_event("DragEnter", event.mimeData(), watched=watched)
+                    log_drop_event("DragEnter", event.mimeData(), watched=watched, pos=pos)
                 if self._accept_file_drag(event):
                     # True: 자식 QWidget 기본 dragEnter가 ignore()로 수락을 뒤집지 않게.
                     return True
@@ -4815,8 +4817,21 @@ class MainWindow(QMainWindow):
             return
         preferred = self._current_preferred_ide()
         if session.ide_id != preferred:
-            self._clear_ide_session("preferred IDE 변경")
-            return
+            # IRIS IDE 기동/Opening/Companion 중 preferred 불일치로 세션을 끊으면
+            # Opening 화면이 사라지고 Theia 기동이 중간에 끊긴다.
+            launching = (
+                self._iris_ide_launch_worker is not None
+                and self._iris_ide_launch_worker.isRunning()
+            )
+            win = self._iris_ide_window
+            iris_live = session.ide_id == "iris_ide" and (
+                launching
+                or self._ui_mode in ("ide_hero", "ide_companion")
+                or bool(win and (win.is_opening() or win.isVisible() or win.is_theia_loaded()))
+            )
+            if not iris_live:
+                self._clear_ide_session("preferred IDE 변경")
+                return
         if session.ide_id == "iris_ide":
             # 히어로: IDE 창 없이 Iris 단일 창만 — 세션 유지
             if session.mode == "hero" or self._ui_mode == "ide_hero":
@@ -4825,6 +4840,16 @@ class MainWindow(QMainWindow):
                 return
             hwnd = session.hwnd
             win = self._iris_ide_window
+            launching = (
+                self._iris_ide_launch_worker is not None
+                and self._iris_ide_launch_worker.isRunning()
+            )
+            if launching or (win is not None and win.is_opening()):
+                session.last_seen_at = time.time()
+                self._ide_session = session
+                if hwnd:
+                    self._ide_hwnd = hwnd
+                return
             alive = bool(win and win.isVisible()) or self._ide_hwnd_alive(hwnd)
             mgr = shared_iris_ide_runtime()
             if not alive:
@@ -4833,11 +4858,13 @@ class MainWindow(QMainWindow):
                     return
             # File > Open Folder / Close Folder inside Theia's own UI changes
             # the workspace without going through _open_iris_ide_folder — sync
-            # the bound session so it stops referencing whatever folder was
-            # open when it was first bound (mgr.workspace/_open reads the
-            # bridge's live state file, not a network call — cheap here).
-            live_open = mgr.workspace_open
-            live_root = mgr.workspace
+            # from bridge state file (cheap, no network).
+            try:
+                live_open = bool(mgr.workspace_open)
+                live_root = (mgr.workspace or "").strip()
+            except Exception:
+                live_open = bool(mgr.workspace)
+                live_root = (mgr.workspace or "").strip()
             if live_open and live_root and live_root != session.workspace_root:
                 session.workspace_root = live_root
                 session.mode = "workspace"
@@ -5508,6 +5535,23 @@ class MainWindow(QMainWindow):
         self, url: str, bridge_port: int, bridge_token: str, workspace: str
     ) -> None:
         self._iris_ide_launch_worker = None
+        self._disarm_explorer_drop_overlay()
+        # ponytail: worker→load_theia→QWebEngineView 1틱 지연 — Opening 중 overlay·재진입 회피
+        QTimer.singleShot(
+            0,
+            lambda u=url, bp=bridge_port, bt=bridge_token, ws=workspace: self._load_theia_after_launch(
+                u, bp, bt, ws
+            ),
+        )
+
+    def _disarm_explorer_drop_overlay(self) -> None:
+        guard = getattr(self, "_explorer_drop_guard", None)
+        if guard is not None:
+            guard.overlay().disarm()
+
+    def _load_theia_after_launch(
+        self, url: str, bridge_port: int, bridge_token: str, workspace: str
+    ) -> None:
         win = self._ensure_iris_ide_window()
         win.apply_frameless_chrome()
         self._pending_iris_ide_workspace = workspace
@@ -5526,14 +5570,22 @@ class MainWindow(QMainWindow):
 
     def _on_iris_ide_launch_err(self, err: str) -> None:
         self._iris_ide_launch_worker = None
-        self._chat.append_message_instant("Iris", f"IDE 준비 실패: {err}")
+        self._disarm_explorer_drop_overlay()
+        detail = (err or "unknown").strip()
+        self._chat.append_message_instant("Iris", f"IDE 준비 실패: {detail}")
+        self._live_activity.append_instant_line(f"IDE 준비 실패: {detail[:180]}")
         win = self._ensure_iris_ide_window()
-        win.show_welcome()
+        # Opening 화면에 원인을 남긴 뒤 웰컴으로 — 조용히 사라지지 않게
+        win.show_loading(f"IDE 준비 실패\n{detail[:240]}")
+        QTimer.singleShot(2500, win.show_welcome)
 
     def _on_iris_ide_theia_ready(self, ok: bool) -> None:
         if not ok:
             self._chat.append_message_instant("Iris", "IDE 화면 로드에 실패했습니다.")
-            self._ensure_iris_ide_window().show_welcome()
+            self._live_activity.append_instant_line("IDE 화면 로드 실패 (QWebEngine)")
+            win = self._ensure_iris_ide_window()
+            win.show_loading("IDE 화면 로드 실패 — WebEngine/Theia URL을 확인하세요")
+            QTimer.singleShot(2500, win.show_welcome)
             return
         source = getattr(self, "_pending_iris_ide_source", "icon")
         workspace = (getattr(self, "_pending_iris_ide_workspace", "") or "").strip()
@@ -5604,6 +5656,7 @@ class MainWindow(QMainWindow):
         win = self._ensure_iris_ide_window()
         win.apply_frameless_chrome()
         win.show_loading(f"Opening {root.name}…")
+        self._disarm_explorer_drop_overlay()
         if self._iris_ide_launch_worker is not None and self._iris_ide_launch_worker.isRunning():
             return "IDE already launching"
         self._pending_iris_ide_source = source
@@ -6525,6 +6578,18 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._arm_win_shell_drop)
         if sys.platform == "win32" and not self._test_mode:
             QTimer.singleShot(0, self._apply_hwnd_branding_safe)
+            QTimer.singleShot(0, self._start_explorer_drop_guard)
+
+    def _start_explorer_drop_guard(self) -> None:
+        if self._explorer_drop_guard is not None:
+            return
+        try:
+            from iris.ui.window.explorer_drop_overlay import ExplorerDropGuard
+
+            self._explorer_drop_guard = ExplorerDropGuard(self)
+            self._explorer_drop_guard.start()
+        except Exception:
+            self._explorer_drop_guard = None
 
     def _arm_win_shell_drop(self) -> None:
         try:
@@ -6564,6 +6629,13 @@ class MainWindow(QMainWindow):
             self._sync_docked_iris_ide_geometry()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        guard = getattr(self, "_explorer_drop_guard", None)
+        if guard is not None:
+            try:
+                guard.stop()
+            except Exception:
+                pass
+            self._explorer_drop_guard = None
         wiz = getattr(self, "_setup_wizard", None)
         if wiz is not None and wiz.isVisible():
             if not wiz.allow_close():

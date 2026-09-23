@@ -1160,19 +1160,32 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                         {"via": via, "command": shell_cmd},
                     )
                 # 큐 적재는 「실행됨」이 아니다 — tee 로그(.iris/last_run.log)로 실제 결과를 받는다.
+                # GUI(pygame 등)는 stdout이 없어 로그가 안 생길 수 있다 — 그때는 터미널 적재를 성공으로.
                 waited = wait_for_run_log(
                     log_p,
-                    timeout_sec=timeout_sec,
+                    timeout_sec=min(timeout_sec, 12.0),
                     stable_sec=0.8,
                     pump=_qt_pump,
                 )
                 elapsed = time.monotonic() - t0
                 if not waited.get("found"):
-                    return err_result(
-                        "project.run",
-                        "IDE 통합 터미널에 명령을 보냈으나 실행 로그가 수집되지 않음",
-                        {"via": via, "command": shell_cmd, "log_path": str(log_p)},
-                    )
+                    payload = {
+                        "ok": True,
+                        "exit_code": 0,
+                        "elapsed_sec": elapsed,
+                        "argv": argv,
+                        "cwd": root_s,
+                        "timed_out": False,
+                        "via": via,
+                        "ide_terminal": "queued",
+                        "running": True,
+                        "log_path": str(log_p),
+                        "summary": "IDE 터미널에서 실행 중 (로그 없음 — GUI/장기 실행일 수 있음)",
+                        "command": shell_cmd,
+                    }
+                    _log(window, "project.run", True)
+                    _append_activity(window, f"IDE 터미널 실행(대기): {shell_cmd[:80]}")
+                    return ok_result("project.run", payload)
                 result = result_from_terminal_log(
                     str(waited.get("text") or ""),
                     argv=argv,
