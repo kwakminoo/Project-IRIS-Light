@@ -58,9 +58,20 @@ powershell -ExecutionPolicy Bypass -File scripts\build_iris_setup.ps1
 
 버전을 올릴 때는 `installer\iris.iss` 의 `MyAppVersion` 한 곳만 고칩니다.
 
+## 대응 소스 (GPL-3.0 §6)
+
+바이너리(`IRIS-Setup.exe`, thin launcher `dist/IRIS.exe`)를 배포할 때 대응 소스는
+**이 공개 저장소**입니다. 릴리스 노트에 아래를 그대로 넣습니다.
+
+```text
+Corresponding source: https://github.com/kwakminoo/Project-IRIS-Light
+Tag / commit: <RELEASE_TAG or REVISION>
+License: GPL-3.0-or-later (see LICENSE, LICENSE.md)
+```
+
 ## 배포
 
-1. 최신 main에서 빌드. 릴리스 노트에 **빌드 커밋 해시**(`REVISION`)를 적습니다.
+1. 최신 main에서 빌드. 릴리스 노트에 **빌드 커밋 해시**(`REVISION`)와 **대응 소스 URL**을 적습니다.
 2. 태그로 릴리스를 만들고 `IRIS-Setup.exe` + `IRIS-Setup.exe.sha256` 을 올립니다.
 3. 검증:
 
