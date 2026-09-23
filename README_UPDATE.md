@@ -111,7 +111,7 @@ gh repo edit kwakminoo/Project-IRIS-Light --description "..." `
 | GIF 5개 녹화 | 위 3항 참고 |
 | Social preview 이미지 | Settings → General → Social preview. `assets/visuals/iris_core.png` 활용 가능 |
 | 릴리스 노트 정비 | `v2026.08.27` 릴리스 본문에 Roadmap 완료 항목 4개를 정리하면 유입에 유리 |
-| Repository 사이트 링크 | Settings 또는 About → Website 에 `https://cjh030906.github.io/iris-light-site/` |
+| Repository 사이트 링크 | Settings 또는 About → Website 에 `https://iris-light-site.vercel.app/` |
 
 ## 5. 검증
 

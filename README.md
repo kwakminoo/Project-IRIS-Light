@@ -26,7 +26,7 @@ IRIS는 LLM · MCP · Voice Runtime · Local/Cloud Model을 연결해 **내 PC�
 
 > 표시 이름 **IRIS** · 코드/패키지명 Iris Light · 앱 버전 `0.1.0-light`
 
-🌐 **소개 사이트 — [cjh030906.github.io/iris-light-site](https://cjh030906.github.io/iris-light-site/)** ([저장소](https://github.com/cjh030906/iris-light-site))
+🌐 **소개 사이트 — [iris-light-site.vercel.app](https://iris-light-site.vercel.app/)** ([저장소](https://github.com/cjh030906/iris-light-site))
 
 ---
 

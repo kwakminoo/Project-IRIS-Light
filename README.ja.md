@@ -26,7 +26,7 @@ IRIS は LLM・MCP・Voice Runtime・Local/Cloud Model をつなぎ、**自分�
 
 > 表示名 **IRIS** · パッケージ名 Iris Light · アプリバージョン `0.1.0-light`
 
-🌐 **紹介サイト — [cjh030906.github.io/iris-light-site](https://cjh030906.github.io/iris-light-site/)**
+🌐 **紹介サイト — [iris-light-site.vercel.app](https://iris-light-site.vercel.app/)**
 
 > このページは主要セクションの要約です。ハードウェア要件・インストールのトラブルシューティング・ライセンスの詳細は [English README](README.en.md) を参照してください。
 

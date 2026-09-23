@@ -25,6 +25,26 @@ _WIN_TESSERACT_CANDIDATES = (
 _tesseract_ready = False
 _tessdata_dir: Path | None = None
 
+# 웹 Setup 다운로드 오류와 분리 — 도움말: https://iris-light-site.vercel.app/#install
+_SETUP_HELP = "https://iris-light-site.vercel.app/#install"
+_SUPPORTED_ATTACH = "PDF, Markdown, TXT, CSV, JSON, LOG, http(s) URL"
+
+
+class UnsupportedAttachmentTypeError(ValueError):
+    """채팅/위키 첨부 본문 추출이 거부된 경우 (Windows Setup 다운로드와 무관)."""
+
+    code = "ATTACHMENT_UNSUPPORTED_TYPE"
+
+    def __init__(self, suffix: str) -> None:
+        label = suffix or "(확장자 없음)"
+        super().__init__(
+            f"[{self.code}] 이 파일 형식은 위키·본문 첨부로 읽을 수 없습니다: {label}. "
+            f"지원: {_SUPPORTED_ATTACH}. "
+            "Windows용 IRIS Setup(.exe) 다운로드·설치 문제와는 무관합니다. "
+            f"설치 파일은 {_SETUP_HELP} 또는 GitHub Releases에서 받으세요."
+        )
+        self.suffix = suffix
+
 
 class _HtmlTextExtractor(HTMLParser):
     def __init__(self) -> None:
@@ -353,4 +373,5 @@ def extract_from_source(source: str) -> dict[str, str | bool]:
             "truncated": truncated,
         }
 
-    raise ValueError(f"unsupported file type: {suffix or '(no extension)'}")
+    # F5: Setup 다운로드 「허용되지 않는 파일 형식」과 혼동 금지 — 첨부/위키 추출 전용 코드.
+    raise UnsupportedAttachmentTypeError(suffix)

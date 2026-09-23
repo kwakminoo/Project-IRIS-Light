@@ -26,7 +26,7 @@ It aims to be more than a chatbot:
 
 > Display name **IRIS** · package name Iris Light · app version `0.1.0-light`
 
-🌐 **Project site — [cjh030906.github.io/iris-light-site](https://cjh030906.github.io/iris-light-site/)** ([repo](https://github.com/cjh030906/iris-light-site))
+🌐 **Project site — [iris-light-site.vercel.app](https://iris-light-site.vercel.app/)** ([repo](https://github.com/cjh030906/iris-light-site))
 
 ---
 
