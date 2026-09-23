@@ -5,9 +5,9 @@
     "stable_filename":  "IRIS-Setup.exe",
     "product_version":  "0.1.6",
     "tag":  "v2026.09.24",
-    "published_at":  "2026-09-23T17:34:46Z",
-    "size_bytes":  27282233,
-    "sha256":  "dd22912c95528695ca72364b25cc62d045e0a35a833b66b1c72feefcef7586f6",
+    "published_at":  "2026-09-23T17:36:04Z",
+    "size_bytes":  27281806,
+    "sha256":  "6081422ca4a3ade74fdf2695c3c337922a3578672cb5f1aaf859448e3d874e7e",
     "download_url":  "https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup-0.1.6.exe",
     "stable_download_url":  "https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup.exe",
     "checksum_url":  "https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup-0.1.6.exe.sha256",
@@ -23,3 +23,4 @@
                          "gpu":  "불필요 (기본 클라우드 모델)"
                      }
 }
+
