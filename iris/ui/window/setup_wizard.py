@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from iris.assets.setup_logos import brand_for_step, brand_label, setup_brand_pixmap
 from iris.config.settings import Settings
 from iris.system.setup_protocol import (
     CORE_STEP_IDS,
@@ -47,12 +48,18 @@ _STATUS_MARK = {
 }
 
 
+# 설치·기동 중 터미널 패널(+로고)을 띄울 Core/Optional 단계
 _STREAM_STEPS = {
     "mcp_venv",
     "ollama_install",
     "ollama_model",
     "ollama_cloud",
     "hermes_install",
+    "hermes_env",
+    "hermes_provider",
+    "iris_control_sync",
+    "hermes_gateway",
+    "core_smoke",
     "voice",
     "voice_full",
     "learning",
@@ -107,6 +114,23 @@ class _NeedsUserCard(QFrame):
         self._url = ""
         lay = QVBoxLayout(self)
         lay.setSpacing(TOKENS.spacing_sm)
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(TOKENS.spacing_sm)
+        self._logo = QLabel()
+        self._logo.setFixedSize(36, 36)
+        self._logo.setScaledContents(False)
+        self._logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand_row.addWidget(self._logo)
+        self._brand_name = QLabel("")
+        self._brand_name.setStyleSheet(
+            f"color: {TOKENS.neon_cyan}; font-weight: 600; font-size: {TOKENS.font_size_body}px;"
+        )
+        brand_row.addWidget(self._brand_name)
+        brand_row.addStretch(1)
+        self._brand_row = QWidget()
+        self._brand_row.setLayout(brand_row)
+        self._brand_row.hide()
+        lay.addWidget(self._brand_row)
         self._why = QLabel("")
         self._why.setWordWrap(True)
         lay.addWidget(self._why)
@@ -215,9 +239,17 @@ class _NeedsUserCard(QFrame):
         self._term.hide()
         lay.addWidget(self._term)
 
+    def _apply_brand(self, step_id: str) -> None:
+        brand = brand_for_step(step_id)
+        pm = setup_brand_pixmap(brand, size=36)
+        self._logo.setPixmap(pm)
+        self._brand_name.setText(brand_label(brand))
+        self._brand_row.show()
+
     def bind(self, result: SetupStepResult, *, allow_skip: bool) -> None:
         self.end_install()
         self._step_id = result.step_id
+        self._apply_brand(result.step_id)
         self._why.setText(result.message or result.label)
         self._hint.setText(result.action_hint or "")
         self._hint.setVisible(bool(result.action_hint))
@@ -242,6 +274,7 @@ class _NeedsUserCard(QFrame):
             self._why.setText(why)
         if step_id:
             self._step_id = step_id
+        self._apply_brand(self._step_id)
         self._hint.hide()
         self._console_hint.setVisible(self._step_id in _VISIBLE_CONSOLE_STEPS)
         self._paste.hide()
@@ -288,13 +321,16 @@ class _NeedsUserCard(QFrame):
         self._console_hint.hide()
         self._bar.hide()
         self._term.hide()
+        self._brand_row.hide()
 
     def finish_install(self, *, message: str = "") -> None:
-        """설치 종료 — 터미널 로그는 유지."""
+        """설치 종료 — 로고·터미널 로그는 유지."""
         self._spin_timer.stop()
         self._loading_row.hide()
         self._console_hint.hide()
         self._bar.hide()
+        if self._step_id:
+            self._apply_brand(self._step_id)
         if message:
             self._why.setText(message)
             self._why.show()

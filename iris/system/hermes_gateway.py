@@ -211,6 +211,91 @@ def _hermes_venv_python() -> Path | None:
     return py if py.is_file() else None
 
 
+def is_hermes_trampoline_failure(text: str) -> bool:
+    """uv trampoline이 베이스 Python을 못 찾는 실패(os error 2)인지."""
+    t = (text or "").lower()
+    if "uv trampoline" in t:
+        return True
+    return "entity not found" in t and "os error 2" in t
+
+
+def _pyvenv_home_path(venv_dir: Path) -> Path | None:
+    cfg = venv_dir / "pyvenv.cfg"
+    if not cfg.is_file():
+        return None
+    try:
+        for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.lower().startswith("home"):
+                _, _, raw = line.partition("=")
+                home = Path(raw.strip().strip('"'))
+                return home if str(home) else None
+    except OSError:
+        return None
+    return None
+
+
+def probe_hermes_runtime(
+    *, command: str = "hermes", timeout_sec: float = 25.0
+) -> tuple[bool, str]:
+    """Hermes venv/exe가 실제로 Python 자식을 띄울 수 있는지.
+
+    파일만 있고 베이스 인터프리터가 사라진 경우(uv trampoline os error 2)를
+    설치·gateway 단계 전에 잡는다.
+    """
+    venv_dir = _hermes_venv_dir()
+    venv_py = _hermes_venv_python()
+    if venv_py is not None:
+        home = _pyvenv_home_path(venv_dir)
+        if home is not None and not home.is_dir():
+            return False, f"pyvenv home 없음: {home}"
+        try:
+            proc = subprocess.run(
+                [str(venv_py), "-c", "print('ok')"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=max(5.0, timeout_sec),
+                check=False,
+                env=_gateway_child_env(),
+                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if sys.platform == "win32"
+                else 0,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, f"venv python 실행 실패: {exc}"
+        err = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+        if proc.returncode != 0 or is_hermes_trampoline_failure(err):
+            detail = err[:400] if err else f"exit {proc.returncode}"
+            return False, detail
+        return True, f"venv ok ({venv_py.name})"
+
+    exe = hermes_executable(command)
+    if not exe:
+        return False, "hermes 실행 파일 없음"
+    try:
+        proc = subprocess.run(
+            [exe, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(5.0, timeout_sec),
+            check=False,
+            env=_gateway_child_env(),
+            creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if sys.platform == "win32"
+            else 0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"hermes 실행 실패: {exc}"
+    err = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+    if proc.returncode != 0 or is_hermes_trampoline_failure(err):
+        detail = err[:400] if err else f"exit {proc.returncode}"
+        return False, detail
+    return True, f"exe ok ({Path(exe).name})"
+
+
 def _gateway_argv() -> list[str]:
     # 신규 기동 — stop 후 start 경로를 쓰므로 --replace에 의존하지 않음
     return ["gateway", "run", "--quiet", "--accept-hooks"]

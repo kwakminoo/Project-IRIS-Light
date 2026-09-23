@@ -24,13 +24,17 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from iris.system.hermes_gateway import (
+    CODE_PROCESS_CRASH,
     ensure_hermes_gateway_running,
     ensure_hermes_provider_config,
     hermes_executable,
     hermes_home,
     is_hermes_gateway_running,
+    is_hermes_trampoline_failure,
     load_hermes_dotenv,
+    probe_hermes_runtime,
     resolve_hermes_api_key,
+    stop_hermes_gateway,
     verify_iris_mcp_tools,
 )
 from iris.system.hermes_iris_control_sync import (
@@ -659,6 +663,8 @@ class SetupProtocol:
         self._abort = False
         self._active_proc: subprocess.Popen[bytes] | None = None
         self._cloud_without_local_confirmed = False
+        # ponytail: Hermes 런타임 자동 재설치는 세션당 1회 — 무한 루프 천장
+        self._hermes_runtime_repaired = False
 
     def bind_stream(self, fn: StreamFn | None) -> None:
         self._on_stream = fn
@@ -2052,8 +2058,27 @@ class SetupProtocol:
         return None
 
     def _step_hermes_install(self) -> SetupStepResult:
-        if hermes_executable(self.hermes_command):
-            return self._record_step("hermes_install", "done", "Hermes 이미 설치됨")
+        ok, detail = probe_hermes_runtime(command=self.hermes_command)
+        if ok:
+            return self._record_step(
+                "hermes_install", "done", f"Hermes 사용 가능 ({detail})"
+            )
+        broken = bool(hermes_executable(self.hermes_command)) or (
+            hermes_home() / "hermes-agent"
+        ).is_dir()
+        if broken:
+            return SetupStepResult(
+                step_id="hermes_install",
+                status="needs_user",
+                message=(
+                    "Hermes 실행 파일은 있으나 런타임이 깨져 있습니다 "
+                    f"({detail[:160]}). 자동으로 재설치합니다."
+                ),
+                action_url=HERMES_INSTALL_URL,
+                action_hint="재설치에 수 분이 걸릴 수 있습니다. .env·API 키는 유지됩니다.",
+                label=CORE_STEP_LABELS["hermes_install"],
+                can_install=sys.platform == "win32",
+            )
         return SetupStepResult(
             step_id="hermes_install",
             status="needs_user",
@@ -2064,9 +2089,33 @@ class SetupProtocol:
             can_install=sys.platform == "win32",
         )
 
+    def _wipe_hermes_agent_runtime(self) -> str:
+        """깨진 hermes-agent 트리만 제거 (.env·config.yaml 유지)."""
+        agent = hermes_home() / "hermes-agent"
+        if not agent.is_dir():
+            return "hermes-agent 없음"
+        try:
+            stop_hermes_gateway(
+                self.hermes_command, wait_sec=8.0, should_abort=lambda: self._abort
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            shutil.rmtree(agent)
+            return f"제거됨: {agent}"
+        except OSError as exc:
+            # 일부 파일 잠금 — ignore_errors로 최대한 비움
+            shutil.rmtree(agent, ignore_errors=True)
+            if agent.is_dir():
+                return f"부분 제거({exc}): {agent}"
+            return f"제거됨(무시된 오류): {agent}"
+
     def _install_hermes(self) -> SetupStepResult:
-        if hermes_executable(self.hermes_command):
-            return self._record_step("hermes_install", "done", "Hermes 이미 사용 가능")
+        ok, detail = probe_hermes_runtime(command=self.hermes_command)
+        if ok:
+            return self._record_step(
+                "hermes_install", "done", f"Hermes 이미 사용 가능 ({detail})"
+            )
         if sys.platform != "win32":
             return SetupStepResult(
                 step_id="hermes_install",
@@ -2077,6 +2126,13 @@ class SetupProtocol:
                 label=CORE_STEP_LABELS["hermes_install"],
                 can_install=False,
             )
+        # exe만 있고 trampoline이 깨진 경우 — 재설치 전에 런타임 트리 제거
+        if (hermes_home() / "hermes-agent").is_dir() or hermes_executable(
+            self.hermes_command
+        ):
+            wipe_msg = self._wipe_hermes_agent_runtime()
+            self._emit_stream(f"깨진 Hermes 런타임 정리… {wipe_msg}", None, replace=False)
+            self._hermes_runtime_repaired = True
         ps = (
             # PowerShell 5.1의 irm은 ProgressPreference 기본값(Continue) 때문에
             # 진행률 렌더링이 병목이 된다. 245KB 스크립트가 3분+ 걸리는 원인.
@@ -2102,9 +2158,12 @@ class SetupProtocol:
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             refresh_process_path()
-            if hermes_executable(self.hermes_command):
+            ok_after, detail_after = probe_hermes_runtime(command=self.hermes_command)
+            if ok_after:
                 return self._record_step(
-                    "hermes_install", "done", "시간 초과 후 Hermes 사용 가능 확인"
+                    "hermes_install",
+                    "done",
+                    f"시간 초과 후 Hermes 사용 가능 확인 ({detail_after})",
                 )
             return self._needs_user_install_check(
                 "hermes_install",
@@ -2116,8 +2175,11 @@ class SetupProtocol:
                 can_install=True,
             )
         refresh_process_path()
-        if hermes_executable(self.hermes_command):
-            return self._record_step("hermes_install", "done", "Hermes 설치됨")
+        ok_after, detail_after = probe_hermes_runtime(command=self.hermes_command)
+        if ok_after:
+            return self._record_step(
+                "hermes_install", "done", f"Hermes 설치됨 ({detail_after})"
+            )
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "")[:180]
             return self._needs_user_install_check(
@@ -2128,9 +2190,12 @@ class SetupProtocol:
             )
         return self._needs_user_install_check(
             "hermes_install",
-            message="설치는 됐지만 PATH에 없습니다. Iris를 재시작한 뒤 「완료했어요」.",
-            action_url="",
-            can_install=False,
+            message=(
+                "설치 스크립트는 끝났지만 Hermes 런타임이 동작하지 않습니다 "
+                f"({detail_after[:160]}). Iris 재시작 후 「완료했어요」또는 재설치."
+            ),
+            action_url=HERMES_INSTALL_URL,
+            can_install=True,
         )
 
     def _step_hermes_env(self) -> SetupStepResult:
@@ -2228,6 +2293,46 @@ class SetupProtocol:
         def _progress(msg: str) -> None:
             self._emit_stream(msg, None, replace=False)
 
+        def _try_start(*, prefer_restart: bool) -> bool:
+            if prefer_restart:
+                return restart_hermes_gateway(
+                    self.hermes_base_url,
+                    api_key=key,
+                    command=self.hermes_command,
+                    wait_sec=60.0,
+                    should_abort=_aborting,
+                    on_progress=_progress,
+                )
+            return ensure_hermes_gateway_running(
+                self.hermes_base_url,
+                api_key=key,
+                command=self.hermes_command,
+                wait_sec=55.0,
+                should_abort=_aborting,
+                on_progress=_progress,
+            )
+
+        def _should_auto_repair_runtime() -> bool:
+            if self._hermes_runtime_repaired or self.simulate or self.dry_run:
+                return False
+            if sys.platform != "win32":
+                return False
+            diag = get_last_gateway_diagnosis()
+            if diag is None:
+                return False
+            blob = f"{diag.code}\n{diag.message}\n{diag.detail}"
+            if is_hermes_trampoline_failure(blob):
+                return True
+            # PROCESS_CRASH만 추가 probe — timeout/포트 충돌마다 25초 낭비 금지
+            if diag.code != CODE_PROCESS_CRASH:
+                return False
+            ok_rt, detail_rt = probe_hermes_runtime(
+                command=self.hermes_command, timeout_sec=12.0
+            )
+            return (not ok_rt) and (
+                is_hermes_trampoline_failure(detail_rt) or "pyvenv home" in detail_rt
+            )
+
         _progress("Hermes gateway 상태 확인…")
         already = is_hermes_gateway_running(
             self.hermes_base_url, api_key=key, timeout_sec=2.0
@@ -2240,27 +2345,36 @@ class SetupProtocol:
             ok = True
         elif not _aborting():
             _progress("gateway 기동…")
-            ok = ensure_hermes_gateway_running(
-                self.hermes_base_url,
-                api_key=key,
-                command=self.hermes_command,
-                wait_sec=55.0,
-                should_abort=_aborting,
-                on_progress=_progress,
-            )
+            ok = _try_start(prefer_restart=False)
             if not ok and not _aborting():
                 diag = get_last_gateway_diagnosis()
                 if diag:
                     _progress(f"기동 실패 스냅샷: [{diag.code}] {diag.message}")
-                _progress("gateway 재기동 시도…")
-                ok = restart_hermes_gateway(
-                    self.hermes_base_url,
-                    api_key=key,
-                    command=self.hermes_command,
-                    wait_sec=60.0,
-                    should_abort=_aborting,
-                    on_progress=_progress,
-                )
+                if _should_auto_repair_runtime():
+                    _progress(
+                        "깨진 Hermes 런타임(uv trampoline) 감지 — 자동 재설치 후 재시도…"
+                    )
+                    repaired = self._install_hermes()
+                    self._emit_stream(repaired.message, None, replace=False)
+                    if repaired.status == "done" and not _aborting():
+                        _progress("재설치 완료 — gateway 재기동…")
+                        ok = _try_start(prefer_restart=True)
+                elif not _aborting():
+                    _progress("gateway 재기동 시도…")
+                    ok = _try_start(prefer_restart=True)
+                    # 재기동도 trampoline이면 한 번 더 복구
+                    if (
+                        not ok
+                        and not _aborting()
+                        and _should_auto_repair_runtime()
+                    ):
+                        _progress(
+                            "재기동도 런타임 실패 — 자동 재설치 후 최종 재시도…"
+                        )
+                        repaired = self._install_hermes()
+                        self._emit_stream(repaired.message, None, replace=False)
+                        if repaired.status == "done" and not _aborting():
+                            ok = _try_start(prefer_restart=True)
         if _aborting():
             return self._record_step("hermes_gateway", "failed", "사용자가 중단함")
         if not ok:

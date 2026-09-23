@@ -214,6 +214,30 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("sk-", text)
         self.assertNotIn("sk-", diag.copy_text())
 
+    def test_trampoline_failure_detector(self) -> None:
+        self.assertTrue(
+            gw.is_hermes_trampoline_failure(
+                "error: uv trampoline failed to spawn Python child process\n"
+                "  Caused by: entity not found (os error 2)"
+            )
+        )
+        self.assertFalse(gw.is_hermes_trampoline_failure("connection refused"))
+        self.assertFalse(gw.is_hermes_trampoline_failure(""))
+
+    def test_probe_hermes_runtime_missing_pyvenv_home(self) -> None:
+        agent = self.home / "hermes-agent" / "venv"
+        scripts = agent / "Scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "python.exe").write_text("", encoding="utf-8")
+        (agent / "pyvenv.cfg").write_text(
+            "home = C:\\definitely\\missing\\uv\\python\\cpython\n",
+            encoding="utf-8",
+        )
+        with patch.object(gw, "_hermes_agent_dir", return_value=self.home / "hermes-agent"):
+            ok, detail = gw.probe_hermes_runtime(timeout_sec=5.0)
+        self.assertFalse(ok)
+        self.assertIn("pyvenv home", detail)
+
     def test_diagnosis_persisted(self) -> None:
         gw._set_diagnosis(
             gw.GatewayDiagnosis(

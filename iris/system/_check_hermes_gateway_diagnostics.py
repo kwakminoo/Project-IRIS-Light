@@ -101,6 +101,13 @@ def _main() -> None:
             )
             assert gw.gateway_diagnosis_path().is_file()
 
+        # --- trampoline / runtime probe ---
+        assert gw.is_hermes_trampoline_failure(
+            "error: uv trampoline failed to spawn Python child process\n"
+            "Caused by: entity not found (os error 2)"
+        )
+        assert not gw.is_hermes_trampoline_failure("connection refused")
+
         # --- user message has code, no secret ---
         msg = gw.GatewayDiagnosis(
             code=gw.CODE_TIMEOUT,

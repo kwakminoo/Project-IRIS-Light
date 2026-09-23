@@ -53,6 +53,13 @@ def main() -> None:
     assert d.is_dir()
     assert parse_install_percent("  ████  42%") == 42
     assert parse_install_percent("pulling manifest") is None
+    from iris.assets.setup_logos import brand_for_step, setup_brand_pixmap
+    from iris.ui.window.setup_wizard import _STREAM_STEPS
+
+    assert brand_for_step("hermes_gateway") == "hermes"
+    assert brand_for_step("core_smoke") == "iris"
+    assert "hermes_gateway" in _STREAM_STEPS and "core_smoke" in _STREAM_STEPS
+    assert not setup_brand_pixmap("hermes", size=24).isNull()
     print("setup_protocol check ok", setup_state_path(), "detect.keys=", sorted(snap))
 
 
