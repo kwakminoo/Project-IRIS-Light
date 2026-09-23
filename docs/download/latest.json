@@ -1,13 +1,13 @@
-﻿{
+{
     "schema":  "iris-setup-release/v1",
     "filename":  "IRIS-Setup-0.1.7.exe",
     "display_filename":  "IRIS-Setup-0.1.7.exe",
     "stable_filename":  "IRIS-Setup.exe",
     "product_version":  "0.1.7",
-    "tag":  "v2026.09.24",
-    "published_at":  "2026-09-23T17:56:31Z",
-    "size_bytes":  27284966,
-    "sha256":  "f2d56f4143226cfd5931208f57a45cec8125477812eb8ad9104667dcd00ffea7",
+    "tag":  "v2026.09.24.1",
+    "published_at":  "2026-09-23T18:02:55Z",
+    "size_bytes":  27287553,
+    "sha256":  "d9b5cd6bffeb30ba893e3e0b2552bcba7cfba46a15058b2a5acc016f4dd95d86",
     "download_url":  "https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup-0.1.7.exe",
     "stable_download_url":  "https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup.exe",
     "checksum_url":  "https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup-0.1.7.exe.sha256",
