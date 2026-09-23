@@ -34,7 +34,6 @@ from iris.system.hermes_gateway import (
     load_hermes_dotenv,
     probe_hermes_runtime,
     resolve_hermes_api_key,
-    stop_hermes_gateway,
     verify_iris_mcp_tools,
 )
 from iris.system.hermes_iris_control_sync import (
@@ -2090,27 +2089,73 @@ class SetupProtocol:
         )
 
     def _wipe_hermes_agent_runtime(self) -> str:
-        """깨진 hermes-agent 트리만 제거 (.env·config.yaml 유지)."""
-        agent = hermes_home() / "hermes-agent"
-        if not agent.is_dir():
-            return "hermes-agent 없음"
-        try:
-            stop_hermes_gateway(
-                self.hermes_command, wait_sec=8.0, should_abort=lambda: self._abort
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            shutil.rmtree(agent)
-            return f"제거됨: {agent}"
-        except OSError as exc:
-            # 일부 파일 잠금 — ignore_errors로 최대한 비움
-            shutil.rmtree(agent, ignore_errors=True)
-            if agent.is_dir():
-                return f"부분 제거({exc}): {agent}"
-            return f"제거됨(무시된 오류): {agent}"
+        """깨진 hermes-agent 트리 정리 (.env·config.yaml 유지). 잠금 시 rename 우회."""
+        from iris.system.hermes_install import force_retire_hermes_agent
+
+        return force_retire_hermes_agent(command=self.hermes_command)
+
+    def _run_hermes_official_installer(self) -> subprocess.CompletedProcess[str]:
+        """공식 install.ps1 — HTTPS clone은 스크립트가 SSH 실패 후 처리."""
+        ps = (
+            "$ProgressPreference='SilentlyContinue'; "
+            "& ([scriptblock]::Create((irm '"
+            + HERMES_INSTALL_URL
+            + "'))) -SkipSetup -NonInteractive"
+        )
+        # uv junction(WinError 448) 완화를 위해 LOCALAPPDATA 쪽 힌트만 세팅.
+        # 공식 스크립트가 UV_PYTHON_INSTALL_DIR 을 checkout 전용으로 덮어쓰므로
+        # 근본 우회는 _install_hermes_bypass 가 담당한다.
+        env = os.environ.copy()
+        local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        env.setdefault("UV_DATA_DIR", str(Path(local) / "uv"))
+        env.setdefault("UV_CACHE_DIR", str(Path(local) / "uv" / "cache"))
+        return self._run_streamed(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                ps,
+            ],
+            timeout=_HERMES_IDLE_SEC,
+            hard_timeout=_HERMES_HARD_SEC,
+            hidden=False,
+            env=env,
+        )
+
+    def _install_hermes_bypass(self) -> SetupStepResult:
+        """uv managed Python junction 실패 시 시스템/Iris Python 우회 설치."""
+        from iris.system.hermes_install import install_hermes_with_system_python
+
+        self._emit_stream(
+            "uv Python junction 실패(WinError 448) 감지 — 시스템/Iris Python으로 우회 설치…",
+            None,
+            replace=False,
+        )
+        ok, detail = install_hermes_with_system_python(
+            command=self.hermes_command,
+            on_stream=lambda m: self._emit_stream(m, None, replace=False),
+            run_streamed=self._run_streamed,
+            should_abort=lambda: self._abort,
+        )
+        refresh_process_path()
+        if ok:
+            self._hermes_runtime_repaired = True
+            return self._record_step("hermes_install", "done", detail[:240])
+        return self._needs_user_install_check(
+            "hermes_install",
+            message=f"우회 설치도 실패: {detail[:200]}",
+            action_url=HERMES_INSTALL_URL,
+            can_install=True,
+        )
 
     def _install_hermes(self) -> SetupStepResult:
+        from iris.system.hermes_install import (
+            combined_install_log_tail,
+            looks_like_uv_python_mount_failure,
+        )
+
         ok, detail = probe_hermes_runtime(command=self.hermes_command)
         if ok:
             return self._record_step(
@@ -2133,29 +2178,13 @@ class SetupProtocol:
             wipe_msg = self._wipe_hermes_agent_runtime()
             self._emit_stream(f"깨진 Hermes 런타임 정리… {wipe_msg}", None, replace=False)
             self._hermes_runtime_repaired = True
-        ps = (
-            # PowerShell 5.1의 irm은 ProgressPreference 기본값(Continue) 때문에
-            # 진행률 렌더링이 병목이 된다. 245KB 스크립트가 3분+ 걸리는 원인.
-            "$ProgressPreference='SilentlyContinue'; "
-            "& ([scriptblock]::Create((irm '"
-            + HERMES_INSTALL_URL
-            + "'))) -SkipSetup -NonInteractive"
-        )
+
+        log_bits: list[str] = []
         self._emit_stream("Hermes 공식 설치 스크립트 실행 중…", None, replace=False)
         try:
-            proc = self._run_streamed(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    ps,
-                ],
-                timeout=_HERMES_IDLE_SEC,
-                hard_timeout=_HERMES_HARD_SEC,
-                hidden=False,
-            )
+            proc = self._run_hermes_official_installer()
+            log_bits.append(proc.stdout or "")
+            log_bits.append(proc.stderr or "")
         except (OSError, subprocess.TimeoutExpired) as exc:
             refresh_process_path()
             ok_after, detail_after = probe_hermes_runtime(command=self.hermes_command)
@@ -2165,6 +2194,10 @@ class SetupProtocol:
                     "done",
                     f"시간 초과 후 Hermes 사용 가능 확인 ({detail_after})",
                 )
+            log_bits.append(str(exc))
+            blob = combined_install_log_tail(*log_bits)
+            if looks_like_uv_python_mount_failure(blob):
+                return self._install_hermes_bypass()
             return self._needs_user_install_check(
                 "hermes_install",
                 message=(
@@ -2180,8 +2213,16 @@ class SetupProtocol:
             return self._record_step(
                 "hermes_install", "done", f"Hermes 설치됨 ({detail_after})"
             )
+        blob = combined_install_log_tail(*log_bits, detail_after)
+        if looks_like_uv_python_mount_failure(blob):
+            return self._install_hermes_bypass()
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "")[:180]
+            # 실패 로그에 448이 파이프에 안 잡힌 경우에도 Python 실패면 우회
+            if looks_like_uv_python_mount_failure(err) or "Failed to install Python" in (
+                proc.stdout or ""
+            ):
+                return self._install_hermes_bypass()
             return self._needs_user_install_check(
                 "hermes_install",
                 message=f"설치가 끝나지 않았습니다. {err}",

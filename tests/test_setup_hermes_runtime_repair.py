@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from iris.system import hermes_gateway as gw
+from iris.system import hermes_install as hi
 from iris.system.setup_protocol import SetupProtocol
 
 
@@ -57,9 +58,12 @@ class SetupHermesRuntimeRepairTests(unittest.TestCase):
         env_path = self.home / ".env"
         env_path.write_text("API_SERVER_KEY=keep-me\n", encoding="utf-8")
         proto = SetupProtocol(dry_run=False, simulate=False)
-        with patch("iris.system.setup_protocol.stop_hermes_gateway", return_value=True):
+        with (
+            patch.object(hi.gw, "stop_hermes_gateway", return_value=True),
+            patch.object(hi, "_kill_hermes_tree_holders"),
+        ):
             msg = proto._wipe_hermes_agent_runtime()
-        self.assertIn("제거", msg)
+        self.assertTrue("치움" in msg or "삭제" in msg or "정리" in msg, msg)
         self.assertFalse(agent.exists())
         self.assertTrue(env_path.is_file())
         self.assertIn("keep-me", env_path.read_text(encoding="utf-8"))
