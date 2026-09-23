@@ -26,7 +26,7 @@ IRIS 将 LLM、MCP、Voice Runtime 与 Local/Cloud Model 连接起来，是一�
 
 > 显示名称 **IRIS** · 包名 Iris Light · 应用版本 `0.1.0-light`
 
-🌐 **项目介绍站 — [cjh030906.github.io/iris-light-site](https://cjh030906.github.io/iris-light-site/)**
+🌐 **项目介绍站 — [iris-light-site.vercel.app](https://iris-light-site.vercel.app/)**
 
 > 本页为主要章节的摘要。硬件要求、安装故障排查与许可证细节请参阅 [English README](README.en.md)。
 

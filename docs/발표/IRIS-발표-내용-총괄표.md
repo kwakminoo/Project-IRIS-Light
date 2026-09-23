@@ -222,7 +222,7 @@
 | 1 | 소스코드 공개 | GitHub `Project-IRIS-Light` (2026-07 생성, 지속 갱신) |
 | 2 | 바이너리·설치본 배포 | GitHub Releases — `IRIS-Setup.exe` (latest 고정 URL) |
 | 3 | 버전 릴리스 | 최신 공개 태그 **IRIS Light v2026.08.27** (앱 `0.1.0-light`) |
-| 4 | 소개 사이트 | [cjh030906.github.io/iris-light-site](https://cjh030906.github.io/iris-light-site/) |
+| 4 | 소개 사이트 | [iris-light-site.vercel.app](https://iris-light-site.vercel.app/) |
 | 5 | 다국어 문서 공개 | README 한국어·영어·일본어·중국어 |
 | 6 | 기술·운영 문서 공개 | domain · IA · API · voice · installer · demo script |
 | 7 | 데모 영상 | 촬영 대본·업로드 절차 문서화 완료, 영상 공개 준비 중 |
@@ -296,7 +296,7 @@
 | 저장소 | https://github.com/kwakminoo/Project-IRIS-Light |
 | 최신 릴리스 | https://github.com/kwakminoo/Project-IRIS-Light/releases/latest |
 | 설치 프로그램 | https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup.exe |
-| 소개 사이트 | https://cjh030906.github.io/iris-light-site/ |
+| 소개 사이트 | https://iris-light-site.vercel.app/ |
 | Hermes | https://hermes-agent.nousresearch.com/ |
 | Ollama | https://ollama.com/ |
 

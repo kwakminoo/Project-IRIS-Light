@@ -558,7 +558,10 @@ def build_run_command(
         return ["node", rel]
     if suffix in (".html", ".htm"):
         raise ValueError(f"use browser preview for static web file: {rel}")
-    raise ValueError(f"unsupported file type for auto-run: {suffix or '(none)'}")
+        raise ValueError(
+            f"[PROJECT_AUTORUN_UNSUPPORTED_TYPE] 자동 실행에 지원하지 않는 파일 형식입니다: "
+            f"{suffix or '(none)'}. Windows Setup 다운로드와 무관합니다."
+        )
 
 
 def is_static_web_file(file: str) -> bool:

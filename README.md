@@ -26,13 +26,15 @@ IRIS는 LLM · MCP · Voice Runtime · Local/Cloud Model을 연결해 **내 PC�
 
 > 표시 이름 **IRIS** · 코드/패키지명 Iris Light · 앱 버전 `0.1.0-light`
 
-🌐 **소개 사이트 — [cjh030906.github.io/iris-light-site](https://cjh030906.github.io/iris-light-site/)** ([저장소](https://github.com/cjh030906/iris-light-site))
+🌐 **소개 사이트 — [iris-light-site.vercel.app](https://iris-light-site.vercel.app/)** ([저장소](https://github.com/cjh030906/iris-light-site))
 
 ---
 
 ## Demo
 
 **설치부터 실제 동작까지 3분** — 영상 준비 중입니다. 촬영 대본과 업로드 절차는 [`docs/demo-video-script.md`](docs/demo-video-script.md)에 있습니다.
+
+검증관·기여자용 **클릭 단위 재현**은 데모 영상과 별도입니다 → [`docs/검증/기능테스트-시나리오서.md`](docs/검증/기능테스트-시나리오서.md)
 
 <!-- DEMO_VIDEO:START -->
 <!--
@@ -354,12 +356,20 @@ chmod +x run.sh
 | [docs/domain.md](docs/domain.md) | 바운디드 컨텍스트 · Runtime Gateway 설계 |
 | [docs/ia/IA.md](docs/ia/IA.md) | 정보 구조 · 요청 경로 · 아키텍처 다이어그램 |
 | [docs/api/](docs/api/) | API 관련 문서 |
+| [docs/guides/extending-iris.md](docs/guides/extending-iris.md) | 코어 불변 · 스킬/MCP 확장 |
+| [docs/guides/ui-toolkit-migration.md](docs/guides/ui-toolkit-migration.md) | PyQt6→PySide6 UI 전환 가이드 (문서만) |
+| [docs/guides/agent-readable-docs.md](docs/guides/agent-readable-docs.md) | AI·인간 공용 모듈 헤더 계약 |
+| [docs/검증/기능테스트-시나리오서.md](docs/검증/기능테스트-시나리오서.md) | 검증관용 클릭 단위 시나리오 |
+| [docs/검증/core-smoke.md](docs/검증/core-smoke.md) | 코어 스모크 1커맨드 |
+| [docs/검증/license-scan-report.md](docs/검증/license-scan-report.md) | 라이선스 스캔·충돌 0 리포트 |
 | [docs/voice.md](docs/voice.md) | 음성 STT/TTS · 보이스 프로필 |
 | [docs/voice_architecture.md](docs/voice_architecture.md) | 음성 런타임 경계 · 흐름 |
 | [docs/installer-release.md](docs/installer-release.md) | 설치 프로그램 빌드 · 릴리스 절차 |
 | [docs/demo-video-script.md](docs/demo-video-script.md) | 데모 영상 촬영 대본 · 업로드 절차 |
 | [integrations/hermes-skills/README.md](integrations/hermes-skills/README.md) | Iris Control Surface (Hermes ↔ UI) |
 | [LICENSE.md](LICENSE.md) | 라이선스 근거 · 서드파티 인벤토리 |
+| [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | 제3자 고지 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 기여 가이드 |
 
 <details>
 <summary><b>프로젝트 구조 · 기술 스택</b></summary>
@@ -407,9 +417,12 @@ LICENSE.md            # 라이선스 근거·서드파티 인벤토리
 
 ## 기여
 
-이슈·PR 환영합니다. 변경 전에는 가능하면 기존 `_check_*.py` 스모크나 관련 모듈 단위 확인을 돌려 주세요.
+이슈·PR 환영합니다. 절차·라이선스·확장점은 [`CONTRIBUTING.md`](CONTRIBUTING.md)를 먼저 보세요.
 
 ```powershell
+# 핵심 스모크 묶음
+powershell -ExecutionPolicy Bypass -File scripts\run_core_smoke.ps1
+
 # 예: IDE companion orphan 창 회귀 방지
 py -3 -m iris.ui._check_ide_companion_windows
 ```

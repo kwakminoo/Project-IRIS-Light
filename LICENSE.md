@@ -108,9 +108,14 @@ IRIS는 "구독료 없이 누구나 쓰는 로컬 우선 AI 에이전트"를 지
 | onnxruntime | MIT | ✅ |
 | openai (SDK) | Apache-2.0 | ✅ |
 | anthropic (SDK) | MIT | ✅ |
+| pypdf | BSD-3-Clause | ✅ |
+| pytesseract | Apache-2.0 | ✅ |
+| PyMuPDF | **AGPL-3.0 OR Commercial** | ✅\* (무료 휠=AGPL; GPL-3와 결합 가능 — 스캔 리포트 참고) |
 | comtypes | MIT | ✅ |
 | pywin32 | PSF-2.0 | ✅ |
 | pyobjc-framework-* | MIT | ✅ |
+
+\* 상세: [`docs/검증/license-scan-report.md`](docs/검증/license-scan-report.md) · 고지: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
 
 ### 3.2 선택 음성 런타임 (`services/voice_runtime/requirements-voice*.txt`)
 
@@ -124,7 +129,7 @@ IRIS는 "구독료 없이 누구나 쓰는 로컬 우선 AI 에이전트"를 지
 | soundfile, uvicorn, starlette, torch, torchaudio, scipy, pandas | BSD 계열 | ✅ |
 | transformers, accelerate, huggingface_hub, safetensors, tokenizers, gradio | Apache-2.0 | ✅ |
 | **qwen-tts** | Apache-2.0 | ✅ 코드 기준. **모델 가중치는 별도 조건** — §4.1 |
-| faster-qwen3-tts | 업스트림 표기 확인 필요 | ⚠ 배포 전 재확인 대상 |
+| **faster-qwen3-tts** | **MIT** | ✅ PyPI License-Expression 실측 (0.3.2, 2026-09-23) |
 
 ### 3.3 벤더링된 코드
 
@@ -233,8 +238,9 @@ About/Third-party notices에서 Eclipse Theia 사용 사실과 라이선스를 �
 - [x] README 라이선스 섹션이 실제 라이선스와 일치
 - [x] 벤더링 코드의 원본 `LICENSE`·출처 표기 보존 (`integrations/showui-aloha/`)
 - [x] 음성 원본 데이터 미커밋 상태 확인
-- [ ] `faster-qwen3-tts` 업스트림 라이선스 최종 확인 (§3.2)
-- [ ] `dist/IRIS.exe` 배포 시 대응 소스 위치(본 저장소 URL) 릴리스 노트에 명시
+- [x] `faster-qwen3-tts` 업스트림 라이선스 최종 확인 (§3.2) — **MIT** (2026-09-23 실측)
+- [x] `dist/IRIS.exe` / `IRIS-Setup.exe` 배포 시 대응 소스 위치 명시 — 본 저장소
+  `https://github.com/kwakminoo/Project-IRIS-Light` (`docs/installer-release.md` §대응 소스)
 
 ---
 

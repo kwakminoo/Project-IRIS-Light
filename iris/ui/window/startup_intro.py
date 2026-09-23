@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import time
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import (
@@ -23,6 +24,9 @@ if TYPE_CHECKING:
     from iris.ui.widgets.particle_visualizer import ParticleVisualizer
 
 _HERO_RNG = random.Random(7)
+# ponytail: 모델/클라우드 워커(≈18s)보다 길어야 준비완료가 클라우드보다 먼저 안 뜸.
+# 워커 hang 시에만 이 상한으로 finished 강제.
+_MODELS_WAIT_CAP_S = 20.0
 
 
 class _SlideFadeProxy(QObject):
@@ -324,6 +328,7 @@ class StartupIntroAnimator(QObject):
         self._motion_done = False
         self._started = False
         self._completed = False
+        self._models_wait_t0: float | None = None
         self._hold_timer = QTimer(self)
         self._hold_timer.setSingleShot(True)
         self._hold_timer.timeout.connect(self._try_complete)
@@ -822,8 +827,9 @@ class StartupIntroAnimator(QObject):
 
     def _on_motion_finished(self) -> None:
         self._motion_done = True
-        # 모델 프로브가 아직이면 짧게 대기(연출이 로딩 역할)
+        # 모델 프로브가 아직이면 짧게 대기(연출이 로딩 역할) — 상한 후 강제 완료
         if not self._models_ready:
+            self._models_wait_t0 = time.monotonic()
             self._hold_timer.start(120)
             return
         self._try_complete()
@@ -834,11 +840,15 @@ class StartupIntroAnimator(QObject):
         if not self._motion_done:
             return
         if not self._models_ready:
-            # 모델 확인이 길면 구체에 약한 글리치만 유지
-            if self._orb is not None:
-                self._orb.setGlitch(0.18)
-            self._hold_timer.start(180)
-            return
+            t0 = self._models_wait_t0
+            if t0 is not None and (time.monotonic() - t0) >= _MODELS_WAIT_CAP_S:
+                self._models_ready = True
+            else:
+                # 모델 확인이 길면 구체에 약한 글리치만 유지
+                if self._orb is not None:
+                    self._orb.setGlitch(0.18)
+                self._hold_timer.start(180)
+                return
         self._completed = True
         self._hold_timer.stop()
         if self._orb is not None:

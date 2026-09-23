@@ -55,6 +55,9 @@ def main() -> None:
     from iris.ui.window.main_window import MainWindow
 
     app = QApplication(sys.argv)
+    # ponytail: 설정/위저드 등 top-level 다이얼로그만 닫혀도 프로세스 종료 금지 —
+    # 종료는 MainWindow.closeEvent accept 뒤 QApplication.quit()만.
+    app.setQuitOnLastWindowClosed(False)
     app.setOrganizationName(APP_DISPLAY_NAME)
     app.setApplicationName(APP_DISPLAY_NAME)
     app.setApplicationDisplayName(APP_DISPLAY_NAME)

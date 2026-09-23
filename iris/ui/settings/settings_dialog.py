@@ -1644,10 +1644,10 @@ class SettingsDialog(QDialog):
         if wait:
             for active in workers:
                 if active.isRunning():
-                    active.wait(1500)
+                    active.wait(300)
             for active in bootstraps:
                 if active.isRunning():
-                    active.wait(1500)
+                    active.wait(300)
         self._preview_player.stop()
         if announce:
             self._voice_status.setText("재생 중지")
@@ -1861,7 +1861,7 @@ class SettingsDialog(QDialog):
         lay.addWidget(
             make_hint(
                 "Ollama · Hermes · iris-control MCP 등 Core 환경과 IRIS IDE(선택)를 설치하거나 상태를 검사합니다. "
-                "검사는 최소 로컬 모델과 Ollama 클라우드 로그인을 함께 확인합니다. "
+                "검사는 서비스 기동·연결을 시도한 뒤, 부족하면 자동 설치/복구까지 진행합니다. "
                 "미설치면 「시작 프로토콜 가동」, 이미 준비됐으면 「검사」가 표시됩니다."
             )
         )
@@ -2078,6 +2078,7 @@ class SettingsDialog(QDialog):
 
         class _VerifyWorker(QThread):
             finished_ok = pyqtSignal(bool, str)
+            progress = pyqtSignal(str)
 
             def __init__(self, proto, parent=None) -> None:
                 super().__init__(parent)
@@ -2085,15 +2086,48 @@ class SettingsDialog(QDialog):
 
             def run(self) -> None:
                 try:
+                    from iris.system.setup_protocol import _warm_core_services
+
+                    self.progress.emit("서비스 기동·연결 확인 중…")
+                    _warm_core_services(
+                        ollama_base_url=self._proto.ollama_base_url,
+                        hermes_base_url=self._proto.hermes_base_url,
+                        hermes_command=self._proto.hermes_command,
+                        wait_sec=30.0,
+                    )
                     ok, detail = self._proto.verify_core()
-                    self.finished_ok.emit(ok, detail)
+                    if ok:
+                        self.finished_ok.emit(True, detail)
+                        return
+
+                    # 검사 실패 → 자동 복구(설치 가능한 단계는 클릭 없이 진행)
+                    self.progress.emit("검사 실패 — 자동 설치/복구 진행…")
+
+                    def _auto_user(result) -> str:
+                        if getattr(result, "can_install", False):
+                            return "install"
+                        # 로그인·API 키 등은 위저드에서 처리
+                        return "abort"
+
+                    repaired = self._proto.run_core(on_user=_auto_user)
+                    if repaired:
+                        ok2, detail2 = self._proto.verify_core()
+                        self.finished_ok.emit(ok2, detail2)
+                        return
+                    # 자동으로 못 끝낸 경우(로그인 등) — 마지막 verify 메시지 + 안내
+                    ok3, detail3 = self._proto.verify_core_quick()
+                    msg = detail3 if not ok3 else (detail or "복구가 완료되지 않았습니다.")
+                    self.finished_ok.emit(False, msg)
                 except Exception as exc:  # noqa: BLE001
                     self.finished_ok.emit(False, str(exc)[:240])
 
         self._setup_primary_btn.setEnabled(False)
-        self._setup_status.setText("상태: Core 검사 중…")
+        self._setup_status.setText("상태: Core 검사·복구 중…")
         worker = _VerifyWorker(self._setup_protocol_instance(), parent=self)
         self._setup_verify_worker = worker
+        worker.progress.connect(
+            lambda t: self._setup_status.setText(f"상태: {t}") if t else None
+        )
         worker.finished_ok.connect(self._on_setup_verify_done)
         worker.start()
 
@@ -2111,13 +2145,19 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, title, text)
             return
         self._setup_status.setText(f"검사 결과: 실패 — {text.splitlines()[0]}")
-        QMessageBox.warning(
+        # 자동 복구로도 안 되면 위저드(로그인 등)로 이어감
+        go = QMessageBox.question(
             self,
             "시작 프로토콜 검사",
             f"{text}\n\n"
-            "「다시 설정」에서 Ollama 「로그인」또는 「최소 모델 설치」를 할 수 있습니다.",
+            "자동으로 해결되지 않은 항목이 있습니다. "
+            "시작 프로토콜 위저드를 열어 이어서 진행할까요?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
         )
         self._setup_repair_btn.show()
+        if go == QMessageBox.StandardButton.Yes:
+            self._open_setup_wizard(mode="repair")
 
     def _load_sync_status_text(self) -> str:
         return settings_service.load_hermes_sync_status_text()
@@ -2422,9 +2462,10 @@ class SettingsDialog(QDialog):
             return
         self._cancel_deferred_status_workers()
         self._disconnect_mic_meter()
-        if not self._stop_voice_playback(announce=False, wait=True):
-            self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
-            return
+        try:
+            self._stop_voice_playback(announce=False, wait=False)
+        except Exception:
+            pass
         self._stop_mic_monitor()
         if self._microphone is not None:
             self._microphone.set_device(self._voice_prefs.stt_device_id)
@@ -2433,9 +2474,10 @@ class SettingsDialog(QDialog):
     def accept(self) -> None:
         self._cancel_deferred_status_workers()
         self._disconnect_mic_meter()
-        if not self._stop_voice_playback(announce=False, wait=True):
-            self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
-            return
+        try:
+            self._stop_voice_playback(announce=False, wait=False)
+        except Exception:
+            pass
         self._stop_mic_monitor()
         super().accept()
 
@@ -2446,10 +2488,10 @@ class SettingsDialog(QDialog):
             return
         self._cancel_deferred_status_workers()
         self._disconnect_mic_meter()
-        if not self._stop_voice_playback(announce=False, wait=True):
-            self._voice_status.setText("음성 스트림 종료를 기다리는 중입니다.")
-            event.ignore()
-            return
+        try:
+            self._stop_voice_playback(announce=False, wait=False)
+        except Exception:
+            pass
         self._stop_mic_monitor()
         super().closeEvent(event)
 

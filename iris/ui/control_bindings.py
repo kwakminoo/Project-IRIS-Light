@@ -2756,13 +2756,26 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         )
 
     def content_extract(args: dict[str, Any]) -> dict[str, Any]:
-        from iris.knowledge.content_extract import extract_from_source
+        from iris.knowledge.content_extract import (
+            UnsupportedAttachmentTypeError,
+            extract_from_source,
+        )
 
         source = str(args.get("source") or args.get("path") or args.get("url") or "").strip()
         if not source:
             return err_result("content.extract", "source required (file path or http(s) URL)")
         try:
             data = extract_from_source(source)
+        except UnsupportedAttachmentTypeError as exc:
+            return err_result(
+                "content.extract",
+                str(exc),
+                {
+                    "error_code": exc.code,
+                    "help_url": "https://iris-light-site.vercel.app/#install",
+                    "scope": "attachment_extract",
+                },
+            )
         except (ValueError, OSError, RuntimeError) as exc:
             return err_result("content.extract", str(exc))
         _log(window, "content.extract", True)
@@ -2779,6 +2792,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
         )
 
     def wiki_import_content(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.knowledge.content_extract import UnsupportedAttachmentTypeError
         from iris.knowledge.wiki_import_ops import import_to_wiki
         from iris.knowledge.wiki_summarize import summarize_for_wiki
 
@@ -2816,6 +2830,16 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 mode=mode,
                 rel_path=rel_in,
                 summarize_fn=summarize_fn,
+            )
+        except UnsupportedAttachmentTypeError as exc:
+            return err_result(
+                "wiki.import_content",
+                str(exc),
+                {
+                    "error_code": exc.code,
+                    "help_url": "https://iris-light-site.vercel.app/#install",
+                    "scope": "attachment_extract",
+                },
             )
         except (ValueError, OSError, RuntimeError) as exc:
             return err_result("wiki.import_content", str(exc))

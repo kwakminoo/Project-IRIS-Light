@@ -1,8 +1,5 @@
-IRIS is installed.
+IRIS is installed. Python venv and packages are already set up.
 
-Python venv and packages were set up during install (internet required).
-Start IRIS from the desktop / Start Menu shortcut, or run.bat in the install folder.
+On first launch, the setup wizard continues with Ollama and Hermes.
 
-On first launch the setup wizard continues with Ollama and Hermes.
-
-If the Python step failed, open the install folder and double-click setup.bat.
+Start IRIS from the desktop / Start Menu shortcut.

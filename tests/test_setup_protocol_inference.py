@@ -44,6 +44,21 @@ class LocalVsCloudModelTests(TestCase):
             ["gemma4:e2b"],
         )
 
+    def test_embedding_models_are_not_chat_inference(self) -> None:
+        from iris.system.setup_protocol import prefer_chat_model
+
+        self.assertEqual(
+            local_inference_models(["bge-m3:latest", "nomic-embed-text", "gemma4:e2b"]),
+            ["gemma4:e2b"],
+        )
+        self.assertFalse(
+            has_usable_inference_backend(["bge-m3:latest"], cloud_signed_in=False)
+        )
+        self.assertEqual(
+            prefer_chat_model(["bge-m3:latest", "llama3.2:latest"], preferred="gemma4:e2b"),
+            "llama3.2:latest",
+        )
+
     def test_usable_backend_requires_local_or_cloud_login(self) -> None:
         self.assertFalse(
             has_usable_inference_backend(["gemma4:31b-cloud"], cloud_signed_in=False)

@@ -132,9 +132,16 @@ class HermesHealthWorker(QThread):
                 )
                 ok = mcp_ok
             else:
-                self.notice.emit(
-                    "Hermes gateway를 시작할 수 없습니다. hermes 설치와 API_SERVER_ENABLED를 확인하세요."
-                )
+                from iris.system.hermes_gateway import get_last_gateway_diagnosis
+
+                diag = get_last_gateway_diagnosis()
+                if diag is not None:
+                    self.notice.emit(diag.user_message()[:400])
+                else:
+                    self.notice.emit(
+                        "Hermes gateway를 시작할 수 없습니다. "
+                        "hermes 설치·포트 8642·로그(%LOCALAPPDATA%\\hermes\\logs\\iris-gateway)를 확인하세요."
+                    )
             self.finished_ok.emit(ok)
         except Exception as e:
             self.failed.emit(str(e))
@@ -280,8 +287,16 @@ class HermesChatWorker(QThread):
                     api_key=self._api_key,
                     command=self._command,
                 ):
+                    from iris.system.hermes_gateway import get_last_gateway_diagnosis
+
+                    diag = get_last_gateway_diagnosis()
                     self.failed.emit(
-                        "Hermes gateway를 시작할 수 없습니다. hermes 설치와 API_SERVER_ENABLED를 확인하세요."
+                        diag.user_message()[:400]
+                        if diag is not None
+                        else (
+                            "Hermes gateway를 시작할 수 없습니다. "
+                            "설치·포트·%LOCALAPPDATA%\\hermes\\logs\\iris-gateway 로그를 확인하세요."
+                        )
                     )
                     return
             client = HermesClient(
