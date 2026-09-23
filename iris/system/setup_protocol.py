@@ -914,6 +914,28 @@ class SetupProtocol:
             return "abort"
         return (on_user(result) or "done").strip().lower() or "done"
 
+    def _auto_or_wait_user(
+        self,
+        on_user: UserActionFn | None,
+        result: SetupStepResult,
+        *,
+        allow_auto_install: bool = True,
+    ) -> str:
+        """설치 가능(can_install)하면 클릭 없이 「install」, 아니면 UI 대기.
+
+        ponytail: 로그인·API 키 붙여넣기(can_install=False)는 자동화하지 않음.
+        자동 설치가 한 번 실패한 뒤 다시 needs_user면 allow_auto_install=False 로
+        사용자에게 넘긴다(무한 재설치 방지).
+        """
+        if allow_auto_install and result.can_install:
+            self._emit_stream(
+                f"{result.label or result.step_id}: 자동 설치 진행…",
+                None,
+                replace=False,
+            )
+            return "install"
+        return self._wait_user(on_user, result)
+
     def inspect_inference(self) -> dict[str, Any]:
         """Ollama 최소 모델·클라우드 로그인 스냅샷 (검사 워커에서 호출)."""
         running = is_ollama_running(self.ollama_base_url)
@@ -1035,7 +1057,7 @@ class SetupProtocol:
 
                 if result.status == "needs_user":
                     self._emit(on_progress, result)
-                    choice = self._wait_user(on_user, result)
+                    choice = self._auto_or_wait_user(on_user, result)
                     if choice == "abort":
                         self._record_step(step_id, "failed", self._abort_message(on_user))
                         return False
@@ -1053,9 +1075,10 @@ class SetupProtocol:
                                 break
                             if installed.status == "failed":
                                 return False
-                            # installed.status == "needs_user" — 설치 결과 카드에 대해
-                            # 다시 사용자 응답을 기다린다 (재검증으로 그냥 넘어가지 않는다)
-                            inner_choice = self._wait_user(on_user, installed)
+                            # 자동 설치 후에도 needs_user → 사용자 확인 (재설치 루프 금지)
+                            inner_choice = self._auto_or_wait_user(
+                                on_user, installed, allow_auto_install=False
+                            )
                             if inner_choice == "abort":
                                 self._record_step(step_id, "failed", self._abort_message(on_user))
                                 return False
@@ -1267,7 +1290,7 @@ class SetupProtocol:
             self._emit(on_progress, result)
             self._save_optional(which, result)
             if result.status == "needs_user":
-                choice = self._wait_user(on_user, result)
+                choice = self._auto_or_wait_user(on_user, result)
                 if choice == "skip":
                     skipped = SetupStepResult(
                         step_id=which,
@@ -1295,9 +1318,10 @@ class SetupProtocol:
                             return True
                         if installed.status == "failed":
                             return False
-                        # installed.status == "needs_user" — 설치 결과 카드에 대해
-                        # 다시 사용자 응답을 기다린다 (재검증으로 그냥 넘어가지 않는다)
-                        inner_choice = self._wait_user(on_user, installed)
+                        # 자동 설치 실패 후 needs_user → 사용자에게 넘김
+                        inner_choice = self._auto_or_wait_user(
+                            on_user, installed, allow_auto_install=False
+                        )
                         if inner_choice == "skip":
                             skipped = SetupStepResult(
                                 step_id=which,
@@ -1669,9 +1693,9 @@ class SetupProtocol:
         return SetupStepResult(
             step_id="ollama_install",
             status="needs_user",
-            message="Ollama가 없습니다. 「설치」를 누르면 공식 설치 스크립트를 실행합니다.",
+            message="Ollama가 없습니다. 공식 설치 스크립트를 자동 실행합니다.",
             action_url=OLLAMA_DOWNLOAD_URL,
-            action_hint="UAC가 뜨면 허용하세요. 수동 설치 시 「열기」 후 「완료했어요」.",
+            action_hint="UAC가 뜨면 허용하세요. 실패 시에만 수동 「열기」/「완료했어요」가 필요합니다.",
             label=CORE_STEP_LABELS["ollama_install"],
             can_install=True,
         )
@@ -2033,9 +2057,9 @@ class SetupProtocol:
         return SetupStepResult(
             step_id="hermes_install",
             status="needs_user",
-            message="Hermes Agent가 없습니다. 「설치」를 누르면 공식 설치 스크립트를 실행합니다.",
+            message="Hermes Agent가 없습니다. 공식 설치 스크립트를 자동 실행합니다.",
             action_url=HERMES_INSTALL_URL,
-            action_hint="설치에 수 분이 걸릴 수 있습니다. 수동이면 「열기」 후 「완료했어요」.",
+            action_hint="설치에 수 분이 걸릴 수 있습니다. 실패 시에만 수동 「열기」/「완료했어요」가 필요합니다.",
             label=CORE_STEP_LABELS["hermes_install"],
             can_install=sys.platform == "win32",
         )
@@ -2890,6 +2914,21 @@ def _self_check() -> None:
         proto._wait_user(None, SetupStepResult("state_init", "needs_user")) == "abort"
     )
     assert proto._wait_user(lambda r: "install", SetupStepResult("x", "needs_user")) == "install"
+    # can_install이면 클릭 없이 자동 install
+    assert (
+        proto._auto_or_wait_user(
+            None, SetupStepResult("ollama_install", "needs_user", can_install=True)
+        )
+        == "install"
+    )
+    assert (
+        proto._auto_or_wait_user(
+            None,
+            SetupStepResult("ollama_install", "needs_user", can_install=True),
+            allow_auto_install=False,
+        )
+        == "abort"
+    )
 
     # --- 2) simulate/dry_run은 실제 setup_state.json과 완전히 분리된 파일을 쓴다 ---
     real_path = setup_state_path(simulate=False, dry_run=False)
