@@ -1,6 +1,7 @@
 ﻿# IRIS Windows Setup.exe 빌드 — 현재 워크스페이스 소스를 설치 패키지로 묶는다.
-# 출력: dist\IRIS-Setup.exe  (파일명에 버전을 넣지 않는다 — 랜딩 페이지가
-#       releases/latest/download/IRIS-Setup.exe 를 고정으로 가리킨다)
+# 출력:
+#   dist\IRIS-Setup.exe              — 안정 별칭 (/latest/download/IRIS-Setup.exe)
+#   dist\IRIS-Setup-<version>.exe    — 다운로드 시 브라우저에 보이는 버전 파일명
 $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent
 Set-Location $Root
@@ -187,34 +188,47 @@ if ($pfx -and (Test-Path $pfx) -and $pfxPass) {
 
 $size = (Get-Item $out).Length
 $product = ((Get-Item $out).VersionInfo.ProductVersion).Trim()
+# Inno VersionInfo can be "0.1.5.0" — display/filename uses major.minor.patch
+if ($product -match '^(\d+\.\d+\.\d+)') { $productShort = $Matches[1] } else { $productShort = $product }
+$versionedName = "IRIS-Setup-$productShort.exe"
+$versionedOut = Join-Path $Root "dist\$versionedName"
+Copy-Item -Force $out $versionedOut
+
 $hash = (Get-FileHash $out -Algorithm SHA256).Hash.ToLowerInvariant()
 $shaFile = Join-Path $Root "dist\IRIS-Setup.exe.sha256"
 [System.IO.File]::WriteAllText($shaFile, "$hash  IRIS-Setup.exe`n")
+$shaVersioned = Join-Path $Root "dist\$versionedName.sha256"
+[System.IO.File]::WriteAllText($shaVersioned, "$hash  $versionedName`n")
 
 $downloadDir = Join-Path $Root "docs\download"
 New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
 Copy-Item -Force $shaFile (Join-Path $downloadDir "IRIS-Setup.exe.sha256")
+Copy-Item -Force $shaVersioned (Join-Path $downloadDir "$versionedName.sha256")
 
 $tagHint = ""
 try {
     $tagHint = (git -C $Root describe --tags --abbrev=0 2>$null).Trim()
 } catch { }
 
+$baseLatest = "https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download"
 $meta = [ordered]@{
     schema             = "iris-setup-release/v1"
-    filename           = "IRIS-Setup.exe"
-    display_filename   = "IRIS-Setup-$product.exe"
-    product_version    = $product
+    filename           = $versionedName
+    display_filename   = $versionedName
+    stable_filename    = "IRIS-Setup.exe"
+    product_version    = $productShort
     tag                = $tagHint
     published_at       = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     size_bytes         = $size
     sha256             = $hash
-    download_url       = "https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup.exe"
-    checksum_url       = "https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup.exe.sha256"
+    download_url       = "$baseLatest/$versionedName"
+    stable_download_url = "$baseLatest/IRIS-Setup.exe"
+    checksum_url       = "$baseLatest/$versionedName.sha256"
+    stable_checksum_url = "$baseLatest/IRIS-Setup.exe.sha256"
     releases_url       = "https://github.com/kwakminoo/Project-IRIS-Light/releases"
     site_install_url   = "https://iris-light-site.vercel.app/#install"
     code_signed        = $codeSigned
-    notes              = "Asset name stays IRIS-Setup.exe for stable /latest/download URL. Version is in tag + this metadata."
+    notes              = "Primary download is versioned ($versionedName) so browsers save with the version. IRIS-Setup.exe remains as a stable alias."
     requirements       = [ordered]@{
         os   = "Windows 10/11 (x64)"
         ram  = "8GB (권장 16GB)"
@@ -226,8 +240,9 @@ $metaPath = Join-Path $downloadDir "latest.json"
 $meta | ConvertTo-Json -Depth 4 | Set-Content -Path $metaPath -Encoding utf8
 Copy-Item -Force $metaPath (Join-Path $Root "dist\latest.json")
 
-Write-Host "OK:" (Resolve-Path $out) "($([math]::Round($size/1MB, 1)) MB, ProductVersion $product)"
+Write-Host "OK:" (Resolve-Path $out) "($([math]::Round($size/1MB, 1)) MB, ProductVersion $productShort)"
+Write-Host "Versioned:" (Resolve-Path $versionedOut)
 Write-Host "SHA-256: $hash"
 Write-Host "메타:" (Resolve-Path $metaPath)
-Write-Host "릴리스 에셋: IRIS-Setup.exe + IRIS-Setup.exe.sha256 (+ 선택 latest.json). 버전은 태그로 구분."
+Write-Host "릴리스 에셋: $versionedName + IRIS-Setup.exe (+ .sha256 + latest.json)"
 Write-Host "업로드 후: powershell -ExecutionPolicy Bypass -File scripts\verify_setup_release.ps1"

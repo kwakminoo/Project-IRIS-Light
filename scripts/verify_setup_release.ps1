@@ -96,12 +96,15 @@ try {
         throw ("hash mismatch`n  expected " + $ExpectedSha256 + "`n  got      " + $got)
     }
 
-    $localSha = Join-Path $Root "docs\download\IRIS-Setup.exe.sha256"
+    $localSha = Join-Path $Root ("docs\download\{0}.sha256" -f $expectedName)
+    if (-not (Test-Path $localSha)) {
+        $localSha = Join-Path $Root "docs\download\IRIS-Setup.exe.sha256"
+    }
     if (Test-Path $localSha) {
         $line = (Get-Content $localSha -TotalCount 1 -Encoding utf8).Trim()
         $localHash = ($line -split '\s+')[0].ToLowerInvariant()
         if ($localHash -match '^[0-9a-f]{64}$' -and $localHash -ne $got) {
-            throw "docs/download/IRIS-Setup.exe.sha256 ($localHash) != downloaded hash"
+            throw "$localSha ($localHash) != downloaded hash"
         }
     }
 

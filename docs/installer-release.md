@@ -1,32 +1,38 @@
 # 설치 프로그램 빌드 · 배포 절차
 
-랜딩 페이지(`https://iris-light-site.vercel.app/#install`)의 Windows Setup 버튼은
-공식 HTTPS 주소만 가리킵니다.
+랜딩 페이지(`https://iris-light-site.vercel.app/#install`)는 `docs/download/latest.json`의
+`download_url`을 읽어서 **버전 파일명**으로 받습니다.
+
+예:
+
+```
+https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup-0.1.5.exe
+```
+
+브라우저 저장 이름이 `IRIS-Setup-0.1.5.exe`처럼 버전을 포함합니다.
+
+안정 별칭(북마크·구 링크용)도 같이 올립니다.
 
 ```
 https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup.exe
 ```
 
-**에셋 이름은 반드시 `IRIS-Setup.exe`** 여야 합니다. 버전을 파일명에 넣으면
-(`IRIS-Setup-0.1.1.exe`) 이 주소가 404가 되고 사이트 버튼이 죽습니다. 버전은 릴리스
-태그·`docs/download/latest.json` 으로 구분합니다. 빌드 스크립트가 이미
-`dist\IRIS-Setup.exe` 로 내보내므로 **이름을 바꾸지 말고 그대로 올리면 됩니다.**
-
-함께 올릴 것:
+## 릴리스에 올릴 에셋
 
 | 에셋 | 역할 |
 |------|------|
-| `IRIS-Setup.exe` | 설치 프로그램 (고정 이름) |
-| `IRIS-Setup.exe.sha256` | SHA-256 한 줄 (`<hash>  IRIS-Setup.exe`) |
-| `latest.json` (선택) | 사이트 폴백 메타 — `docs/download/latest.json` 과 동일 |
+| `IRIS-Setup-<version>.exe` | **기본 다운로드** (버전이 파일명에 보임) |
+| `IRIS-Setup-<version>.exe.sha256` | 버전 파일 SHA-256 |
+| `IRIS-Setup.exe` | 안정 별칭 (동일 바이너리 복사) |
+| `IRIS-Setup.exe.sha256` | 별칭 SHA-256 |
+| `latest.json` | 사이트·검증 메타 (`download_url` = 버전 파일) |
 
 GitHub CDN이 최종 응답에 넣는 헤더(정상 시):
 
 - `Content-Type: application/octet-stream`
-- `Content-Disposition: attachment; filename=IRIS-Setup.exe`
+- `Content-Disposition: attachment; filename=IRIS-Setup-<version>.exe`
 - `Content-Length` · `Accept-Ranges: bytes` · HTTPS
 
-중간 302의 `Content-Type: text/html` 은 리다이렉트 페이지이며, **최종 200**만 보면 됩니다.
 `scripts\verify_setup_release.ps1` 이 최종 헤더·PE 매직·해시를 검사합니다.
 
 ## F1~F5 — 사이트가 할 수 있는 것 / 없는 것
@@ -51,8 +57,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build_iris_setup.ps1
 산출물:
 
 - `dist\IRIS-Setup.exe`
-- `dist\IRIS-Setup.exe.sha256` · `docs\download\IRIS-Setup.exe.sha256`
-- `docs\download\latest.json` · `dist\latest.json`
+- `dist\IRIS-Setup-<version>.exe`
+- 대응 `.sha256` · `docs\download\latest.json` · `dist\latest.json`
 
 코드 서명은 인증서가 있을 때만 (`docs/code-signing.md`).
 
@@ -60,7 +66,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build_iris_setup.ps1
 
 ## 대응 소스 (GPL-3.0 §6)
 
-바이너리(`IRIS-Setup.exe`, thin launcher `dist/IRIS.exe`)를 배포할 때 대응 소스는
+바이너리(`IRIS-Setup*.exe`, thin launcher `dist/IRIS.exe`)를 배포할 때 대응 소스는
 **이 공개 저장소**입니다. 릴리스 노트에 아래를 그대로 넣습니다.
 
 ```text
@@ -72,7 +78,7 @@ License: GPL-3.0-or-later (see LICENSE, LICENSE.md)
 ## 배포
 
 1. 최신 main에서 빌드. 릴리스 노트에 **빌드 커밋 해시**(`REVISION`)와 **대응 소스 URL**을 적습니다.
-2. 태그로 릴리스를 만들고 `IRIS-Setup.exe` + `IRIS-Setup.exe.sha256` 을 올립니다.
+2. 태그로 릴리스를 만들고 위 에셋 표를 모두 올립니다.
 3. 검증:
 
 ```powershell
@@ -86,7 +92,7 @@ powershell -ExecutionPolicy Bypass -File scripts\verify_setup_release.ps1
 ## 사용자 검증 (PowerShell)
 
 ```powershell
-Get-FileHash .\IRIS-Setup.exe -Algorithm SHA256
+Get-FileHash .\IRIS-Setup-0.1.5.exe -Algorithm SHA256
 # 사이트/릴리스에 게시된 SHA-256 과 비교. 다르면 공식 페이지에서 다시 받으세요.
 ```
 
@@ -94,7 +100,7 @@ Get-FileHash .\IRIS-Setup.exe -Algorithm SHA256
 
 - [ ] `verify_setup_release.ps1` OK
 - [ ] `ProductVersion` = 올리려는 버전
-- [ ] 에셋 이름 `IRIS-Setup.exe` (변형 금지)
+- [ ] 버전 파일 + `IRIS-Setup.exe` 별칭 둘 다 업로드
 - [ ] SHA-256 파일이 같은 해시를 가리킴
 - [ ] 설치 후 바탕화면 `IRIS` 실행
 - [ ] 번들에 `.iris_light_test_tmp` · `.env` 없음
@@ -105,6 +111,6 @@ Inno Setup 6.4+ 는 로더가 바뀌어 `innoextract` 가 읽지 못합니다.
 짧은 경로에 무인 설치하고 로그를 봅니다.
 
 ```powershell
-.\IRIS-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NOICONS /DIR=C:\t\iris /LOG=C:\t\install.log
+.\IRIS-Setup-0.1.5.exe /VERYSILENT /SUPPRESSMSGBOXES /NOICONS /DIR=C:\t\iris /LOG=C:\t\install.log
 C:\t\iris\unins000.exe /VERYSILENT
 ```

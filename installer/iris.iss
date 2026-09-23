@@ -4,8 +4,8 @@
 #define MyAppPublisher "IRIS"
 #define MyAppURL "https://github.com/kwakminoo/Project-IRIS-Light"
 #define MyAppExeName "IRIS.exe"
-; 랜딩 페이지가 releases/latest/download/IRIS-Setup.exe 를 고정으로 가리킨다.
-; 파일명에 버전을 넣으면 그 주소가 404가 된다 — 버전은 릴리스 태그로만 구분한다.
+; Inno 출력은 IRIS-Setup.exe. 빌드 스크립트가 IRIS-Setup-<version>.exe 복사본도 만든다.
+; 사이트는 latest.json 의 download_url(버전 파일명)을 쓰고, IRIS-Setup.exe 는 안정 별칭이다.
 #define MyOutputName "IRIS-Setup"
 ; 가장 깊은 번들 파일(integrations\showui-aloha\...\trajectory_refiner.txt)의
 ; 설치 폴더 기준 상대 경로 길이. MAX_PATH(260) 계산의 근거다.
