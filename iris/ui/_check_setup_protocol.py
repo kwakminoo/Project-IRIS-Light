@@ -5,8 +5,10 @@ from __future__ import annotations
 from iris.system.setup_protocol import (
     CORE_STEP_IDS,
     OPTIONAL_IDS,
+    VISIBLE_CONSOLE_STEPS,
     SetupProtocol,
     SetupStepResult,
+    core_needs_user_next,
     default_min_model,
     format_inference_report,
     has_usable_inference_backend,
@@ -53,13 +55,15 @@ def main() -> None:
     assert d.is_dir()
     assert parse_install_percent("  ████  42%") == 42
     assert parse_install_percent("pulling manifest") is None
-    from iris.assets.setup_logos import brand_for_step, setup_brand_pixmap
     from iris.ui.window.setup_wizard import _STREAM_STEPS
 
-    assert brand_for_step("hermes_gateway") == "hermes"
-    assert brand_for_step("core_smoke") == "iris"
     assert "hermes_gateway" in _STREAM_STEPS and "core_smoke" in _STREAM_STEPS
-    assert not setup_brand_pixmap("hermes", size=24).isNull()
+    assert VISIBLE_CONSOLE_STEPS == frozenset(
+        {"ollama_install", "hermes_install", "emulator"}
+    )
+    assert core_needs_user_next("skip", allow_skip=False) == "reverify"
+    assert core_needs_user_next("skip", allow_skip=True) == "skip"
+    assert "last_verify" in st
     print("setup_protocol check ok", setup_state_path(), "detect.keys=", sorted(snap))
 
 

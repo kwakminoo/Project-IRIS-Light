@@ -1314,8 +1314,16 @@ class ChatPanel(QWidget):
             if isinstance(item, OllamaModelInfo):
                 label = item.catalog_name or display_name_from_runtime(item.name)
                 provider = ""
-                if is_api_runtime_model(item.name) and " · " in label:
-                    provider = label.split(" · ", 1)[0].strip()
+                if is_api_runtime_model(item.name):
+                    # catalog "제공자 · 이름" → 표시는 이름만, 제공자는 그룹용
+                    if " · " in label:
+                        provider, label = label.split(" · ", 1)
+                        provider = provider.strip()
+                        label = label.strip()
+                    if not label or label == item.name:
+                        label = display_name_from_runtime(item.name)
+                elif not item.catalog_name or label == item.name:
+                    label = display_name_from_runtime(item.name)
                 entries.append(
                     (
                         label,
@@ -1352,11 +1360,11 @@ class ChatPanel(QWidget):
             self._model_combo.setItemData(i, QBrush(color), Qt.ItemDataRole.ForegroundRole)
             if is_api_runtime_model(runtime):
                 from iris.infrastructure.api_model_meta import tool_support_label
-                from iris.storage.api_providers import parse_runtime_model_id
 
-                parsed = parse_runtime_model_id(runtime)
-                mid = parsed[1] if parsed else runtime
-                tip = f"{provider or 'API'} · {mid} · {tool_support_label(tool_state)}" + tip_extra
+                tip = (
+                    f"{provider or 'API'} · {label} · {tool_support_label(tool_state)}"
+                    + tip_extra
+                )
             else:
                 desc = describe_model(runtime)
                 tip = (desc or runtime) + tip_extra

@@ -20,12 +20,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from iris.assets.setup_logos import brand_for_step, brand_label, setup_brand_pixmap
 from iris.config.settings import Settings
 from iris.system.setup_protocol import (
     CORE_STEP_IDS,
     CORE_STEP_LABELS,
     OPTIONAL_IDS,
+    OPTIONAL_LABELS,
+    VISIBLE_CONSOLE_STEPS,
     SetupProtocol,
     SetupStepResult,
     is_core_ready,
@@ -47,8 +48,18 @@ _STATUS_MARK = {
     "skipped": "–",
 }
 
+_STATUS_A11Y = {
+    "pending": "대기",
+    "installing": "진행 중",
+    "verifying": "검증 중",
+    "needs_user": "사용자 확인 필요",
+    "done": "완료",
+    "failed": "실패",
+    "skipped": "건너뜀",
+}
 
-# 설치·기동 중 터미널 패널(+로고)을 띄울 Core/Optional 단계
+
+# 설치·기동 중 터미널 패널을 띄울 Core/Optional 단계
 _STREAM_STEPS = {
     "mcp_venv",
     "ollama_install",
@@ -68,11 +79,8 @@ _STREAM_STEPS = {
     "iris_ide",
 }
 
-# winget/UAC 승격이 멈추는 걸 막으려고 콘솔 창을 일부러 숨기지 않는 단계들
-# (setup_protocol.py의 _run_streamed(..., hidden=False) 호출부와 동일 목록).
-# 이 창은 출력이 전부 파이프로 Iris 로그에 새 나가서 화면엔 빈 채로 떠 있다 —
-# 사용자가 "멈췄다"고 오해하기 쉬워 안내 문구를 따로 보여준다.
-_VISIBLE_CONSOLE_STEPS = {"ollama_install", "hermes_install", "emulator"}
+# needs_user 장시간 방치 시 힌트 (ms)
+_NEEDS_USER_IDLE_HINT_MS = 120_000
 
 
 class _SpinnerWidget(QWidget):
@@ -114,23 +122,6 @@ class _NeedsUserCard(QFrame):
         self._url = ""
         lay = QVBoxLayout(self)
         lay.setSpacing(TOKENS.spacing_sm)
-        brand_row = QHBoxLayout()
-        brand_row.setSpacing(TOKENS.spacing_sm)
-        self._logo = QLabel()
-        self._logo.setFixedSize(36, 36)
-        self._logo.setScaledContents(False)
-        self._logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        brand_row.addWidget(self._logo)
-        self._brand_name = QLabel("")
-        self._brand_name.setStyleSheet(
-            f"color: {TOKENS.neon_cyan}; font-weight: 600; font-size: {TOKENS.font_size_body}px;"
-        )
-        brand_row.addWidget(self._brand_name)
-        brand_row.addStretch(1)
-        self._brand_row = QWidget()
-        self._brand_row.setLayout(brand_row)
-        self._brand_row.hide()
-        lay.addWidget(self._brand_row)
         self._why = QLabel("")
         self._why.setWordWrap(True)
         lay.addWidget(self._why)
@@ -239,17 +230,9 @@ class _NeedsUserCard(QFrame):
         self._term.hide()
         lay.addWidget(self._term)
 
-    def _apply_brand(self, step_id: str) -> None:
-        brand = brand_for_step(step_id)
-        pm = setup_brand_pixmap(brand, size=36)
-        self._logo.setPixmap(pm)
-        self._brand_name.setText(brand_label(brand))
-        self._brand_row.show()
-
     def bind(self, result: SetupStepResult, *, allow_skip: bool) -> None:
         self.end_install()
         self._step_id = result.step_id
-        self._apply_brand(result.step_id)
         self._why.setText(result.message or result.label)
         self._hint.setText(result.action_hint or "")
         self._hint.setVisible(bool(result.action_hint))
@@ -274,9 +257,8 @@ class _NeedsUserCard(QFrame):
             self._why.setText(why)
         if step_id:
             self._step_id = step_id
-        self._apply_brand(self._step_id)
         self._hint.hide()
-        self._console_hint.setVisible(self._step_id in _VISIBLE_CONSOLE_STEPS)
+        self._console_hint.setVisible(self._step_id in VISIBLE_CONSOLE_STEPS)
         self._paste.hide()
         self._open_btn.hide()
         self._install_btn.hide()
@@ -321,16 +303,23 @@ class _NeedsUserCard(QFrame):
         self._console_hint.hide()
         self._bar.hide()
         self._term.hide()
-        self._brand_row.hide()
+
+    def append_hint(self, text: str) -> None:
+        extra = (text or "").strip()
+        if not extra:
+            return
+        cur = self._hint.text() or ""
+        if extra in cur:
+            return
+        self._hint.setText((cur + "\n" if cur else "") + extra)
+        self._hint.show()
 
     def finish_install(self, *, message: str = "") -> None:
-        """설치 종료 — 로고·터미널 로그는 유지."""
+        """설치 종료 — 터미널 로그는 유지."""
         self._spin_timer.stop()
         self._loading_row.hide()
         self._console_hint.hide()
         self._bar.hide()
-        if self._step_id:
-            self._apply_brand(self._step_id)
         if message:
             self._why.setText(message)
             self._why.show()
@@ -371,7 +360,10 @@ class SetupWizard(QDialog):
         self._core_phase = True
         self._step_status: dict[str, str] = {s: "pending" for s in CORE_STEP_IDS}
         self._finished = False
-
+        self._optional_total = len(OPTIONAL_IDS)
+        self._needs_user_idle = QTimer(self)
+        self._needs_user_idle.setSingleShot(True)
+        self._needs_user_idle.timeout.connect(self._on_needs_user_idle)
         root = QVBoxLayout(self)
         root.setContentsMargins(TOKENS.spacing_xl, TOKENS.spacing_lg, TOKENS.spacing_xl, TOKENS.spacing_lg)
         root.setSpacing(TOKENS.spacing_md)
@@ -409,8 +401,13 @@ class SetupWizard(QDialog):
 
         self._list = QListWidget()
         for sid in CORE_STEP_IDS:
-            item = QListWidgetItem(f"{_STATUS_MARK['pending']}  {CORE_STEP_LABELS[sid]}")
+            label = CORE_STEP_LABELS[sid]
+            item = QListWidgetItem(f"{_STATUS_MARK['pending']}  {label}")
             item.setData(Qt.ItemDataRole.UserRole, sid)
+            item.setData(
+                Qt.ItemDataRole.AccessibleDescriptionRole,
+                f"{label}, {_STATUS_A11Y['pending']}",
+            )
             self._list.addItem(item)
         root.addWidget(self._list, 1)
 
@@ -448,8 +445,13 @@ class SetupWizard(QDialog):
             self._start_worker()
 
     def _start_worker(self) -> None:
-        if self._worker is not None and self._worker.isRunning():
+        if self._worker is not None and (
+            self._worker.isRunning() or self._worker.is_install_running()
+        ):
+            self._append_log("이전 설치가 아직 정리 중입니다. 잠시 후 재시도하세요.")
+            self._retry_btn.show()
             return
+        self._needs_user_idle.stop()
         self._retry_btn.hide()
         self._copy_diag_btn.hide()
         self._enter_btn.hide()
@@ -464,6 +466,7 @@ class SetupWizard(QDialog):
             hermes_base_url=self._settings.hermes_base_url,
             hermes_command=self._settings.hermes_command,
             min_model=self._settings.ollama_model or "",
+            allow_core_skip=(self._mode == "repair"),
         )
         worker = SetupProtocolWorker(
             proto,
@@ -477,6 +480,7 @@ class SetupWizard(QDialog):
         worker.log_line.connect(self._append_log)
         worker.install_chunk.connect(self._on_install_chunk)
         worker.phase_changed.connect(self._on_phase)
+        worker.optional_progress.connect(self._on_optional_progress)
         worker.failed.connect(self._on_failed)
         worker.finished_ok.connect(self._on_finished)
         worker.start()
@@ -494,12 +498,22 @@ class SetupWizard(QDialog):
         self._core_phase = phase == "core"
         if phase == "optional":
             self._subtitle.setText("추가 기능(선택) — 「나중에」로 건너뛸 수 있습니다.")
-            self._progress.setRange(0, 0)  # indeterminate
-            self._progress.setFormat("Optional…")
+            self._progress.setRange(0, self._optional_total)
+            self._progress.setValue(0)
+            self._progress.setFormat("Optional %v / %m")
         elif phase == "done":
             self._progress.setRange(0, len(CORE_STEP_IDS))
             self._progress.setValue(len(CORE_STEP_IDS))
             self._progress.setFormat("Core Ready")
+
+    def _on_optional_progress(self, index: int, total: int, step_id: str) -> None:
+        self._optional_total = max(1, int(total))
+        self._progress.setRange(0, self._optional_total)
+        # index는 시작 시점(1-based) — 진행 바는 완료 수에 가깝게 index-1
+        self._progress.setValue(max(0, int(index) - 1))
+        self._progress.setFormat("Optional %v / %m")
+        label = OPTIONAL_LABELS.get(step_id, step_id)
+        self._current.setText(f"Optional {index}/{total}: {label}")
 
     def _on_step(self, result: object) -> None:
         if not isinstance(result, SetupStepResult):
@@ -514,6 +528,15 @@ class SetupWizard(QDialog):
             if self._card.is_installing():
                 self._card.end_install()
                 self._card.hide()
+            if (
+                not self._core_phase
+                and result.step_id in OPTIONAL_IDS
+                and result.status in ("done", "skipped", "failed")
+            ):
+                # optional 완료 반영 — optional_progress 시작값과 맞춤
+                cur = self._progress.value()
+                if cur < self._progress.maximum():
+                    self._progress.setValue(cur + 1)
         if result.status == "installing":
             self._current.setText(f"{result.label}: {result.message or '진행 중…'}")
         if result.step_id in self._step_status:
@@ -533,42 +556,79 @@ class SetupWizard(QDialog):
             sid = item.data(Qt.ItemDataRole.UserRole)
             st = self._step_status.get(sid, "pending")
             mark = _STATUS_MARK.get(st, "?")
-            item.setText(f"{mark}  {CORE_STEP_LABELS.get(sid, sid)}")
+            a11y = _STATUS_A11Y.get(st, st)
+            label = CORE_STEP_LABELS.get(sid, sid)
+            item.setText(f"{mark}  {label}")
+            item.setData(
+                Qt.ItemDataRole.AccessibleDescriptionRole,
+                f"{label}, {a11y}",
+            )
 
     def _on_needs_user(self, result: object) -> None:
         if not isinstance(result, SetupStepResult):
             return
         allow_skip = not self._core_phase or result.step_id not in CORE_STEP_IDS
-        # Core needs_user도 재시도만 — later 숨김
+        # Core: first_run 은 스킵 금지. repair 만 위험 고지 후 허용.
         if result.step_id in CORE_STEP_IDS:
-            allow_skip = False
+            allow_skip = self._mode == "repair"
         self._current.setText(result.message or result.label)
-        self._card.bind(result, allow_skip=allow_skip)
+        if allow_skip and result.step_id in CORE_STEP_IDS:
+            # 위험 고지 — 카드 hint에 덧붙임
+            warned = SetupStepResult(
+                step_id=result.step_id,
+                status=result.status,
+                message=result.message,
+                action_url=result.action_url,
+                action_hint=(
+                    (result.action_hint or "")
+                    + ("\n" if result.action_hint else "")
+                    + "【주의】repair 전용 건너뛰기 — 이 단계가 준비되지 않으면 채팅/MCP가 실패할 수 있습니다."
+                ),
+                label=result.label,
+                can_install=result.can_install,
+                can_login=result.can_login,
+                install_label=result.install_label,
+                login_label=result.login_label,
+            )
+            self._card.bind(warned, allow_skip=True)
+        else:
+            self._card.bind(result, allow_skip=allow_skip)
+        self._needs_user_idle.start(_NEEDS_USER_IDLE_HINT_MS)
+
+    def _on_needs_user_idle(self) -> None:
+        self._append_log(
+            "이 단계에서 대기 중입니다. 「완료했어요」/「나중에」/「설치」를 눌러 주세요."
+        )
+        if self._card.isVisible() and not self._card.is_installing():
+            self._card.append_hint("오래 기다리셨다면 버튼을 눌러 주세요.")
 
     def _on_user_done(self, _paste: str) -> None:
+        self._needs_user_idle.stop()
         self._card.hide()
         if self._worker is not None:
             self._worker.resume_user("done")
 
     def _on_user_later(self) -> None:
+        self._needs_user_idle.stop()
         self._card.hide()
         if self._worker is not None:
             self._worker.resume_user("skip")
 
     def _on_user_install(self) -> None:
+        self._needs_user_idle.stop()
         self._card.begin_install("설치 실행 중… UAC가 뜨면 허용해 주세요.", reset=True)
         self._append_log("설치 시작…")
         if self._worker is not None:
             self._worker.resume_user("install")
 
     def _on_install_chunk(self, text: str, percent: object, replace: bool) -> None:
+        """설치 중에는 카드 터미널만 전체 스트림 — 하단 로그는 요약(상태행)만."""
         pct = percent if isinstance(percent, int) else None
         line = (text or "").strip()
-        if line and not replace:
-            self._append_log(line)
-            self._current.setText(line)
-        elif line and replace:
+        if line and replace:
             self._current.setText(line if pct is None else f"{line} ({pct}%)")
+        elif line and not replace:
+            self._current.setText(line)
         if self._card.is_installing() or self._card.isVisible():
             self._card.set_install_chunk(text, pct, bool(replace))
 
@@ -629,10 +689,14 @@ class SetupWizard(QDialog):
         return False
 
     def _abort_worker(self) -> None:
+        self._needs_user_idle.stop()
         if self._worker is not None and self._worker.isRunning():
+            # request_abort → protocol.abort → taskkill /T 프로세스 트리
             self._worker.request_abort()
-            # ponytail: UI 스레드에서 수 초 wait 하면 응답없음. 짧게만 양보.
-            self._worker.wait(500)
+            # ponytail: UI 스레드에서 수 초 wait 하면 응답없음. 짧게 폴링만.
+            for _ in range(6):
+                if self._worker.wait(200):
+                    break
 
     def allow_close(self) -> bool:
         """설치 중이면 확인창. True면 닫기 허용."""

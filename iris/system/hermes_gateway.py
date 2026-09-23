@@ -234,13 +234,36 @@ def _pyvenv_home_path(venv_dir: Path) -> Path | None:
     return None
 
 
+def is_hermes_cli_missing_failure(text: str) -> bool:
+    """gateway/venv 가 hermes_cli 없이 기동돼 ModuleNotFoundError 나는 경우."""
+    t = (text or "").lower()
+    if not t:
+        return False
+    if "no module named 'hermes_cli'" in t or 'no module named "hermes_cli"' in t:
+        return True
+    return "hermes_cli" in t and "modulenotfounderror" in t
+
+
+def is_hermes_gateway_dep_missing_failure(text: str) -> bool:
+    """API gateway 필수 의존성(aiohttp 등) 누락으로 즉시 죽는 경우."""
+    t = (text or "").lower()
+    if not t or "modulenotfounderror" not in t:
+        return False
+    for mod in ("aiohttp", "hermes_cli", "mcp"):
+        if f"no module named '{mod}'" in t or f'no module named "{mod}"' in t:
+            return True
+    if "requires the 'mcp' python sdk" in t:
+        return True
+    return False
+
+
 def probe_hermes_runtime(
     *, command: str = "hermes", timeout_sec: float = 25.0
 ) -> tuple[bool, str]:
-    """Hermes venv/exe가 실제로 Python 자식을 띄울 수 있는지.
+    """Hermes venv/exe가 실제로 gateway를 띄울 수 있는지.
 
-    파일만 있고 베이스 인터프리터가 사라진 경우(uv trampoline os error 2)를
-    설치·gateway 단계 전에 잡는다.
+    파일만 있고 베이스 인터프리터가 사라진 경우(uv trampoline os error 2)와
+    venv만 있고 hermes_cli/aiohttp 가 없는 껍데기 설치를 설치·gateway 전에 잡는다.
     """
     venv_dir = _hermes_venv_dir()
     venv_py = _hermes_venv_python()
@@ -248,9 +271,15 @@ def probe_hermes_runtime(
         home = _pyvenv_home_path(venv_dir)
         if home is not None and not home.is_dir():
             return False, f"pyvenv home 없음: {home}"
+        # gateway 는 python -m hermes_cli.main + aiohttp(tcp_site).
+        # print('ok')/hermes_cli 만 보면 껍데기·extras 누락을 통과시킨다.
         try:
             proc = subprocess.run(
-                [str(venv_py), "-c", "print('ok')"],
+                [
+                    str(venv_py),
+                    "-c",
+                    "import hermes_cli, aiohttp, mcp; print('ok')",
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -267,7 +296,13 @@ def probe_hermes_runtime(
         err = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
         if proc.returncode != 0 or is_hermes_trampoline_failure(err):
             detail = err[:400] if err else f"exit {proc.returncode}"
+            if is_hermes_cli_missing_failure(detail):
+                return False, f"hermes_cli 없음: {detail[:240]}"
+            if is_hermes_gateway_dep_missing_failure(detail):
+                return False, f"gateway 의존성 없음: {detail[:240]}"
             return False, detail
+        if "ok" not in (proc.stdout or ""):
+            return False, f"hermes_cli import 응답 이상: {err[:240]}"
         return True, f"venv ok ({venv_py.name})"
 
     exe = hermes_executable(command)

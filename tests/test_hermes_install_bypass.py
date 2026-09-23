@@ -30,6 +30,27 @@ class HermesInstallBypassTests(unittest.TestCase):
     def test_detect_negative(self) -> None:
         self.assertFalse(hi.looks_like_uv_python_mount_failure("gateway /health timeout"))
 
+    def test_find_bootstrap_python_skips_unsupported_iris_venv(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            iris_python = root / ".venv" / "Scripts" / "python.exe"
+            fallback_python = root / ".venv" / "bin" / "python"
+            iris_python.parent.mkdir(parents=True)
+            fallback_python.parent.mkdir(parents=True)
+            iris_python.touch()
+            fallback_python.touch()
+
+            def version(path: Path) -> tuple[int, int]:
+                return (3, 14) if "Scripts" in path.parts else (3, 13)
+
+            with (
+                patch("iris.system.hermes_iris_control_sync.project_root", return_value=root),
+                patch.object(hi, "python_version", side_effect=version),
+                patch.object(hi.shutil, "which", return_value=None),
+                patch.object(hi.sys, "executable", ""),
+            ):
+                self.assertEqual(hi.find_bootstrap_python(), fallback_python)
+
     def test_force_retire_renames_locked_tree(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "hermes"

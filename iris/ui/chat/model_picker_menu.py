@@ -69,9 +69,9 @@ def _ollama_blurb(m: PickerModel) -> str:
 
 
 def _api_blurb(m: PickerModel) -> str:
-    parsed = parse_runtime_model_id(m.runtime)
-    model_id = parsed[1] if parsed else m.runtime
-    bits = [model_id, tool_support_label(m.tool_support)]
+    from iris.infrastructure.ollama_client import display_name_from_runtime
+
+    bits = [m.label or display_name_from_runtime(m.runtime), tool_support_label(m.tool_support)]
     if m.tool_support == "unknown":
         bits.append("선택하면 1회 확인함")
     return " · ".join(bits)

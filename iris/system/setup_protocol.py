@@ -29,6 +29,8 @@ from iris.system.hermes_gateway import (
     ensure_hermes_provider_config,
     hermes_executable,
     hermes_home,
+    is_hermes_cli_missing_failure,
+    is_hermes_gateway_dep_missing_failure,
     is_hermes_gateway_running,
     is_hermes_trampoline_failure,
     load_hermes_dotenv,
@@ -178,6 +180,48 @@ OPTIONAL_LABELS: dict[str, str] = {
     "ollama_cloud": "Ollama 클라우드",
 }
 
+# winget/UAC 승격용 — 콘솔 창을 숨기지 않는 단계 (_run_streamed hidden=False 와 동일).
+# UI 안내 문구와 공유한다 (setup_wizard VISIBLE_CONSOLE_STEPS).
+VISIBLE_CONSOLE_STEPS: frozenset[str] = frozenset(
+    {"ollama_install", "hermes_install", "emulator"}
+)
+
+# Ready 기준 (문서화):
+# - core_ready / 부팅 게이트: verify_core_quick (Ollama 응답·가용 모델·Hermes /health)
+# - 설정「검사」·core_smoke: verify_core (quick + 채팅 401 + MCP stdio)
+# last_verify 에 최근 검사 수준이 기록되며 HUD/설정에 표시한다.
+
+
+def normalize_user_choice(raw: str | None) -> str:
+    """needs_user 응답 정규화 → abort|install|skip|done."""
+    c = (raw or "done").strip().lower() or "done"
+    if c in ("abort", "install", "skip"):
+        return c
+    if c in ("later", "skip_later"):
+        return "skip"
+    return "done"
+
+
+def core_needs_user_next(choice: str, *, allow_skip: bool = False) -> str:
+    """needs_user 대기 후 전이 (상태머신 — 단위 테스트 고정).
+
+    | choice  | allow_skip | next     |
+    |---------|------------|----------|
+    | abort   | *          | abort    |
+    | install | *          | install  |
+    | skip    | True       | skip     |
+    | skip    | False      | reverify |
+    | done/*  | *          | reverify |
+    """
+    c = normalize_user_choice(choice)
+    if c == "abort":
+        return "abort"
+    if c == "install":
+        return "install"
+    if c == "skip":
+        return "skip" if allow_skip else "reverify"
+    return "reverify"
+
 
 @dataclass
 class SetupStepResult:
@@ -275,7 +319,37 @@ def _default_state() -> dict[str, Any]:
         "steps": {},
         "optional": {k: {"status": "pending", "message": "", "updated_at": ""} for k in OPTIONAL_IDS},
         "last_error": "",
+        # level: none|quick|full — Ready(quick) vs 검사/smoke(full) 불일치 안내용
+        "last_verify": {
+            "level": "none",
+            "ok": False,
+            "detail": "",
+            "at": "",
+        },
     }
+
+
+def get_last_verify(
+    *, simulate: bool | None = None, dry_run: bool | None = None
+) -> dict[str, Any]:
+    raw = load_setup_state(simulate=simulate, dry_run=dry_run).get("last_verify")
+    if not isinstance(raw, dict):
+        return dict(_default_state()["last_verify"])
+    base = dict(_default_state()["last_verify"])
+    base.update({k: raw.get(k, base[k]) for k in base})
+    return base
+
+
+def describe_ready_basis(
+    *, simulate: bool | None = None, dry_run: bool | None = None
+) -> str:
+    """HUD용 Ready 기준 한 줄."""
+    lv = get_last_verify(simulate=simulate, dry_run=dry_run)
+    level = str(lv.get("level") or "none")
+    if level == "none":
+        return "Ready 기준: quick (부팅) · last_verify 없음"
+    ok = "OK" if lv.get("ok") else "FAIL"
+    return f"Ready 기준: quick (부팅) · last={level}/{ok}"
 
 
 def load_setup_state(
@@ -301,6 +375,13 @@ def load_setup_state(
     for key in OPTIONAL_IDS:
         if key not in opt or not isinstance(opt.get(key), dict):
             opt[key] = {"status": "pending", "message": "", "updated_at": ""}
+    lv = base.get("last_verify")
+    if not isinstance(lv, dict):
+        base["last_verify"] = dict(_default_state()["last_verify"])
+    else:
+        merged = dict(_default_state()["last_verify"])
+        merged.update({k: lv.get(k, merged[k]) for k in merged})
+        base["last_verify"] = merged
     return base
 
 
@@ -353,6 +434,10 @@ def mark_core_ready_if_healthy(
     min_model: str = "",
 ) -> bool:
     """부팅 게이트 — True면 시작 프로토콜 없이 runtime boot.
+
+    Ready 기준 (quick):
+    - Ollama 응답 + 가용 추론(로컬 모델 또는 클라우드 로그인) + Hermes /health
+    - MCP stdio·채팅 401은 포함하지 않음 (느림) — 그건 verify_core(full)
 
     - Ollama/Hermes 실행 파일이 없으면 False (위저드).
     - core_ready가 이미 True면 헬스 실패로 플래그를 지우지 않고, 서비스 기동만
@@ -649,6 +734,7 @@ class SetupProtocol:
         min_model: str = "",
         simulate: bool | None = None,
         dry_run: bool | None = None,
+        allow_core_skip: bool = False,
     ) -> None:
         self.ollama_base_url = ollama_base_url
         self.hermes_base_url = hermes_base_url
@@ -656,6 +742,8 @@ class SetupProtocol:
         self.min_model = (min_model or default_min_model()).strip() or DEFAULT_MIN_MODEL
         self.simulate = is_setup_demo() if simulate is None else bool(simulate)
         self.dry_run = is_setup_dry_run() if dry_run is None else bool(dry_run)
+        # repair 모드: Core needs_user 에서 skip 허용 (위험 — 수동 mark)
+        self.allow_core_skip = bool(allow_core_skip)
         self._state = self._load_state()
         self._sim_user_done: set[str] = set()
         self._on_stream: StreamFn | None = None
@@ -673,10 +761,38 @@ class SetupProtocol:
         return proc is not None and proc.poll() is None
 
     def abort(self) -> None:
+        """설치 중단 — `_active_proc` 프로세스 트리(taskkill /T) 정리.
+
+        재진입 전 `is_busy()` / 워커 `isRunning()` 가드로 잔여 설치를 막는다.
+        """
         self._abort = True
         proc = self._active_proc
         if proc is not None:
             _kill_proc_tree(proc)
+
+    def _record_last_verify(self, level: str, ok: bool, detail: str) -> None:
+        self._state["last_verify"] = {
+            "level": level,
+            "ok": bool(ok),
+            "detail": redact_secrets((detail or "")[:240]),
+            "at": _utc_now(),
+        }
+        self._save_state()
+
+    def _core_runners(self) -> list[tuple[str, Callable[[], SetupStepResult]]]:
+        """live Core step 레지스트리 — demo/dry_run 은 CORE_STEP_IDS + 동일 choice 전이."""
+        return [
+            ("state_init", self._step_state_init),
+            ("mcp_venv", self._step_mcp_venv),
+            ("ollama_install", self._step_ollama_install),
+            ("ollama_model", self._step_ollama_model),
+            ("hermes_install", self._step_hermes_install),
+            ("hermes_env", self._step_hermes_env),
+            ("hermes_provider", self._step_hermes_provider),
+            ("iris_control_sync", self._step_iris_control_sync),
+            ("hermes_gateway", self._step_hermes_gateway),
+            ("core_smoke", self._step_core_smoke),
+        ]
 
     def _state_path(self) -> Path:
         return setup_state_path(simulate=self.simulate, dry_run=self.dry_run)
@@ -917,7 +1033,7 @@ class SetupProtocol:
         # 콜백 없이는 사용자 확인을 받을 방법이 없으므로 안전하게 중단한다.
         if on_user is None:
             return "abort"
-        return (on_user(result) or "done").strip().lower() or "done"
+        return normalize_user_choice(on_user(result))
 
     def _auto_or_wait_user(
         self,
@@ -967,38 +1083,60 @@ class SetupProtocol:
 
         MCP stdio 핸드셰이크(최대 수십 초, 프로세스 스폰)는 느리므로 뺀다.
         앱 시작 시 core_ready 여부를 판단할 때처럼 자주 호출되는 경로에서 쓴다.
+        Ready(core_ready) 기준 = 이 quick 수준.
         """
         if self.simulate or self.dry_run:
-            return True, "Ollama·Hermes 정상 (quick)"
+            detail = "Ollama·Hermes 정상 (quick)"
+            self._record_last_verify("quick", True, detail)
+            return True, detail
         info = self.inspect_inference()
         report = str(info.get("report") or "")
         if not info.get("ollama_running"):
-            return False, "Ollama가 응답하지 않습니다"
+            detail = "Ollama가 응답하지 않습니다"
+            self._record_last_verify("quick", False, detail)
+            return False, detail
         if not info.get("usable"):
-            return False, report or "사용 가능한 Ollama 모델이 없습니다"
+            detail = report or "사용 가능한 Ollama 모델이 없습니다"
+            self._record_last_verify("quick", False, detail)
+            return False, detail
         key = resolve_hermes_api_key()
         if not is_hermes_gateway_running(self.hermes_base_url, api_key=key, timeout_sec=3.0):
             from iris.system.hermes_gateway import get_last_gateway_diagnosis
 
             diag = get_last_gateway_diagnosis()
             if diag and not diag.ok:
-                return False, diag.user_message()
-            return False, (
+                detail = diag.user_message()
+                self._record_last_verify("quick", False, detail)
+                return False, detail
+            detail = (
                 "[HEALTH] Hermes gateway /health 실패\n"
                 "조치: 시작 프로토콜을 다시 실행하거나 "
                 "%LOCALAPPDATA%\\hermes\\logs\\iris-gateway 로그를 확인하세요."
             )
-        return True, "Ollama·Hermes 정상"
+            self._record_last_verify("quick", False, detail)
+            return False, detail
+        detail = "Ollama·Hermes 정상"
+        self._record_last_verify("quick", True, detail)
+        return True, detail
 
     def verify_core(self) -> tuple[bool, str]:
-        """전체 검증 — quick 헬스체크 + 채팅 401 + MCP stdio 핸드셰이크."""
+        """전체 검증 — quick 헬스체크 + 채팅 401 + MCP stdio 핸드셰이크.
+
+        설정「검사」·core_smoke 경로. Ready 플래그보다 엄격 — MCP 실패 시
+        core_ready 여부와 무관하게 채팅이 실패할 수 있다.
+        """
         if self.simulate or self.dry_run:
-            return True, "Ollama·Hermes·MCP 정상"
+            detail = "Ollama·Hermes·MCP 정상"
+            self._record_last_verify("full", True, detail)
+            return True, detail
         info = self.inspect_inference()
         report = str(info.get("report") or "")
         if not info.get("ollama_running"):
-            return False, "Ollama가 응답하지 않습니다\n" + report
+            detail = "Ollama가 응답하지 않습니다\n" + report
+            self._record_last_verify("full", False, detail)
+            return False, detail
         if not info.get("usable"):
+            self._record_last_verify("full", False, report)
             return False, report
         key = resolve_hermes_api_key()
         if not is_hermes_gateway_running(self.hermes_base_url, api_key=key):
@@ -1008,25 +1146,35 @@ class SetupProtocol:
             health_msg = diag.user_message() if diag and not diag.ok else (
                 "[HEALTH] Hermes gateway /health 실패"
             )
-            return False, health_msg + "\n" + report
+            detail = health_msg + "\n" + report
+            self._record_last_verify("full", False, detail)
+            return False, detail
         from iris.infrastructure.hermes_client import HermesClient
 
         auth = HermesClient(self.hermes_base_url, api_key=key).probe_chat_auth()
         if auth == "unauthorized":
-            return False, (
+            detail = (
                 "[API_KEY] Hermes 채팅 401 Unauthorized "
                 "(gateway /health 생존과는 별개).\n"
                 "API 키가 게이트웨이(.env API_SERVER_KEY)와 다르거나, "
                 "클라우드 모델인데 미로그인입니다.\n"
                 + report
             )
+            self._record_last_verify("full", False, detail)
+            return False, detail
         if auth == "unreachable":
-            return False, "Hermes 채팅 엔드포인트에 연결할 수 없습니다\n" + report
+            detail = "Hermes 채팅 엔드포인트에 연결할 수 없습니다\n" + report
+            self._record_last_verify("full", False, detail)
+            return False, detail
         mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self.hermes_command)
         if not mcp_ok:
-            return False, f"MCP 검증 실패: {mcp_detail}\n{report}"
+            detail = f"MCP 검증 실패: {mcp_detail}\n{report}"
+            self._record_last_verify("full", False, detail)
+            return False, detail
         kind = "로컬 모델" if info.get("has_local") else "클라우드 로그인"
-        return True, f"Ollama·Hermes·MCP 정상 ({kind})\n{report}"
+        detail = f"Ollama·Hermes·MCP 정상 ({kind})\n{report}"
+        self._record_last_verify("full", True, detail)
+        return True, detail
 
     def run_core(
         self,
@@ -1038,19 +1186,7 @@ class SetupProtocol:
             return self._run_core_simulated(on_progress, on_user)
         if self.dry_run:
             return self._run_core_dry_run(on_progress, on_user)
-        runners: list[tuple[str, Callable[[], SetupStepResult]]] = [
-            ("state_init", self._step_state_init),
-            ("mcp_venv", self._step_mcp_venv),
-            ("ollama_install", self._step_ollama_install),
-            ("ollama_model", self._step_ollama_model),
-            ("hermes_install", self._step_hermes_install),
-            ("hermes_env", self._step_hermes_env),
-            ("hermes_provider", self._step_hermes_provider),
-            ("iris_control_sync", self._step_iris_control_sync),
-            ("hermes_gateway", self._step_hermes_gateway),
-            ("core_smoke", self._step_core_smoke),
-        ]
-        for step_id, runner in runners:
+        for step_id, runner in self._core_runners():
             while True:
                 self._emit(on_progress, self._record_step(step_id, "installing", CORE_STEP_LABELS.get(step_id, "")))
                 try:
@@ -1063,10 +1199,17 @@ class SetupProtocol:
                 if result.status == "needs_user":
                     self._emit(on_progress, result)
                     choice = self._auto_or_wait_user(on_user, result)
-                    if choice == "abort":
+                    nxt = core_needs_user_next(choice, allow_skip=self.allow_core_skip)
+                    if nxt == "abort":
                         self._record_step(step_id, "failed", self._abort_message(on_user))
                         return False
-                    if choice == "install":
+                    if nxt == "skip":
+                        skipped = self._record_step(
+                            step_id, "skipped", "사용자가 건너뜀 (repair)"
+                        )
+                        self._emit(on_progress, skipped)
+                        break
+                    if nxt == "install":
                         advance = False
                         while True:
                             self._emit(
@@ -1084,17 +1227,27 @@ class SetupProtocol:
                             inner_choice = self._auto_or_wait_user(
                                 on_user, installed, allow_auto_install=False
                             )
-                            if inner_choice == "abort":
+                            inner = core_needs_user_next(
+                                inner_choice, allow_skip=self.allow_core_skip
+                            )
+                            if inner == "abort":
                                 self._record_step(step_id, "failed", self._abort_message(on_user))
                                 return False
-                            if inner_choice == "install":
+                            if inner == "skip":
+                                skipped = self._record_step(
+                                    step_id, "skipped", "사용자가 건너뜀 (repair)"
+                                )
+                                self._emit(on_progress, skipped)
+                                advance = True
+                                break
+                            if inner == "install":
                                 continue
-                            # "done" 등 — 사용자가 수동으로 해결했다고 응답 → 재검증
+                            # "reverify" — 사용자가 수동으로 해결했다고 응답 → 재검증
                             break
                         if advance:
                             break
                         continue
-                    # done: 재검증(수동 설치 후)
+                    # reverify: 재검증(수동 설치 후)
                     continue
 
                 self._emit(on_progress, result)
@@ -1148,10 +1301,17 @@ class SetupProtocol:
                     )
                     self._emit(on_progress, result)
                     choice = self._wait_user(on_user, result)
-                    if choice == "abort":
+                    nxt = core_needs_user_next(choice, allow_skip=self.allow_core_skip)
+                    if nxt == "abort":
                         self._record_step(step_id, "failed", self._abort_message(on_user))
                         return False
-                    if choice == "install":
+                    if nxt == "skip":
+                        skipped = self._record_step(
+                            step_id, "skipped", "사용자가 건너뜀 (repair)"
+                        )
+                        self._emit(on_progress, skipped)
+                        break
+                    if nxt == "install":
                         # 데모: 설치 버튼만 눌러도 다음 단계로
                         self._sim_user_done.add(step_id)
                         continue
@@ -1229,10 +1389,17 @@ class SetupProtocol:
                     )
                     self._emit(on_progress, result)
                     choice = self._wait_user(on_user, result)
-                    if choice == "abort":
+                    nxt = core_needs_user_next(choice, allow_skip=self.allow_core_skip)
+                    if nxt == "abort":
                         self._record_step(step_id, "failed", self._abort_message(on_user))
                         return False
-                    if choice == "install":
+                    if nxt == "skip":
+                        skipped = self._record_step(
+                            step_id, "skipped", "사용자가 건너뜀 (repair)"
+                        )
+                        self._emit(on_progress, skipped)
+                        break
+                    if nxt == "install":
                         self._emit(
                             on_progress,
                             self._record_step(step_id, "installing", "설치 실행 중…"),
@@ -2364,6 +2531,10 @@ class SetupProtocol:
             blob = f"{diag.code}\n{diag.message}\n{diag.detail}"
             if is_hermes_trampoline_failure(blob):
                 return True
+            if is_hermes_cli_missing_failure(blob) or is_hermes_gateway_dep_missing_failure(
+                blob
+            ):
+                return True
             # PROCESS_CRASH만 추가 probe — timeout/포트 충돌마다 25초 낭비 금지
             if diag.code != CODE_PROCESS_CRASH:
                 return False
@@ -2371,7 +2542,12 @@ class SetupProtocol:
                 command=self.hermes_command, timeout_sec=12.0
             )
             return (not ok_rt) and (
-                is_hermes_trampoline_failure(detail_rt) or "pyvenv home" in detail_rt
+                is_hermes_trampoline_failure(detail_rt)
+                or is_hermes_cli_missing_failure(detail_rt)
+                or is_hermes_gateway_dep_missing_failure(detail_rt)
+                or "pyvenv home" in detail_rt
+                or "hermes_cli" in detail_rt
+                or "gateway 의존성" in detail_rt
             )
 
         _progress("Hermes gateway 상태 확인…")
@@ -2393,7 +2569,7 @@ class SetupProtocol:
                     _progress(f"기동 실패 스냅샷: [{diag.code}] {diag.message}")
                 if _should_auto_repair_runtime():
                     _progress(
-                        "깨진 Hermes 런타임(uv trampoline) 감지 — 자동 재설치 후 재시도…"
+                        "깨진 Hermes 런타임 감지 — 자동 재설치 후 재시도…"
                     )
                     repaired = self._install_hermes()
                     self._emit_stream(repaired.message, None, replace=False)

@@ -836,6 +836,8 @@ class MainWindow(QMainWindow):
         self._refresh_models(probe_cloud=True)
 
     def _ready_status_message(self) -> str:
+        from iris.system.setup_protocol import describe_ready_basis
+
         model = (
             self._chat.current_model()
             or self._saved_model
@@ -848,6 +850,7 @@ class MainWindow(QMainWindow):
         return (
             f"아이리스 준비완료 모델: {model} 응답 대기중"
             " — 첫 발화에는 약간의 시간이 소요될 수 있습니다"
+            f" · {describe_ready_basis()}"
         )
 
     def _on_intro_finished(self) -> None:
@@ -1064,6 +1067,8 @@ class MainWindow(QMainWindow):
 
     def _append_ok_api_models(self, items: list[OllamaModelInfo]) -> list[OllamaModelInfo]:
         """status==ok 커스텀 API 모델을 피커 목록에 병합."""
+        from iris.infrastructure.ollama_client import display_name_from_runtime
+
         out = list(items)
         seen = {m.name for m in out}
         try:
@@ -1083,10 +1088,11 @@ class MainWindow(QMainWindow):
                     continue
                 seen.add(rid)
                 tool_state = p.tool_support.get(model, "unknown")
+                # catalog: "제공자 · 짧은이름" — 피커 라벨은 이름만 쓰고 제공자는 그룹용
                 out.append(
                     OllamaModelInfo(
                         name=rid,
-                        catalog_name=f"{p.name} · {model}",
+                        catalog_name=f"{p.name} · {display_name_from_runtime(model)}",
                         supports_tools=tool_state != "no",
                         requires_subscription=False,
                         tool_support=tool_state,

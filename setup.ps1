@@ -35,6 +35,7 @@ $LogFile = Join-Path $Root "setup-log.txt"
 $PipLog = Join-Path $Root "setup-log-pip.txt"
 $MinMajor = 3
 $MinMinor = 11
+$MaxMinorExclusive = 14
 
 # ---------------------------------------------------------------- 출력 헬퍼
 $script:StepNo = 0
@@ -89,7 +90,7 @@ Write-Host "  경로: $Root" -ForegroundColor DarkGray
 Write-Host "===============================================" -ForegroundColor Magenta
 
 # ------------------------------------------------------- 1. Python 찾기
-Write-Step "Python 3.$MinMinor 이상 확인"
+Write-Step "Python 3.$MinMinor–3.13 확인"
 
 function Get-PythonCandidates {
     $out = @()
@@ -121,14 +122,14 @@ foreach ($cand in Get-PythonCandidates) {
     $parts = $v.Split(".")
     if ($parts.Count -lt 2) { continue }
     $maj = [int]$parts[0]; $min = [int]$parts[1]
-    if ($maj -gt $MinMajor -or ($maj -eq $MinMajor -and $min -ge $MinMinor)) {
+    if ($maj -eq $MinMajor -and $min -ge $MinMinor -and $min -lt $MaxMinorExclusive) {
         $PyExe = $exe; $PyArgs = $argv; $PyVersion = $v
         break
     }
 }
 
 if (-not $PyExe) {
-    Fail "Python $MinMajor.$MinMinor 이상을 찾지 못했습니다." @(
+    Fail "Hermes 호환 Python 3.$MinMinor–3.13을 찾지 못했습니다." @(
         "https://www.python.org/downloads/ 에서 Python 3.12 설치",
         "설치 화면에서 [Add python.exe to PATH] 체크 필수",
         "또는 PowerShell에서: winget install -e --id Python.Python.3.12",
@@ -148,6 +149,12 @@ if ($Recreate -and (Test-Path $VenvPath)) {
 $VenvPy = Join-Path $VenvPath "Scripts\python.exe"
 
 if (Test-Path $VenvPy) {
+    $VenvVersion = & $VenvPy -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+    if (-not $VenvVersion -or $VenvVersion -notmatch '^3\.(11|12|13)$') {
+        Fail "기존 .venv의 Python($VenvVersion)은 Hermes와 호환되지 않습니다." @(
+            ".\setup.ps1 -Recreate 로 3.11–3.13 가상환경을 새로 만드세요"
+        )
+    }
     Write-Ok ".venv 이미 존재 — 재사용 (새로 만들려면 -Recreate)"
 } else {
     Write-Info "생성 중..."

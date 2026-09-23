@@ -224,6 +224,30 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         self.assertFalse(gw.is_hermes_trampoline_failure("connection refused"))
         self.assertFalse(gw.is_hermes_trampoline_failure(""))
 
+    def test_is_hermes_cli_missing_failure(self) -> None:
+        self.assertTrue(
+            gw.is_hermes_cli_missing_failure(
+                "Error while finding module specification for 'hermes_cli.main' "
+                "(ModuleNotFoundError: No module named 'hermes_cli')"
+            )
+        )
+        self.assertFalse(gw.is_hermes_cli_missing_failure("connection refused"))
+
+    def test_is_hermes_gateway_dep_missing_failure(self) -> None:
+        self.assertTrue(
+            gw.is_hermes_gateway_dep_missing_failure(
+                "from aiohttp import web\nModuleNotFoundError: No module named 'aiohttp'"
+            )
+        )
+        self.assertTrue(
+            gw.is_hermes_gateway_dep_missing_failure(
+                "requires the 'mcp' Python SDK, but it is not installed"
+            )
+        )
+        self.assertFalse(
+            gw.is_hermes_gateway_dep_missing_failure("connection refused")
+        )
+
     def test_probe_hermes_runtime_missing_pyvenv_home(self) -> None:
         agent = self.home / "hermes-agent" / "venv"
         scripts = agent / "Scripts"

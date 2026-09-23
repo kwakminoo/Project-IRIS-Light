@@ -148,8 +148,10 @@ class TopStatusHeader:
 
     def set_model_name(self, name: str) -> None:
         from iris.infrastructure.model_descriptions import describe_model
+        from iris.infrastructure.ollama_client import display_name_from_runtime
 
-        display = name.strip() if name.strip() else "(unset)"
+        raw = name.strip() if name.strip() else "(unset)"
+        display = display_name_from_runtime(raw) if raw != "(unset)" else raw
         self._model_chip.set_value(display, dot_kind="connected")
         desc = describe_model(name)
         tip = f"{display}\n{desc}" if desc else display

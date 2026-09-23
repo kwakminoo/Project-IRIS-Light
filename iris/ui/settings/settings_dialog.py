@@ -2005,9 +2005,15 @@ class SettingsDialog(QDialog):
         return ""
 
     def _apply_setup_snap(self, snap: dict) -> None:
-        from iris.system.setup_protocol import is_core_ready
+        from iris.system.setup_protocol import describe_ready_basis, get_last_verify, is_core_ready
 
         needs = self._setup_needs_install(snap)
+        lv = get_last_verify()
+        level = str(lv.get("level") or "none")
+        if level == "none":
+            verify_bit = "last_verify=없음"
+        else:
+            verify_bit = f"last_verify={level}/{'OK' if lv.get('ok') else 'FAIL'}"
         bits = [
             f"Ollama {'OK' if snap.get('ollama_exe') else '없음'}"
             + self._setup_running_suffix(snap.get("ollama_running")),
@@ -2017,6 +2023,8 @@ class SettingsDialog(QDialog):
             f"venv {'OK' if snap.get('venv_ok') else '없음'}",
             f"API 키 {'설정됨' if snap.get('api_key_set') else '없음'}",
             f"core_ready={'예' if is_core_ready() else '아니오'}",
+            verify_bit,
+            describe_ready_basis(),
         ]
         self._setup_status.setText("상태: " + " · ".join(bits))
         if needs:

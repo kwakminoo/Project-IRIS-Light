@@ -24,6 +24,8 @@ from iris.system import hermes_gateway as gw
 
 HERMES_REPO_HTTPS = "https://github.com/NousResearch/hermes-agent.git"
 StreamFn = Callable[[str], None]
+_HERMES_PYTHON_MIN = (3, 11)
+_HERMES_PYTHON_MAX_EXCLUSIVE = (3, 14)
 
 _UV_MOUNT_MARKERS = (
     "os error 448",
@@ -70,6 +72,24 @@ def _run(
     )
 
 
+def python_version(path: Path) -> tuple[int, int] | None:
+    """Return a candidate interpreter's major/minor version."""
+    try:
+        proc = _run(
+            [str(path), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(r"(?m)^(\d+)\.(\d+)\s*$", proc.stdout or "")
+    return (int(match.group(1)), int(match.group(2))) if proc.returncode == 0 and match else None
+
+
+def is_supported_hermes_python(path: Path) -> bool:
+    version = python_version(path)
+    return version is not None and _HERMES_PYTHON_MIN <= version < _HERMES_PYTHON_MAX_EXCLUSIVE
+
+
 def find_bootstrap_python() -> Path | None:
     """Hermes venv를 만들 베이스 인터프리터 — Iris .venv 우선, 그다음 py launcher."""
     try:
@@ -82,12 +102,12 @@ def find_bootstrap_python() -> Path | None:
         root / ".venv" / "Scripts" / "python.exe",
         root / ".venv" / "bin" / "python",
     ):
-        if cand.is_file():
+        if cand.is_file() and is_supported_hermes_python(cand):
             return cand
     if sys.platform == "win32":
         py = shutil.which("py")
         if py:
-            for flag in ("-3.11", "-3.12", "-3.13", "-3.10", "-3"):
+            for flag in ("-3.13", "-3.12", "-3.11"):
                 try:
                     proc = _run([py, flag, "-c", "import sys; print(sys.executable)"], timeout=20)
                 except (OSError, subprocess.TimeoutExpired):
@@ -95,15 +115,15 @@ def find_bootstrap_python() -> Path | None:
                 line = (proc.stdout or "").strip().splitlines()
                 if proc.returncode == 0 and line:
                     p = Path(line[-1].strip())
-                    if p.is_file():
+                    if p.is_file() and is_supported_hermes_python(p):
                         return p
-    for name in ("python3.11", "python3.12", "python3", "python"):
+    for name in ("python3.13", "python3.12", "python3.11", "python3", "python"):
         found = shutil.which(name)
-        if found:
+        if found and is_supported_hermes_python(Path(found)):
             return Path(found)
     if sys.executable:
         p = Path(sys.executable)
-        if p.is_file():
+        if p.is_file() and is_supported_hermes_python(p):
             return p
     return None
 
@@ -368,8 +388,17 @@ def install_hermes_with_system_python(
     _run([str(venv_py), "-m", "pip", "install", "-U", "pip", "wheel", "setuptools"], timeout=300.0)
 
     _emit("Hermes 패키지 설치 (pip install -e .)…")
-    # 긴 설치 — 스트림 가능하면 사용
-    pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", "."]
+    # API gateway(tcp_site)→aiohttp([homeassistant]), MCP 테스트→mcp([mcp]).
+    # 공식 uv sync 는 lock 으로 끌어오지만 pip -e . 만으론 빠져 PROCESS_CRASH /
+    # mcp test Connection failed 가 난다.
+    pip_cmd = [
+        str(venv_py),
+        "-m",
+        "pip",
+        "install",
+        "-e",
+        ".[homeassistant,mcp]",
+    ]
     try:
         if run_streamed is not None:
             pip = run_streamed(pip_cmd, cwd=str(agent), timeout=900.0, hard_timeout=2400.0, hidden=True)
@@ -377,6 +406,37 @@ def install_hermes_with_system_python(
             pip = _run(pip_cmd, cwd=str(agent), timeout=2400.0)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"pip 설치 중단: {exc}"
+
+    if pip.returncode != 0:
+        # extras 미지원/구버전 메타데이터면 core 만 설치 후 필수 패키지 보강
+        _emit(".[homeassistant,mcp] 실패 — core + aiohttp/mcp 폴백…")
+        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", "."]
+        try:
+            if run_streamed is not None:
+                pip = run_streamed(
+                    pip_cmd, cwd=str(agent), timeout=900.0, hard_timeout=2400.0, hidden=True
+                )
+            else:
+                pip = _run(pip_cmd, cwd=str(agent), timeout=2400.0)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, f"pip 설치 중단: {exc}"
+        if pip.returncode == 0:
+            boost = _run(
+                [
+                    str(venv_py),
+                    "-m",
+                    "pip",
+                    "install",
+                    "aiohttp==3.14.3",
+                    "mcp==2.0.0",
+                    "httpx2==2.7.0",
+                    "starlette==1.3.1",
+                ],
+                timeout=300.0,
+            )
+            if boost.returncode != 0:
+                err = ((boost.stderr or "") + (boost.stdout or ""))[:300]
+                return False, f"gateway/mcp 의존성 보강 실패: {err}"
 
     if pip.returncode != 0:
         # pyproject extras / uv.lock 프로젝트일 수 있음 — requirements 폴백
@@ -409,18 +469,21 @@ def install_hermes_with_system_python(
     if not hermes_exe.is_file():
         # module 진입만 있어도 gateway는 venv python -m hermes_cli.main 으로 동작
         check = _run(
-            [str(venv_py), "-c", "import hermes_cli"],
+            [str(venv_py), "-c", "import hermes_cli, aiohttp, mcp"],
             timeout=60.0,
         )
         if check.returncode != 0:
-            return False, "hermes_cli import 실패 — 패키지 설치 불완전"
+            return False, "hermes_cli/aiohttp/mcp import 실패 — 패키지 설치 불완전"
 
     ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
     if ok:
         return True, f"우회 설치 성공 ({detail})"
     # probe 가 exe 없으면 venv python 기준이라도 import 통과 시 성공으로 본다
     if (scripts / "python.exe").is_file() or (scripts / "python").is_file():
-        check = _run([str(venv_py), "-c", "import hermes_cli; print('ok')"], timeout=60.0)
+        check = _run(
+            [str(venv_py), "-c", "import hermes_cli, aiohttp, mcp; print('ok')"],
+            timeout=60.0,
+        )
         if check.returncode == 0 and "ok" in (check.stdout or ""):
             return True, f"우회 설치 성공 (venv import ok; probe={detail})"
     return False, f"우회 설치 후 런타임 실패: {detail}"

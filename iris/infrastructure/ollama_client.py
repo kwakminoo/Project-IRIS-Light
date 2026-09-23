@@ -51,13 +51,33 @@ def probe_status_from_http_detail(detail: str) -> str:
 
 
 def display_name_from_runtime(runtime_name: str) -> str:
-    """gemma4:31b-cloud → gemma4:31b"""
-    n = runtime_name.strip()
-    if n.endswith("-cloud"):
-        return n[: -len("-cloud")]
-    if n.endswith(":cloud"):
-        return n[: -len(":cloud")]
-    return n
+    """UI용 짧은 모델명.
+
+    - ``api:{provider_id}:{model}`` → 모델명만
+    - ``google/gemma-…`` / ``models/gemini-…`` → 경로·org 제거
+    - ``gemma4:31b-cloud`` → ``gemma4:31b``
+    - 하이픈 구분 API id → 공백 (``gemini-2.5-flash`` → ``gemini 2.5 flash``)
+    """
+    n = (runtime_name or "").strip()
+    if not n or n == "(unset)":
+        return n
+    # Iris 커스텀 API runtime — provider id 버리고 모델 id만
+    if n.lower().startswith("api:") and ":" in n[4:]:
+        n = n.split(":", 2)[2].strip()
+    for suf in ("-cloud", ":cloud"):
+        if n.endswith(suf):
+            n = n[: -len(suf)]
+            break
+    # org/models/… 경로 → 마지막 세그먼트
+    if "/" in n:
+        n = n.rsplit("/", 1)[-1].strip()
+    if not n:
+        return runtime_name.strip()
+    # Ollama 태그(gemma4:31b)는 그대로
+    if ":" in n:
+        return n
+    # API 스타일 하이픈 id → 읽기 쉬운 공백
+    return n.replace("-", " ").strip()
 
 
 def to_runtime_cloud_name(catalog_name: str) -> str:
@@ -405,4 +425,9 @@ if __name__ == "__main__":
     assert probe_status_from_http_detail("model not found") == "unavailable"
     m = OllamaModelInfo(name="x:cloud", supports_tools=False, requires_subscription=True)
     assert m.supports_tools is False and m.requires_subscription is True
+    assert display_name_from_runtime("gemma4:31b-cloud") == "gemma4:31b"
+    assert display_name_from_runtime("api:ab12:models/gemini-2.5-flash") == "gemini 2.5 flash"
+    assert display_name_from_runtime("api:nv:google/gemma-2-9b-it") == "gemma 2 9b it"
+    assert display_name_from_runtime("api:x:meta/llama-3.1-8b-instruct") == "llama 3.1 8b instruct"
+    assert display_name_from_runtime("nvidia/nemotron-3-nano") == "nemotron 3 nano"
     print("ollama_client self-check ok")
