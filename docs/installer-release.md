@@ -54,11 +54,21 @@ GitHub CDN이 최종 응답에 넣는 헤더(정상 시):
 powershell -ExecutionPolicy Bypass -File scripts\build_iris_setup.ps1
 ```
 
+빌드가 끝나면 **GitHub Releases 업로드까지 자동**으로 수행합니다
+(`scripts\publish_iris_setup.ps1`). 끄려면:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_iris_setup.ps1 -NoPublish
+# 또는
+$env:IRIS_SETUP_NO_PUBLISH = "1"
+```
+
 산출물:
 
 - `dist\IRIS-Setup.exe`
 - `dist\IRIS-Setup-<version>.exe`
 - 대응 `.sha256` · `docs\download\latest.json` · `dist\latest.json`
+- (기본) Releases 최신 태그 에셋 + `docs/download` 메타 push
 
 코드 서명은 인증서가 있을 때만 (`docs/code-signing.md`).
 

@@ -1,6 +1,6 @@
 ; IRIS Windows installer — payload is staged next to this file by build_iris_setup.ps1
 #define MyAppName "IRIS"
-#define MyAppVersion "0.1.6"
+#define MyAppVersion "0.1.7"
 #define MyAppPublisher "IRIS"
 #define MyAppURL "https://github.com/kwakminoo/Project-IRIS-Light"
 #define MyAppExeName "IRIS.exe"
@@ -70,6 +70,7 @@ Type: filesandordirs; Name: "{app}\.venv-voice"
 Type: files; Name: "{app}\.env"
 Type: files; Name: "{app}\setup-log.txt"
 Type: files; Name: "{app}\setup-log-pip.txt"
+Type: files; Name: "{app}\setup-fail-reason.txt"
 
 [Code]
 var
@@ -126,17 +127,57 @@ begin
   Result := not DepsFailed;
 end;
 
+{ setup-fail-reason.txt (UTF-8) — Fail() 가 남긴 한 줄. 없으면 setup-log 폴백. }
+function SetupFailureHint(): String;
+var
+  ReasonPath: String;
+  LogPath: String;
+  Lines: TArrayOfString;
+  I: Integer;
+  Line: String;
+begin
+  Result := '';
+  ReasonPath := ExpandConstant('{app}\setup-fail-reason.txt');
+  if FileExists(ReasonPath) then
+  begin
+    if LoadStringsFromFile(ReasonPath, Lines) and (GetArrayLength(Lines) > 0) then
+    begin
+      Result := Trim(Lines[0]);
+      if Result <> '' then
+        Exit;
+    end;
+  end;
+  LogPath := ExpandConstant('{app}\setup-log.txt');
+  if not FileExists(LogPath) then
+    Exit;
+  if not LoadStringsFromFile(LogPath, Lines) then
+    Exit;
+  for I := GetArrayLength(Lines) - 1 downto 0 do
+  begin
+    Line := Trim(Lines[I]);
+    { ASCII fallback: transcript may be UTF-16 and unreadable here }
+    if (Pos('설치 실패:', Line) = 1) or (Pos('FAIL:', Line) = 1) then
+    begin
+      Result := Line;
+      Exit;
+    end;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
   Launched: Boolean;
+  Hint: String;
+  Detail: String;
 begin
   if CurStep <> ssPostInstall then
     Exit;
 
   { SW_HIDE + -WindowStyle Hidden: 콘솔/Windows Terminal 창을 띄우지 않는다.
     진행 안내는 StatusLabel 만. 로그는 setup.ps1 의 Transcript / pip --log 에 남는다. }
-  WizardForm.StatusLabel.Caption := 'Creating Python venv and installing packages (needs internet)...';
+  WizardForm.StatusLabel.Caption :=
+    'Installing Python (if needed) and packages — needs internet, may take several minutes...';
   WizardForm.Refresh();
 
   Launched := Exec(
@@ -159,17 +200,24 @@ begin
   end;
 
   { /VERYSILENT /SUPPRESSMSGBOXES 로 깔면 아래 창이 안 뜬다. 로그에는 남겨 둔다. }
+  Hint := SetupFailureHint();
   Log('setup.ps1 FAILED with exit code ' + IntToStr(ResultCode)
       + ' — IRIS will not start until setup.bat is run successfully.');
+  if Hint <> '' then
+    Log('setup failure hint: ' + Hint);
 
-  SuppressibleMsgBox(
+  Detail :=
     'IRIS was copied to your computer, but installing the Python packages' + #13#10 +
-    'did not finish (exit code ' + IntToStr(ResultCode) + ').' + #13#10#13#10 +
+    'did not finish (exit code ' + IntToStr(ResultCode) + ').' + #13#10#13#10;
+  if Hint <> '' then
+    Detail := Detail + Hint + #13#10#13#10;
+  Detail := Detail +
     'IRIS will not start until this step completes. Check your internet' + #13#10 +
     'connection, then open the install folder and double-click setup.bat:' + #13#10#13#10 +
     ExpandConstant('{app}\setup.bat') + #13#10#13#10 +
     'What went wrong is recorded in:' + #13#10 +
     ExpandConstant('{app}\setup-log.txt') + #13#10 +
-    ExpandConstant('{app}\setup-log-pip.txt'),
-    mbError, MB_OK, IDOK);
+    ExpandConstant('{app}\setup-log-pip.txt');
+
+  SuppressibleMsgBox(Detail, mbError, MB_OK, IDOK);
 end;

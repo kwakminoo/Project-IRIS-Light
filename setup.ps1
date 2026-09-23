@@ -33,9 +33,13 @@ Set-Location $Root
 $VenvPath = Join-Path $Root ".venv"
 $LogFile = Join-Path $Root "setup-log.txt"
 $PipLog = Join-Path $Root "setup-log-pip.txt"
+$FailReasonFile = Join-Path $Root "setup-fail-reason.txt"
 $MinMajor = 3
 $MinMinor = 11
 $MaxMinorExclusive = 14
+# Setup.exe 가 Python 없이 깔리는 PC 대비 — 공식 설치 파일을 받아 조용히 깐다.
+$BootstrapPyVer = "3.12.10"
+$BootstrapPyUrl = "https://www.python.org/ftp/python/$BootstrapPyVer/python-$BootstrapPyVer-amd64.exe"
 
 # ---------------------------------------------------------------- 출력 헬퍼
 $script:StepNo = 0
@@ -68,14 +72,51 @@ function Fail([string]$Message, [string[]]$Hints) {
     Write-Host "전체 기록: $LogFile" -ForegroundColor DarkGray
     if (Test-Path $PipLog) { Write-Host "설치 상세: $PipLog" -ForegroundColor DarkGray }
     Write-Host ""
+    # Inno 대화상자가 읽을 한 줄 — UTF-8. 숨김 창이라 이 파일 없으면 원인 전달이 안 된다.
+    try {
+        [System.IO.File]::WriteAllText($FailReasonFile, "설치 실패: $Message", [System.Text.UTF8Encoding]::new($false))
+    } catch { }
     Stop-Log
     exit 1
+}
+
+# Inno/숨김 창에서도 방금 깐 Python 이 보이도록 Machine+User PATH 를 다시 읽는다.
+function Refresh-ProcessPath {
+    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $user = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($machine -or $user) { $env:Path = "$user;$machine" }
+}
+
+# Microsoft Store 실행 별칭(0바이트) · WindowsApps 스텁은 제외.
+function Test-RealPythonExe([string]$Path) {
+    if (-not $Path) { return $false }
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    if ($Path -match '(?i)\\WindowsApps\\') { return $false }
+    try {
+        $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+        if ($item.Length -lt 1024) { return $false }
+    } catch { return $false }
+    return $true
+}
+
+function Resolve-CommandExe([string]$Name) {
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    if (-not $cmd) { return $null }
+    $src = $cmd.Source
+    if (-not $src) { return $null }
+    if ($Name -match '^(py|python|python3)$' -and -not (Test-RealPythonExe $src)) {
+        # py.exe 런처(C:\Windows\py.exe)는 작을 수 있어도 허용
+        if ($Name -eq "py" -and (Test-Path -LiteralPath $src)) { return $src }
+        return $null
+    }
+    return $src
 }
 
 # 창을 닫으면 화면 기록은 사라진다. 중간에 끊겨도 원인이 남도록 파일로 받아 둔다.
 # 단, PowerShell 5.1 트랜스크립트는 pip 같은 네이티브 출력을 담지 못한다 —
 # 그건 pip 자체 --log 로 $PipLog 에 따로 받는다.
 Remove-Item $PipLog -ErrorAction SilentlyContinue
+Remove-Item $FailReasonFile -ErrorAction SilentlyContinue
 try {
     Start-Transcript -Path $LogFile -Force | Out-Null
     $script:Transcribing = $true
@@ -91,51 +132,169 @@ Write-Host "===============================================" -ForegroundColor Ma
 
 # ------------------------------------------------------- 1. Python 찾기
 Write-Step "Python 3.$MinMinor–3.13 확인"
+Refresh-ProcessPath
 
 function Get-PythonCandidates {
-    $out = @()
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        $out += ,@("py", @("-3.13"))
-        $out += ,@("py", @("-3.12"))
-        $out += ,@("py", @("-3.11"))
-        $out += ,@("py", @("-3"))
+    # ponytail: return ,$array + @() 조합은 후보 Object[] 를 한 원소로 감싸
+    # $cand.Exe 가 모든 경로를 공백으로 이어 붙인다. List 를 그대로 돌려 for-each 한다.
+    $list = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+
+    $queue = New-Object System.Collections.Generic.List[object]
+    $py = Resolve-CommandExe "py"
+    if ($py) {
+        foreach ($flag in @("-3.13", "-3.12", "-3.11", "-3")) {
+            $queue.Add([pscustomobject]@{ Exe = $py; Args = [string[]]@($flag) }) | Out-Null
+        }
+    }
+    foreach ($p in @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"),
+        (Join-Path ${env:ProgramFiles} "Python313\python.exe"),
+        (Join-Path ${env:ProgramFiles} "Python312\python.exe"),
+        (Join-Path ${env:ProgramFiles} "Python311\python.exe")
+    )) {
+        if (Test-RealPythonExe $p) {
+            $queue.Add([pscustomobject]@{ Exe = $p; Args = [string[]]@() }) | Out-Null
+        }
     }
     foreach ($name in @("python", "python3")) {
-        if (Get-Command $name -ErrorAction SilentlyContinue) { $out += ,@($name, @()) }
+        $exe = Resolve-CommandExe $name
+        if ($exe) {
+            $queue.Add([pscustomobject]@{ Exe = $exe; Args = [string[]]@() }) | Out-Null
+        }
     }
-    return $out
+
+    foreach ($e in $queue) {
+        $key = ($e.Exe + "|" + ($e.Args -join " ")).ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $list.Add($e) | Out-Null
+    }
+    return $list
 }
 
-$PyExe = $null
-$PyArgs = @()
-$PyVersion = $null
+function Find-CompatiblePython {
+    $cands = Get-PythonCandidates
+    foreach ($cand in $cands) {
+        $exe = [string]$cand.Exe
+        $argv = @($cand.Args)
+        if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { continue }
+        try {
+            if ($argv.Count -gt 0) {
+                $raw = & $exe @argv -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
+            } else {
+                $raw = & $exe -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
+            }
+        } catch { continue }
+        if ($LASTEXITCODE -ne 0) { continue }
+        if (-not $raw) { continue }
+        $v = ($raw | Select-Object -First 1).Trim()
+        $parts = $v.Split(".")
+        if ($parts.Count -lt 2) { continue }
+        $maj = [int]$parts[0]; $min = [int]$parts[1]
+        if ($maj -eq $MinMajor -and $min -ge $MinMinor -and $min -lt $MaxMinorExclusive) {
+            return @{ Exe = $exe; Args = $argv; Version = $v }
+        }
+    }
+    return $null
+}
 
-foreach ($cand in Get-PythonCandidates) {
-    $exe = $cand[0]
-    $argv = $cand[1]
+function Find-WingetExe {
+    foreach ($c in @(
+        (Resolve-CommandExe "winget"),
+        (Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe"),
+        (Join-Path ${env:ProgramFiles} "WindowsApps\Microsoft.DesktopAppInstaller_*\winget.exe")
+    )) {
+        if (-not $c) { continue }
+        if ($c -match '\*') {
+            $hit = Get-Item $c -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($hit -and $hit.Length -gt 1024) { return $hit.FullName }
+            continue
+        }
+        if ((Test-Path -LiteralPath $c) -and ((Get-Item -LiteralPath $c).Length -gt 1024)) {
+            return $c
+        }
+    }
+    return $null
+}
+
+function Install-PythonBootstrap {
+    Write-Info "호환 Python 없음 — $BootstrapPyVer 자동 설치 시도 (인터넷 필요)"
+
+    $winget = Find-WingetExe
+    if ($winget) {
+        Write-Info "winget 으로 Python 3.12 설치..."
+        & $winget install -e --id Python.Python.3.12 --accept-package-agreements `
+            --accept-source-agreements --disable-interactivity --scope user 2>&1 | Out-Null
+        Refresh-ProcessPath
+        $found = Find-CompatiblePython
+        if ($found) { return $found }
+        Write-Warn "winget 설치 후에도 Python 을 찾지 못함 — 공식 설치 파일로 재시도"
+    }
+
+    $tmp = Join-Path $env:TEMP "iris-python-$BootstrapPyVer-amd64.exe"
     try {
-        $raw = & $exe @argv -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
-    } catch { continue }
-    if (-not $?) { continue }
-    if (-not $raw) { continue }
-    $v = ($raw | Select-Object -First 1).Trim()
-    $parts = $v.Split(".")
-    if ($parts.Count -lt 2) { continue }
-    $maj = [int]$parts[0]; $min = [int]$parts[1]
-    if ($maj -eq $MinMajor -and $min -ge $MinMinor -and $min -lt $MaxMinorExclusive) {
-        $PyExe = $exe; $PyArgs = $argv; $PyVersion = $v
-        break
+        Write-Info "다운로드: $BootstrapPyUrl"
+        # BITS/Invoke-WebRequest 둘 다 깨지는 PC 대비 — .NET 으로 받는다
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $wc = New-Object System.Net.WebClient
+        $wc.Headers.Add("User-Agent", "IRIS-Setup")
+        $wc.DownloadFile($BootstrapPyUrl, $tmp)
+    } catch {
+        Write-Warn "다운로드 실패: $($_.Exception.Message)"
+        return $null
     }
+    if (-not (Test-Path $tmp) -or (Get-Item $tmp).Length -lt 1MB) {
+        Write-Warn "다운로드 파일이 비정상입니다"
+        return $null
+    }
+
+    Write-Info "조용히 설치 중 (현재 사용자 · PATH 등록)..."
+    $installerArgs = @(
+        "/quiet",
+        "InstallAllUsers=0",
+        "PrependPath=1",
+        "Include_test=0",
+        "Include_doc=0",
+        "Include_dev=0",
+        "Include_launcher=1",
+        "AssociateFiles=0",
+        "Shortcuts=0"
+    )
+    $p = Start-Process -FilePath $tmp -ArgumentList $installerArgs -Wait -PassThru
+    Refresh-ProcessPath
+    # 설치 직후 레지스트리/폴더가 늦게 보일 수 있어 잠깐 재탐색
+    for ($i = 0; $i -lt 8; $i++) {
+        $found = Find-CompatiblePython
+        if ($found) { return $found }
+        Start-Sleep -Seconds 1
+        Refresh-ProcessPath
+    }
+    if ($p.ExitCode -ne 0) {
+        Write-Warn "Python 설치 프로그램 exit code $($p.ExitCode)"
+    }
+    return $null
 }
 
-if (-not $PyExe) {
-    Fail "Hermes 호환 Python 3.$MinMinor–3.13을 찾지 못했습니다." @(
-        "https://www.python.org/downloads/ 에서 Python 3.12 설치",
+$hit = Find-CompatiblePython
+if (-not $hit) {
+    $hit = Install-PythonBootstrap
+}
+
+if (-not $hit) {
+    Fail "Hermes 호환 Python 3.$MinMinor–3.13을 찾지 못했고 자동 설치에도 실패했습니다." @(
+        "인터넷 연결을 확인하세요",
+        "https://www.python.org/downloads/release/python-31210/ 에서 Windows installer (64-bit) 설치",
         "설치 화면에서 [Add python.exe to PATH] 체크 필수",
-        "또는 PowerShell에서: winget install -e --id Python.Python.3.12",
         "설치 후 이 창을 닫고 setup.bat 을 다시 실행하세요"
     )
 }
+
+$PyExe = $hit.Exe
+$PyArgs = $hit.Args
+$PyVersion = $hit.Version
 Write-Ok "Python $PyVersion ($PyExe $($PyArgs -join ' '))"
 
 # ------------------------------------------------------- 2. 가상환경
@@ -170,6 +329,34 @@ if (Test-Path $VenvPy) {
 
 # ------------------------------------------------------- 3. pip 업그레이드
 Write-Step "pip 업그레이드"
+
+# PATH 에 깨진 정션/마운트(WinError 448)가 있으면 pip 이 설치 중 죽는다.
+# (예: 일부 클라우드 PC · Cua driver bin 등)
+function Set-PipSafePath {
+    $keep = New-Object System.Collections.Generic.List[string]
+    foreach ($part in @(
+        (Join-Path $VenvPath "Scripts"),
+        "$env:SystemRoot\System32",
+        "$env:SystemRoot",
+        "$env:SystemRoot\System32\Wbem"
+    )) {
+        if ($part -and (Test-Path -LiteralPath $part)) { $keep.Add($part) | Out-Null }
+    }
+    foreach ($part in ($env:Path -split ';')) {
+        if ([string]::IsNullOrWhiteSpace($part)) { continue }
+        if ($part -match '(?i)\\Cua\\|\\cua-driver\\') { continue }
+        try {
+            if (-not (Test-Path -LiteralPath $part)) { continue }
+            $null = Get-Item -LiteralPath $part -ErrorAction Stop
+            if (-not $keep.Contains($part)) { $keep.Add($part) | Out-Null }
+        } catch {
+            Write-Warn "PATH에서 제외 (접근 불가): $part"
+        }
+    }
+    $env:Path = ($keep -join ';')
+}
+Set-PipSafePath
+
 & $VenvPy -m pip install --upgrade pip --disable-pip-version-check --no-input -q
 if ($LASTEXITCODE -ne 0) { Write-Warn "pip 업그레이드 실패 — 기존 pip으로 계속합니다" } else { Write-Ok "pip 최신" }
 
@@ -177,23 +364,37 @@ if ($LASTEXITCODE -ne 0) { Write-Warn "pip 업그레이드 실패 — 기존 pip
 Write-Step "의존성 설치 (requirements.txt) — 수 분 걸릴 수 있습니다"
 
 $Requirements = Join-Path $Root "requirements.txt"
-# 끊긴 다운로드 하나로 설치 전체가 주저앉지 않게 — pip 내부 재시도 + 한 번 더
+# 끊긴 다운로드·SSL 가로채기 환경까지 — 재시도 + trusted-host 폴백
 $pipRc = 1
-foreach ($attempt in 1..2) {
-    if ($attempt -gt 1) { Write-Warn "재시도 $attempt/2 — 이미 받은 패키지는 건너뜁니다" }
+$pipAttempts = @(
+    @{ Extra = @(); Label = "기본" },
+    @{ Extra = @(); Label = "재시도" },
+    @{
+        Extra = @(
+            "--trusted-host", "pypi.org",
+            "--trusted-host", "files.pythonhosted.org",
+            "--trusted-host", "pypi.python.org"
+        )
+        Label = "trusted-host 폴백"
+    }
+)
+foreach ($attempt in 1..$pipAttempts.Count) {
+    $spec = $pipAttempts[$attempt - 1]
+    if ($attempt -gt 1) {
+        Write-Warn "$($spec.Label) $attempt/$($pipAttempts.Count) — 이미 받은 패키지는 건너뜁니다"
+        Set-PipSafePath
+    }
     & $VenvPy -m pip install -r $Requirements --log $PipLog `
-        --disable-pip-version-check --no-input --retries 5 --timeout 60
+        --disable-pip-version-check --no-input --retries 5 --timeout 60 `
+        @($spec.Extra)
     $pipRc = $LASTEXITCODE
     if ($pipRc -eq 0) { break }
 }
 if ($pipRc -ne 0) {
-    Fail "의존성 설치에 실패했습니다." @(
-        "네트워크/프록시 상태를 확인하세요",
-        "사내망이라면: $VenvPy -m pip install -r requirements.txt --trusted-host pypi.org --trusted-host files.pythonhosted.org",
-        ".\setup.ps1 -Recreate 로 가상환경을 새로 만들어 재시도"
-    )
+    Write-Warn "pip 종료 코드 $pipRc — 핵심 패키지 import 로 최종 판정합니다"
+} else {
+    Write-Ok "설치 완료"
 }
-Write-Ok "설치 완료"
 
 # ------------------------------------------------------- 5. .env 준비
 Write-Step "환경 설정(.env) 준비"
@@ -240,10 +441,16 @@ Remove-Item $checkFile -ErrorAction SilentlyContinue
 if ($checkRc -ne 0) {
     Fail "핵심 패키지 import 검증 실패: $result" @(
         ".\setup.ps1 -Recreate 로 재설치",
+        "네트워크/프록시 상태를 확인하세요",
+        "사내망이라면: $VenvPy -m pip install -r requirements.txt --trusted-host pypi.org --trusted-host files.pythonhosted.org",
         "Visual C++ 재배포 패키지가 없으면 PyQt6 로드가 실패할 수 있습니다: winget install -e --id Microsoft.VCRedist.2015+.x64"
     )
 }
+if ($pipRc -ne 0) {
+    Write-Warn "pip 경고가 있었지만 핵심 패키지는 정상입니다"
+}
 Write-Ok "핵심 패키지 정상 (PyQt6 포함)"
+Remove-Item $FailReasonFile -ErrorAction SilentlyContinue
 
 # ------------------------------------------------------- 선택: 음성 런타임
 if ($Voice) {

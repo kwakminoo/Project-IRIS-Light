@@ -2,6 +2,11 @@
 # 출력:
 #   dist\IRIS-Setup.exe              — 안정 별칭 (/latest/download/IRIS-Setup.exe)
 #   dist\IRIS-Setup-<version>.exe    — 다운로드 시 브라우저에 보이는 버전 파일명
+# 기본으로 GitHub Releases 업로드까지 수행. 끄려면 -NoPublish 또는 IRIS_SETUP_NO_PUBLISH=1
+[CmdletBinding()]
+param(
+    [switch]$NoPublish
+)
 $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent
 Set-Location $Root
@@ -17,7 +22,7 @@ $ExcludeDirs = @(
     "__pycache__", ".pytest_cache", ".mypy_cache", ".git",
     ".venv", ".venv-voice", ".iris_light_test_tmp"
 )
-$ExcludeFiles = @(".env", "setup-log.txt", "setup-log-pip.txt", "*.pyc", "_build_exe.log")
+$ExcludeFiles = @(".env", "setup-log.txt", "setup-log-pip.txt", "setup-fail-reason.txt", "*.pyc", "_build_exe.log")
 
 # 설치 폴더 기준 상대 경로가 이보다 길면 MAX_PATH(260)에 걸려 설치가 롤백된다.
 # installer\iris.iss 의 MyDeepestRelPath 와 같이 움직여야 한다.
@@ -61,7 +66,7 @@ function Assert-PayloadClean([string]$PayloadRoot) {
         if ($d -eq "__pycache__") { continue }
         $bad += Get-ChildItem -Path $PayloadRoot -Recurse -Force -Directory -Filter $d -ErrorAction SilentlyContinue
     }
-    foreach ($f in @(".env", "setup-log.txt", "setup-log-pip.txt")) {
+    foreach ($f in @(".env", "setup-log.txt", "setup-log-pip.txt", "setup-fail-reason.txt")) {
         $bad += Get-ChildItem -Path $PayloadRoot -Recurse -Force -File -Filter $f -ErrorAction SilentlyContinue
     }
     if ($bad.Count -gt 0) {
@@ -237,12 +242,25 @@ $meta = [ordered]@{
     }
 }
 $metaPath = Join-Path $downloadDir "latest.json"
-$meta | ConvertTo-Json -Depth 4 | Set-Content -Path $metaPath -Encoding utf8
-Copy-Item -Force $metaPath (Join-Path $Root "dist\latest.json")
+# PS 5.1 Set-Content -Encoding utf8 은 BOM 을 붙여 사이트 JSON.parse 가 깨진다.
+$metaJson = ($meta | ConvertTo-Json -Depth 4) + "`n"
+$utf8 = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($metaPath, $metaJson, $utf8)
+[System.IO.File]::WriteAllText((Join-Path $Root "dist\latest.json"), $metaJson, $utf8)
 
 Write-Host "OK:" (Resolve-Path $out) "($([math]::Round($size/1MB, 1)) MB, ProductVersion $productShort)"
 Write-Host "Versioned:" (Resolve-Path $versionedOut)
 Write-Host "SHA-256: $hash"
 Write-Host "메타:" (Resolve-Path $metaPath)
 Write-Host "릴리스 에셋: $versionedName + IRIS-Setup.exe (+ .sha256 + latest.json)"
-Write-Host "업로드 후: powershell -ExecutionPolicy Bypass -File scripts\verify_setup_release.ps1"
+
+$skipPublish = $NoPublish -or ($env:IRIS_SETUP_NO_PUBLISH -eq "1")
+if ($skipPublish) {
+    Write-Host "Publish skip (-NoPublish / IRIS_SETUP_NO_PUBLISH=1)."
+    Write-Host "수동 업로드: powershell -ExecutionPolicy Bypass -File scripts\publish_iris_setup.ps1"
+} else {
+    Write-Host "Publishing to GitHub Releases ..."
+    & (Join-Path $PSScriptRoot "publish_iris_setup.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "publish_iris_setup.ps1 failed ($LASTEXITCODE)" }
+    Write-Host "verify: powershell -ExecutionPolicy Bypass -File scripts\verify_setup_release.ps1"
+}

@@ -32,6 +32,7 @@ _PRESERVE_NAMES = frozenset(
         ".env",
         "setup-log.txt",
         "setup-log-pip.txt",
+        "setup-fail-reason.txt",
         "REVISION",
         ".iris_light_test_tmp",
     }
