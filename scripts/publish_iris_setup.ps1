@@ -61,22 +61,26 @@ $utf8 = New-Object System.Text.UTF8Encoding $false
 
 $rev = ""
 try { $rev = (git -C $Root rev-parse --short HEAD).Trim() } catch { }
-$notes = @"
-IRIS Light Setup $ver
-
-- Windows Setup auto-install: Python bootstrap, stub/PATH harden, pip recovery
-- ProductVersion $ver
-
-Corresponding source: https://github.com/kwakminoo/Project-IRIS-Light
-Tag / commit: $Tag / $rev
-License: GPL-3.0-or-later (see LICENSE, LICENSE.md)
-"@
+$notes = @(
+    "IRIS Light Setup $ver",
+    "",
+    "- Windows Setup auto-install: Python bootstrap, stub/PATH harden, pip recovery",
+    "- ProductVersion $ver",
+    "",
+    "Corresponding source: https://github.com/kwakminoo/Project-IRIS-Light",
+    "Tag / commit: $Tag / $rev",
+    "License: GPL-3.0-or-later (see LICENSE, LICENSE.md)"
+) -join "`n"
 
 Write-Host "Publishing release $Tag ($ver) ..."
 
-$exists = & gh release view $Tag -R kwakminoo/Project-IRIS-Light 2>$null
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "릴리스 $Tag 이미 있음 — 에셋 clobber 업로드"
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$viewOut = & gh release view $Tag -R kwakminoo/Project-IRIS-Light 2>&1
+$viewRc = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($viewRc -eq 0) {
+    Write-Host "Release $Tag exists - uploading assets with --clobber"
     & gh release upload $Tag @assets -R kwakminoo/Project-IRIS-Light --clobber
     if ($LASTEXITCODE -ne 0) { throw "gh release upload failed ($LASTEXITCODE)" }
     & gh release edit $Tag -R kwakminoo/Project-IRIS-Light --latest --notes $notes | Out-Null
@@ -92,22 +96,28 @@ if ($LASTEXITCODE -eq 0) {
 Write-Host "Release:" "https://github.com/kwakminoo/Project-IRIS-Light/releases/tag/$Tag"
 Write-Host "Download:" "https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/$versionedName"
 
-# 사이트 FALLBACK_META = main/docs/download/latest.json
+# Site FALLBACK_META = main/docs/download/latest.json
 if (-not $SkipGitPush) {
-    $toAdd = @(
+    $candidates = @(
         "docs/download/latest.json",
         "docs/download/IRIS-Setup.exe.sha256",
-        "docs/download/$versionedName.sha256"
-    ) | Where-Object { Test-Path (Join-Path $Root $_) }
+        ("docs/download/" + $versionedName + ".sha256")
+    )
+    $toAdd = @()
+    foreach ($rel in $candidates) {
+        if (Test-Path (Join-Path $Root $rel)) { $toAdd += $rel }
+    }
     if ($toAdd.Count -gt 0) {
         & git -C $Root add -- @toAdd
-        $staged = & git -C $Root diff --cached --name-only
-        if ($staged) {
+        $staged = @(git -C $Root diff --cached --name-only)
+        if ($staged.Count -gt 0) {
             $msg = "Publish IRIS-Setup $ver release metadata ($Tag)."
             & git -C $Root commit -m $msg
             if ($LASTEXITCODE -ne 0) { throw "git commit (download meta) failed" }
             & git -C $Root push origin HEAD
-            if ($LASTEXITCODE -ne 0) { throw "git push failed — 릴리스 에셋은 올랐지만 latest.json fallback 미반영" }
+            if ($LASTEXITCODE -ne 0) {
+                throw "git push failed - release assets uploaded but latest.json fallback not on main"
+            }
             Write-Host "Pushed docs/download meta to origin"
         }
     }
