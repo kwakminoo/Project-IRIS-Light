@@ -14,9 +14,9 @@ from iris.system.hermes_iris_control_sync import hermes_home
 
 
 
-_MARKER = "<!-- iris-control-nudge-v14 -->"
+_MARKER = "<!-- iris-control-nudge-v15 -->"
 
-_BLOCK = """<!-- iris-control-nudge-v14 -->
+_BLOCK = """<!-- iris-control-nudge-v15 -->
 
 ## Iris Light UI control
 
@@ -59,6 +59,8 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 18. Mic off/on: `voice.mic_off` / `voice.mic_on` (status: `voice.mic_status`). Do not claim mic tools are missing.
 
 19. If `mcp__iris_control__*` tools are missing from your tool list: tell the user Iris Control MCP is offline (Iris app must be running; restart Hermes gateway), do not invent tool calls.
+
+20. Open a file only with `ide.open_file` after `iris_get_state` and `project.list_files`. Relative `path` is the bound workspace, not the shell cwd. The folder action is `ide.open_folder` (there is no project.open_folder). If the file is missing, say so. Do not create another file or say it opened.
 
 """
 
@@ -126,6 +128,8 @@ def ensure_memory_nudge() -> str:
 
         and "tools are missing" in existing
 
+        and "there is no project.open_folder" in existing
+
     ):
 
         return "memory nudge already present"
@@ -136,7 +140,7 @@ def ensure_memory_nudge() -> str:
 
     path.write_text(text, encoding="utf-8")
 
-    return "memory nudge updated (v14)"
+    return "memory nudge updated (v15)"
 
 
 
