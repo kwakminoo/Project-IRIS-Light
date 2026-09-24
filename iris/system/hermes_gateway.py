@@ -14,7 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from iris.infrastructure.hermes_client import HermesClient, HealthProbeResult
+from iris.infrastructure.hermes_client import (
+    GatewayReadyResult,
+    HermesClient,
+    HealthProbeResult,
+)
 from iris.infrastructure.hermes_credentials import (
     hermes_home,
     load_hermes_dotenv,
@@ -75,6 +79,9 @@ class GatewayDiagnosis:
     hermes_home: str = ""
     api_server_enabled: str = ""
     has_api_key: bool = False
+    models_ok: bool | None = None
+    chat_auth: str = ""
+    ready_detail: str = ""
     timestamp: str = ""
 
     def user_message(self) -> str:
@@ -120,23 +127,48 @@ def clear_last_gateway_diagnosis() -> None:
 
 
 def mark_gateway_already_running(base_url: str) -> GatewayDiagnosis:
-    """이미 /health OK인 gateway — 진단을 OK로 덮어써 잔상 TIMEOUT을 막는다."""
+    """이미 /health OK인 gateway — ready(/v1/models)·chat_auth 까지 스냅샷."""
     health = probe_gateway_health(base_url, timeout_sec=2.0)
+    key = resolve_hermes_api_key()
+    client = HermesClient(base_url, api_key=key)
+    ready = client.probe_gateway_ready(timeout_sec=3.0)
+    chat = ""
+    if ready.ok:
+        try:
+            chat = client.probe_chat_auth()
+        except Exception:
+            chat = "error"
     return _set_diagnosis(
         GatewayDiagnosis(
-            code=CODE_OK,
-            ok=True,
-            message="gateway 이미 실행 중",
+            code=CODE_OK if ready.ok else CODE_API_KEY_SEPARATE,
+            ok=bool(ready.ok),
+            message=(
+                "gateway 이미 실행 중 (ready OK)"
+                if ready.ok
+                else "gateway /health OK · ready 실패"
+            ),
+            detail=ready.detail,
             health={
                 "code": health.code,
                 "url": health.url,
                 "summary": health.body_summary,
             },
-            has_api_key=bool(resolve_hermes_api_key()),
+            has_api_key=bool(key),
             api_server_enabled=load_hermes_dotenv().get("API_SERVER_ENABLED", "true"),
             port=gateway_port_from_base_url(base_url),
+            models_ok=ready.models_ok,
+            chat_auth=chat,
+            ready_detail=ready.detail,
         )
     )
+
+
+def probe_gateway_ready(
+    base_url: str, *, api_key: str = "", timeout_sec: float = 5.0
+) -> GatewayReadyResult:
+    return HermesClient(
+        base_url, api_key=resolve_hermes_api_key(api_key)
+    ).probe_gateway_ready(timeout_sec=timeout_sec)
 
 
 def gateway_diagnosis_path() -> Path:
@@ -922,6 +954,54 @@ def _windows_gateway_procs_alive() -> bool:
     return bool(_gateway_process_pids())
 
 
+def prune_orphan_gateway_procs(base_url: str = "") -> int:
+    """포트 LISTEN 소유자가 아닌 gateway run 좀비를 종료. 반환=종료 시도 수.
+
+    health OK인데 venv/runtime 이중 기동이 남아 있으면 재시작·키 교체 시 혼선.
+    """
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return 0
+    port = gateway_port_from_base_url(base_url)
+    owners: set[int] = set()
+    try:
+        for c in psutil.net_connections(kind="inet"):
+            if not c.laddr or int(getattr(c.laddr, "port", 0) or 0) != port:
+                continue
+            if str(c.status).upper() != "LISTEN":
+                continue
+            if c.pid:
+                owners.add(int(c.pid))
+    except (psutil.Error, OSError, AttributeError):
+        return 0
+    if not owners:
+        return 0
+    me = os.getpid()
+    killed = 0
+    for pid in _gateway_process_pids():
+        if pid == me or pid in owners:
+            continue
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                    creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+                )
+            else:
+                import signal
+
+                os.kill(pid, signal.SIGTERM)
+            killed += 1
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return killed
+
+
 def _force_kill_windows_gateway_procs() -> None:
     me = os.getpid()
     if sys.platform != "win32":
@@ -1095,6 +1175,9 @@ def ensure_hermes_gateway_running(
     # 이미 Hermes health OK
     health = probe_gateway_health(base_url, timeout_sec=2.0)
     if health.ok:
+        n = prune_orphan_gateway_procs(base_url)
+        if n:
+            _note(f"orphan gateway {n}개 정리")
         _set_diagnosis(
             GatewayDiagnosis(
                 code=CODE_OK,

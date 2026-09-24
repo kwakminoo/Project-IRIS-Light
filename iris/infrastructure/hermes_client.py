@@ -11,7 +11,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from iris.infrastructure.hermes_credentials import resolve_hermes_api_key
+from iris.infrastructure.hermes_credentials import (
+    is_weak_hermes_api_key,
+    resolve_hermes_api_key,
+)
 
 
 def api_root_from_base(base_url: str) -> str:
@@ -37,6 +40,20 @@ class HealthProbeResult:
     body_summary: str = ""
     looks_like_hermes: bool = False
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class GatewayReadyResult:
+    """/health + /v1/models 채팅 준비 진단 (시크릿 값 없음)."""
+
+    ok: bool
+    code: str  # ok | no_key | models_http | models_error | health_fail
+    health_ok: bool = False
+    models_ok: bool = False
+    http_status: int | None = None
+    detail: str = ""
+    key_len: int = 0
+    key_weak: bool = False
 
 
 def _summarize_health_body(raw: str, *, limit: int = 120) -> str:
@@ -293,17 +310,72 @@ class HermesClient:
         """/health — 프로세스 생존만 (Bearer 불필요)."""
         return self._health_ping_ok(timeout_sec=timeout_sec)
 
-    def gateway_ready(self) -> bool:
-        """/health + /v1/models — 프로세스·키 존재. 채팅 401은 probe_chat_auth()."""
-        if not self._health_ping_ok():
-            return False
-        if not self.api_key:
-            return False
+    def probe_gateway_ready(self, *, timeout_sec: float = 5.0) -> GatewayReadyResult:
+        """/health + /v1/models — 실패 코드·HTTP 상태를 남긴다 (키 값 비노출)."""
+        health = self.probe_health(timeout_sec=timeout_sec)
+        key = (self.api_key or "").strip()
+        key_len = len(key)
+        key_weak = is_weak_hermes_api_key(key) if key else True
+        if not health.ok:
+            return GatewayReadyResult(
+                ok=False,
+                code="health_fail",
+                health_ok=False,
+                detail=f"/health {health.code}",
+                key_len=key_len,
+                key_weak=key_weak,
+            )
+        if not key:
+            return GatewayReadyResult(
+                ok=False,
+                code="no_key",
+                health_ok=True,
+                detail="API_SERVER_KEY 없음",
+                key_len=0,
+                key_weak=True,
+            )
         try:
             self._get_json(f"{self.base_url}/models")
-            return True
-        except Exception:
-            return False
+            return GatewayReadyResult(
+                ok=True,
+                code="ok",
+                health_ok=True,
+                models_ok=True,
+                http_status=200,
+                detail="/v1/models OK",
+                key_len=key_len,
+                key_weak=key_weak,
+            )
+        except HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="replace")[:120]
+            except Exception:
+                body = str(e.reason or "")[:80]
+            return GatewayReadyResult(
+                ok=False,
+                code="models_http",
+                health_ok=True,
+                models_ok=False,
+                http_status=int(e.code) if e.code else None,
+                detail=f"/v1/models HTTP {e.code}: {body}".strip(),
+                key_len=key_len,
+                key_weak=key_weak,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return GatewayReadyResult(
+                ok=False,
+                code="models_error",
+                health_ok=True,
+                models_ok=False,
+                detail=f"/v1/models 오류: {exc}"[:200],
+                key_len=key_len,
+                key_weak=key_weak,
+            )
+
+    def gateway_ready(self) -> bool:
+        """/health + /v1/models — 프로세스·키 존재. 채팅 401은 probe_chat_auth()."""
+        return self.probe_gateway_ready().ok
 
     def probe_chat_auth(self) -> str:
         """채팅과 같은 POST /v1/chat/completions 로 Bearer를 검사.
@@ -607,7 +679,11 @@ class HermesClient:
                         continue
                     err_msg = _sse_error_message(obj)
                     if err_msg:
-                        raise RuntimeError(f"Hermes: {err_msg}")
+                        from iris.infrastructure.hermes_errors import format_hermes_sse_error
+
+                        raise RuntimeError(
+                            f"Hermes: {format_hermes_sse_error(err_msg, model=model)}"
+                        )
                     if event_name == "hermes.tool.progress":
                         msg = _format_tool_progress(obj)
                         if msg:
@@ -644,11 +720,9 @@ class HermesClient:
         except HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:400]
             if e.code == 401:
-                raise RuntimeError(
-                    "Hermes HTTP 401 Unauthorized. "
-                    "시작 프로토콜 「다시 설정」으로 API 키를 맞추고, "
-                    "로컬 최소 모델을 받거나 Ollama 클라우드 로그인을 확인하세요."
-                ) from e
+                from iris.infrastructure.hermes_errors import format_hermes_http_401
+
+                raise RuntimeError(format_hermes_http_401()) from e
             raise RuntimeError(f"Hermes HTTP {e.code}: {detail or e.reason}") from e
         except URLError as e:
             raise RuntimeError(f"Hermes 연결 실패: {e.reason}") from e

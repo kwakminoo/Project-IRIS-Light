@@ -225,7 +225,18 @@ def _ollama_signed_in() -> bool:
         )
         with urlopen(req, timeout=4.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        return bool(isinstance(data, dict) and data.get("email"))
+        if not isinstance(data, dict):
+            return False
+        # 스키마 변동 대비: email / user / username / id + signed_in
+        if data.get("email"):
+            return True
+        if data.get("user") or data.get("username"):
+            return True
+        if data.get("id") and data.get("signed_in") is not False:
+            return True
+        if data.get("signed_in") is True or data.get("logged_in") is True:
+            return True
+        return False
     except Exception:
         return False
 

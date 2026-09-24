@@ -317,10 +317,36 @@ class GatewayDiagnosticsTests(unittest.TestCase):
             body_summary='{"status":"ok"}',
         )
         with patch.object(gw, "probe_gateway_health", return_value=healthy):
-            diag = gw.mark_gateway_already_running("http://127.0.0.1:8642/v1")
+            with patch(
+                "iris.system.hermes_gateway.resolve_hermes_api_key",
+                return_value="x" * 40,
+            ):
+                with patch.object(
+                    gw.HermesClient,
+                    "probe_gateway_ready",
+                    return_value=type(
+                        "R",
+                        (),
+                        {
+                            "ok": True,
+                            "models_ok": True,
+                            "detail": "/v1/models OK",
+                            "code": "ok",
+                            "key_weak": False,
+                            "key_len": 40,
+                        },
+                    )(),
+                ):
+                    with patch.object(
+                        gw.HermesClient, "probe_chat_auth", return_value="ok"
+                    ):
+                        diag = gw.mark_gateway_already_running(
+                            "http://127.0.0.1:8642/v1"
+                        )
         self.assertTrue(diag.ok)
         self.assertEqual(diag.code, gw.CODE_OK)
-        self.assertEqual(diag.message, "gateway 이미 실행 중")
+        self.assertIn("ready OK", diag.message)
+        self.assertTrue(diag.models_ok)
 
 
 if __name__ == "__main__":
