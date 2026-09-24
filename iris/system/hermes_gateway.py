@@ -105,6 +105,40 @@ def get_last_gateway_diagnosis() -> GatewayDiagnosis | None:
     return _LAST_DIAGNOSIS
 
 
+def clear_last_gateway_diagnosis() -> None:
+    """재시도·재검사 전 잔상 TIMEOUT 진단을 지운다."""
+    global _LAST_DIAGNOSIS, _LAST_CHILD, _LAST_LOG_PATHS
+    _LAST_DIAGNOSIS = None
+    _LAST_CHILD = None
+    _LAST_LOG_PATHS = None
+    try:
+        path = gateway_diagnosis_path()
+        if path.is_file():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def mark_gateway_already_running(base_url: str) -> GatewayDiagnosis:
+    """이미 /health OK인 gateway — 진단을 OK로 덮어써 잔상 TIMEOUT을 막는다."""
+    health = probe_gateway_health(base_url, timeout_sec=2.0)
+    return _set_diagnosis(
+        GatewayDiagnosis(
+            code=CODE_OK,
+            ok=True,
+            message="gateway 이미 실행 중",
+            health={
+                "code": health.code,
+                "url": health.url,
+                "summary": health.body_summary,
+            },
+            has_api_key=bool(resolve_hermes_api_key()),
+            api_server_enabled=load_hermes_dotenv().get("API_SERVER_ENABLED", "true"),
+            port=gateway_port_from_base_url(base_url),
+        )
+    )
+
+
 def gateway_diagnosis_path() -> Path:
     return _gateway_log_dir() / "gateway-last-diagnosis.json"
 
@@ -247,13 +281,15 @@ def is_hermes_cli_missing_failure(text: str) -> bool:
 def is_hermes_gateway_dep_missing_failure(text: str) -> bool:
     """API gateway 필수 의존성(aiohttp 등) 누락으로 즉시 죽는 경우."""
     t = (text or "").lower()
-    if not t or "modulenotfounderror" not in t:
+    if not t:
+        return False
+    if "requires the 'mcp' python sdk" in t:
+        return True
+    if "modulenotfounderror" not in t:
         return False
     for mod in ("aiohttp", "hermes_cli", "mcp"):
         if f"no module named '{mod}'" in t or f'no module named "{mod}"' in t:
             return True
-    if "requires the 'mcp' python sdk" in t:
-        return True
     return False
 
 

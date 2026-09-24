@@ -294,6 +294,34 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         assert diag is not None
         self.assertTrue(diag.ok)
 
+    def test_clear_and_mark_already_running_clears_stale_timeout(self) -> None:
+        stale = gw.GatewayDiagnosis(
+            code=gw.CODE_TIMEOUT,
+            ok=False,
+            message="gateway /health 응답 대기 시간이 초과되었습니다.",
+        )
+        gw._set_diagnosis(stale)
+        self.assertFalse(gw.get_last_gateway_diagnosis().ok)  # type: ignore[union-attr]
+        path = gw.gateway_diagnosis_path()
+        self.assertTrue(path.is_file())
+
+        gw.clear_last_gateway_diagnosis()
+        self.assertIsNone(gw.get_last_gateway_diagnosis())
+        self.assertFalse(path.exists())
+
+        healthy = HealthProbeResult(
+            ok=True,
+            code="ok",
+            url="http://127.0.0.1:8642/health",
+            looks_like_hermes=True,
+            body_summary='{"status":"ok"}',
+        )
+        with patch.object(gw, "probe_gateway_health", return_value=healthy):
+            diag = gw.mark_gateway_already_running("http://127.0.0.1:8642/v1")
+        self.assertTrue(diag.ok)
+        self.assertEqual(diag.code, gw.CODE_OK)
+        self.assertEqual(diag.message, "gateway 이미 실행 중")
+
 
 if __name__ == "__main__":
     unittest.main()

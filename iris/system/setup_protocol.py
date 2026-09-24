@@ -232,9 +232,11 @@ class SetupStepResult:
     action_hint: str = ""
     label: str = ""
     can_install: bool = False  # NeedsUser 카드에 「설치」 버튼
-    can_login: bool = False  # 「로그인」 버튼 (action_url 열기)
+    can_login: bool = False  # 「로그인」/「Ollama 열기」 버튼
     install_label: str = ""
     login_label: str = ""
+    # "ollama" → 데스크톱 앱 실행 (브라우저 URL 대신 클라우드 로그인 유도)
+    open_local_app: str = ""
 
     def __post_init__(self) -> None:
         if not self.label:
@@ -244,7 +246,7 @@ class SetupStepResult:
         if not self.install_label:
             self.install_label = "설치"
         if not self.login_label:
-            self.login_label = "로그인"
+            self.login_label = "Ollama 열기" if self.open_local_app == "ollama" else "로그인"
 
 
 ProgressFn = Callable[[SetupStepResult], None]
@@ -628,7 +630,7 @@ def format_inference_report(
     elif not cloud_signed_in and not local_models:
         lines.append(
             "로그인하거나 최소 로컬 모델을 설치해야 채팅이 됩니다. "
-            "「다시 설정」에서 「로그인」또는 「최소 모델 설치」를 고르세요."
+            "「다시 설정」에서 「Ollama 열기」또는 「최소 모델 설치」를 고르세요."
         )
     return "\n".join(lines)
 
@@ -1101,18 +1103,22 @@ class SetupProtocol:
             return False, detail
         key = resolve_hermes_api_key()
         if not is_hermes_gateway_running(self.hermes_base_url, api_key=key, timeout_sec=3.0):
-            from iris.system.hermes_gateway import get_last_gateway_diagnosis
+            from iris.system.hermes_gateway import probe_gateway_health
 
-            diag = get_last_gateway_diagnosis()
-            if diag and not diag.ok:
-                detail = diag.user_message()
-                self._record_last_verify("quick", False, detail)
-                return False, detail
-            detail = (
-                "[HEALTH] Hermes gateway /health 실패\n"
-                "조치: 시작 프로토콜을 다시 실행하거나 "
-                "%LOCALAPPDATA%\\hermes\\logs\\iris-gateway 로그를 확인하세요."
-            )
+            # 잔상 TIMEOUT 진단을 그대로 쓰지 않는다 — 지금 /health 를 다시 본다.
+            health = probe_gateway_health(self.hermes_base_url, timeout_sec=3.0)
+            if health.ok:
+                detail = (
+                    "[HEALTH] /health OK 이지만 gateway 준비 판정 실패 "
+                    "(API 키 또는 /v1/models). Hermes .env 의 API_SERVER_KEY 를 확인하세요.\n"
+                    f"로그: %LOCALAPPDATA%\\hermes\\logs\\iris-gateway"
+                )
+            else:
+                detail = (
+                    f"[HEALTH] Hermes gateway /health 실패 ({health.code})\n"
+                    "조치: 시작 프로토콜을 다시 실행하거나 "
+                    "%LOCALAPPDATA%\\hermes\\logs\\iris-gateway 로그를 확인하세요."
+                )
             self._record_last_verify("quick", False, detail)
             return False, detail
         detail = "Ollama·Hermes 정상"
@@ -1140,12 +1146,18 @@ class SetupProtocol:
             return False, report
         key = resolve_hermes_api_key()
         if not is_hermes_gateway_running(self.hermes_base_url, api_key=key):
-            from iris.system.hermes_gateway import get_last_gateway_diagnosis
+            from iris.system.hermes_gateway import probe_gateway_health
 
-            diag = get_last_gateway_diagnosis()
-            health_msg = diag.user_message() if diag and not diag.ok else (
-                "[HEALTH] Hermes gateway /health 실패"
-            )
+            health = probe_gateway_health(self.hermes_base_url, timeout_sec=3.0)
+            if health.ok:
+                health_msg = (
+                    "[HEALTH] /health OK 이지만 gateway_ready 실패 "
+                    "(API 키 또는 /v1/models)."
+                )
+            else:
+                health_msg = (
+                    f"[HEALTH] Hermes gateway /health 실패 ({health.code})"
+                )
             detail = health_msg + "\n" + report
             self._record_last_verify("full", False, detail)
             return False, detail
@@ -1589,7 +1601,8 @@ class SetupProtocol:
             ),
             can_login=which == "ollama_cloud",
             install_label="최소 모델 설치" if which == "ollama_cloud" else "",
-            login_label="로그인" if which == "ollama_cloud" else "",
+            login_label="Ollama 열기" if which == "ollama_cloud" else "",
+            open_local_app="ollama" if which == "ollama_cloud" else "",
         )
         self._emit(on_progress, result)
         self._save_optional(which, result)
@@ -1680,7 +1693,7 @@ class SetupProtocol:
                 OPTIONAL_LABELS["ollama_cloud"],
                 "Ollama 클라우드에 로그인하거나 최소 로컬 모델을 설치하세요. 로그인이 되어 있으면 다운로드 없이 클라우드를 권장합니다.",
                 OLLAMA_SIGNIN_URL,
-                "「로그인」후 「완료했어요」, 또는 「최소 모델 설치」.",
+                "「Ollama 열기」→ 앱에서 로그인 → 「완료했어요」, 또는 「최소 모델 설치」.",
                 True,
             ),
         }
@@ -1700,7 +1713,8 @@ class SetupProtocol:
         if which == "ollama_cloud":
             result.can_login = True
             result.install_label = "최소 모델 설치"
-            result.login_label = "로그인"
+            result.login_label = "Ollama 열기"
+            result.open_local_app = "ollama"
         self._emit(on_progress, result)
         self._save_optional(which, result)
         choice = self._wait_user(on_user, result)
@@ -2066,19 +2080,21 @@ class SetupProtocol:
             status="needs_user",
             message=(
                 "Ollama 클라우드에 로그인하거나 최소 로컬 모델을 설치하세요. "
-                "로그인이 되어 있으면 다운로드 없이 클라우드 모델을 쓰는 것을 권장합니다. "
+                "「Ollama 열기」로 앱을 켠 뒤 계정 로그인하면 다운로드 없이 "
+                "클라우드 모델을 쓸 수 있습니다. "
                 f"로그인하지 않으면 최소 모델({model})을 받습니다."
             ),
             action_url=OLLAMA_SIGNIN_URL,
             action_hint=(
-                "「로그인」으로 브라우저를 연 뒤 로그인하고 「완료했어요」. "
+                "「Ollama 열기」→ 앱에서 로그인 → 「완료했어요」로 연결을 다시 확인합니다. "
                 "또는 「최소 모델 설치」."
             ),
             label=label,
             can_install=True,
             can_login=True,
             install_label="최소 모델 설치",
-            login_label="로그인",
+            login_label="Ollama 열기",
+            open_local_app="ollama",
         )
 
     def _install_min_local_model(self, step_id: str) -> SetupStepResult:
@@ -2558,6 +2574,10 @@ class SetupProtocol:
         if already and not _aborting():
             # ponytail: 매 설치마다 무조건 restart하면 stop CLI + 재기동으로
             # 1~2분 무응답처럼 보인다. 살아 있으면 ensure만.
+            # 잔상 TIMEOUT 진단이 남지 않도록 OK로 덮어쓴다.
+            from iris.system.hermes_gateway import mark_gateway_already_running
+
+            mark_gateway_already_running(self.hermes_base_url)
             _progress("gateway 이미 실행 중 — 유지")
             ok = True
         elif not _aborting():

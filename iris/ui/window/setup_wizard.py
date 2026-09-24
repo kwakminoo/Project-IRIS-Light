@@ -120,6 +120,7 @@ class _NeedsUserCard(QFrame):
         super().__init__(parent)
         self.setObjectName("NeedsUserCard")
         self._url = ""
+        self._open_app = ""
         lay = QVBoxLayout(self)
         lay.setSpacing(TOKENS.spacing_sm)
         self._why = QLabel("")
@@ -237,8 +238,10 @@ class _NeedsUserCard(QFrame):
         self._hint.setText(result.action_hint or "")
         self._hint.setVisible(bool(result.action_hint))
         self._url = (result.action_url or "").strip()
+        self._open_app = (result.open_local_app or "").strip().lower()
         self._open_btn.setText(result.login_label if result.can_login else "열기")
-        self._open_btn.setVisible(bool(self._url))
+        # 앱 열기 또는 URL 중 하나라도 있으면 버튼 표시
+        self._open_btn.setVisible(bool(self._open_app) or bool(self._url) or result.can_login)
         self._install_btn.setText(result.install_label or "설치")
         self._install_btn.setVisible(bool(result.can_install))
         # 키 붙여넣기는 external_api 등 hint에 '붙여넣'이 있을 때만
@@ -327,6 +330,34 @@ class _NeedsUserCard(QFrame):
         self.setVisible(True)
 
     def _open_url(self) -> None:
+        if self._open_app == "ollama":
+            try:
+                from iris.system.ollama_server import ensure_ollama_running, open_ollama_app
+
+                ok, detail = open_ollama_app()
+                ensure_ollama_running("http://127.0.0.1:11434/v1", wait_sec=8.0)
+                if ok:
+                    self._hint.setText(
+                        "Ollama 앱을 열었습니다. 앱에서 클라우드 로그인한 뒤 "
+                        "「완료했어요」를 누르면 연결을 다시 확인합니다."
+                    )
+                    self._hint.show()
+                else:
+                    # 앱을 못 열면 브라우저 로그인으로 폴백
+                    if self._url:
+                        QDesktopServices.openUrl(QUrl(self._url))
+                    self._hint.setText(
+                        f"Ollama 앱을 열지 못했습니다 ({detail}). "
+                        "브라우저 로그인 페이지를 열었습니다."
+                    )
+                    self._hint.show()
+                return
+            except Exception as exc:  # noqa: BLE001
+                self._hint.setText(f"Ollama 열기 실패: {exc}")
+                self._hint.show()
+                if self._url:
+                    QDesktopServices.openUrl(QUrl(self._url))
+                return
         if self._url:
             QDesktopServices.openUrl(QUrl(self._url))
 
@@ -445,20 +476,47 @@ class SetupWizard(QDialog):
             self._start_worker()
 
     def _start_worker(self) -> None:
-        if self._worker is not None and (
-            self._worker.isRunning() or self._worker.is_install_running()
-        ):
-            self._append_log("이전 설치가 아직 정리 중입니다. 잠시 후 재시도하세요.")
-            self._retry_btn.show()
-            return
+        # 재시도/재검사: 이전 워커를 끊고 진단 잔상·목록을 비운 뒤 새로 시작한다.
+        if self._worker is not None:
+            if self._worker.isRunning() or self._worker.is_install_running():
+                self._append_log("이전 실행을 종료하는 중…")
+                self._abort_worker()
+                if self._worker is not None and self._worker.isRunning():
+                    if not self._worker.wait(8000):
+                        self._append_log(
+                            "이전 설치가 아직 정리 중입니다. 잠시 후 재시도하세요."
+                        )
+                        self._retry_btn.show()
+                        return
+            try:
+                self._worker.failed.disconnect(self._on_failed)
+                self._worker.finished_ok.disconnect(self._on_finished)
+            except TypeError:
+                pass
+            self._worker = None
+
+        try:
+            from iris.system.hermes_gateway import clear_last_gateway_diagnosis
+
+            clear_last_gateway_diagnosis()
+        except Exception:  # noqa: BLE001
+            pass
+
         self._needs_user_idle.stop()
         self._retry_btn.hide()
         self._copy_diag_btn.hide()
         self._enter_btn.hide()
         self._card.hide()
+        self._card.end_install()
         self._core_phase = True
+        self._finished = False
+        self._step_status = {s: "pending" for s in CORE_STEP_IDS}
+        self._refresh_list()
         self._progress.setRange(0, len(CORE_STEP_IDS))
+        self._progress.setValue(0)
         self._progress.setFormat("Core %v / %m")
+        self._current.setText("준비 중…")
+        self._log.clear()
         if self._mode == "repair":
             reset_core_ready()
         proto = SetupProtocol(
@@ -589,6 +647,8 @@ class SetupWizard(QDialog):
                 can_login=result.can_login,
                 install_label=result.install_label,
                 login_label=result.login_label,
+                open_local_app=result.open_local_app,
+            )
             )
             self._card.bind(warned, allow_skip=True)
         else:

@@ -152,7 +152,8 @@ class OllamaModelStepTests(TestCase):
         self.assertTrue(result.can_login)
         self.assertTrue(result.can_install)
         self.assertEqual(result.install_label, "최소 모델 설치")
-        self.assertEqual(result.login_label, "로그인")
+        self.assertEqual(result.login_label, "Ollama 열기")
+        self.assertEqual(result.open_local_app, "ollama")
 
     @patch("iris.system.setup_protocol.save_setup_state")
     @patch("iris.system.setup_protocol.SetupProtocol._persist_iris_model")
@@ -205,4 +206,5 @@ class OllamaModelStepTests(TestCase):
         self.assertTrue(card.can_login)
         self.assertTrue(card.can_install)
         self.assertEqual(card.install_label, "최소 모델 설치")
-        self.assertEqual(card.login_label, "로그인")
+        self.assertEqual(card.login_label, "Ollama 열기")
+        self.assertEqual(card.open_local_app, "ollama")
