@@ -649,7 +649,6 @@ class SetupWizard(QDialog):
                 login_label=result.login_label,
                 open_local_app=result.open_local_app,
             )
-            )
             self._card.bind(warned, allow_skip=True)
         else:
             self._card.bind(result, allow_skip=allow_skip)
