@@ -42,6 +42,10 @@ def describe_model(name: str) -> str:
     n = (name or "").strip().lower()
     if not n:
         return ""
+    if n.startswith("api:") and ":" in n[4:]:
+        n = n.split(":", 2)[2]
+    if "/" in n:
+        n = n.rsplit("/", 1)[-1]
     for suf in ("-cloud", ":cloud"):
         if n.endswith(suf):
             n = n[: -len(suf)]
@@ -57,6 +61,7 @@ if __name__ == "__main__":
     assert describe_model("gemma4:26b").startswith("Google Gemma 4")
     assert describe_model("minimax-m3:cloud").startswith("MiniMax M3")
     assert describe_model("kimi-k2.7-code").startswith("Kimi K2.7 Code")
+    assert describe_model("api:x:google/gemma-2-9b").startswith("Google Gemma")
     assert describe_model("") == ""
     assert describe_model("unknown-model:1b") == ""
     print("model_descriptions self-check ok")
