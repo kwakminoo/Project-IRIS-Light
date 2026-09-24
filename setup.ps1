@@ -300,14 +300,29 @@ Write-Ok "Python $PyVersion ($PyExe $($PyArgs -join ' '))"
 # ------------------------------------------------------- 2. 가상환경
 Write-Step "가상환경(.venv) 준비"
 
+function Test-VenvUsable([string]$Path) {
+    $cfg = Join-Path $Path "pyvenv.cfg"
+    $py = Join-Path $Path "Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $cfg)) { return $false }
+    if (-not (Test-Path -LiteralPath $py)) { return $false }
+    return $true
+}
+
 if ($Recreate -and (Test-Path $VenvPath)) {
     Write-Info "-Recreate: 기존 .venv 삭제"
     Remove-Item -Recurse -Force $VenvPath
 }
 
 $VenvPy = Join-Path $VenvPath "Scripts\python.exe"
+$VenvCfg = Join-Path $VenvPath "pyvenv.cfg"
 
-if (Test-Path $VenvPy) {
+# Scripts만 남고 pyvenv.cfg 가 없으면 python 이 "No pyvenv.cfg" 로 즉사한다 → 자동 재생성
+if ((Test-Path $VenvPath) -and -not (Test-VenvUsable $VenvPath)) {
+    Write-Warn "깨진 .venv 감지 (pyvenv.cfg 없음) — 삭제 후 다시 만듭니다"
+    Remove-Item -Recurse -Force $VenvPath -ErrorAction SilentlyContinue
+}
+
+if (Test-VenvUsable $VenvPath) {
     $VenvVersion = & $VenvPy -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
     if (-not $VenvVersion -or $VenvVersion -notmatch '^3\.(11|12|13)$') {
         Fail "기존 .venv의 Python($VenvVersion)은 Hermes와 호환되지 않습니다." @(
@@ -318,7 +333,7 @@ if (Test-Path $VenvPy) {
 } else {
     Write-Info "생성 중..."
     & $PyExe @PyArgs -m venv $VenvPath
-    if (-not (Test-Path $VenvPy)) {
+    if (-not (Test-VenvUsable $VenvPath)) {
         Fail "가상환경 생성에 실패했습니다." @(
             "$PyExe $($PyArgs -join ' ') -m ensurepip 실행 후 재시도",
             "Microsoft Store 버전 Python은 문제가 생길 수 있습니다. python.org 배포판을 권장합니다"
@@ -330,8 +345,16 @@ if (Test-Path $VenvPy) {
 # ------------------------------------------------------- 3. pip 업그레이드
 Write-Step "pip 업그레이드"
 
-# PATH 에 깨진 정션/마운트(WinError 448)가 있으면 pip 이 설치 중 죽는다.
-# (예: 일부 클라우드 PC · Cua driver bin 등)
+# PATH 의 정션/미신뢰 마운트(WinError 448) — Cua driver 등이 pip 설치 중 경로 통과를 막는다.
+function Test-PathIsReparse([string]$Dir) {
+    try {
+        $item = Get-Item -LiteralPath $Dir -Force -ErrorAction Stop
+        return [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+    } catch {
+        return $true
+    }
+}
+
 function Set-PipSafePath {
     $keep = New-Object System.Collections.Generic.List[string]
     foreach ($part in @(
@@ -344,9 +367,13 @@ function Set-PipSafePath {
     }
     foreach ($part in ($env:Path -split ';')) {
         if ([string]::IsNullOrWhiteSpace($part)) { continue }
-        if ($part -match '(?i)\\Cua\\|\\cua-driver\\') { continue }
+        if ($part -match '(?i)\\Cua\\|\\cua-driver\\|\\OneDrive\\') { continue }
         try {
             if (-not (Test-Path -LiteralPath $part)) { continue }
+            if (Test-PathIsReparse $part) {
+                Write-Warn "PATH에서 제외 (정션/마운트): $part"
+                continue
+            }
             $null = Get-Item -LiteralPath $part -ErrorAction Stop
             if (-not $keep.Contains($part)) { $keep.Add($part) | Out-Null }
         } catch {
@@ -354,6 +381,21 @@ function Set-PipSafePath {
         }
     }
     $env:Path = ($keep -join ';')
+    # pip/임시 파일이 사용자 TEMP 의 필터 드라이버를 타지 않게 설치 폴더로 고정
+    $pipTmp = Join-Path $Root ".iris-setup-tmp"
+    New-Item -ItemType Directory -Force -Path $pipTmp | Out-Null
+    $env:TEMP = $pipTmp
+    $env:TMP = $pipTmp
+    $env:PYTHONNOUSERSITE = "1"
+}
+function Get-PipLogErrorTail {
+    if (-not (Test-Path -LiteralPath $PipLog)) { return "" }
+    try {
+        $lines = Get-Content -LiteralPath $PipLog -Tail 80 -ErrorAction Stop
+    } catch { return "" }
+    $err = ($lines | Where-Object { $_ -match 'ERROR:|WinError\s*448|No pyvenv' } | Select-Object -Last 3) -join " | "
+    if ($err.Length -gt 400) { $err = $err.Substring($err.Length - 400) }
+    return $err
 }
 Set-PipSafePath
 
@@ -439,12 +481,22 @@ $checkRc = $LASTEXITCODE
 Remove-Item $checkFile -ErrorAction SilentlyContinue
 
 if ($checkRc -ne 0) {
-    Fail "핵심 패키지 import 검증 실패: $result" @(
-        ".\setup.ps1 -Recreate 로 재설치",
+    $pipHint = Get-PipLogErrorTail
+    $msg = "핵심 패키지 import 검증 실패: $result"
+    if ($pipHint) { $msg = "$msg — $pipHint" }
+    $hints = @(
+        "설치 폴더에서 setup.bat 을 다시 실행하거나: .\setup.ps1 -Recreate",
         "네트워크/프록시 상태를 확인하세요",
         "사내망이라면: $VenvPy -m pip install -r requirements.txt --trusted-host pypi.org --trusted-host files.pythonhosted.org",
         "Visual C++ 재배포 패키지가 없으면 PyQt6 로드가 실패할 수 있습니다: winget install -e --id Microsoft.VCRedist.2015+.x64"
     )
+    if ($pipHint -match '448|탑재|Cua|cua-driver') {
+        $hints = @(
+            "PATH 의 Cua/클라우드 드라이버 정션이 pip 을 막을 수 있습니다. .\setup.ps1 -Recreate 를 다시 실행하세요",
+            "그래도 실패하면 Cua를 잠시 종료하거나 PATH에서 cua-driver\\bin 을 제거한 뒤 setup.bat 재실행"
+        ) + $hints
+    }
+    Fail $msg $hints
 }
 if ($pipRc -ne 0) {
     Write-Warn "pip 경고가 있었지만 핵심 패키지는 정상입니다"

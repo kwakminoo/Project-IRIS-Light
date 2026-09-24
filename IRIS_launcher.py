@@ -118,6 +118,20 @@ def main() -> None:
     except OSError as e:
         _die(f"프로젝트 폴더로 이동 실패:\n{root}\n\n{e}")
 
+    venv_cfg = root / ".venv" / "pyvenv.cfg"
+    scripts = root / ".venv" / "Scripts"
+    has_py = (scripts / "pythonw.exe").is_file() or (scripts / "python.exe").is_file()
+    if has_py and not venv_cfg.is_file():
+        _die(
+            "IRIS를 시작하지 못했습니다.\n\n"
+            "가상환경이 깨져 있습니다 (No pyvenv.cfg).\n"
+            "설치 폴더의 setup.bat 을 다시 실행하세요.\n"
+            "그래도 안 되면 PowerShell에서:\n"
+            f"  cd /d {root}\n"
+            "  .\\setup.ps1 -Recreate\n\n"
+            f"프로젝트: {root}"
+        )
+
     for py in _python_candidates(root):
         if not py.is_file():
             continue

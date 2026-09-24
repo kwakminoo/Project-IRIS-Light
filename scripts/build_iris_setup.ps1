@@ -20,7 +20,7 @@ $Exe = Join-Path $Root "dist\IRIS.exe"
 # 번들에 절대 들어가면 안 되는 것들. 테스트 잔재·가상환경·사용자 키·설치 로그.
 $ExcludeDirs = @(
     "__pycache__", ".pytest_cache", ".mypy_cache", ".git",
-    ".venv", ".venv-voice", ".iris_light_test_tmp"
+    ".venv", ".venv-voice", ".iris_light_test_tmp", ".iris-setup-tmp"
 )
 $ExcludeFiles = @(".env", "setup-log.txt", "setup-log-pip.txt", "setup-fail-reason.txt", "*.pyc", "_build_exe.log")
 
