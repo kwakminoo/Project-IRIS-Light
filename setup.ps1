@@ -345,17 +345,14 @@ if (Test-VenvUsable $VenvPath) {
 # ------------------------------------------------------- 3. pip 업그레이드
 Write-Step "pip 업그레이드"
 
-# PATH 의 정션/미신뢰 마운트(WinError 448) — Cua driver 등이 pip 설치 중 경로 통과를 막는다.
-function Test-PathIsReparse([string]$Dir) {
-    try {
-        $item = Get-Item -LiteralPath $Dir -Force -ErrorAction Stop
-        return [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
-    } catch {
-        return $true
-    }
-}
+# 원본 환경 — 실패 시 복구용 (과한 PATH/TEMP 격리는 일부 PC에서 pip 자체를 죽인다)
+$script:OrigPath = $env:Path
+$script:OrigTemp = $env:TEMP
+$script:OrigTmp = $env:TMP
 
+# PATH 에서 Cua 등 알려진 미신뢰 정션만 뺀다 (전 정션 제거·TEMP 강제 이동은 하지 않음).
 function Set-PipSafePath {
+    param([switch]$IsolateTemp)
     $keep = New-Object System.Collections.Generic.List[string]
     foreach ($part in @(
         (Join-Path $VenvPath "Scripts"),
@@ -365,15 +362,13 @@ function Set-PipSafePath {
     )) {
         if ($part -and (Test-Path -LiteralPath $part)) { $keep.Add($part) | Out-Null }
     }
-    foreach ($part in ($env:Path -split ';')) {
+    $sourcePath = if ($script:OrigPath) { $script:OrigPath } else { $env:Path }
+    foreach ($part in ($sourcePath -split ';')) {
         if ([string]::IsNullOrWhiteSpace($part)) { continue }
-        if ($part -match '(?i)\\Cua\\|\\cua-driver\\|\\OneDrive\\') { continue }
+        # WinError 448 재현 경로 — 이름 기준만 (다른 정션은 유지)
+        if ($part -match '(?i)\\Cua\\|\\cua-driver\\') { continue }
         try {
             if (-not (Test-Path -LiteralPath $part)) { continue }
-            if (Test-PathIsReparse $part) {
-                Write-Warn "PATH에서 제외 (정션/마운트): $part"
-                continue
-            }
             $null = Get-Item -LiteralPath $part -ErrorAction Stop
             if (-not $keep.Contains($part)) { $keep.Add($part) | Out-Null }
         } catch {
@@ -381,23 +376,62 @@ function Set-PipSafePath {
         }
     }
     $env:Path = ($keep -join ';')
-    # pip/임시 파일이 사용자 TEMP 의 필터 드라이버를 타지 않게 설치 폴더로 고정
-    $pipTmp = Join-Path $Root ".iris-setup-tmp"
-    New-Item -ItemType Directory -Force -Path $pipTmp | Out-Null
-    $env:TEMP = $pipTmp
-    $env:TMP = $pipTmp
     $env:PYTHONNOUSERSITE = "1"
+    if ($IsolateTemp) {
+        try {
+            $pipTmp = Join-Path $Root ".iris-setup-tmp"
+            New-Item -ItemType Directory -Force -Path $pipTmp | Out-Null
+            $env:TEMP = $pipTmp
+            $env:TMP = $pipTmp
+            Write-Info "TEMP 격리: $pipTmp"
+        } catch {
+            Write-Warn "TEMP 격리 실패 — 시스템 TEMP 유지: $_"
+            $env:TEMP = $script:OrigTemp
+            $env:TMP = $script:OrigTmp
+        }
+    } else {
+        $env:TEMP = $script:OrigTemp
+        $env:TMP = $script:OrigTmp
+    }
 }
+
+function Restore-OrigEnv {
+    if ($script:OrigPath) { $env:Path = $script:OrigPath }
+    if ($script:OrigTemp) { $env:TEMP = $script:OrigTemp }
+    if ($script:OrigTmp) { $env:TMP = $script:OrigTmp }
+}
+
 function Get-PipLogErrorTail {
     if (-not (Test-Path -LiteralPath $PipLog)) { return "" }
     try {
-        $lines = Get-Content -LiteralPath $PipLog -Tail 80 -ErrorAction Stop
+        $lines = Get-Content -LiteralPath $PipLog -Tail 120 -ErrorAction Stop
     } catch { return "" }
-    $err = ($lines | Where-Object { $_ -match 'ERROR:|WinError\s*448|No pyvenv' } | Select-Object -Last 3) -join " | "
-    if ($err.Length -gt 400) { $err = $err.Substring($err.Length - 400) }
+    $hit = $lines | Where-Object { $_ -match 'ERROR:|WinError\s*\d+|No matching distribution|Could not find|SSLError|ProxyError' }
+    if (-not $hit) {
+        $hit = $lines | Select-Object -Last 5
+    }
+    $err = ($hit | Select-Object -Last 4) -join " | "
+    if ($err.Length -gt 350) { $err = $err.Substring($err.Length - 350) }
     return $err
 }
+
+function Ensure-VenvPip {
+    # 일부 Python 설치는 venv 에 pip 가 없다 — ensurepip 로 복구
+    & $VenvPy -m pip --version 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { return $true }
+    Write-Warn "venv pip 없음 — ensurepip 실행"
+    & $VenvPy -m ensurepip --upgrade 2>$null | Out-Null
+    & $VenvPy -m pip --version 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
 Set-PipSafePath
+if (-not (Ensure-VenvPip)) {
+    Fail "가상환경에 pip 를 설치하지 못했습니다." @(
+        ".\setup.ps1 -Recreate 로 다시 시도하세요",
+        "python.org 에서 Python 3.12 설치 시 'pip' 옵션을 켜세요"
+    )
+}
 
 & $VenvPy -m pip install --upgrade pip --disable-pip-version-check --no-input -q
 if ($LASTEXITCODE -ne 0) { Write-Warn "pip 업그레이드 실패 — 기존 pip으로 계속합니다" } else { Write-Ok "pip 최신" }
@@ -406,32 +440,47 @@ if ($LASTEXITCODE -ne 0) { Write-Warn "pip 업그레이드 실패 — 기존 pip
 Write-Step "의존성 설치 (requirements.txt) — 수 분 걸릴 수 있습니다"
 
 $Requirements = Join-Path $Root "requirements.txt"
-# 끊긴 다운로드·SSL 가로채기 환경까지 — 재시도 + trusted-host 폴백
+if (-not (Test-Path -LiteralPath $Requirements)) {
+    Fail "requirements.txt 가 없습니다: $Requirements" @("설치본이 손상됐을 수 있습니다. Setup.exe 를 다시 받아 설치하세요")
+}
+
+# 1) 기본  2) trusted-host  3) TEMP 격리+trusted (448 등)
 $pipRc = 1
 $pipAttempts = @(
-    @{ Extra = @(); Label = "기본" },
-    @{ Extra = @(); Label = "재시도" },
+    @{ Extra = @(); IsolateTemp = $false; Label = "기본" },
     @{
         Extra = @(
             "--trusted-host", "pypi.org",
             "--trusted-host", "files.pythonhosted.org",
             "--trusted-host", "pypi.python.org"
         )
-        Label = "trusted-host 폴백"
+        IsolateTemp = $false
+        Label = "trusted-host"
+    },
+    @{
+        Extra = @(
+            "--trusted-host", "pypi.org",
+            "--trusted-host", "files.pythonhosted.org",
+            "--trusted-host", "pypi.python.org"
+        )
+        IsolateTemp = $true
+        Label = "TEMP격리+trusted-host"
     }
 )
 foreach ($attempt in 1..$pipAttempts.Count) {
     $spec = $pipAttempts[$attempt - 1]
     if ($attempt -gt 1) {
-        Write-Warn "$($spec.Label) $attempt/$($pipAttempts.Count) — 이미 받은 패키지는 건너뜁니다"
-        Set-PipSafePath
+        Write-Warn "$($spec.Label) 재시도 $attempt/$($pipAttempts.Count)"
+        $null = Ensure-VenvPip
     }
+    if ($spec.IsolateTemp) { Set-PipSafePath -IsolateTemp } else { Set-PipSafePath }
     & $VenvPy -m pip install -r $Requirements --log $PipLog `
-        --disable-pip-version-check --no-input --retries 5 --timeout 60 `
+        --disable-pip-version-check --no-input --retries 5 --timeout 120 `
         @($spec.Extra)
     $pipRc = $LASTEXITCODE
     if ($pipRc -eq 0) { break }
 }
+Restore-OrigEnv
 if ($pipRc -ne 0) {
     Write-Warn "pip 종료 코드 $pipRc — 핵심 패키지 import 로 최종 판정합니다"
 } else {
@@ -472,7 +521,7 @@ if missing:
     sys.exit(1)
 print("OK")
 '@
-$checkFile = Join-Path $env:TEMP "iris_setup_check.py"
+$checkFile = Join-Path $Root "_iris_setup_check.py"
 Set-Content -Path $checkFile -Value $check -Encoding utf8
 # 검사 결과는 stdout으로만 받는다 — 네이티브 stderr를 2>&1 로 합치면
 # PowerShell 5.1이 성공한 실행도 실패로 표시한다
@@ -482,18 +531,21 @@ Remove-Item $checkFile -ErrorAction SilentlyContinue
 
 if ($checkRc -ne 0) {
     $pipHint = Get-PipLogErrorTail
-    $msg = "핵심 패키지 import 검증 실패: $result"
-    if ($pipHint) { $msg = "$msg — $pipHint" }
+    # Inno 대화상자는 짧아야 읽힌다 — 모듈 나열 대신 pip 원인 우선
+    if ($pipHint) {
+        $msg = "패키지 설치 실패: $pipHint"
+    } else {
+        $short = "$result"
+        if ($short.Length -gt 180) { $short = $short.Substring(0, 180) + "…" }
+        $msg = "핵심 패키지 검증 실패: $short"
+    }
     $hints = @(
-        "설치 폴더에서 setup.bat 을 다시 실행하거나: .\setup.ps1 -Recreate",
-        "네트워크/프록시 상태를 확인하세요",
-        "사내망이라면: $VenvPy -m pip install -r requirements.txt --trusted-host pypi.org --trusted-host files.pythonhosted.org",
-        "Visual C++ 재배포 패키지가 없으면 PyQt6 로드가 실패할 수 있습니다: winget install -e --id Microsoft.VCRedist.2015+.x64"
+        "인터넷 연결 확인 후 설치 폴더에서 setup.bat 재실행 (또는 .\setup.ps1 -Recreate)",
+        "상세: $PipLog"
     )
     if ($pipHint -match '448|탑재|Cua|cua-driver') {
         $hints = @(
-            "PATH 의 Cua/클라우드 드라이버 정션이 pip 을 막을 수 있습니다. .\setup.ps1 -Recreate 를 다시 실행하세요",
-            "그래도 실패하면 Cua를 잠시 종료하거나 PATH에서 cua-driver\\bin 을 제거한 뒤 setup.bat 재실행"
+            "Cua 등 PATH 정션이 pip 을 막을 수 있습니다. Cua 종료 후 setup.bat 재실행"
         ) + $hints
     }
     Fail $msg $hints

@@ -26,6 +26,8 @@ ENV/
 
 # Test / runtime artifacts
 .iris_light_test_tmp/
+.iris-setup-tmp/
+_iris_setup_check.py
 *.db
 *.db-shm
 *.db-wal

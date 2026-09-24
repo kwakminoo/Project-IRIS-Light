@@ -1,6 +1,6 @@
 ; IRIS Windows installer — payload is staged next to this file by build_iris_setup.ps1
 #define MyAppName "IRIS"
-#define MyAppVersion "0.1.11"
+#define MyAppVersion "0.1.12"
 #define MyAppPublisher "IRIS"
 #define MyAppURL "https://github.com/kwakminoo/Project-IRIS-Light"
 #define MyAppExeName "IRIS.exe"
