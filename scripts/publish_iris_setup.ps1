@@ -64,7 +64,8 @@ try { $rev = (git -C $Root rev-parse --short HEAD).Trim() } catch { }
 $notes = @(
     "IRIS Light Setup $ver",
     "",
-    "- Windows Setup auto-install: Python bootstrap, stub/PATH harden, pip recovery",
+    "- Fix: .venv Access Denied on -Recreate (stop lockers, rename trash, retry)",
+    "- Windows Setup: Python bootstrap, Store stub/PATH harden, pip recovery",
     "- ProductVersion $ver",
     "",
     "Corresponding source: https://github.com/kwakminoo/Project-IRIS-Light",

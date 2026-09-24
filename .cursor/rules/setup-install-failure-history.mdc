@@ -1,0 +1,26 @@
+---
+description: Setup.exe / setup.ps1 설치 실패 시 이전 해결을 반복하지 말 것
+globs: setup.ps1,setup.bat,installer/iris.iss,scripts/_check_setup*.ps1,scripts/build_iris_setup.ps1,docs/code-review/Setup*.md
+alwaysApply: false
+---
+
+# Setup 패키지 설치 실패 — 이력 우선
+
+증상「Python packages did not finish」또는 `setup-fail-reason.txt`의 `FAIL:` 을 다룰 때:
+
+1. **먼저 읽기**: `docs/code-review/Setup패키지설치실패-원인과-개선안.md` §3 표 (S1–S7).
+2. **이미 완료된 해결을 같은 방식으로 반복하지 말 것** (표「다시 쓸 때」열).
+3. Core「Hermes 설치」UI면 이 규칙이 아니라 연번 22 / `Hermes설치실패-원인과-개선안.md`.
+
+## 하지 말 것 (이미 썼거나 실패한 패턴)
+
+- Store `WindowsApps\python.exe` 스텁을 다시 허용
+- PATH 통째 삭제 (Cua는 `Set-PipSafePath` 스크럽 유지)
+- 깨진 `.venv`에 `Remove-Item -ErrorAction SilentlyContinue`만 (반쯤 남음)
+- **Access Denied에 `Remove-Item -Force`만** 또는 Inno 동일 `-Recreate` 2회만
+- trusted-host를 pip 1순위 기본으로 승격
+
+## 잠금(S7) 계약
+
+- `Stop-IrisVenvHolders` → 재시도 삭제 → **rename `*.trash-*`** → robocopy wipe (`Remove-TreeSafe`)
+- hermes `force_retire`와 같은 rename 계약; Force만으로 되돌리지 말 것

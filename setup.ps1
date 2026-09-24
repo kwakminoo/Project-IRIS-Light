@@ -327,12 +327,158 @@ function Test-VenvUsable([string]$Path) {
     $py = Join-Path $Path "Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $cfg)) { return $false }
     if (-not (Test-Path -LiteralPath $py)) { return $false }
+    # 잠긴/접근 거부 python.exe 는 “존재”만으로 쓰면 이후 단계에서 trap 으로 죽는다
+    try {
+        $item = Get-Item -LiteralPath $py -ErrorAction Stop
+        if ($item.Length -lt 1024) { return $false }
+    } catch { return $false }
     return $true
 }
 
+# .venv\Scripts\python.exe / IRIS.exe 가 살아 있으면 Remove-Item 이
+# 「'python.exe' 경로에 대한 액세스가 거부되었습니다」로 즉시 실패한다
+# (Inno 가 매번 -Recreate 로 돌릴 때 재설치·업그레이드 PC에서 흔함).
+function Stop-IrisVenvHolders {
+    param([string]$Tree, [string]$AppRoot = $Root)
+    if (-not $Tree) { return }
+    $norm = $null
+    $app = $null
+    try { $norm = [IO.Path]::GetFullPath($Tree).TrimEnd('\') } catch { return }
+    if ($AppRoot) {
+        try { $app = [IO.Path]::GetFullPath($AppRoot).TrimEnd('\') } catch { $app = $null }
+    }
+    $irisExe = if ($app) { Join-Path $app "IRIS.exe" } else { $null }
+    $me = $PID
+    $killed = 0
+    foreach ($proc in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+        if (-not $proc -or $proc.ProcessId -eq $me) { continue }
+        $exe = [string]$proc.ExecutablePath
+        $cmd = [string]$proc.CommandLine
+        $hit = $false
+        if ($exe -and $exe.StartsWith($norm, [StringComparison]::OrdinalIgnoreCase)) { $hit = $true }
+        if ($irisExe -and $exe -and $exe.Equals($irisExe, [StringComparison]::OrdinalIgnoreCase)) { $hit = $true }
+        if (-not $hit -and $cmd -and $cmd.IndexOf($norm, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $hit = $true
+        }
+        if (-not $hit) { continue }
+        try {
+            Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+            $killed++
+        } catch { }
+    }
+    if ($killed -gt 0) {
+        Write-Warn "잠금 프로세스 $killed 개 종료 (.venv / IRIS)"
+        Start-Sleep -Milliseconds 500
+    }
+}
+
+# Remove-Item 실패(Access Denied) 시 rename → trash 로 자리를 비운다.
+# 이미 쓴 방법(강제 Remove만 / SilentlyContinue)과 다르게 hermes force_retire 와 같은 계약.
+function Remove-TreeSafe {
+    param([string]$Path, [string]$Label = ".venv")
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $true }
+
+    Stop-IrisVenvHolders -Tree $Path -AppRoot $Root
+
+    for ($i = 1; $i -le 5; $i++) {
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            if (-not (Test-Path -LiteralPath $Path)) { return $true }
+        } catch {
+            Write-Warn "$Label 삭제 재시도 $i/5: $($_.Exception.Message)"
+            Stop-IrisVenvHolders -Tree $Path -AppRoot $Root
+            Start-Sleep -Milliseconds (400 * $i)
+        }
+    }
+
+    $parent = Split-Path -Parent $Path
+    $leaf = Split-Path -Leaf $Path
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $trashName = "$leaf.trash-$stamp"
+    $trash = Join-Path $parent $trashName
+
+    $moved = $false
+    try {
+        [System.IO.Directory]::Move($Path, $trash)
+        $moved = $true
+        Write-Warn "$Label 잠금 — $trashName 으로 이동 후 정리"
+    } catch {
+        try {
+            Rename-Item -LiteralPath $Path -NewName $trashName -ErrorAction Stop
+            $moved = $true
+            Write-Warn "$Label 잠금 — $trashName 으로 이름 변경 후 정리"
+        } catch {
+            Write-Warn "$Label 디렉터리 rename 실패: $($_.Exception.Message)"
+        }
+    }
+
+    # 디렉터리 rename 이 막히면 잠긴 exe 만 치우고 트리를 다시 지운다
+    if (-not $moved -and (Test-Path -LiteralPath $Path)) {
+        foreach ($rel in @("Scripts\python.exe", "Scripts\pythonw.exe", "Scripts\IRIS.exe")) {
+            $locked = Join-Path $Path $rel
+            if (-not (Test-Path -LiteralPath $locked)) { continue }
+            $q = "$locked.quarantine-$stamp"
+            try {
+                [System.IO.File]::Move($locked, $q)
+                Write-Warn "$Label 파일 quarantine: $rel"
+            } catch {
+                try {
+                    Rename-Item -LiteralPath $locked -NewName ((Split-Path $rel -Leaf) + ".quarantine-$stamp") -ErrorAction Stop
+                } catch { }
+            }
+        }
+        Stop-IrisVenvHolders -Tree $Path -AppRoot $Root
+        Start-Sleep -Milliseconds 400
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            if (-not (Test-Path -LiteralPath $Path)) { return $true }
+        } catch { }
+        try {
+            [System.IO.Directory]::Move($Path, $trash)
+            $moved = $true
+        } catch {
+            Write-Warn "$Label 최종 이동 실패: $($_.Exception.Message)"
+            return $false
+        }
+    }
+
+    if (-not $moved) { return -not (Test-Path -LiteralPath $Path) }
+
+    # ponytail: 설치를 막지 않도록 trash 는 best-effort. 실패해도 새 .venv 자리는 비었다.
+    try {
+        $empty = Join-Path $parent ".iris-empty-wipe-$stamp"
+        New-Item -ItemType Directory -Force -Path $empty | Out-Null
+        $null = & robocopy $empty $trash /MIR /NFL /NDL /NJH /NJS /nc /ns /np
+        Remove-Item -LiteralPath $empty -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $trash -Recurse -Force -ErrorAction SilentlyContinue
+    } catch { }
+    # 오래된 trash 잔존 ≤3
+    try {
+        $old = @(Get-ChildItem -LiteralPath $parent -Directory -Filter "$leaf.trash-*" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending)
+        if ($old.Count -gt 3) {
+            $old | Select-Object -Skip 3 | ForEach-Object {
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch { }
+    return -not (Test-Path -LiteralPath $Path)
+}
+
+function Fail-VenvLocked([string]$Detail) {
+    Fail "가상환경 정리 실패 (파일 잠금): $Detail" @(
+        "실행 중인 IRIS / 터미널의 .venv python 을 모두 종료하세요",
+        "작업 관리자에서 IRIS.exe · python.exe · pythonw.exe 확인",
+        "백신/Controlled Folder Access 가 설치 폴더를 잠그면 예외 추가 후 setup.bat 재실행",
+        ".\setup.ps1 -Recreate"
+    )
+}
+
 if ($Recreate -and (Test-Path $VenvPath)) {
-    Write-Info "-Recreate: 기존 .venv 삭제"
-    Remove-Item -Recurse -Force $VenvPath
+    Write-Info "-Recreate: 기존 .venv 삭제 (잠금 해제 포함)"
+    if (-not (Remove-TreeSafe -Path $VenvPath -Label ".venv")) {
+        Fail-VenvLocked $VenvPath
+    }
 }
 
 $VenvPy = Join-Path $VenvPath "Scripts\python.exe"
@@ -340,19 +486,37 @@ $VenvCfg = Join-Path $VenvPath "pyvenv.cfg"
 
 # Scripts만 남고 pyvenv.cfg 가 없으면 python 이 "No pyvenv.cfg" 로 즉사한다 → 자동 재생성
 if ((Test-Path $VenvPath) -and -not (Test-VenvUsable $VenvPath)) {
-    Write-Warn "깨진 .venv 감지 (pyvenv.cfg 없음) — 삭제 후 다시 만듭니다"
-    Remove-Item -Recurse -Force $VenvPath -ErrorAction SilentlyContinue
+    Write-Warn "깨진 .venv 감지 — 삭제 후 다시 만듭니다"
+    if (-not (Remove-TreeSafe -Path $VenvPath -Label ".venv")) {
+        Fail-VenvLocked $VenvPath
+    }
 }
 
 if (Test-VenvUsable $VenvPath) {
-    $VenvVersion = & $VenvPy -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
-    if (-not $VenvVersion -or $VenvVersion -notmatch '^3\.(11|12|13)$') {
+    try {
+        $VenvVersion = & $VenvPy -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+    } catch {
+        Write-Warn ".venv python 실행 거부 — 재생성합니다: $($_.Exception.Message)"
+        if (-not (Remove-TreeSafe -Path $VenvPath -Label ".venv")) {
+            Fail-VenvLocked "$VenvPy ($($_.Exception.Message))"
+        }
+        $VenvVersion = $null
+    }
+}
+if ((Test-Path $VenvPath) -and (Test-VenvUsable $VenvPath) -and $VenvVersion) {
+    if ($VenvVersion -notmatch '^3\.(11|12|13)$') {
         Fail "기존 .venv의 Python($VenvVersion)은 Hermes와 호환되지 않습니다." @(
             ".\setup.ps1 -Recreate 로 3.11–3.13 가상환경을 새로 만드세요"
         )
     }
     Write-Ok ".venv 이미 존재 — 재사용 (새로 만들려면 -Recreate)"
 } else {
+    if (Test-Path $VenvPath) {
+        # 반쯤 남은 트리면 venv 생성이 실패한다
+        if (-not (Remove-TreeSafe -Path $VenvPath -Label ".venv")) {
+            Fail-VenvLocked $VenvPath
+        }
+    }
     Write-Info "생성 중..."
     & $PyExe @PyArgs -m venv $VenvPath
     if (-not (Test-VenvUsable $VenvPath)) {
@@ -363,6 +527,7 @@ if (Test-VenvUsable $VenvPath) {
     }
     Write-Ok "생성 완료: $VenvPath"
 }
+$VenvPy = Join-Path $VenvPath "Scripts\python.exe"
 
 # ------------------------------------------------------- 3. pip 업그레이드
 Write-Step "pip 업그레이드"
@@ -516,7 +681,11 @@ Remove-Item $checkFile -ErrorAction SilentlyContinue
 if ($checkRc -ne 0) {
     Write-Warn "핵심 패키지 없음 — .venv 재생성 후 1회 재설치합니다"
     try {
-        if (Test-Path $VenvPath) { Remove-Item -Recurse -Force $VenvPath }
+        if (Test-Path $VenvPath) {
+            if (-not (Remove-TreeSafe -Path $VenvPath -Label ".venv")) {
+                throw "venv locked: $VenvPath"
+            }
+        }
         & $PyExe @PyArgs -m venv $VenvPath
         if (-not (Test-VenvUsable $VenvPath)) { throw "venv recreate failed" }
         $VenvPy = Join-Path $VenvPath "Scripts\python.exe"
