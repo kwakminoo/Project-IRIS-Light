@@ -299,6 +299,8 @@ def run_hud_confirm(
     ok_text: str = "선택",
     cancel_text: str = "취소",
     default_ok: bool = False,
+    eyebrow: str = "MODEL NOTICE",
+    destructive: bool = False,
 ) -> bool:
     """컴팩트 Iris HUD 확인창. True면 확인."""
     accent_color = accent or TOKENS.neon_cyan
@@ -326,7 +328,7 @@ def run_hud_confirm(
 
     top = QHBoxLayout()
     top.setSpacing(TOKENS.spacing_sm)
-    eye = QLabel("MODEL NOTICE")
+    eye = QLabel(eyebrow)
     eye.setObjectName("HudConfirmEyebrow")
     top.addWidget(eye, 0, Qt.AlignmentFlag.AlignVCenter)
     top.addStretch(1)
@@ -344,7 +346,10 @@ def run_hud_confirm(
     hint_lab = QLabel(hint)
     hint_lab.setObjectName("HudConfirmHint")
     hint_lab.setWordWrap(True)
-    lay.addWidget(hint_lab)
+    if hint:
+        lay.addWidget(hint_lab)
+    else:
+        hint_lab.hide()
 
     btns = QHBoxLayout()
     btns.setSpacing(TOKENS.spacing_sm)
@@ -359,6 +364,22 @@ def run_hud_confirm(
     ok.setCursor(Qt.CursorShape.PointingHandCursor)
     ok.setAutoDefault(False)
     ok.setDefault(default_ok)
+    if destructive:
+        ok.setStyleSheet(
+            f"""
+            QPushButton#HudConfirmOk {{
+                background-color: rgba(248, 113, 113, 0.22);
+                color: {TOKENS.text_primary};
+                border: 1px solid {accent_color};
+                min-width: 96px;
+                font-weight: 600;
+            }}
+            QPushButton#HudConfirmOk:hover {{
+                background-color: rgba(248, 113, 113, 0.38);
+                border-color: {accent_color};
+            }}
+            """
+        )
     ok.clicked.connect(dlg.accept)
     btns.addWidget(cancel)
     btns.addWidget(ok)

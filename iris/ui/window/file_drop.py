@@ -42,7 +42,7 @@ def drop_event_types():
     return (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop)
 
 
-def log_drop_event(phase: str, mime, *, watched: object | None = None) -> None:
+def log_drop_event(phase: str, mime, *, watched: object | None = None, pos=None) -> None:
     """탐색기 DnD 진단 — ~/.iris-light/logs/dnd.log (항상 1줄, 용량 작음)."""
     try:
         log_dir = Path.home() / ".iris-light" / "logs"
@@ -59,10 +59,21 @@ def log_drop_event(phase: str, mime, *, watched: object | None = None) -> None:
                     urls = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()][:4]
             except Exception:
                 pass
-        name = type(watched).__name__ if watched is not None else "-"
+        cls = type(watched).__name__ if watched is not None else "-"
+        oname = "-"
+        try:
+            oname = str(getattr(watched, "objectName", lambda: "")() or "-")
+        except Exception:
+            pass
+        pos_s = "-"
+        if pos is not None:
+            try:
+                pos_s = f"{int(pos.x())},{int(pos.y())}"
+            except Exception:
+                pos_s = str(pos)
         line = (
-            f"{time.strftime('%H:%M:%S')} {phase} widget={name} "
-            f"urls={urls!r} formats={fmts!r}\n"
+            f"{time.strftime('%H:%M:%S')} {phase} widget={cls}/{oname} "
+            f"pos={pos_s} urls={urls!r} formats={fmts!r}\n"
         )
         with (log_dir / "dnd.log").open("a", encoding="utf-8") as fh:
             fh.write(line)

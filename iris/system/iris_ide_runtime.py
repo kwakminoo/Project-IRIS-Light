@@ -84,6 +84,7 @@ class IrisIdeRuntimeManager:
         self._token: str = ""
         self._workspace: str = ""
         self._lock = threading.Lock()
+        self._proc_logs: tuple[Any, ...] = ()
 
     def status(self) -> IrisIdeStatus:
         node_ok, node_msg = is_node_ready()
@@ -197,6 +198,9 @@ class IrisIdeRuntimeManager:
             "lib/browser/iris-ide-frontend-contribution.js",
             "lib/browser/iris-ide-frontend-module.js",
             "lib/browser/iris-ide-bridge-poller.js",
+            "lib/node/iris-ide-backend-contribution.js",
+            "lib/node/iris-ide-backend-module.js",
+            "lib/node/iris-ide-bridge-server.js",
             "lib/frontend/bundle.js",
             "bridge/standalone-bridge.js",
         ):
@@ -287,7 +291,16 @@ class IrisIdeRuntimeManager:
                 self._bridge_port = 3001
                 self._token = "demo-token"
                 self._workspace = project_root_path or ""
-                self._write_state({"pid": 0, "port": 3000, "bridge_port": 3001, "token": self._token})
+                self._write_state(
+                    {
+                        "pid": 0,
+                        "port": 3000,
+                        "bridge_port": 3001,
+                        "token": self._token,
+                        "workspace": self._workspace,
+                        "workspace_open": bool(self._workspace),
+                    }
+                )
                 return True, "demo"
             ok, msg = self.verify_installation()
             if not ok:
@@ -317,17 +330,24 @@ class IrisIdeRuntimeManager:
             self._bridge_port = _free_port()
         self._token = secrets.token_urlsafe(24)
         env = os.environ.copy()
+        # 경로 점검용 변수가 부모에 남아 있으면 브리지가 listen 전에 종료한다.
+        env.pop("IRIS_BRIDGE_RESOLVE_CHECK", None)
         env["PORT"] = str(self._theia_port)
         env["THEIA_CONFIG_DIR"] = str(iris_ide_config_dir())
         env["IRIS_IDE_WORKSPACE"] = self._workspace
         env["IRIS_IDE_BRIDGE_PORT"] = str(self._bridge_port)
         env["IRIS_IDE_BRIDGE_TOKEN"] = self._token
         env["IRIS_IDE_STATE_FILE"] = str(runtime_state_path())
+        # Theia 내장 IrisIdeBridgeServer가 같은 포트에 재bind하지 않게
+        env["IRIS_IDE_STANDALONE_BRIDGE"] = "1"
         node = node_executable()
         theia_cli = runtime_install_dir() / "node_modules" / "@theia" / "cli" / "bin" / "theia.js"
         bridge_js = runtime_install_dir() / "bridge" / "standalone-bridge.js"
-        if not bridge_js.is_file():
-            bridge_js = runtime_source_dir() / "bridge" / "standalone-bridge.js"
+        src_bridge = runtime_source_dir() / "bridge" / "standalone-bridge.js"
+        # 설치본 bridge가 구버전이면 setWorkspace 등 누락 — 기동 직전 소스 덮어씀
+        if src_bridge.is_file():
+            bridge_js.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_bridge, bridge_js)
         if not theia_cli.is_file():
             return False, "theia CLI missing — repair/install 필요"
         if not bridge_js.is_file():
@@ -347,19 +367,39 @@ class IrisIdeRuntimeManager:
             theia_args.append(f"--ovsx-router-config={router_config}")
         if self._workspace:
             theia_args.append(self._workspace)
+        log_dir = iris_state_dir() / "runtime" / "iris_ide_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # ponytail: DEVNULL이면 crash 원인 증발 — 파일로만 남기고 UI에 tail 노출
+        theia_log = open(log_dir / "theia.log", "w", encoding="utf-8", errors="replace")
+        bridge_log = open(log_dir / "bridge.log", "w", encoding="utf-8", errors="replace")
+        self._proc_logs = (theia_log, bridge_log)
         kwargs_base: dict[str, Any] = {
             "cwd": str(runtime_install_dir()),
             "env": env,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
             "stdin": subprocess.DEVNULL,
         }
         if sys.platform == "win32":
             kwargs_base["creationflags"] = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
         try:
-            self._bridge_proc = subprocess.Popen([node, str(bridge_js)], **kwargs_base)  # noqa: S603
-            self._proc = subprocess.Popen(theia_args, **kwargs_base)  # noqa: S603
+            self._bridge_proc = subprocess.Popen(  # noqa: S603
+                [node, str(bridge_js)],
+                **kwargs_base,
+                stdout=bridge_log,
+                stderr=subprocess.STDOUT,
+            )
+            self._proc = subprocess.Popen(  # noqa: S603
+                theia_args,
+                **kwargs_base,
+                stdout=theia_log,
+                stderr=subprocess.STDOUT,
+            )
         except OSError as exc:
+            for handle in self._proc_logs:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+            self._proc_logs = ()
             return False, str(exc)
         self._write_state(
             {
@@ -369,11 +409,15 @@ class IrisIdeRuntimeManager:
                 "bridge_port": self._bridge_port,
                 "token": self._token,
                 "workspace": self._workspace,
+                "workspace_open": bool(self._workspace),
             }
         )
         ok_ready, detail = self.wait_until_ready(timeout_sec=120.0)
         if not ok_ready:
+            log_tail = self._recent_proc_log_tail()
             self.stop()
+            if log_tail:
+                return False, f"{detail}\n{log_tail}"
             return False, detail
         return True, detail
 
@@ -383,7 +427,11 @@ class IrisIdeRuntimeManager:
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
             if self._proc is not None and self._proc.poll() is not None:
-                return False, "Theia process exited early"
+                code = self._proc.returncode
+                return False, f"Theia process exited early (code={code})"
+            if self._bridge_proc is not None and self._bridge_proc.poll() is not None:
+                code = self._bridge_proc.returncode
+                return False, f"bridge process exited early (code={code})"
             if self.health():
                 st = self._read_state()
                 if int(st.get("bridge_port") or 0):
@@ -417,7 +465,32 @@ class IrisIdeRuntimeManager:
 
     @property
     def workspace(self) -> str:
-        return self._workspace
+        """Bridge state-file workspace (File > Open Folder may rewrite it)."""
+        live = str(self._read_state().get("workspace") or "").strip()
+        return live or self._workspace
+
+    @property
+    def workspace_open(self) -> bool:
+        """Whether Theia currently has a folder open (vs welcome)."""
+        st = self._read_state()
+        if "workspace_open" in st:
+            return bool(st.get("workspace_open"))
+        return bool(self._workspace)
+
+    def _recent_proc_log_tail(self, *, chars: int = 600) -> str:
+        log_dir = iris_state_dir() / "runtime" / "iris_ide_logs"
+        bits: list[str] = []
+        for name in ("theia.log", "bridge.log"):
+            path = log_dir / name
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+            if text:
+                bits.append(f"[{name}]\n{text[-chars:]}")
+        return "\n".join(bits)
 
     def health(self) -> bool:
         if is_iris_ide_demo():
@@ -490,6 +563,12 @@ class IrisIdeRuntimeManager:
                         pass
             self._proc = None
             self._bridge_proc = None
+            for handle in self._proc_logs:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+            self._proc_logs = ()
             self._clear_state()
 
     def _read_state(self) -> dict[str, Any]:

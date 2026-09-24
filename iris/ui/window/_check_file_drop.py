@@ -87,6 +87,8 @@ def main() -> None:
     check_chat_drag_actions()
     check_finish_keeps_pending_outside()
     check_win_shell_drop_arm()
+    check_explorer_overlay_drop()
+    check_no_win32_drop_hooks()
     # ponytail: 소스가 OK여도 구식 bundle.js면 실행에 안 뜸 — 번들 마커 필수
     for label, bundle in (
         ("workspace", root / "integrations" / "iris-ide" / "lib" / "frontend" / "bundle.js"),
@@ -184,6 +186,130 @@ def check_finish_keeps_pending_outside() -> None:
         assert bound_finish() == [r"C:\proj\tab.py"]
     assert inst._pending_ide_drag == []
     inst._attach_os_drop_paths.assert_called_with([r"C:\proj\tab.py"])
+
+
+def check_no_win32_drop_hooks() -> None:
+    """탐색기 드롭 우회가 nativeEvent/WNDPROC 훅을 다시 넣지 않았는지."""
+    root = Path(__file__).resolve().parents[3]
+    banned = (
+        "def nativeEvent",
+        "class _DropNativeFilter",
+        "GWL_WNDPROC",
+        "SetWindowLongPtr",
+        "CallWindowProc",
+        "SetWindowsHookEx",
+    )
+    text = (root / "iris/ui/window/explorer_drop_overlay.py").read_text(encoding="utf-8")
+    for token in banned:
+        assert token not in text, f"explorer_drop_overlay reintroduced {token}"
+    assert "_qt_modal_blocking" in text
+    assert "_drop_guard_paused" in text
+    assert "drop_target_global_rect" in text
+    main = (root / "iris/ui/window/main_window.py").read_text(encoding="utf-8")
+    assert "def nativeEvent" not in main
+    assert "QAbstractNativeEventFilter" not in main
+
+
+def check_explorer_overlay_drop() -> None:
+    """별도 Qt overlay가 + 첨부와 같은 attach 콜백을 쓰는지."""
+    import sys
+
+    from PyQt6.QtCore import QMimeData, QPoint, QPointF, QUrl, Qt
+    from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+    from PyQt6.QtWidgets import QMainWindow
+
+    from iris.ui.window.explorer_drop_overlay import ExplorerDropGuard
+
+    host = QMainWindow()
+    host.setWindowTitle("overlay-host")
+    host.resize(320, 240)
+    host._pending_ide_drag = []
+    attached: list[str] = []
+
+    def _attach(paths: list[str]) -> bool:
+        attached.extend(paths)
+        return True
+
+    host._attach_os_drop_paths = _attach  # type: ignore[method-assign]
+    guard = ExplorerDropGuard(host)
+    overlay = guard.overlay()
+    assert overlay.acceptDrops() is True
+    assert overlay.isVisible() is False
+    host.show()
+    QApplication.instance().processEvents()
+
+    sample = Path(__file__).resolve()
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(sample))])
+    enter = QDragEnterEvent(
+        QPoint(12, 16),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    overlay.dragEnterEvent(enter)
+    assert enter.isAccepted(), "file dragEnter must accept"
+
+    drop = QDropEvent(
+        QPointF(12, 16),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    overlay.dropEvent(drop)
+    assert [Path(p).resolve() for p in attached] == [sample], attached
+    assert overlay.isVisible() is False, "drop 후 overlay 제거"
+
+    extra = (sample.parent / "file_drop.py").resolve()
+    multi = QMimeData()
+    multi.setUrls([QUrl.fromLocalFile(str(sample)), QUrl.fromLocalFile(str(extra))])
+    overlay.dropEvent(
+        QDropEvent(
+            QPointF(8, 8),
+            Qt.DropAction.CopyAction,
+            multi,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+    )
+    assert [Path(p).resolve() for p in attached[-2:]] == [sample, extra], attached
+
+    overlay.arm()
+    QApplication.instance().processEvents()
+    assert overlay.isVisible() is True
+    overlay.disarm()
+    assert overlay.isVisible() is False
+
+    from iris.ui.window.explorer_drop_overlay import _drop_guard_paused, _qt_modal_blocking
+
+    assert _qt_modal_blocking() is False
+    assert _drop_guard_paused(host) is False
+    class _RunningWorker:
+        def isRunning(self) -> bool:
+            return True
+
+    host._iris_ide_launch_worker = _RunningWorker()
+    assert _drop_guard_paused(host) is True
+    host._iris_ide_launch_worker = None
+    dlg = QMainWindow()  # not modal
+    assert _qt_modal_blocking() is False
+    dlg.close()
+
+    if sys.platform == "win32":
+        overlay.arm()
+        QApplication.instance().processEvents()
+        hwnd = int(overlay.winId())
+        assert hwnd != 0
+        import ctypes
+
+        from iris.ui.window.win_shell_drop import WS_EX_TRANSPARENT, hwnd_drop_debug
+
+        ex = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
+        assert not (ex & WS_EX_TRANSPARENT), hwnd_drop_debug(hwnd)
+        overlay.disarm()
+    host.close()
 
 
 if __name__ == "__main__":

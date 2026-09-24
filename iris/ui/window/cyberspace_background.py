@@ -89,14 +89,21 @@ class CyberspaceBackground(QWidget):
         self._sync_layers()
 
     def _orb_layer_geometry(self) -> QRect:
-        """orb_host가 있으면 그 rect(로컬), 없으면 창 전체."""
+        """orb_host가 있으면 그 rect(로컬), 없으면 창 전체.
+
+        host가 숨겨지거나 크기가 0이면(채팅이 로고 자리까지 확장) 창 전체로
+        폴백하지 않는다 — 구체가 채팅 위로 다시 떠오른다.
+        """
         host = self._orb_host
-        if host is not None and host.isVisible() and host.window() is self.window():
-            top_left = host.mapTo(self, QPoint(0, 0))
-            size = host.size()
-            if size.width() > 0 and size.height() > 0:
-                return QRect(top_left, size)
-        return self.rect()
+        if host is None:
+            return self.rect()
+        if not host.isVisible() or host.window() is not self.window():
+            return QRect()
+        top_left = host.mapTo(self, QPoint(0, 0))
+        size = host.size()
+        if size.width() <= 0 or size.height() <= 0:
+            return QRect()
+        return QRect(top_left, size)
 
     def _sync_layers(self) -> None:
         rect = self.rect()

@@ -98,7 +98,7 @@ class BootChecksWorker(QThread):
 class IrisIdeLaunchWorker(QThread):
     """IRIS IDE Theia 런타임 기동 — UI 스레드 밖에서 수행."""
 
-    finished_ok = pyqtSignal(str, int, str, str)  # base_url, bridge_port, bridge_token, workspace
+    finished_ok = pyqtSignal(str, str)  # base_url, workspace. 브리지 포트·토큰은 IdeLink가 보관한다.
     finished_err = pyqtSignal(str)
 
     def __init__(self, project_root: str = "", parent=None) -> None:
@@ -113,12 +113,7 @@ class IrisIdeLaunchWorker(QThread):
         if not ok:
             self.finished_err.emit(err)
             return
-        self.finished_ok.emit(
-            mgr.base_url(),
-            int(mgr.bridge_port or 0),
-            mgr.bridge_token(),
-            mgr.workspace,
-        )
+        self.finished_ok.emit(mgr.base_url(), mgr.workspace)
 
 
 class EmulatorLaunchWorker(QThread):

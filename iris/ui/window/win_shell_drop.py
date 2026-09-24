@@ -62,6 +62,57 @@ def enable_shell_file_drop(hwnd: int) -> bool:
         return False
 
 
+def hwnd_drop_debug(hwnd: int) -> str:
+    """OLE 등록·창 스타일 스냅샷. 훅 없음."""
+    if sys.platform != "win32" or not hwnd:
+        return f"hwnd={hwnd} (skip)"
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        ex = user32.GetWindowLongW(int(hwnd), GWL_EXSTYLE) & 0xFFFFFFFF
+        bits: list[str] = []
+        if ex & 0x00080000:
+            bits.append("LAYERED")
+        if ex & WS_EX_TRANSPARENT:
+            bits.append("TRANSPARENT")
+        if ex & WS_EX_ACCEPTFILES:
+            bits.append("ACCEPTFILES")
+        user32.GetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+        user32.GetPropW.restype = wintypes.HANDLE
+        ole = int(user32.GetPropW(wintypes.HWND(int(hwnd)), "OleDropTargetInterface") or 0)
+        return (
+            f"hwnd={int(hwnd)} ex=0x{ex:08x} {'|'.join(bits) or '-'} "
+            f"ole={ole} elevated={_process_elevated()}"
+        )
+    except Exception as exc:
+        return f"hwnd={int(hwnd)} debug_fail={exc!r}"
+
+
+def _process_elevated() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        token = wintypes.HANDLE()
+        if not ctypes.windll.advapi32.OpenProcessToken(
+            ctypes.windll.kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)
+        ):
+            return False
+        elev = wintypes.DWORD()
+        size = wintypes.DWORD()
+        ok = ctypes.windll.advapi32.GetTokenInformation(
+            token, 20, ctypes.byref(elev), ctypes.sizeof(elev), ctypes.byref(size)
+        )
+        ctypes.windll.kernel32.CloseHandle(token)
+        return bool(ok and elev.value)
+    except Exception:
+        return False
+
+
 def _log(line: str) -> None:
     try:
         log_dir = Path.home() / ".iris-light" / "logs"

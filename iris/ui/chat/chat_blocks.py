@@ -10,6 +10,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from iris.ui.chat.chat_syntax import highlight_code
 from iris.ui.shared.theme_tokens import TOKENS
 
 if TYPE_CHECKING:
@@ -175,14 +176,19 @@ def diff_block_to_html(diff_text: str) -> str:
             f'<span style="display:block;background:{bg};color:{fg};">{esc}</span>'
         )
     body = "".join(rows) if rows else f'<span style="color:{t.text_muted};">&nbsp;</span>'
+    # Qt Rich Text의 일반 <pre>/<div>는 padding·border를 그리지 않는다(실측 확인 —
+    # _code_card_html 주석 참고). <table>/<td>만 실제로 렌더링하므로 표로 구성한다.
     return (
-        f'<pre style="display:block;margin:4px 0;padding:0;white-space:pre-wrap;'
-        f'{_shell_style(mono=True)}color:{t.text_primary};">'
-        f'<span style="display:block;padding:4px 10px;'
-        f'border-bottom:1px solid {t.chat_block_border};'
-        f'color:{t.text_muted};font-size:{t.font_size_micro};">diff</span>'
-        f'<code style="display:block;padding:8px 10px;font-family:{t.chat_block_mono_font};'
-        f'font-size:{t.font_size_caption};">{body}</code></pre>'
+        f'<table width="100%" cellspacing="0" cellpadding="0" '
+        f'style="width:100%;background-color:{t.chat_block_bg};margin:6px 0;">'
+        f'<tr><td style="padding:7px 16px;font-family:{t.chat_ui_font};'
+        f"font-size:{t.font_size_micro};color:{t.text_muted};"
+        f'border-bottom:1px solid {t.chat_block_border_solid};">diff</td></tr>'
+        f'<tr><td style="padding:12px 16px;white-space:pre-wrap;">'
+        f'<code style="font-family:{t.chat_block_mono_font};'
+        f"font-weight:{t.chat_block_code_weight};font-size:{t.font_size_caption};"
+        f'line-height:{t.chat_block_line_height};color:{t.text_primary};">{body}</code>'
+        f"</td></tr></table>"
     )
 
 
@@ -208,37 +214,94 @@ def wrap_document_html(inner: str) -> str:
     )
 
 
+# Qt Rich Text는 인라인 요소의 padding/border-radius를 렌더링하지 않는다(실측
+# 확인). 그래서 얇은 공백(hair space)을 텍스트 양옆에 넣어 배경이 글자에 바싹
+# 붙어 보이지 않도록 한다 — 실제 padding 대신 쓰는 대체 수단이다.
+_INLINE_CODE_PAD = " "
+
+
 def inline_code_to_html(text: str) -> str:
+    t = TOKENS
     esc = html.escape(text or "")
-    return f'<code style="color:#a5b4fc;">{esc}</code>'
+    return (
+        f'<code style="display:inline;color:{t.chat_inline_code_color};'
+        f"background-color:{t.chat_inline_code_bg};font-family:{t.chat_block_mono_font};"
+        f"font-weight:{t.chat_block_code_weight};font-size:{t.font_size_caption};"
+        f'border-radius:4px;">{_INLINE_CODE_PAD}{esc}{_INLINE_CODE_PAD}</code>'
+    )
+
+
+_LANG_DISPLAY_NAMES = {
+    "py": "Python",
+    "python": "Python",
+    "js": "JavaScript",
+    "javascript": "JavaScript",
+    "jsx": "JSX",
+    "ts": "TypeScript",
+    "typescript": "TypeScript",
+    "tsx": "TSX",
+    "json": "JSON",
+    "html": "HTML",
+    "css": "CSS",
+    "sql": "SQL",
+    "sh": "Bash",
+    "bash": "Bash",
+    "shell": "Shell",
+    "zsh": "Zsh",
+    "yml": "YAML",
+    "yaml": "YAML",
+    "md": "Markdown",
+    "markdown": "Markdown",
+    "kt": "Kotlin",
+    "cs": "C#",
+    "cpp": "C++",
+    "c++": "C++",
+    "ps1": "PowerShell",
+    "powershell": "PowerShell",
+}
+
+
+def _display_lang_name(language: str) -> str:
+    lang = (language or "").strip()
+    if not lang:
+        return ""
+    return _LANG_DISPLAY_NAMES.get(lang.lower(), lang.capitalize())
 
 
 def fenced_code_to_html(block: FencedCodeBlock) -> str:
     t = TOKENS
-    lang = html.escape((block.language or "").strip(), quote=True)
-    code = html.escape(block.code or "")
-    lang_label = (
-        f'<span style="color:{t.text_muted};font-size:{t.font_size_micro};'
-        f'letter-spacing:0.3px;">{lang}</span>'
+    lang = html.escape(_display_lang_name(block.language or ""), quote=True)
+    highlighted = highlight_code(block.code or "", block.language or "")
+    code = highlighted if highlighted is not None else html.escape(block.code or "")
+    lang_cell = (
+        f'<span style="color:{t.text_muted};letter-spacing:0.3px;">{lang}</span>'
         if lang
-        else ""
+        else "&nbsp;"
     )
     copy_href = html.escape(copy_anchor_for(block.code or ""), quote=True)
-    copy_link = (
-        f'<a href="{copy_href}" style="float:right;color:{t.text_accent};'
-        f'font-size:{t.font_size_micro};text-decoration:none;">복사</a>'
-    )
-    header = (
-        f'<span style="display:block;padding:4px 10px;'
-        f'border-bottom:1px solid {t.chat_block_border};">'
-        f"{lang_label}{copy_link}</span>"
-    )
+    # Qt Rich Text는 일반 <pre>/<div>에 padding·border(-bottom)를 그리지 않고
+    # float도 지원하지 않는다(실측 확인). <table>/<td>만 이 스타일들을 실제로
+    # 렌더링하므로 헤더(언어명 좌측·복사 우측)와 코드 카드 전체를 표로 구성해
+    # 코드 첫 줄과 확실히 분리한다.
     return (
-        f'<pre style="display:block;margin:4px 0;padding:0;white-space:pre-wrap;'
-        f'{_shell_style(mono=True)}color:{t.text_primary};">'
-        f'{header}'
-        f'<code style="display:block;padding:8px 10px;font-family:{t.chat_block_mono_font};'
-        f'font-size:{t.font_size_caption};">{code}</code></pre>'
+        f'<table width="100%" cellspacing="0" cellpadding="0" '
+        f'style="width:100%;background-color:{t.chat_block_bg};margin:6px 0;">'
+        f"<tr>"
+        f'<td style="padding:7px 16px;font-family:{t.chat_ui_font};'
+        f'font-size:{t.font_size_micro};border-bottom:1px solid {t.chat_block_border_solid};">'
+        f"{lang_cell}</td>"
+        f'<td width="1" style="padding:7px 16px;font-family:{t.chat_ui_font};'
+        f"font-size:{t.font_size_micro};white-space:nowrap;text-align:right;"
+        f'border-bottom:1px solid {t.chat_block_border_solid};">'
+        f'<a href="{copy_href}" style="color:{t.text_muted};text-decoration:none;">복사</a>'
+        f"</td>"
+        f"</tr>"
+        f'<tr><td colspan="2" style="padding:12px 16px;white-space:pre-wrap;">'
+        f'<code style="font-family:{t.chat_block_mono_font};'
+        f"font-weight:{t.chat_block_code_weight};font-size:{t.font_size_caption};"
+        f'line-height:{t.chat_block_line_height};color:{t.text_primary};">{code}</code>'
+        f"</td></tr>"
+        f"</table>"
     )
 
 

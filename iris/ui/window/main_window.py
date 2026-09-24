@@ -51,6 +51,8 @@ from iris.storage.api_providers import (
     runtime_model_id,
     usable_models,
 )
+from iris.runtime.chat_session import ChatSession
+from iris.runtime.chat_turn_gate import ChatTurnGate
 from iris.storage.email_accounts import EmailAccount, find_account, load_email_accounts
 from iris.monitoring.notification_policy import NotificationPolicy
 from iris.audio.alert_speech import (
@@ -202,6 +204,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self._drop_armed: WeakSet = WeakSet()
         self._pending_ide_drag: list[str] = []
+        self._explorer_drop_guard = None
 
         self._env_path = Path(__file__).resolve().parents[3] / ".env"
         self._settings = load_settings(self._env_path)
@@ -215,7 +218,8 @@ class MainWindow(QMainWindow):
         self._state = StateMachine()
         self._state.state_changed.connect(self._on_app_state)
         self._voice_prefs: VoicePreferences = load_voice_preferences(self._db)
-        self._history: list[dict[str, str]] = []
+        self._chat_session = ChatSession(self._db)
+        self._turn_gate = ChatTurnGate()
         self._last_assistant_text = ""
         self._pending_local_vibe_prompt = ""
         self._live_vibe: dict | None = None
@@ -273,8 +277,6 @@ class MainWindow(QMainWindow):
         self._email_folder = "inbox"  # 메시지 조회용 메일함 키
         self._selected_email_account_id = ""
         self._hermes_online = False
-        self._busy = False
-        self._ignore_chat_result = False
         self._quota_by_key: dict[str, object] = {}
         self._last_ollama_quota_refresh = 0.0
         self._workspace_mode = "assistant"
@@ -324,7 +326,6 @@ class MainWindow(QMainWindow):
         self._turn_dispatcher.turn_ready.connect(self._dispatch_user_turn)
         self._turn_dispatcher.turn_queued.connect(self._on_turn_queued)
         self._turn_dispatcher.turn_dropped.connect(self._on_turn_dropped)
-        self._active_turn_id = ""
         self._active_turn_source = UserTurnSource.KEYBOARD
         self._wiki_import_worker: WikiImportWorker | None = None
         self._recent_voice_turns: deque[tuple[float, int | None, str]] = deque()
@@ -539,6 +540,14 @@ class MainWindow(QMainWindow):
         self._chat.speaker_clicked.connect(self._on_chat_speaker_clicked)
         self._chat.update_action_clicked.connect(self._on_chat_update_action)
         left_lay.addWidget(self._chat, 3)
+
+        history_panel = self._left_sidebar.chat_history
+        history_panel.new_chat_requested.connect(self._on_new_chat_requested)
+        history_panel.conversation_selected.connect(self._on_conversation_selected)
+        history_panel.conversation_delete_requested.connect(self._on_conversation_deleted)
+        history_panel.conversation_rename_requested.connect(self._on_conversation_renamed)
+        self._chat.restore_messages(self._history)
+        self._refresh_chat_history_panel()
 
         self._monitor = UnifiedMonitorPanel()
         self._monitor.set_database(self._db)
@@ -1346,6 +1355,149 @@ class MainWindow(QMainWindow):
         self._chat.set_context_usage(used, limit)
 
     # ------------------------------------------------------------------
+    # 대화 세션·턴 점유 — 저장/식별은 세션·게이트, 화면은 여기
+    # ------------------------------------------------------------------
+
+    @property
+    def _conversation_id(self) -> int:
+        return self._chat_session.conversation_id
+
+    @_conversation_id.setter
+    def _conversation_id(self, value: int) -> None:
+        self._chat_session.conversation_id = int(value)
+
+    @property
+    def _history(self) -> list[dict[str, str]]:
+        return self._chat_session.history
+
+    @_history.setter
+    def _history(self, value: list[dict[str, str]]) -> None:
+        self._chat_session.history = value
+
+    @property
+    def _active_turn_id(self) -> str:
+        return self._turn_gate.active_id
+
+    @_active_turn_id.setter
+    def _active_turn_id(self, value: str) -> None:
+        self._turn_gate.active_id = value
+
+    @property
+    def _busy(self) -> bool:
+        return self._turn_gate.busy
+
+    @_busy.setter
+    def _busy(self, value: bool) -> None:
+        self._turn_gate.busy = bool(value)
+
+    @property
+    def _ignore_chat_result(self) -> bool:
+        return self._turn_gate.ignore_result
+
+    @_ignore_chat_result.setter
+    def _ignore_chat_result(self, value: bool) -> None:
+        self._turn_gate.ignore_result = bool(value)
+
+    def _record_history(self, role: str, content: str) -> None:
+        """메인 채팅 턴을 세션에 기록하고, 사용자 메시지면 목록을 다시 그린다."""
+        err = self._chat_session.record(role, content)
+        if err:
+            self._live_activity.append_instant_line(f"chat 저장 실패: {err}")
+            return
+        if role == "user":
+            self._refresh_chat_history_panel()
+
+    def _drop_last_user_history(self) -> None:
+        """실패한 턴 되돌리기 — 세션이 메모리·DB를 같이 뺀다."""
+        self._chat_session.drop_last_user()
+
+    def _refresh_chat_history_panel(self) -> None:
+        panel = getattr(self._left_sidebar, "chat_history", None)
+        if panel is None:
+            return
+        try:
+            items = self._chat_session.list_items()
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(f"chat 목록 실패: {exc}")
+            return
+        panel.set_conversations(items, active_id=self._conversation_id)
+
+    def _load_conversation(self, conversation_id: int) -> None:
+        """세션 전환 — 진행 중 턴은 끊고 트랜스크립트를 다시 그린다."""
+        if self._busy:
+            self._cancel_current_turn(
+                reason="conversation_switch",
+                preserve_partial_response=True,
+            )
+        self._chat_session.activate(conversation_id)
+        self._last_assistant_text = ""
+        self._pending_local_vibe_prompt = ""
+        self._live_vibe = None
+        self._chat.restore_messages(self._history)
+        self._refresh_context_gauge()
+        self._refresh_chat_history_panel()
+
+    def reset_current_conversation(self) -> None:
+        """현재 세션의 대화 내용만 비운다 (세션 자체는 유지)."""
+        if self._busy:
+            self._cancel_current_turn(
+                reason="conversation_reset",
+                preserve_partial_response=False,
+            )
+        self._chat_session.clear_messages()
+        self._last_assistant_text = ""
+        self._chat.clear_transcript()
+        self._refresh_context_gauge()
+        self._refresh_chat_history_panel()
+
+    def _on_new_chat_requested(self) -> None:
+        cid = self._chat_session.start_new()
+        if cid == self._conversation_id and not self._history:
+            self._refresh_chat_history_panel()
+            return
+        self._load_conversation(cid)
+        self._live_activity.append_instant_line("새 채팅 시작")
+
+    def _on_conversation_selected(self, conversation_id: int) -> None:
+        cid = int(conversation_id)
+        if cid == self._conversation_id:
+            return
+        self._load_conversation(cid)
+
+    def _on_conversation_renamed(self, conversation_id: int, title: str) -> None:
+        err = self._chat_session.rename(conversation_id, title)
+        if err:
+            self._live_activity.append_instant_line(f"채팅 제목 저장 실패: {err}")
+            return
+        self._refresh_chat_history_panel()
+
+    def _on_conversation_deleted(self, conversation_id: int) -> None:
+        from iris.ui.settings.hud_dialog import run_hud_confirm
+        from iris.ui.shared.theme_tokens import TOKENS
+
+        cid = int(conversation_id)
+        shown = self._chat_session.title_of(cid) or "이 채팅"
+        if not run_hud_confirm(
+            self,
+            title="채팅 삭제",
+            eyebrow="CHATS",
+            badge="DELETE",
+            accent=TOKENS.error,
+            body="이 채팅을 삭제하시겠습니까?",
+            hint=shown,
+            ok_text="삭제",
+            cancel_text="취소",
+            default_ok=False,
+            destructive=True,
+        ):
+            return
+        self._chat_session.delete(cid)
+        if cid != self._conversation_id:
+            self._refresh_chat_history_panel()
+            return
+        self._load_conversation(self._chat_session.ensure_active())
+
+    # ------------------------------------------------------------------
     # 고정 창 AI 감시
     # ------------------------------------------------------------------
 
@@ -1623,8 +1775,9 @@ class MainWindow(QMainWindow):
         elif et in drop_event_types():
             from iris.ui.window.file_drop import log_drop_event
 
+            pos = getattr(event, "position", lambda: None)()
             if et == QEvent.Type.Drop:
-                log_drop_event("Drop", event.mimeData(), watched=watched)
+                log_drop_event("Drop", event.mimeData(), watched=watched, pos=pos)
                 paths = paths_from_mime(event.mimeData())
                 if not paths and self._pending_ide_drag:
                     paths = list(self._pending_ide_drag)
@@ -1635,7 +1788,7 @@ class MainWindow(QMainWindow):
             else:
                 # DragEnter만 로그 (Move는 스팸)
                 if et == QEvent.Type.DragEnter:
-                    log_drop_event("DragEnter", event.mimeData(), watched=watched)
+                    log_drop_event("DragEnter", event.mimeData(), watched=watched, pos=pos)
                 if self._accept_file_drag(event):
                     # True: 자식 QWidget 기본 dragEnter가 ignore()로 수락을 뒤집지 않게.
                     return True
@@ -1749,7 +1902,7 @@ class MainWindow(QMainWindow):
             panel.end_iris(msg)
         else:
             self._chat.append_message_instant("Iris", msg)
-        self._history.append({"role": "assistant", "content": msg})
+        self._record_history("assistant", msg)
         self._refresh_context_gauge()
         self._live_activity.append_instant_line(f"wiki.import ok {result.get('rel_path')}")
 
@@ -1815,7 +1968,7 @@ class MainWindow(QMainWindow):
         self._chat.set_generating(False)
         msg = f"위키 저장 실패: {err}"
         self._chat.append_message_instant("Iris", msg)
-        self._history.append({"role": "assistant", "content": msg})
+        self._record_history("assistant", msg)
         self._refresh_context_gauge()
         self._finish_current_turn(turn_id)
 
@@ -1832,7 +1985,7 @@ class MainWindow(QMainWindow):
             panel.append_user(display)
         else:
             self._chat.append_message_instant("You", display)
-        self._history.append({"role": "user", "content": display})
+        self._record_history("user", display)
         if req.mode == "summarize":
             self._start_wiki_import_async(turn, req)
             return True
@@ -1850,7 +2003,7 @@ class MainWindow(QMainWindow):
                 panel.end_iris(msg)
             else:
                 self._chat.append_message_instant("Iris", msg)
-            self._history.append({"role": "assistant", "content": msg})
+            self._record_history("assistant", msg)
             self._finish_current_turn(turn.id)
             return True
         self._present_wiki_import_success(turn, result)
@@ -1867,7 +2020,7 @@ class MainWindow(QMainWindow):
         if not text and not turn.attachments:
             self._turn_dispatcher.finish_active_turn(turn.id)
             return
-        self._active_turn_id = turn.id
+        self._turn_gate.begin(turn.id)
         self._active_turn_source = turn.source
         if turn.source == UserTurnSource.VOICE:
             self._live_activity.append_instant_line(
@@ -1922,12 +2075,9 @@ class MainWindow(QMainWindow):
                 self._chat.append_message_instant("You", self._format_user_turn_content(turn))
         else:
             self._chat.append_message_instant("You", self._format_user_turn_content(turn))
-        self._history.append(
-            {"role": "user", "content": self._format_user_turn_content(turn)}
-        )
+        self._record_history("user", self._format_user_turn_content(turn))
         self._refresh_context_gauge()
-        self._busy = True
-        self._ignore_chat_result = False
+        self._turn_gate.arm()
         self._stop_tts_playback()
         self._begin_auto_tts_response()
         self._chat.set_generating(True)
@@ -1956,8 +2106,7 @@ class MainWindow(QMainWindow):
             except Exception as exc:  # noqa: BLE001
                 self._busy = False
                 self._chat.set_generating(False)
-                if self._history and self._history[-1].get("role") == "user":
-                    self._history.pop()
+                self._drop_last_user_history()
                 self._chat.append_message_instant("Iris", str(exc))
                 self._finish_current_turn(turn.id, open_followup=False)
                 return
@@ -1980,8 +2129,7 @@ class MainWindow(QMainWindow):
             if provider is None or not provider.base_url:
                 self._busy = False
                 self._chat.set_generating(False)
-                if self._history and self._history[-1].get("role") == "user":
-                    self._history.pop()
+                self._drop_last_user_history()
                 self._chat.append_message_instant(
                     "Iris",
                     "선택한 API가 설정에서 삭제되었거나 Base URL이 없습니다. 설정을 확인하세요.",
@@ -2011,6 +2159,22 @@ class MainWindow(QMainWindow):
 
     def _start_chat_worker(self, worker: QThread, turn_id: str) -> None:
         self._chat_worker = worker
+        for sig in (
+            getattr(worker, "connecting", None),
+            getattr(worker, "tool_progress", None),
+            getattr(worker, "thinking_started", None),
+            getattr(worker, "thinking_chunk", None),
+            getattr(worker, "thinking_done", None),
+            getattr(worker, "content_chunk", None),
+            getattr(worker, "finished_ok", None),
+            getattr(worker, "failed", None),
+        ):
+            if sig is None:
+                continue
+            try:
+                sig.disconnect()
+            except TypeError:
+                pass
         worker.connecting.connect(lambda model, host, tid=turn_id: self._on_chat_connecting_for_turn(model, host, tid))
         if hasattr(worker, "tool_progress"):
             worker.tool_progress.connect(lambda message, tid=turn_id: self._on_hermes_tool_progress_for_turn(message, tid))
@@ -2026,17 +2190,11 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _is_current_turn(self, turn_id: str) -> bool:
-        return bool(turn_id) and turn_id == self._active_turn_id
+        return self._turn_gate.is_current(turn_id)
 
     def _finish_current_turn(self, turn_id: str | None = None, *, open_followup: bool) -> None:
-        current_id = turn_id or self._active_turn_id
-        self._busy = False
+        current_id = self._turn_gate.finish(turn_id)
         self._chat.set_generating(False)
-        if current_id and current_id == self._active_turn_id:
-            self._active_turn_id = ""
-        elif not current_id and self._active_turn_id:
-            current_id = self._active_turn_id
-            self._active_turn_id = ""
         if open_followup:
             self._open_voice_followup_window()
         active = self._turn_dispatcher.active_turn
@@ -2044,6 +2202,14 @@ class MainWindow(QMainWindow):
             finish_id = current_id or active.id
             self._turn_dispatcher.finish_active_turn(finish_id)
         self._sync_voice_conversation_state()
+
+    @staticmethod
+    def _cancelled_assistant_text(partial: str, *, reason: str) -> str:
+        text = (partial or "").strip()
+        if reason != "conversation_switch":
+            return text
+        note = "대화 전환으로 응답을 중단했습니다."
+        return f"{text}\n\n{note}" if text else note
 
     def _cancel_current_turn(self, *, reason: str, preserve_partial_response: bool) -> None:
         """생성 중 turn을 안전하게 끊고 다음 turn이 진행되게 한다."""
@@ -2054,24 +2220,33 @@ class MainWindow(QMainWindow):
                 self._stop_tts_playback()
                 self._sync_voice_conversation_state()
             return
-        self._ignore_chat_result = True
+        self._turn_gate.suppress_result()
         worker = self._chat_worker
         if worker is not None:
             cancel = getattr(worker, "request_cancel", None)
             if callable(cancel):
                 cancel()
         partial = (self._chat.typing_buffer_text or "").strip()
+        saved = self._cancelled_assistant_text(partial, reason=reason)
         if getattr(self._chat, "_stream_active", False):
-            self._chat.end_stream_message(partial or None)
-            if preserve_partial_response and partial:
-                self._history.append({"role": "assistant", "content": partial})
-                self._last_assistant_text = partial
+            self._chat.end_stream_message(saved or None)
+            if preserve_partial_response and saved:
+                self._record_history("assistant", saved)
+                self._last_assistant_text = saved
                 self._refresh_context_gauge()
+        elif reason == "conversation_switch" and saved:
+            self._record_history("assistant", saved)
+            self._last_assistant_text = saved
         # speech_sync 스트림은 end 후에도 타이핑이 남을 수 있음 → setHtml 전 확정
         self._chat.finish_typing()
         self._stop_tts_playback()
         self._tts_pump = None
-        self._live_activity.append_instant_line(f"VOICE current_turn_cancel_requested reason={reason}")
+        if reason == "conversation_switch":
+            self._live_activity.append_instant_line("대화 전환으로 응답을 중단했습니다.")
+        else:
+            self._live_activity.append_instant_line(
+                f"VOICE current_turn_cancel_requested reason={reason}"
+            )
         self._maybe_refresh_ollama_quota()
         self._finish_current_turn(open_followup=False)
 
@@ -2235,8 +2410,7 @@ class MainWindow(QMainWindow):
         self._maybe_end_pcm_session()
 
     def _on_chat_finished(self, content: str) -> None:
-        if self._ignore_chat_result:
-            self._ignore_chat_result = False
+        if self._turn_gate.consume_ignored():
             self._chat_worker = None
             self._tts_pump = None
             self._maybe_refresh_ollama_quota()
@@ -2250,7 +2424,7 @@ class MainWindow(QMainWindow):
         else:
             self._chat.append_message_instant("Iris", "(빈 응답)")
         if text:
-            self._history.append({"role": "assistant", "content": text})
+            self._record_history("assistant", text)
             self._last_assistant_text = text
             self._try_reveal_local_vibe_code(text)
         self._refresh_context_gauge()
@@ -2301,6 +2475,14 @@ class MainWindow(QMainWindow):
         if state is None:
             state = self._live_vibe = {"raw": "", "started": False, "closed": False}
         state["closed"] = True  # _feed_live_vibe_stream 진입 차단
+        state["tool_written"] = True
+
+    def _suppress_generated_file_fallback(self) -> None:
+        """ide.open_file 이 있으면 실패해도 iris_generated.py 를 열지 않는다."""
+        state = self._live_vibe
+        if state is None:
+            state = self._live_vibe = {"raw": "", "started": False, "closed": False}
+        state["closed"] = True
         state["tool_written"] = True
 
     def _feed_live_vibe_stream(self, chunk: str) -> None:
@@ -2398,7 +2580,7 @@ class MainWindow(QMainWindow):
         state["rel"] = norm_rel
         state["hwnd"] = hwnd
         state["opened"] = opened
-        return True
+        return bool(opened)
 
     def _live_vibe_flush(self, state: dict) -> None:
         tail = state["raw"][state["code_start"] :]
@@ -2464,6 +2646,8 @@ class MainWindow(QMainWindow):
                 root = state.get("root", "")
                 rel = state.get("rel", "")
                 if not is_run_request(prompt):
+                    if not state.get("opened"):
+                        return
                     self._chat.append_message_instant("Iris", f"IDE에 `{rel}` 파일을 열었습니다.")
                     return
                 ran = surface.registry.invoke(
@@ -2522,6 +2706,13 @@ class MainWindow(QMainWindow):
                 )
                 return
             if not is_run_request(prompt):
+                result = written.get("result") if isinstance(written.get("result"), dict) else {}
+                if not result.get("opened"):
+                    self._chat.append_message_instant(
+                        "Iris",
+                        f"IDE에 `{rel}` 파일을 썼지만 열리지는 않았습니다.",
+                    )
+                    return
                 self._chat.append_message_instant("Iris", f"IDE에 `{rel}` 파일을 열었습니다.")
                 return
             ran = surface.registry.invoke(
@@ -3747,8 +3938,7 @@ class MainWindow(QMainWindow):
         self._chat.fallback_typing_if_waiting_for_tts()
 
     def _on_chat_failed(self, err: str) -> None:
-        if self._ignore_chat_result:
-            self._ignore_chat_result = False
+        if self._turn_gate.consume_ignored():
             self._chat_worker = None
             self._stop_tts_playback()
             self._tts_pump = None
@@ -3760,8 +3950,7 @@ class MainWindow(QMainWindow):
         if getattr(self._chat, "_stream_active", False):
             self._chat.end_stream_message(None)
         # 실패한 user turn은 히스토리에서 제거 (재시도 깔끔하게)
-        if self._history and self._history[-1].get("role") == "user":
-            self._history.pop()
+        self._drop_last_user_history()
         self._refresh_context_gauge()
         self._live_activity.append_instant_line(f"Error: {err}")
         self._chat.append_message_instant(
@@ -4457,27 +4646,27 @@ class MainWindow(QMainWindow):
         for pat in enter_patterns:
             if re.match(pat, normalized, flags=re.IGNORECASE):
                 self._chat.append_message_instant("You", text)
-                self._history.append({"role": "user", "content": text})
+                self._record_history("user", text)
                 if self._ui_mode == "ide_companion":
                     reply = "이미 IDE Companion 모드입니다."
                 else:
                     self._enter_ide_companion()
                     reply = "IDE Companion을 켰습니다. (사이드바 IDE 아이콘과 동일)"
                 self._chat.append_message_instant("Iris", reply)
-                self._history.append({"role": "assistant", "content": reply})
+                self._record_history("assistant", reply)
                 self._refresh_context_gauge()
                 return True
         for pat in exit_patterns:
             if re.match(pat, normalized, flags=re.IGNORECASE):
                 self._chat.append_message_instant("You", text)
-                self._history.append({"role": "user", "content": text})
+                self._record_history("user", text)
                 if self._ui_mode != "ide_companion":
                     reply = "지금은 Companion 모드가 아닙니다."
                 else:
                     self._exit_ide_companion()
                     reply = "IDE Companion을 종료했습니다."
                 self._chat.append_message_instant("Iris", reply)
-                self._history.append({"role": "assistant", "content": reply})
+                self._record_history("assistant", reply)
                 self._refresh_context_gauge()
                 return True
         return False
@@ -4614,10 +4803,10 @@ class MainWindow(QMainWindow):
             action()
             return
         self._chat.append_message_instant("You", text)
-        self._history.append({"role": "user", "content": text})
+        self._record_history("user", text)
         action()
         self._chat.append_message_instant("Iris", reply_ok)
-        self._history.append({"role": "assistant", "content": reply_ok})
+        self._record_history("assistant", reply_ok)
         self._refresh_context_gauge()
 
     def _chat_messages_with_project_context(self) -> list[dict[str, str]]:
@@ -4770,6 +4959,9 @@ class MainWindow(QMainWindow):
         self._ide_hwnd = None
         self._ide_pid = None
         self._ide_window_owned_by_iris = False
+        from iris.system.ide_link import shared_ide_link
+
+        shared_ide_link().close()
         if was_hero:
             self._exit_iris_ide_hero(animate=False)
         elif was_companion:
@@ -4790,8 +4982,21 @@ class MainWindow(QMainWindow):
             return
         preferred = self._current_preferred_ide()
         if session.ide_id != preferred:
-            self._clear_ide_session("preferred IDE 변경")
-            return
+            # IRIS IDE 기동/Opening/Companion 중 preferred 불일치로 세션을 끊으면
+            # Opening 화면이 사라지고 Theia 기동이 중간에 끊긴다.
+            launching = (
+                self._iris_ide_launch_worker is not None
+                and self._iris_ide_launch_worker.isRunning()
+            )
+            win = self._iris_ide_window
+            iris_live = session.ide_id == "iris_ide" and (
+                launching
+                or self._ui_mode in ("ide_hero", "ide_companion")
+                or bool(win and (win.is_opening() or win.isVisible() or win.is_theia_loaded()))
+            )
+            if not iris_live:
+                self._clear_ide_session("preferred IDE 변경")
+                return
         if session.ide_id == "iris_ide":
             # 히어로: IDE 창 없이 Iris 단일 창만 — 세션 유지
             if session.mode == "hero" or self._ui_mode == "ide_hero":
@@ -4800,12 +5005,36 @@ class MainWindow(QMainWindow):
                 return
             hwnd = session.hwnd
             win = self._iris_ide_window
+            launching = (
+                self._iris_ide_launch_worker is not None
+                and self._iris_ide_launch_worker.isRunning()
+            )
+            if launching or (win is not None and win.is_opening()):
+                session.last_seen_at = time.time()
+                self._ide_session = session
+                if hwnd:
+                    self._ide_hwnd = hwnd
+                return
             alive = bool(win and win.isVisible()) or self._ide_hwnd_alive(hwnd)
+            mgr = shared_iris_ide_runtime()
             if not alive:
-                mgr = shared_iris_ide_runtime()
                 if not mgr.bridge_health():
                     self._clear_ide_session("IDE 창 종료")
                     return
+            # File > Open Folder / Close Folder inside Theia's own UI changes
+            # the workspace without going through _open_iris_ide_folder — sync
+            # from bridge state file (cheap, no network).
+            try:
+                live_open = bool(mgr.workspace_open)
+                live_root = (mgr.workspace or "").strip()
+            except Exception:
+                live_open = bool(mgr.workspace)
+                live_root = (mgr.workspace or "").strip()
+            if live_open and live_root and live_root != session.workspace_root:
+                session.workspace_root = live_root
+                session.mode = "workspace"
+            elif not live_open and session.mode != "welcome":
+                session.mode = "welcome"
             session.last_seen_at = time.time()
             self._ide_session = session
             self._ide_hwnd = session.hwnd
@@ -5268,6 +5497,9 @@ class MainWindow(QMainWindow):
         self._ide_session = IdeSession()
         self._ide_hwnd = None
         self._ide_pid = None
+        from iris.system.ide_link import shared_ide_link
+
+        shared_ide_link().close()
         if animate_panels and self._intro is not None:
             self._intro.start_enter_from_void()
         if not self._runtime_boot_started:
@@ -5290,10 +5522,9 @@ class MainWindow(QMainWindow):
         self._intro.start_panels_reveal()
 
     def _iris_ide_bridge_client(self):
-        from iris.infrastructure.iris_ide_client import IrisIdeClient
+        from iris.system.ide_link import shared_ide_link
 
-        mgr = shared_iris_ide_runtime()
-        return IrisIdeClient(base_url=mgr.bridge_base_url(), token=mgr.bridge_token())
+        return shared_ide_link().client()
 
     def _activate_iris_ide_companion_tile(self, *, label: str = "") -> str:
         """IRIS IDE — Iris 본체 8:2 + IDE는 자식 HWND로 좌측 호스트에 도킹.
@@ -5471,18 +5702,29 @@ class MainWindow(QMainWindow):
         """IRIS IDE 진입 — 단일 창 히어로 (폴더 열기 전 Companion 타일 없음)."""
         self._enter_iris_ide_hero(source=source)
 
-    def _on_iris_ide_launch_ok(
-        self, url: str, bridge_port: int, bridge_token: str, workspace: str
-    ) -> None:
+    def _on_iris_ide_launch_ok(self, url: str, workspace: str) -> None:
         self._iris_ide_launch_worker = None
+        self._disarm_explorer_drop_overlay()
+        # ponytail: worker→load_theia→QWebEngineView 1틱 지연 — Opening 중 overlay·재진입 회피
+        QTimer.singleShot(0, lambda u=url, ws=workspace: self._load_theia_after_launch(u, ws))
+
+    def _disarm_explorer_drop_overlay(self) -> None:
+        guard = getattr(self, "_explorer_drop_guard", None)
+        if guard is not None:
+            guard.overlay().disarm()
+
+    def _load_theia_after_launch(self, url: str, workspace: str) -> None:
+        from iris.system.ide_link import shared_ide_link
+
         win = self._ensure_iris_ide_window()
         win.apply_frameless_chrome()
         self._pending_iris_ide_workspace = workspace
+        ident = shared_ide_link().page_identity()
         cport, ctoken = self._iris_control_query()
         win.load_theia(
             url,
-            bridge_port=bridge_port,
-            bridge_token=bridge_token,
+            bridge_port=ident.port,
+            bridge_token=ident.token,
             control_port=cport,
             control_token=ctoken,
             workspace=workspace,
@@ -5493,14 +5735,22 @@ class MainWindow(QMainWindow):
 
     def _on_iris_ide_launch_err(self, err: str) -> None:
         self._iris_ide_launch_worker = None
-        self._chat.append_message_instant("Iris", f"IDE 준비 실패: {err}")
+        self._disarm_explorer_drop_overlay()
+        detail = (err or "unknown").strip()
+        self._chat.append_message_instant("Iris", f"IDE 준비 실패: {detail}")
+        self._live_activity.append_instant_line(f"IDE 준비 실패: {detail[:180]}")
         win = self._ensure_iris_ide_window()
-        win.show_welcome()
+        # Opening 화면에 원인을 남긴 뒤 웰컴으로 — 조용히 사라지지 않게
+        win.show_loading(f"IDE 준비 실패\n{detail[:240]}")
+        QTimer.singleShot(2500, win.show_welcome)
 
     def _on_iris_ide_theia_ready(self, ok: bool) -> None:
         if not ok:
             self._chat.append_message_instant("Iris", "IDE 화면 로드에 실패했습니다.")
-            self._ensure_iris_ide_window().show_welcome()
+            self._live_activity.append_instant_line("IDE 화면 로드 실패 (QWebEngine)")
+            win = self._ensure_iris_ide_window()
+            win.show_loading("IDE 화면 로드 실패 — WebEngine/Theia URL을 확인하세요")
+            QTimer.singleShot(2500, win.show_welcome)
             return
         source = getattr(self, "_pending_iris_ide_source", "icon")
         workspace = (getattr(self, "_pending_iris_ide_workspace", "") or "").strip()
@@ -5571,6 +5821,7 @@ class MainWindow(QMainWindow):
         win = self._ensure_iris_ide_window()
         win.apply_frameless_chrome()
         win.show_loading(f"Opening {root.name}…")
+        self._disarm_explorer_drop_overlay()
         if self._iris_ide_launch_worker is not None and self._iris_ide_launch_worker.isRunning():
             return "IDE already launching"
         self._pending_iris_ide_source = source
@@ -6505,6 +6756,18 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._arm_win_shell_drop)
         if sys.platform == "win32" and not self._test_mode:
             QTimer.singleShot(0, self._apply_hwnd_branding_safe)
+            QTimer.singleShot(0, self._start_explorer_drop_guard)
+
+    def _start_explorer_drop_guard(self) -> None:
+        if self._explorer_drop_guard is not None:
+            return
+        try:
+            from iris.ui.window.explorer_drop_overlay import ExplorerDropGuard
+
+            self._explorer_drop_guard = ExplorerDropGuard(self)
+            self._explorer_drop_guard.start()
+        except Exception:
+            self._explorer_drop_guard = None
 
     def _arm_win_shell_drop(self) -> None:
         try:
@@ -6544,6 +6807,13 @@ class MainWindow(QMainWindow):
             self._sync_docked_iris_ide_geometry()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        guard = getattr(self, "_explorer_drop_guard", None)
+        if guard is not None:
+            try:
+                guard.stop()
+            except Exception:
+                pass
+            self._explorer_drop_guard = None
         wiz = getattr(self, "_setup_wizard", None)
         if wiz is not None and wiz.isVisible():
             if not wiz.allow_close():

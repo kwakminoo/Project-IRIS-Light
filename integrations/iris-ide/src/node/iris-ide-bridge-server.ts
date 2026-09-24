@@ -21,10 +21,13 @@ export class IrisIdeBridgeServer {
     protected port = 0;
     protected token = '';
     protected workspaceRoot = '';
+    protected workspaceOpen = false;
     protected editorState: Json | null = null;
 
     async start(): Promise<void> {
-        this.workspaceRoot = (process.env.IRIS_IDE_WORKSPACE || process.cwd()).trim();
+        const envWs = (process.env.IRIS_IDE_WORKSPACE || '').trim();
+        this.workspaceRoot = envWs || process.cwd();
+        this.workspaceOpen = Boolean(envWs);
         this.token = (process.env.IRIS_IDE_BRIDGE_TOKEN || '').trim() || crypto.randomBytes(24).toString('hex');
         const wantPort = parseInt(process.env.IRIS_IDE_BRIDGE_PORT || '0', 10);
         this.server = http.createServer((req, res) => this.handle(req, res));
@@ -57,6 +60,7 @@ export class IrisIdeBridgeServer {
                 bridge_port: this.port,
                 token: this.token,
                 workspace: this.workspaceRoot,
+                workspace_open: this.workspaceOpen,
             };
             fs.mkdirSync(path.dirname(statePath), { recursive: true });
             fs.writeFileSync(statePath, JSON.stringify(payload, null, 2));
@@ -106,8 +110,11 @@ export class IrisIdeBridgeServer {
 
     protected resolvePath(p: string): string {
         const root = path.resolve(this.workspaceRoot);
-        const target = path.resolve(root, p || '.');
-        if (!target.startsWith(root)) {
+        const raw = String(p || '').trim();
+        const target = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(root, raw || '.');
+        const rel = path.relative(root, target);
+        const escapes = rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+        if (rel !== '' && escapes) {
             throw new Error('path escapes workspace');
         }
         return target;
@@ -156,7 +163,20 @@ export class IrisIdeBridgeServer {
                     workspace: this.workspaceRoot,
                 };
             case 'getWorkspace':
-                return { root: this.workspaceRoot };
+                return { root: this.workspaceRoot, opened: this.workspaceOpen };
+            case 'setWorkspace': {
+                const root = String(args.root || '').trim();
+                if (root) {
+                    const abs = path.resolve(root);
+                    if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+                        throw new Error(`not a directory: ${root}`);
+                    }
+                    this.workspaceRoot = abs;
+                }
+                this.workspaceOpen = args.opened !== undefined ? Boolean(args.opened) : Boolean(root);
+                this.writeStateFile();
+                return { root: this.workspaceRoot, opened: this.workspaceOpen };
+            }
             case 'setEditorState':
                 this.editorState = this.normalizeEditorState(args);
                 return { saved: true };

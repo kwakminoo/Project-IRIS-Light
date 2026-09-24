@@ -1,0 +1,626 @@
+[
+  {
+    "name": "activity.log",
+    "summary": "Append Live Activity line",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "calendar.add_event",
+    "summary": "Add calendar event (title, start_at, optional end_at/note/place)",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "calendar.delete_event",
+    "summary": "Delete calendar event by id",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "calendar.list_events",
+    "summary": "List calendar events",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "calendar.refresh_holidays",
+    "summary": "Refresh KR public holidays for current calendar year",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "calendar.select_day",
+    "summary": "Open calendar and select a day (date=YYYY-MM-DD)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "calendar.set_month",
+    "summary": "Open calendar and show year/month",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "calendar.status",
+    "summary": "Calendar workspace status + upcoming events summary",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "chat.attach",
+    "summary": "Attach a file path to the IRIS chat composer as an @reference chip",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "chat.clear_history",
+    "summary": "Clear the current chat session (context, transcript and stored messages)",
+    "risk": "medium",
+    "confirm_required": true
+  },
+  {
+    "name": "chat.drag_end",
+    "summary": "Finish IDE→chat companion drag — attach if cursor is over Iris",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "chat.drag_start",
+    "summary": "Begin IDE→chat companion drag (path list; OS DnD bypass for QWebEngine)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "chat.list_sessions",
+    "summary": "List saved chat sessions (id, title, message_count)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "chat.new_session",
+    "summary": "Start a new chat session (same as sidebar CHATS +)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "chat.open_session",
+    "summary": "Switch to a saved chat session by id (args.id)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "chat.set_model",
+    "summary": "Select chat/Ollama model and sync Hermes",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "chat.stop",
+    "summary": "Stop current chat turn (same as Stop button)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "content.extract",
+    "summary": "Extract text from PDF, text file, or http(s) URL",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "diagram.render",
+    "summary": "Render a typed JSON IR into an interactive diagram and show it (kind = architecture|workflow|sequence|dataflow|lifecycle). Read integrations/archify/schemas/<kind>.schema.json for the IR shape (architecture needs explicit placement: layout {mode:\"grid\",cols:n} with 0-based row/col per component, or pos/size per component); on failure the error data carries archify diagnostics[] — fix the IR and retry",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "email.add_account",
+    "summary": "Add email account (address, password, label) — requires confirm=true",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
+    "name": "email.list_accounts",
+    "summary": "List email accounts (id/address/label, no passwords)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "email.list_messages",
+    "summary": "Fetch inbox summaries (optional since/today/limit/cached/refresh) for agent answers",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "email.open_compose",
+    "summary": "Open email compose UI",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "email.open_message",
+    "summary": "Open email message by uid",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "email.read_message",
+    "summary": "Fetch email body by uid and open it in the UI",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "email.refresh_inbox",
+    "summary": "Refresh email inbox",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "email.remove_account",
+    "summary": "Remove email account by id — requires confirm=true",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
+    "name": "email.select_folder",
+    "summary": "Select mailbox folder display name (받은편지함 등)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "email.send",
+    "summary": "Send email (to, subject, body) — requires confirm=true",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
+    "name": "email.set_account",
+    "summary": "Select email account by id",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "email.set_category",
+    "summary": "Gmail category tab index",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.input_text",
+    "summary": "Type text via adb input text",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.install",
+    "summary": "adb install -r APK on emulator",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.key",
+    "summary": "Send keyevent HOME|BACK|ENTER|APP_SWITCH|POWER",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.kill",
+    "summary": "Kill IrisLight_Pixel Android emulator",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.launch",
+    "summary": "Launch IrisLight_Pixel Android emulator",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.logcat_tail",
+    "summary": "Read recent logcat lines (optional filter)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.play_install",
+    "summary": "Install app from Play Store via market:// deep link + UI tree",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.screenshot",
+    "summary": "Capture emulator screenshot to file",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.start_app",
+    "summary": "Start app by package (optional activity)",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.status",
+    "summary": "Android emulator status (AVD serials)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.swipe",
+    "summary": "Swipe from x1,y1 to x2,y2",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.tap",
+    "summary": "Tap screen at x,y",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.tap_text",
+    "summary": "Tap the on-screen element whose text/description matches",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.ui_texts",
+    "summary": "List on-screen texts via uiautomator (no coordinates needed)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "emulator.wait_ready",
+    "summary": "Wait until adb serial + boot_completed",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "get_catalog",
+    "summary": "List all Iris control actions (catalog)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "get_state",
+    "summary": "Iris session state: ui_mode companion workspace IDE project_root model",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "ide.enter_companion",
+    "summary": "Enter IDE Companion using the current bound session or create one with preferred IDE",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "ide.exit_companion",
+    "summary": "Exit IDE Companion and clear the bound IDE session",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "ide.list",
+    "summary": "List IDE catalog and install status",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "ide.open_file",
+    "summary": "Open an existing file in the bound IDE workspace. Required: path, or project_root+rel_path. Relative paths are under the bound workspace from iris_get_state, not the shell cwd. Missing files are an error; do not create a substitute.",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "ide.open_folder",
+    "summary": "Open a folder in the IDE. The action name is ide.open_folder (not project.open_folder). args.path is required.",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "ide.pick_open_file",
+    "summary": "Native OS file picker then open selected files in the bound IDE",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "ide.pick_open_folder",
+    "summary": "Native OS folder picker then open that folder in IRIS IDE",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "ide.set_preferred",
+    "summary": "Set preferred IDE id (cursor vscode pycharm … or custom)",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "ide.set_project_root",
+    "summary": "Set project_root folder for IDE Companion / vibe coding",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "ide.toggle_companion",
+    "summary": "Toggle IDE Companion (same as IDE icon)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "learning.get",
+    "summary": "Get learned workflow details",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "learning.list",
+    "summary": "List learned computer-use workflows",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "learning.run",
+    "summary": "Execute a learned workflow via Aloha Actor",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
+    "name": "learning.run_status",
+    "summary": "Get learned workflow run status",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "learning.start",
+    "summary": "Start demonstration recording session",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "learning.status",
+    "summary": "Current learning recorder state",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "learning.stop",
+    "summary": "Stop recording and process learned workflow",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "learning.toggle",
+    "summary": "Toggle learning record (same as titlebar learning icon)",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "notify.add_alert",
+    "summary": "Add notification alert row",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "ping",
+    "summary": "Iris alive check / ping",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "profile.get",
+    "summary": "Get user profile (no secrets)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "profile.set",
+    "summary": "Set user profile fields: name preferred_ide project_root project_parents ide paths",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "project.create_scaffold",
+    "summary": "Create project folder + template (gugudan|python-hello|empty), optionally open in IDE",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "project.find_similar",
+    "summary": "Fuzzy-find project folders under configured parents by name (e.g. ai guitar tab → AI-Guitar-Tab-main)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "project.list_files",
+    "summary": "List files in the bound IDE workspace (query = case-insensitive substring) — use this before open_file/run when the path is unknown",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "project.list_parents",
+    "summary": "List project search parent folders (settings project_parents or built-in defaults)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "project.open_similar",
+    "summary": "Fuzzy-find best matching project and open in Companion; on ambiguous/low_score returns matches (use force=true to override)",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "project.run",
+    "summary": "Run only in the bound IDE integrated terminal via Iris: Run task",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "project.write_file",
+    "summary": "Write file under the bound IDE workspace; open=true reveals tab then streams chunks",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "settings.get",
+    "summary": "Get Ollama/Hermes connection settings (no secret values)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "settings.set",
+    "summary": "Set Ollama/Hermes settings; hermes_api_key needs confirm=true",
+    "risk": "high",
+    "confirm_required": false
+  },
+  {
+    "name": "ui.open_mcp",
+    "summary": "Open Hermes MCP manager dialog",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "ui.open_settings",
+    "summary": "Open Iris settings dialog",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "ui.open_skills",
+    "summary": "Open Hermes Skills manager dialog",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "ui.open_user_profile",
+    "summary": "Open user profile dialog",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "voice.mic_off",
+    "summary": "Turn microphone listen off",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "voice.mic_on",
+    "summary": "Turn microphone listen on (requires STT enabled)",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "voice.mic_status",
+    "summary": "Get mic listen / STT status",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "voice.toggle_mic",
+    "summary": "Toggle mic listen (same as titlebar mic icon)",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "wiki.import_content",
+    "summary": "Extract PDF/URL/file text and save to Iris Wiki inbox, then open in UI (mode=raw|summarize)",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "wiki.list_notes",
+    "summary": "List Iris Wiki note paths",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "wiki.open_note",
+    "summary": "Open Iris Wiki workspace and show note by rel_path",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "wiki.reload",
+    "summary": "Reload Iris Wiki graph/detail",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "wiki.write_user_note",
+    "summary": "Save markdown to Iris Wiki user/ (default inbox/{slug}.md) and show it",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "window.minimize",
+    "summary": "Minimize Iris window",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "window.show",
+    "summary": "Show / raise / activate Iris window (un-minimize)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "window.toggle_maximize",
+    "summary": "Toggle maximize Iris window",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "workspace.open_assistant",
+    "summary": "Open assistant / home workspace (orb + chat)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "workspace.open_calendar",
+    "summary": "Open calendar workspace (KR holidays + schedule)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "workspace.open_discord",
+    "summary": "Discord workspace (준비 중)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "workspace.open_email",
+    "summary": "Open email workspace inbox",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "workspace.open_instagram",
+    "summary": "Instagram workspace (준비 중)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "workspace.open_kakao",
+    "summary": "KakaoTalk workspace (준비 중)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "workspace.open_mobile",
+    "summary": "Launch Android emulator (mobile icon)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "workspace.open_obsidian",
+    "summary": "Open Iris Wiki / Obsidian workspace",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "workspace.open_telegram",
+    "summary": "Telegram workspace (준비 중)",
+    "risk": "low",
+    "confirm_required": false
+  }
+]

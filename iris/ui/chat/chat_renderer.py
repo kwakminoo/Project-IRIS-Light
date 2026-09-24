@@ -55,6 +55,13 @@ _INLINE_CODE_TAG = re.compile(
 )
 _FENCE = "```"
 
+_TABLE_CELL_OPEN = re.compile(r"<(th|td)(\s[^>]*)?>", re.IGNORECASE)
+_STYLE_ATTR = re.compile(r'style\s*=\s*"([^"]*)"', re.IGNORECASE)
+_BARE_INLINE_CODE = re.compile(r"<code>([^<]*)</code>")
+# Qt Rich Text는 인라인 요소의 padding을 렌더링하지 않으므로(실측 확인) 배경이
+# 글자에 바싹 붙어 보이지 않도록 얇은 공백(hair space)을 양옆에 넣는다.
+_INLINE_CODE_PAD = " "
+
 
 def render_markdown_document(text: str, *, citations: bool = True) -> str:
     """Markdown → QTextEdit용 HTML (Iris 답변은 citations=True)."""
@@ -289,6 +296,50 @@ def _style_img_tag(attrs: str) -> str:
     )
 
 
+def _merge_cell_style(attrs: str, extra_style: str) -> str:
+    """기존 style(정렬 등)을 보존하며 셀 스타일을 앞쪽에 병합 — 뒤 선언이 우선이므로
+    markdown이 넣은 text-align 등은 그대로 유지된다."""
+    attrs = attrs or ""
+    m = _STYLE_ATTR.search(attrs)
+    if m:
+        existing = m.group(1).strip()
+        if existing and not existing.endswith(";"):
+            existing += ";"
+        merged = f"{extra_style}{existing}"
+        return _STYLE_ATTR.sub(f'style="{merged}"', attrs, count=1)
+    return f' style="{extra_style}"{attrs}'
+
+
+def _style_table_cell(match: re.Match[str]) -> str:
+    t = TOKENS
+    tag = match.group(1).lower()
+    attrs = match.group(2) or ""
+    if tag == "th":
+        style = (
+            f"background-color:{t.chat_table_header_bg};color:{t.text_primary};"
+            f"font-weight:600;padding:6px 12px;border:none;"
+            f"border-bottom:1px solid {t.chat_table_row_border};text-align:left;"
+        )
+    else:
+        style = (
+            f"color:{t.text_primary};padding:6px 12px;border:none;"
+            f"border-bottom:1px solid {t.chat_table_row_border};text-align:left;"
+        )
+    return f"<{tag}{_merge_cell_style(attrs, style)}>"
+
+
+def _style_tables(html_body: str) -> str:
+    out = re.sub(
+        r"<table>",
+        '<table border="0" cellspacing="0" cellpadding="0" '
+        'style="border-collapse:collapse;width:100%;margin:6px 0 10px 0;">',
+        html_body,
+        flags=re.IGNORECASE,
+    )
+    out = _TABLE_CELL_OPEN.sub(_style_table_cell, out)
+    return out
+
+
 def _style_chat_html(html_body: str) -> str:
     t = TOKENS
     body = f"color:{t.text_primary};"
@@ -312,11 +363,16 @@ def _style_chat_html(html_body: str) -> str:
         flags=re.IGNORECASE,
     )
     out = re.sub(r"<pre>", f'<pre style="{shell}">', out)
-    out = re.sub(
-        r"<code>",
-        f'<code style="color:#a5b4fc;font-family:{t.chat_block_mono_font};">',
+    out = _BARE_INLINE_CODE.sub(
+        lambda m: (
+            f'<code style="display:inline;color:{t.chat_inline_code_color};'
+            f"background-color:{t.chat_inline_code_bg};font-family:{t.chat_block_mono_font};"
+            f"font-weight:{t.chat_block_code_weight};font-size:{t.font_size_caption};"
+            f'border-radius:4px;">{_INLINE_CODE_PAD}{m.group(1)}{_INLINE_CODE_PAD}</code>'
+        ),
         out,
     )
+    out = _style_tables(out)
     out = re.sub(
         r"<h([1-6])>",
         f'<span style="display:block;font-weight:700;margin:6px 0 4px 0;{body}">',

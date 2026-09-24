@@ -1,0 +1,172 @@
+.iris-ide-start {
+    height: 100%;
+}
+
+.iris-ide-start__scroll {
+    height: 100%;
+    overflow: auto;
+    background: var(--theia-editor-background);
+    color: var(--theia-foreground);
+    display: flex;
+    justify-content: center;
+}
+
+.iris-ide-start__inner {
+    width: 100%;
+    max-width: 920px;
+    padding: 96px 40px 40px;
+    box-sizing: border-box;
+}
+
+.iris-ide-start__header {
+    margin-bottom: 56px;
+}
+
+.iris-ide-start__brand {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.iris-ide-start__logo {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, var(--theia-focusBorder, #4a7dff), var(--theia-button-background, #6b4aff));
+    flex: none;
+}
+
+.iris-ide-start__brand h1 {
+    font-size: 28px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: 0.01em;
+}
+
+.iris-ide-start__tagline {
+    margin: 10px 0 0;
+    color: var(--theia-descriptionForeground);
+    font-size: 13px;
+}
+
+.iris-ide-start__columns {
+    display: grid;
+    grid-template-columns: minmax(220px, 320px) 1fr;
+    gap: 64px;
+}
+
+.iris-ide-start__col h2 {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--theia-descriptionForeground);
+    margin: 0 0 14px;
+}
+
+.iris-ide-start__action {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--theia-textLink-foreground, var(--theia-foreground));
+    font-size: 13px;
+    padding: 7px 8px;
+    margin: 0 0 2px -8px;
+    border-radius: 5px;
+    cursor: pointer;
+    text-align: left;
+}
+
+.iris-ide-start__action:hover {
+    background: var(--theia-list-hoverBackground);
+}
+
+.iris-ide-start__action .codicon {
+    font-size: 16px;
+    flex: none;
+}
+
+.iris-ide-start__muted {
+    color: var(--theia-descriptionForeground);
+    font-size: 13px;
+    margin: 4px 0;
+}
+
+.iris-ide-start__recent-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.iris-ide-start__recent-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font: inherit;
+    padding: 7px 8px;
+    margin: 0 0 2px -8px;
+    border-radius: 5px;
+    cursor: pointer;
+    text-align: left;
+}
+
+.iris-ide-start__recent-item:hover {
+    background: var(--theia-list-hoverBackground);
+}
+
+.iris-ide-start__recent-item .codicon {
+    font-size: 16px;
+    flex: none;
+    margin-top: 1px;
+}
+
+.iris-ide-start__recent-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.iris-ide-start__recent-name {
+    font-size: 13px;
+    color: var(--theia-textLink-foreground, var(--theia-foreground));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.iris-ide-start__recent-detail {
+    font-size: 12px;
+    color: var(--theia-descriptionForeground);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.iris-ide-start__footer {
+    margin-top: 72px;
+    padding-top: 16px;
+    border-top: 1px solid var(--theia-editorGroup-border, var(--theia-panel-border));
+}
+
+.iris-ide-start__checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--theia-descriptionForeground);
+    cursor: pointer;
+}
+
+.iris-ide-start__checkbox input {
+    margin: 0;
+}

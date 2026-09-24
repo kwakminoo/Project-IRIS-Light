@@ -231,6 +231,30 @@ def create_scaffold(
     return {"path": str(root), "name": safe, "files": files, "template": tmpl}
 
 
+def workspace_rel_for_open(workspace_root: str | Path, path: str) -> str:
+    """상대 경로는 워크스페이스 기준. cwd로 풀지 않는다. 밖과 .. 는 거절."""
+    import os
+
+    raw_text = str(path or "").strip()
+    if not raw_text or ".." in Path(raw_text.replace("\\", "/")).parts:
+        raise ValueError("path escapes workspace")
+    root = Path(workspace_root).expanduser().resolve()
+    raw = Path(raw_text)
+    target = raw if raw.is_absolute() else (root / raw)
+    try:
+        target = target.resolve()
+    except OSError as exc:
+        raise ValueError("path escapes workspace") from exc
+    root_key = os.path.normcase(str(root))
+    target_key = os.path.normcase(str(target))
+    if target_key != root_key and not target_key.startswith(root_key + os.sep):
+        raise ValueError("path escapes workspace")
+    rel = Path(os.path.relpath(str(target), str(root)))
+    if not rel.parts or rel.parts[0] == "..":
+        raise ValueError("path escapes workspace")
+    return rel.as_posix()
+
+
 def resolve_under_root(project_root: str | Path, rel_path: str) -> tuple[Path, Path, str]:
     """(root, abs_path, rel). path escape 검증."""
     root = Path(project_root).expanduser().resolve()
@@ -350,28 +374,50 @@ def _smooth_text_chunks(text: str, size: int) -> list[str]:
 
 
 _IRIS_TASK_LABEL = "Iris: Run"
+_IRIS_EXIT_RE = __import__("re").compile(r"(?m)^IRIS_EXIT:(-?\d+)\s*$")
 
 
-def build_iris_terminal_command(argv: list[str]) -> str:
-    """명령을 통합 터미널에 보여 주면서 .iris/last_run.log에도 tee.
+def _cmd_quote(arg: str) -> str:
+    if arg == "":
+        return '""'
+    if any(ch in arg for ch in ' \t&|<>^%!"'):
+        return '"' + arg.replace('"', '""') + '"'
+    return arg
 
-    이중 실행 없음 — 터미널 1회만. Iris는 로그를 읽어 채팅 요약.
-    Windows: PowerShell. macOS/Linux: bash(PIPESTATUS로 종료코드 보존).
+
+def build_iris_terminal_command(argv: list[str], *, shell: str = "") -> str:
+    """명령을 통합 터미널에 보여 주면서 .iris/last_run.log에 출력과 IRIS_EXIT를 남긴다.
+
+    shell이 비어 있으면 태스크용 기본값이다. Windows 태스크는 powershell.exe를
+    고정하므로 PowerShell. IRIS IDE 통합 터미널은 실제 셸을 넘겨야 한다.
     """
     if not argv:
         raise ValueError("empty argv")
-    if sys.platform == "win32":
+    kind = (shell or "").strip().lower()
+    if not kind:
+        kind = "powershell" if sys.platform == "win32" else "sh"
+    if kind in {"cmd", "cmd.exe"}:
+        quoted = " ".join(_cmd_quote(str(a)) for a in argv)
+        return (
+            "if not exist .iris mkdir .iris\n"
+            "del /f /q .iris\\last_run.log 2>nul\n"
+            f"{quoted} > .iris\\last_run.log 2>&1\n"
+            "echo IRIS_EXIT:%ERRORLEVEL% >> .iris\\last_run.log\n"
+            "type .iris\\last_run.log\n"
+        )
+    if kind in {"powershell", "pwsh", "powershell.exe"}:
         parts: list[str] = []
         for a in argv:
             s = str(a).replace("'", "''")
             parts.append(f"'{s}'")
         invoke = "& " + " ".join(parts)
-        # $LASTEXITCODE: native 명령 종료코드
         return (
             "New-Item -ItemType Directory -Force -Path .iris | Out-Null; "
             "Remove-Item -Force -ErrorAction SilentlyContinue .iris\\last_run.log; "
-            f"$out = {invoke} 2>&1 | Tee-Object -FilePath .iris\\last_run.log; "
-            "if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE } else { exit 0 }"
+            f"{invoke} 2>&1 | Tee-Object -FilePath .iris\\last_run.log; "
+            "$code = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }; "
+            "Add-Content -Path .iris\\last_run.log -Value \"IRIS_EXIT:$code\"; "
+            "exit $code"
         )
     import shlex
 
@@ -379,7 +425,8 @@ def build_iris_terminal_command(argv: list[str]) -> str:
     return (
         "mkdir -p .iris; rm -f .iris/last_run.log; "
         f"{{ {cmd}; }} 2>&1 | tee .iris/last_run.log; "
-        "exit ${PIPESTATUS[0]}"
+        'code=${PIPESTATUS[0]}; printf "IRIS_EXIT:%s\\n" "$code" >> .iris/last_run.log; '
+        'exit "$code"'
     )
 
 
@@ -505,13 +552,14 @@ def result_from_terminal_log(
     cwd: str,
     elapsed_sec: float,
 ) -> dict:
-    """tee 로그 텍스트를 run_project_command 결과 형태로."""
-    # stderr 구분 없이 tee 됨 — 전체를 stdout으로, 실패 추정은 비어있음/traceback
-    low = (log_text or "").lower()
-    failed = "traceback (most recent call last)" in low or "error:" in low
+    """로그의 IRIS_EXIT 줄이 있을 때만 종료 코드를 확정한다."""
+    match = _IRIS_EXIT_RE.search(log_text or "")
+    body = _IRIS_EXIT_RE.sub("", log_text or "").strip()
+    confirmed = match is not None
     return {
-        "exit_code": 1 if failed and "traceback" in low else 0,
-        "stdout": log_text or "",
+        "exit_code": int(match.group(1)) if match else None,
+        "confirmed": confirmed,
+        "stdout": body,
         "stderr": "",
         "elapsed_sec": round(float(elapsed_sec), 3),
         "argv": argv,

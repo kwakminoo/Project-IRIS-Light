@@ -62,6 +62,7 @@ def _http(method: str, path: str, body: dict[str, Any] | None = None) -> dict[st
                 "action": "http",
                 "result": {},
                 "error": "IRIS_CONTROL_TOKEN missing (set env or ~/.iris-light/control_token). Is Iris running?",
+                "transport": True,
             }
         url = f"{base}{path}"
         req = urllib.request.Request(
@@ -86,19 +87,28 @@ def _http(method: str, path: str, body: dict[str, Any] | None = None) -> dict[st
                     "action": "http",
                     "result": {},
                     "error": "invalid JSON from Iris",
+                    "transport": True,
                 }
-            return parsed if isinstance(parsed, dict) else {"ok": False, "error": "bad response"}
+            return parsed if isinstance(parsed, dict) else {
+                "ok": False,
+                "error": "bad response",
+                "transport": True,
+            }
         except urllib.error.HTTPError as exc:
             try:
                 raw = exc.read().decode("utf-8")
-                return json.loads(raw)
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return parsed
             except Exception:
-                return {
-                    "ok": False,
-                    "action": "http",
-                    "result": {},
-                    "error": f"HTTP {exc.code}: Iris control rejected request",
-                }
+                pass
+            return {
+                "ok": False,
+                "action": "http",
+                "result": {},
+                "error": f"HTTP {exc.code}: Iris control rejected request",
+                "transport": True,
+            }
         except urllib.error.URLError as exc:
             last_reason = exc.reason
             time.sleep(0.35 * (attempt + 1))
@@ -109,6 +119,7 @@ def _http(method: str, path: str, body: dict[str, Any] | None = None) -> dict[st
                 "action": "http",
                 "result": {},
                 "error": f"Iris control error: {exc}",
+                "transport": True,
             }
     return {
         "ok": False,
@@ -118,6 +129,7 @@ def _http(method: str, path: str, body: dict[str, Any] | None = None) -> dict[st
             f"Iris control unreachable at {last_base} ({last_reason}). "
             "Start Iris Light first."
         ),
+        "transport": True,
     }
 
 
@@ -148,8 +160,12 @@ TOOLS = [
             "NOT for opening folders via terminal — use Iris actions so Companion tiling works. "
             "High-risk actions require args.confirm=true (email.send, email.add_account, "
             "email.remove_account, chat.clear_history). "
-            "Examples: action=project.open_similar args={query}; action=ide.open_folder args={path}; "
-            "action=ide.open_file args={path|rel_path}; "
+            "Chat sessions: chat.new_session / chat.list_sessions / chat.open_session args={id}. "
+            "Examples: action=ide.open_folder args={path} (there is no project.open_folder). "
+            "action=ide.open_file args={path} or {project_root, rel_path}. "
+            "path is relative to the bound IDE workspace from iris_get_state, not the shell cwd. "
+            "List the workspace first (project.list_files). "
+            "If the file is missing, return the error — do not create a substitute file or claim it opened. "
             "action=project.write_file args={rel_path,content,open,stream}; "
             "action=project.run args={file|command}; "
             "action=ide.enter_companion; action=ide.exit_companion; "
@@ -181,12 +197,14 @@ TOOLS = [
 
 
 def _tool_result(payload: dict[str, Any]) -> dict[str, Any]:
-    # ensure_ascii: Windows Hermes/파이프 cp949 디코드 실패로 stdio 세션이 죽는 경우 방지
+    # Hermes는 isError 응답을 연결 실패로 센다 (mcp_tool.py: "error" in parsed → breaker).
+    # 도구가 답한 실행 오류는 isError를 켜지 않는다. ok는 그대로 false.
     text = json.dumps(payload, ensure_ascii=True, indent=2)
-    is_err = not bool(payload.get("ok", True)) and payload.get("error")
+    failed = not bool(payload.get("ok", True)) and bool(payload.get("error"))
+    transport = bool(payload.get("transport"))
     return {
         "content": [{"type": "text", "text": text}],
-        "isError": bool(is_err),
+        "isError": bool(failed and transport),
     }
 
 

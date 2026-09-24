@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 from iris.ui.shared.theme_tokens import TOKENS
 
-# Running Windows 기준 — 제목↔선, 선↔본문 여백 통일
+# 사이드바 섹션 기준 — 제목↔선, 선↔본문 여백 통일
 SECTION_TITLE_LINE_GAP = TOKENS.spacing_sm
 SECTION_CONTENT_GAP = TOKENS.spacing_xs
 SECTION_PANEL_MARGINS = (

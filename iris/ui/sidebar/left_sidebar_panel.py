@@ -7,19 +7,18 @@ from PyQt6.QtWidgets import QSizePolicy, QSplitter, QStackedWidget, QVBoxLayout,
 
 from iris.ui.knowledge.email_detail_panel import EmailFolderPanel
 from iris.ui.knowledge.obsidian_detail_panel import ObsidianDetailPanel
-from iris.ui.monitor.window_list_panel import WindowListPanel
+from iris.ui.monitor.chat_history_panel import ChatHistoryPanel
 
 _SIDEBAR_MIN_WIDTH = 200
 _SIDEBAR_MAX_WIDTH = 300
 # Obsidian 상세 패널 — 드래그로 폭 조절
 _OBSIDIAN_SIDEBAR_MIN = 180
 _OBSIDIAN_SIDEBAR_MAX = 480
-_OBSIDIAN_SIDEBAR_DEFAULT = 260
 
 
 class LeftSidebarPanel(QWidget):
     """
-    상단: Running Windows 또는 Obsidian 노트 상세
+    상단: Chats, 또는 Obsidian/Email 상세
     하단: CPU·GPU·메모리 + Workspace 액션
     """
 
@@ -38,13 +37,13 @@ class LeftSidebarPanel(QWidget):
         self._splitter.setChildrenCollapsible(False)
         self._splitter.setHandleWidth(0)
 
-        self.window_list = WindowListPanel(self)
+        self.chat_history = ChatHistoryPanel(self)
         self.obsidian_detail = ObsidianDetailPanel(self)
         self.email_folder = EmailFolderPanel(self)
 
         self._top_stack = QStackedWidget(self)
         self._top_stack.setObjectName("LeftSidebarTopStack")
-        self._top_stack.addWidget(self.window_list)
+        self._top_stack.addWidget(self.chat_history)
         self._top_stack.addWidget(self.obsidian_detail)
         self._top_stack.addWidget(self.email_folder)
 
@@ -98,7 +97,7 @@ class LeftSidebarPanel(QWidget):
             self._splitter.setSizes([480, 120])
             return
 
-        self._top_stack.setCurrentWidget(self.window_list)
+        self._top_stack.setCurrentWidget(self.chat_history)
         self.utility.metrics.setVisible(True)
         self.setMinimumWidth(_SIDEBAR_MIN_WIDTH)
         self.setMaximumWidth(_SIDEBAR_MAX_WIDTH)

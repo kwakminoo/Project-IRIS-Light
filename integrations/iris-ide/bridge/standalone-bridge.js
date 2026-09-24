@@ -8,7 +8,10 @@ const http = require('http');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const workspaceRoot = path.resolve(process.env.IRIS_IDE_WORKSPACE || process.cwd());
+const envWorkspace = (process.env.IRIS_IDE_WORKSPACE || '').trim();
+let workspaceRoot = path.resolve(envWorkspace || process.cwd());
+// Welcome vs folder-open — sandbox root may stay populated even when closed.
+let workspaceOpen = Boolean(envWorkspace);
 const token = (process.env.IRIS_IDE_BRIDGE_TOKEN || '').trim() || crypto.randomBytes(24).toString('hex');
 const wantPort = parseInt(process.env.IRIS_IDE_BRIDGE_PORT || '0', 10);
 const stateFile = (process.env.IRIS_IDE_STATE_FILE || '').trim();
@@ -17,8 +20,11 @@ let editorState = null;
 let pendingCommands = [];
 let commandResults = {};
 let nextCommandId = 1;
+let boundPort = 0;
+let lastFrontendPollAt = 0;
 
 function writeState(port) {
+    boundPort = port || boundPort;
     if (!stateFile) return;
     let existing = {};
     try {
@@ -28,25 +34,28 @@ function writeState(port) {
     } catch (_) { /* ignore */ }
     const payload = {
         ...existing,
-        bridge_port: port,
+        bridge_port: boundPort,
         token,
         workspace: workspaceRoot,
+        workspace_open: workspaceOpen,
         bridge_pid: process.pid,
     };
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
     fs.writeFileSync(stateFile, JSON.stringify(payload, null, 2));
 }
 
+function isInsideWorkspace(root, target) {
+    const rel = path.relative(path.resolve(root), path.resolve(target));
+    if (rel === '') return true;
+    if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return false;
+    return true;
+}
+
 function resolvePath(rel) {
-    const root = workspaceRoot;
+    const root = path.resolve(workspaceRoot);
     const raw = String(rel || '').trim();
-    if (path.isAbsolute(raw)) {
-        const abs = path.resolve(raw);
-        if (!abs.startsWith(root)) throw new Error('path escapes workspace');
-        return abs;
-    }
-    const target = path.resolve(root, raw || '.');
-    if (!target.startsWith(root)) throw new Error('path escapes workspace');
+    const target = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(root, raw || '.');
+    if (!isInsideWorkspace(root, target)) throw new Error('path escapes workspace');
     return target;
 }
 
@@ -92,7 +101,13 @@ function waitForFrontendCommand(id, timeoutMs = 30000) {
                 return;
             }
             if (Date.now() > deadline) {
-                reject(new Error('frontend command timeout'));
+                const age = lastFrontendPollAt ? (Date.now() - lastFrontendPollAt) : -1;
+                const hint = lastFrontendPollAt
+                    ? `last frontend poll ${age}ms ago`
+                    : 'no frontend poll yet — is IRIS IDE Theia loaded?';
+                const timed = new Error(`frontend command timeout (${hint})`);
+                timed.code = 'timeout';
+                reject(timed);
                 return;
             }
             setTimeout(tick, 80);
@@ -112,11 +127,26 @@ async function dispatch(cmd, args) {
         case 'health':
             return { product: 'IRIS IDE', theia: '1.74.0', workspace: workspaceRoot };
         case 'getWorkspace':
-            return { root: workspaceRoot };
+            return { root: workspaceRoot, opened: workspaceOpen };
+        case 'setWorkspace': {
+            // Frontend pushes File > Open/Close Folder changes so bridge state stays live.
+            const root = String(args.root || '').trim();
+            if (root) {
+                const abs = path.resolve(root);
+                if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+                    throw new Error(`not a directory: ${root}`);
+                }
+                workspaceRoot = abs;
+            }
+            workspaceOpen = args.opened !== undefined ? Boolean(args.opened) : Boolean(root);
+            writeState(boundPort);
+            return { root: workspaceRoot, opened: workspaceOpen };
+        }
         case 'setEditorState':
             editorState = normalizeEditorState(args);
             return { saved: true };
         case 'pollPendingCommands': {
+            lastFrontendPollAt = Date.now();
             const limit = Math.min(parseInt(String(args.limit || 8), 10) || 8, 20);
             const batch = pendingCommands.splice(0, limit);
             return { commands: batch };
@@ -206,12 +236,13 @@ async function dispatch(cmd, args) {
             }
         case 'runTerminalCommand': {
             const command = String(args.command || args.cmd || '').trim();
-            if (!command) {
+            const argv = Array.isArray(args.argv) ? args.argv.map(item => String(item)) : [];
+            if (!command && argv.length === 0) {
                 throw new Error('runTerminalCommand: empty command');
             }
             const cwd = args.cwd ? String(args.cwd) : workspaceRoot;
             // ponytail: execSync 폴백 금지 — Hermes/브릿지 셸이 아니라 Theia 통합 터미널만.
-            return await enqueueFrontend('runTerminalCommand', { command, cwd }, 15000);
+            return await enqueueFrontend('runTerminalCommand', { command, cwd, argv }, 15000);
         }
         case 'getTerminalState':
             return { active: pendingCommands.some(c => c.cmd === 'runTerminalCommand') };
@@ -273,9 +304,29 @@ const server = http.createServer(async (req, res) => {
         const result = await dispatch(cmd, body);
         send(200, { ok: true, command: cmd, result });
     } catch (err) {
-        send(400, { ok: false, error: err.message || String(err) });
+        const fail = { ok: false, error: err.message || String(err) };
+        if (err && err.code === 'timeout') fail.code = 'timeout';
+        send(400, fail);
     }
 });
+
+if (process.argv[2] === '--resolve-check') {
+    const root = path.resolve(process.env.IRIS_IDE_WORKSPACE || process.cwd());
+    workspaceRoot = root;
+    const inside = resolvePath('apple.txt');
+    if (!inside.toLowerCase().endsWith(`${path.sep}apple.txt`.toLowerCase())) process.exit(2);
+    resolvePath(path.join(root, 'apple.txt'));
+    for (const bad of ['../outside.txt', path.resolve(root, '..', 'outside.txt')]) {
+        try {
+            resolvePath(bad);
+            process.exit(4);
+        } catch (err) {
+            if (!String(err.message).includes('path escapes workspace')) process.exit(5);
+        }
+    }
+    console.log('resolvePath ok');
+    process.exit(0);
+}
 
 server.listen(wantPort > 0 ? wantPort : 0, '127.0.0.1', () => {
     const addr = server.address();

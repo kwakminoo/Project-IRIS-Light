@@ -86,7 +86,7 @@ def build_cyberspace_qss() -> str:
         QWidget#ObsidianParticleOrb,
         QWidget#ObsidianDetailPanel,
         QWidget#LeftSidebarPanel,
-        QWidget#WindowListPanel,
+        QWidget#ChatHistoryPanel,
         QWidget#SidebarUtilityPanel,
         QWidget#SystemMetricsPanel,
         QWidget#WorkspaceActionPanel,
