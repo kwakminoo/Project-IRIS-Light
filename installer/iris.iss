@@ -1,6 +1,6 @@
 ; IRIS Windows installer — payload is staged next to this file by build_iris_setup.ps1
 #define MyAppName "IRIS"
-#define MyAppVersion "0.1.12"
+#define MyAppVersion "0.1.13"
 #define MyAppPublisher "IRIS"
 #define MyAppURL "https://github.com/kwakminoo/Project-IRIS-Light"
 #define MyAppExeName "IRIS.exe"
@@ -156,7 +156,7 @@ begin
   begin
     Line := Trim(Lines[I]);
     { ASCII fallback: transcript may be UTF-16 and unreadable here }
-    if (Pos('설치 실패:', Line) = 1) or (Pos('FAIL:', Line) = 1) then
+    if (Pos('FAIL:', Line) = 1) or (Pos('설치 실패:', Line) = 1) then
     begin
       Result := Line;
       Exit;
@@ -170,20 +170,37 @@ var
   Launched: Boolean;
   Hint: String;
   Detail: String;
+  SetupArgs: String;
 begin
   if CurStep <> ssPostInstall then
     Exit;
 
-  { SW_HIDE + -WindowStyle Hidden: 콘솔/Windows Terminal 창을 띄우지 않는다.
-    진행 안내는 StatusLabel 만. 로그는 setup.ps1 의 Transcript / pip --log 에 남는다. }
+  { 완전 숨김(SW_HIDE)은 일부 PC에서 네트워크/AV 와 충돌 → 최소화로 실행.
+    -Recreate: 이전 실패로 비어 있는 .venv 를 버리고 깨끗이 깐다. }
   WizardForm.StatusLabel.Caption :=
     'Installing Python (if needed) and packages — needs internet, may take several minutes...';
   WizardForm.Refresh();
 
+  SetupArgs := ExpandConstant(
+    '-NoProfile -ExecutionPolicy Bypass -File "{app}\setup.ps1" -Recreate');
+
   Launched := Exec(
     ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    ExpandConstant('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{app}\setup.ps1"'),
-    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    SetupArgs,
+    ExpandConstant('{app}'), SW_SHOWMINNOACTIVE, ewWaitUntilTerminated, ResultCode);
+
+  { 1차 실패 시 동일 복구 경로를 한 번 더 (setup.bat -Recreate 와 동일) }
+  if Launched and (ResultCode <> 0) then
+  begin
+    Log('setup.ps1 first attempt failed (' + IntToStr(ResultCode) + ') — retrying -Recreate');
+    WizardForm.StatusLabel.Caption :=
+      'Retrying package install...';
+    WizardForm.Refresh();
+    Launched := Exec(
+      ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      SetupArgs,
+      ExpandConstant('{app}'), SW_SHOWMINNOACTIVE, ewWaitUntilTerminated, ResultCode);
+  end;
 
   if not Launched then
   begin

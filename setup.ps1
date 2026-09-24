@@ -72,13 +72,35 @@ function Fail([string]$Message, [string[]]$Hints) {
     Write-Host "전체 기록: $LogFile" -ForegroundColor DarkGray
     if (Test-Path $PipLog) { Write-Host "설치 상세: $PipLog" -ForegroundColor DarkGray }
     Write-Host ""
-    # Inno 대화상자가 읽을 한 줄 — UTF-8. 숨김 창이라 이 파일 없으면 원인 전달이 안 된다.
+    # Inno LoadStringsFromFile 은 UTF-8 BOM + ASCII FAIL: 이 가장 안전하다
     try {
-        [System.IO.File]::WriteAllText($FailReasonFile, "설치 실패: $Message", [System.Text.UTF8Encoding]::new($false))
+        $oneLine = ($Message -replace '[\r\n]+', ' ').Trim()
+        if ($oneLine.Length -gt 300) { $oneLine = $oneLine.Substring(0, 300) + "..." }
+        $payload = "FAIL: $oneLine`r`n설치 실패: $oneLine`r`n"
+        [System.IO.File]::WriteAllText(
+            $FailReasonFile,
+            $payload,
+            (New-Object System.Text.UTF8Encoding $true)
+        )
     } catch { }
     Stop-Log
     exit 1
 }
+
+# 숨김 설치에서 예외가 나도 원인 파일을 남긴다 (빈 Setup 대화상자 방지)
+trap {
+    try {
+        $m = $_.Exception.Message
+        if (-not $m) { $m = "$_" }
+        Fail "스크립트 오류: $m" @(
+            "설치 폴더에서 setup.bat 을 다시 실행하세요",
+            ".\setup.ps1 -Recreate"
+        )
+    } catch {
+        exit 1
+    }
+}
+
 
 # Inno/숨김 창에서도 방금 깐 Python 이 보이도록 Machine+User PATH 를 다시 읽는다.
 function Refresh-ProcessPath {
@@ -345,14 +367,9 @@ if (Test-VenvUsable $VenvPath) {
 # ------------------------------------------------------- 3. pip 업그레이드
 Write-Step "pip 업그레이드"
 
-# 원본 환경 — 실패 시 복구용 (과한 PATH/TEMP 격리는 일부 PC에서 pip 자체를 죽인다)
-$script:OrigPath = $env:Path
-$script:OrigTemp = $env:TEMP
-$script:OrigTmp = $env:TMP
-
-# PATH 에서 Cua 등 알려진 미신뢰 정션만 뺀다 (전 정션 제거·TEMP 강제 이동은 하지 않음).
+# PATH 에 깨진 정션/마운트(WinError 448)가 있으면 pip 이 설치 중 죽는다.
+# (예: 일부 클라우드 PC · Cua driver bin 등) — 0.1.7 검증된 최소 스크럽만 유지
 function Set-PipSafePath {
-    param([switch]$IsolateTemp)
     $keep = New-Object System.Collections.Generic.List[string]
     foreach ($part in @(
         (Join-Path $VenvPath "Scripts"),
@@ -362,10 +379,8 @@ function Set-PipSafePath {
     )) {
         if ($part -and (Test-Path -LiteralPath $part)) { $keep.Add($part) | Out-Null }
     }
-    $sourcePath = if ($script:OrigPath) { $script:OrigPath } else { $env:Path }
-    foreach ($part in ($sourcePath -split ';')) {
+    foreach ($part in ($env:Path -split ';')) {
         if ([string]::IsNullOrWhiteSpace($part)) { continue }
-        # WinError 448 재현 경로 — 이름 기준만 (다른 정션은 유지)
         if ($part -match '(?i)\\Cua\\|\\cua-driver\\') { continue }
         try {
             if (-not (Test-Path -LiteralPath $part)) { continue }
@@ -377,28 +392,6 @@ function Set-PipSafePath {
     }
     $env:Path = ($keep -join ';')
     $env:PYTHONNOUSERSITE = "1"
-    if ($IsolateTemp) {
-        try {
-            $pipTmp = Join-Path $Root ".iris-setup-tmp"
-            New-Item -ItemType Directory -Force -Path $pipTmp | Out-Null
-            $env:TEMP = $pipTmp
-            $env:TMP = $pipTmp
-            Write-Info "TEMP 격리: $pipTmp"
-        } catch {
-            Write-Warn "TEMP 격리 실패 — 시스템 TEMP 유지: $_"
-            $env:TEMP = $script:OrigTemp
-            $env:TMP = $script:OrigTmp
-        }
-    } else {
-        $env:TEMP = $script:OrigTemp
-        $env:TMP = $script:OrigTmp
-    }
-}
-
-function Restore-OrigEnv {
-    if ($script:OrigPath) { $env:Path = $script:OrigPath }
-    if ($script:OrigTemp) { $env:TEMP = $script:OrigTemp }
-    if ($script:OrigTmp) { $env:TMP = $script:OrigTmp }
 }
 
 function Get-PipLogErrorTail {
@@ -407,16 +400,13 @@ function Get-PipLogErrorTail {
         $lines = Get-Content -LiteralPath $PipLog -Tail 120 -ErrorAction Stop
     } catch { return "" }
     $hit = $lines | Where-Object { $_ -match 'ERROR:|WinError\s*\d+|No matching distribution|Could not find|SSLError|ProxyError' }
-    if (-not $hit) {
-        $hit = $lines | Select-Object -Last 5
-    }
-    $err = ($hit | Select-Object -Last 4) -join " | "
-    if ($err.Length -gt 350) { $err = $err.Substring($err.Length - 350) }
+    if (-not $hit) { $hit = $lines | Select-Object -Last 5 }
+    $err = ($hit | Select-Object -Last 3) -join " | "
+    if ($err.Length -gt 280) { $err = $err.Substring($err.Length - 280) }
     return $err
 }
 
 function Ensure-VenvPip {
-    # 일부 Python 설치는 venv 에 pip 가 없다 — ensurepip 로 복구
     & $VenvPy -m pip --version 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { return $true }
     Write-Warn "venv pip 없음 — ensurepip 실행"
@@ -425,11 +415,22 @@ function Ensure-VenvPip {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Invoke-PipInstallRequirements {
+    param([string[]]$ExtraArgs = @())
+    Set-PipSafePath
+    if (-not (Ensure-VenvPip)) { return 1 }
+    & $VenvPy -m pip install --upgrade pip --disable-pip-version-check --no-input -q
+    & $VenvPy -m pip install -r $Requirements --log $PipLog `
+        --disable-pip-version-check --no-input --retries 8 --timeout 120 `
+        @ExtraArgs
+    return $LASTEXITCODE
+}
+
 Set-PipSafePath
 if (-not (Ensure-VenvPip)) {
     Fail "가상환경에 pip 를 설치하지 못했습니다." @(
         ".\setup.ps1 -Recreate 로 다시 시도하세요",
-        "python.org 에서 Python 3.12 설치 시 'pip' 옵션을 켜세요"
+        "python.org 에서 Python 3.12 설치 시 pip 옵션을 켜세요"
     )
 }
 
@@ -441,46 +442,30 @@ Write-Step "의존성 설치 (requirements.txt) — 수 분 걸릴 수 있습니
 
 $Requirements = Join-Path $Root "requirements.txt"
 if (-not (Test-Path -LiteralPath $Requirements)) {
-    Fail "requirements.txt 가 없습니다: $Requirements" @("설치본이 손상됐을 수 있습니다. Setup.exe 를 다시 받아 설치하세요")
+    Fail "requirements.txt 가 없습니다: $Requirements" @("Setup.exe 를 다시 받아 설치하세요")
 }
 
-# 1) 기본  2) trusted-host  3) TEMP 격리+trusted (448 등)
 $pipRc = 1
 $pipAttempts = @(
-    @{ Extra = @(); IsolateTemp = $false; Label = "기본" },
+    @{ Extra = @(); Label = "기본" },
+    @{ Extra = @(); Label = "재시도" },
     @{
         Extra = @(
             "--trusted-host", "pypi.org",
             "--trusted-host", "files.pythonhosted.org",
             "--trusted-host", "pypi.python.org"
         )
-        IsolateTemp = $false
         Label = "trusted-host"
-    },
-    @{
-        Extra = @(
-            "--trusted-host", "pypi.org",
-            "--trusted-host", "files.pythonhosted.org",
-            "--trusted-host", "pypi.python.org"
-        )
-        IsolateTemp = $true
-        Label = "TEMP격리+trusted-host"
     }
 )
 foreach ($attempt in 1..$pipAttempts.Count) {
     $spec = $pipAttempts[$attempt - 1]
     if ($attempt -gt 1) {
-        Write-Warn "$($spec.Label) 재시도 $attempt/$($pipAttempts.Count)"
-        $null = Ensure-VenvPip
+        Write-Warn "$($spec.Label) $attempt/$($pipAttempts.Count)"
     }
-    if ($spec.IsolateTemp) { Set-PipSafePath -IsolateTemp } else { Set-PipSafePath }
-    & $VenvPy -m pip install -r $Requirements --log $PipLog `
-        --disable-pip-version-check --no-input --retries 5 --timeout 120 `
-        @($spec.Extra)
-    $pipRc = $LASTEXITCODE
+    $pipRc = Invoke-PipInstallRequirements -ExtraArgs $spec.Extra
     if ($pipRc -eq 0) { break }
 }
-Restore-OrigEnv
 if ($pipRc -ne 0) {
     Write-Warn "pip 종료 코드 $pipRc — 핵심 패키지 import 로 최종 판정합니다"
 } else {
@@ -523,32 +508,47 @@ print("OK")
 '@
 $checkFile = Join-Path $Root "_iris_setup_check.py"
 Set-Content -Path $checkFile -Value $check -Encoding utf8
-# 검사 결과는 stdout으로만 받는다 — 네이티브 stderr를 2>&1 로 합치면
-# PowerShell 5.1이 성공한 실행도 실패로 표시한다
 $result = & $VenvPy $checkFile
 $checkRc = $LASTEXITCODE
 Remove-Item $checkFile -ErrorAction SilentlyContinue
 
+# 이전 실패로 비어 있는 .venv 가 재사용된 경우 — 한 번 지우고 재설치 (setup.bat -Recreate 와 동일)
+if ($checkRc -ne 0) {
+    Write-Warn "핵심 패키지 없음 — .venv 재생성 후 1회 재설치합니다"
+    try {
+        if (Test-Path $VenvPath) { Remove-Item -Recurse -Force $VenvPath }
+        & $PyExe @PyArgs -m venv $VenvPath
+        if (-not (Test-VenvUsable $VenvPath)) { throw "venv recreate failed" }
+        $VenvPy = Join-Path $VenvPath "Scripts\python.exe"
+        $trusted = @(
+            "--trusted-host", "pypi.org",
+            "--trusted-host", "files.pythonhosted.org",
+            "--trusted-host", "pypi.python.org"
+        )
+        $null = Invoke-PipInstallRequirements -ExtraArgs $trusted
+        Set-Content -Path $checkFile -Value $check -Encoding utf8
+        $result = & $VenvPy $checkFile
+        $checkRc = $LASTEXITCODE
+        Remove-Item $checkFile -ErrorAction SilentlyContinue
+    } catch {
+        Write-Warn "재설치 복구 중 오류: $($_.Exception.Message)"
+        $checkRc = 1
+    }
+}
+
 if ($checkRc -ne 0) {
     $pipHint = Get-PipLogErrorTail
-    # Inno 대화상자는 짧아야 읽힌다 — 모듈 나열 대신 pip 원인 우선
     if ($pipHint) {
         $msg = "패키지 설치 실패: $pipHint"
     } else {
         $short = "$result"
-        if ($short.Length -gt 180) { $short = $short.Substring(0, 180) + "…" }
+        if ($short.Length -gt 160) { $short = $short.Substring(0, 160) + "..." }
         $msg = "핵심 패키지 검증 실패: $short"
     }
-    $hints = @(
-        "인터넷 연결 확인 후 설치 폴더에서 setup.bat 재실행 (또는 .\setup.ps1 -Recreate)",
-        "상세: $PipLog"
+    Fail $msg @(
+        "인터넷 연결 확인 후 setup.bat 재실행",
+        "상세 로그: $PipLog"
     )
-    if ($pipHint -match '448|탑재|Cua|cua-driver') {
-        $hints = @(
-            "Cua 등 PATH 정션이 pip 을 막을 수 있습니다. Cua 종료 후 setup.bat 재실행"
-        ) + $hints
-    }
-    Fail $msg $hints
 }
 if ($pipRc -ne 0) {
     Write-Warn "pip 경고가 있었지만 핵심 패키지는 정상입니다"
