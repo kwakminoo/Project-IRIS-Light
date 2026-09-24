@@ -72,6 +72,7 @@ from iris.ui.chat.chat_display import (
     TYPING_INTERVAL_MS,
     TYPING_SPEECH_MAX_CHARS_PER_TICK,
     TYPING_SPEECH_MIN_CHARS_PER_SEC,
+    assistant_visible_text,
     effective_typing_duration_ms,
     extend_typing_timeline_ms,
     normalize_chat_body,
@@ -183,7 +184,7 @@ def _uris_from_mime_text(text: str) -> list[str]:
     return out
 
 
-def _drop_targets_from_mime(mime) -> list[str]:
+def _drop_targets_from_mime(mime, *, text_paths: bool = True) -> list[str]:
     """드롭/붙여넣기 — 로컬 경로 또는 @참조 토큰."""
     paths = _paths_from_mime(mime)
     if paths:
@@ -227,7 +228,7 @@ def _drop_targets_from_mime(mime) -> list[str]:
             local = QUrl(line).toLocalFile().strip()
             if local:
                 return [local]
-        if _looks_like_path_line(line):
+        if _looks_like_path_line(line) and text_paths:
             return [line]
     return []
 
@@ -238,7 +239,7 @@ def _paths_from_clipboard() -> list[str]:
     if cb is None:
         return []
     mime = cb.mimeData()
-    targets = _drop_targets_from_mime(mime)
+    targets = _drop_targets_from_mime(mime, text_paths=False)
     if targets:
         return targets
     img = cb.image()
@@ -414,7 +415,7 @@ class ChatComposerInput(QPlainTextEdit):
         return super().canInsertFromMimeData(source)
 
     def insertFromMimeData(self, source) -> None:  # noqa: N802
-        paths = _drop_targets_from_mime(source)
+        paths = _drop_targets_from_mime(source, text_paths=False)
         if not paths and source is not None and source.hasImage():
             data = source.imageData()
             if isinstance(data, QImage) and not data.isNull():
@@ -1309,10 +1310,12 @@ class ChatPanel(QWidget):
         return msg_id
 
     def _insert_iris_body(self, cursor: QTextCursor, body: str, msg_id: str) -> str:
-        """Iris 답변 본문 — 마크다운 원문 전체를 그대로 렌더링."""
-        html_body = render_iris_message(body)
-        prefetch_chat_html_images(self._log, html_body)
-        cursor.insertHtml(html_body)
+        """Iris 답변 — 화면은 요약 정책, 저장 본문은 원문."""
+        visible = assistant_visible_text(body, streaming=False)
+        html_body = render_iris_message(visible) if visible.strip() else ""
+        if html_body:
+            prefetch_chat_html_images(self._log, html_body)
+            cursor.insertHtml(html_body)
         self._store_message_body(msg_id, body)
         cursor.insertHtml(self._speaker_link_html(msg_id))
         return msg_id
@@ -2074,6 +2077,8 @@ class ChatPanel(QWidget):
         body = normalize_chat_body(who, prepare_chat_text(text))
         if not body:
             return
+        if who.strip().lower() == "iris" and not assistant_visible_text(body, streaming=False).strip():
+            return
         cursor = self._begin_chat_message_cursor()
         msg_id = self._begin_iris_prefix(cursor, who)
         if msg_id:
@@ -2374,17 +2379,32 @@ class ChatPanel(QWidget):
         self._typing_wait_for_tts_completion = False
         self._ensure_buffered_typing_fallback()
 
+    def _iris_paint_html(self, body: str) -> str:
+        """스트리밍·타이핑 중 화면. 원문 버퍼는 바꾸지 않는다."""
+        streaming = bool(self._stream_active)
+        visible = assistant_visible_text(body, streaming=streaming)
+        raw_prose = prose_char_count(self._typing_text or body)
+        if raw_prose > self._typing_index:
+            keep = len(visible) * self._typing_index // raw_prose
+            visible = visible[:keep]
+        if not visible.strip():
+            return ""
+        return render_iris_message(visible)
+
     def _replace_typing_body(self) -> None:
-        """타이핑 본문 — prose만 점진 표시, code/tool은 즉시 카드."""
+        """타이핑 본문 — Iris 는 요약 정책, 그 외는 기존 세그먼트 표시."""
         if self._typing_body_start is None:
             return
         start = self._stream_block_start or self._typing_body_start
-        html_body = streaming_segments_html(
-            parse_chat_segments(self._typing_text),
-            self._typing_index,
-            render_markdown=self._typing_render_markdown,
-            tool_blocks=self._log._tool_blocks,
-        )
+        if self._typing_render_markdown:
+            html_body = self._iris_paint_html(self._typing_text)
+        else:
+            html_body = streaming_segments_html(
+                parse_chat_segments(self._typing_text),
+                self._typing_index,
+                render_markdown=self._typing_render_markdown,
+                tool_blocks=self._log._tool_blocks,
+            )
         cursor = self._log.textCursor()
         cursor.setPosition(start)
         cursor.movePosition(

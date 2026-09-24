@@ -110,8 +110,11 @@ export class IrisIdeBridgeServer {
 
     protected resolvePath(p: string): string {
         const root = path.resolve(this.workspaceRoot);
-        const target = path.resolve(root, p || '.');
-        if (!target.startsWith(root)) {
+        const raw = String(p || '').trim();
+        const target = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(root, raw || '.');
+        const rel = path.relative(root, target);
+        const escapes = rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+        if (rel !== '' && escapes) {
             throw new Error('path escapes workspace');
         }
         return target;

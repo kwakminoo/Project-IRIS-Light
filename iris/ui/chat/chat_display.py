@@ -29,6 +29,151 @@ def normalize_chat_body(who: str, text: str) -> str:
     return strip_speaker_prefix(who, prepare_chat_text(text))
 
 
+# 요약만 표시 — 적용 조건은 메인 채팅 Iris 답변뿐이다.
+# 시스템 프롬프트의 "summarize only in chat" 를 화면에서 강제한다.
+# 사용자 메시지·위키·오류 전용 렌더·워크스페이스 패널은 호출하지 않는다.
+# 원문(코드 펜스)은 IDE 트리거가 그대로 소비한다. 여기선 성공 문구를 만들지 않는다.
+_TOOL_MARK = "IRIS_TOOL_"
+_URL_RE = re.compile(r"https?://[^\s<>)\]]+", re.IGNORECASE)
+# ponytail: 청크 끝의 슬래시 토큰은 경로로 보고 보류한다. and/or 도 다음 청크·종료 전까지 숨는다.
+_HOLD_PATH = re.compile(
+    r"(?:(?<![A-Za-z0-9_])[A-Za-z]:[\\/]?"
+    r"|\\\\"
+    r"|/(?:Users|home|var|tmp|opt|usr)(?:/[A-Za-z0-9_.\\/-]*)?"
+    r"|(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]*)\Z"
+)
+
+
+def assistant_visible_text(raw: str, *, streaming: bool) -> str:
+    """Iris 답변 원문 → 화면용 텍스트.
+
+    코드 펜스·도구 블록·불필요한 경로는 뺀다. 요약 문장·오류 설명·
+    결과 안내·http(s) 링크·파일 이름만은 남긴다.
+    streaming 이면 청크 끝에 걸친 펜스·경로·도구 표식은 아직 그리지 않는다.
+    """
+    from iris.core.chat_block_parser import ProseSegment, parse_chat_segments
+
+    parts: list[str] = []
+    for seg in parse_chat_segments(raw or ""):
+        if isinstance(seg, ProseSegment):
+            parts.append(seg.text)
+    text = _drop_dangling_tool("".join(parts))
+    if streaming:
+        text = _streaming_head(text)
+    return _tidy(_replace_unnecessary_paths(text))
+
+
+def _drop_dangling_tool(text: str) -> str:
+    """파서가 블록으로 못 자른 IRIS_TOOL_ 조각. 완성 문장은 유지."""
+    out: list[str] = []
+    idx = 0
+    while True:
+        found = text.find(_TOOL_MARK, idx)
+        if found < 0:
+            out.append(text[idx:])
+            break
+        out.append(text[idx:found])
+        line_end = text.find("\n", found)
+        if line_end < 0:
+            break
+        idx = line_end + 1
+    return "".join(out)
+
+
+def _streaming_head(text: str) -> str:
+    """끝나지 않은 펜스·경로·도구 접두사는 다음 청크까지 보류."""
+    while True:
+        nxt = _cut_streaming_suffix(text)
+        if nxt == text:
+            return text
+        text = nxt
+
+
+def _cut_streaming_suffix(text: str) -> str:
+    for size in range(len(_TOOL_MARK), 3, -1):
+        if text.endswith(_TOOL_MARK[:size]):
+            return text[:-size]
+    fence = re.search(r"(?:^|\n)(`{1,2})\Z", text)
+    if fence:
+        return text[: fence.start(1)]
+    held = _HOLD_PATH.search(text)
+    if held is not None and not _token_is_url(text, held.start()):
+        return text[: held.start()]
+    return text
+
+
+def _token_is_url(text: str, start: int) -> bool:
+    cut = max(text.rfind(ch, 0, start) for ch in " \n\t(")
+    token = text[cut + 1 :].lower()
+    return token.startswith("http://") or token.startswith("https://")
+
+
+def _replace_unnecessary_paths(text: str) -> str:
+    """절대·다단 경로는 파일 이름만 남긴다. URL 은 그대로."""
+    from iris.ui.chat.chat_renderer import _FILE_EXT
+
+    masked, urls = _mask_urls(text)
+    line = r"(?::\d+(?::\d+)?)?"
+    path_re = re.compile(
+        rf"(?<![A-Za-z0-9_./:\\-])(?<!://)"
+        rf"("
+        rf"[A-Za-z]:[\\/][A-Za-z0-9_.\-\\/:]+"
+        rf"|\\\\[A-Za-z0-9_.\-\\/:]+"
+        rf"|/(?:Users|home|var|tmp|opt|usr)/[A-Za-z0-9_.\-\\/:]+"
+        rf"|(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+\.{_FILE_EXT}{line}"
+        rf")"
+    )
+
+    def repl(match: re.Match[str]) -> str:
+        token = match.group(0)
+        core = token.rstrip(".,;!?)]}\"'")
+        tail = token[len(core) :]
+        if not _has_file_ext(core):
+            return f"작업 폴더{tail}"
+        name = _basename(core)
+        return f"{name}{tail}" if name else tail
+
+    return _unmask_urls(path_re.sub(repl, masked), urls)
+
+
+def _has_file_ext(path: str) -> bool:
+    from iris.ui.chat.chat_renderer import _FILE_EXT
+
+    name = _basename(path).split(":", 1)[0]
+    return bool(re.search(rf"\.{_FILE_EXT}\Z", name, re.IGNORECASE))
+
+
+def _basename(path: str) -> str:
+    name = path.replace("\\", "/").rstrip("/").split("/")[-1]
+    if name in ("", ".", ".."):
+        return ""
+    return name
+
+
+def _mask_urls(text: str) -> tuple[str, list[str]]:
+    found: list[str] = []
+
+    def repl(match: re.Match[str]) -> str:
+        found.append(match.group(0))
+        return f"\ue000{len(found) - 1}\ue001"
+
+    return _URL_RE.sub(repl, text), found
+
+
+def _unmask_urls(text: str, urls: list[str]) -> str:
+    for index, url in enumerate(urls):
+        text = text.replace(f"\ue000{index}\ue001", url)
+    return text
+
+
+def _tidy(text: str) -> str:
+    text = re.sub(r"`[ \t]*`", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def chat_body_to_html(text: str) -> str:
     """QTextEdit 본문 삽입용 HTML — render_user_message thin wrapper."""
     from iris.ui.chat.chat_renderer import render_user_message

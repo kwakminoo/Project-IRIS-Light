@@ -330,6 +330,8 @@ class IrisIdeRuntimeManager:
             self._bridge_port = _free_port()
         self._token = secrets.token_urlsafe(24)
         env = os.environ.copy()
+        # 경로 점검용 변수가 부모에 남아 있으면 브리지가 listen 전에 종료한다.
+        env.pop("IRIS_BRIDGE_RESOLVE_CHECK", None)
         env["PORT"] = str(self._theia_port)
         env["THEIA_CONFIG_DIR"] = str(iris_ide_config_dir())
         env["IRIS_IDE_WORKSPACE"] = self._workspace

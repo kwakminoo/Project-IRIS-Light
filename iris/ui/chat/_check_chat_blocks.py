@@ -287,16 +287,17 @@ def _smoke_chat_panel(app: QApplication) -> None:
     )
     app.processEvents()
     html_doc = panel._log.toHtml()
+    # Iris 답변은 요약 정책 — 펜스 카드는 숨기고 본문·도구 카드는 남긴다.
     _assert_html_contains(
         html_doc,
         "font-weight:700",
         "user",
-        "Python",
-        "iris-copy://",
+        "alpha",
         "Smoke shell",
         "iris-collapse://smoke-tool",
         label="ChatPanel smoke",
     )
+    assert "print" not in html_doc and "iris-copy://" not in html_doc
     _assert_mono_in_html(html_doc, label="ChatPanel smoke")
     assert "iris-tts://" in html_doc
 

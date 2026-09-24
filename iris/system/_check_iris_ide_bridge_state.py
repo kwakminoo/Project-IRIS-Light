@@ -1,7 +1,7 @@
 """IRIS IDE 브리지 상태연동 자체점검 — 총괄표 #1·#2·#3.
 
 - #1 브리지 신원: 쿼리 소실 후 sessionStorage 승계 (컴파일된 lib/browser 헬퍼를 node로 실행)
-- #2 컨텍스트 예산: 브리지가 중간에 멈춰도 _iris_ide_context 최악 소요가 예산 이하
+- #2 컨텍스트 예산: 내부 대기 예산 1.5초. 벽시계 전체 소요는 타임아웃 처리 때문에 예산을 조금 넘을 수 있고, 검사는 예산+0.5초다. 1.5초는 전체 호출 상한이 아니다.
 - #3 빈 편집기 정규화: setEditorState({}) → editor null / editors []
 - #4 오류 본문 보존: 브리지 400의 사유가 "HTTP Error 400"으로 뭉개지지 않는다
 - #5 UI 스레드 미차단: 브리지 호출이 전부 _bridge_call_pumping을 거치고, 대기 중 Qt 이벤트가 돈다
@@ -106,6 +106,7 @@ class _HalfDeadHandler(http.server.BaseHTTPRequestHandler):
 
 def _check_context_budget() -> None:
     """#2 — 일부 호출이 멈춰도 전체 소요가 예산을 넘지 않고, 도달 실패는 즉시 이탈한다."""
+    from iris.system.ide_link import shared_ide_link
     from iris.ui import control_bindings as cb
 
     budget = cb._IDE_CONTEXT_BUDGET
@@ -118,7 +119,9 @@ def _check_context_budget() -> None:
         cb._iris_ide_client = lambda _w: IrisIdeClient(
             base_url=f"http://127.0.0.1:{port}", token=TOKEN, timeout=30.0
         )
-        cb._ide_context_cache.update(at=0.0, value={})
+        link = shared_ide_link()
+        link.invalidate()
+        link._last_editor_path = None
         started = time.monotonic()
         ctx = cb._iris_ide_context(None)
         hung = time.monotonic() - started
@@ -136,7 +139,7 @@ def _check_context_budget() -> None:
         # 브리지 미기동(연결 거부) — 현행과 동일하게 즉시 이탈해야 한다.
         srv.shutdown()
         srv.server_close()
-        cb._ide_context_cache.update(at=0.0, value={})
+        link.invalidate()
         started = time.monotonic()
         down = cb._iris_ide_context(None)
         refused = time.monotonic() - started
@@ -144,11 +147,11 @@ def _check_context_budget() -> None:
         assert refused <= budget + 0.5, f"미기동 이탈 지연: {refused:.2f}s"
         print(
             f"  #2 예산 ok (부분정지 {hung:.2f}s / 캐시 {cached:.3f}s / 미기동 {refused:.2f}s,"
-            f" 상한 {budget}s)"
+            f" 내부 예산 {budget}s, 벽시계 허용 +0.5s)"
         )
     finally:
         cb._iris_ide_client = original
-        cb._ide_context_cache.update(at=0.0, value={})
+        shared_ide_link().close()
 
 
 class _BadRequestHandler(http.server.BaseHTTPRequestHandler):
@@ -184,9 +187,11 @@ def _check_error_body_preserved() -> None:
             client.run_terminal_command("echo hi")
         except IrisIdeClientError as exc:
             msg = str(exc)
+            kind = exc.code
         else:
             raise AssertionError("400인데 예외가 안 남")
         assert "frontend command timeout" in msg, f"사유가 뭉개짐: {msg}"
+        assert kind == "execution", kind
         print("  #4 오류 본문 보존 ok")
     finally:
         srv.shutdown()

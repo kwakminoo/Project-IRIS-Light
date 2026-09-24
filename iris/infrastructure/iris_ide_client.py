@@ -13,7 +13,43 @@ LOGGER = logging.getLogger(__name__)
 
 
 class IrisIdeClientError(RuntimeError):
-    pass
+    """code: execution | auth | server | connection | timeout | protocol.
+
+    우선순위: 본문 code → HTTP 상태 → 응답 없음.
+    본문 code가 알려진 값이면 상태보다 먼저다. 408·504도 본문 code가 있으면 그 code다.
+    상태가 남을 때 408·504는 timeout, 401·403·407은 auth, 그 외 5xx는 server.
+    connection은 HTTP 응답이 없는 전송 실패만. protocol은 깨진 JSON·비객체 본문.
+    오류 문구로 code를 정하지 않는다. str()은 기존 문구 그대로.
+    """
+
+    def __init__(self, message: str, *, code: str = "execution") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+_CODES = frozenset({"execution", "auth", "server", "connection", "timeout", "protocol"})
+
+
+def _body_code(body: object) -> str | None:
+    if isinstance(body, dict) and body.get("code") in _CODES:
+        return str(body["code"])
+    return None
+
+
+def _http_code(status: int, body: object) -> str:
+    """상태와 본문 code만 본다. 오류 문구는 다시 읽지 않는다."""
+    marked = _body_code(body)
+    if marked:
+        return marked
+    if status in (408, 504):
+        return "timeout"
+    if status in (401, 403, 407):
+        return "auth"
+    if status >= 500:
+        return "server"
+    if not isinstance(body, dict):
+        return "protocol"
+    return "execution"
 
 
 class IrisIdeClient:
@@ -40,23 +76,26 @@ class IrisIdeClient:
             # 브리지는 실패 사유를 본문 JSON에만 담는다 — 버리면 "HTTP Error 400"만 남아 진단이 끊긴다.
             try:
                 body = json.loads(exc.read().decode("utf-8"))
-                detail = str(body.get("error") or "") if isinstance(body, dict) else ""
             except (ValueError, OSError, UnicodeDecodeError):
-                detail = ""
-            raise IrisIdeClientError(f"{command}: {detail}" if detail else str(exc)) from exc
+                body = None
+            detail = str(body.get("error") or "") if isinstance(body, dict) else ""
+            message = f"{command}: {detail}" if detail else str(exc)
+            raise IrisIdeClientError(message, code=_http_code(exc.code, body)) from exc
         except (URLError, TimeoutError, OSError) as exc:
             LOGGER.warning(
                 "iris_ide bridge %s failed after %.2fs: %s", command, time.monotonic() - t0, exc
             )
-            raise IrisIdeClientError(str(exc)) from exc
+            reason = getattr(exc, "reason", None)
+            timed = isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError)
+            raise IrisIdeClientError(str(exc), code="timeout" if timed else "connection") from exc
         elapsed = time.monotonic() - t0
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
             LOGGER.warning("iris_ide bridge %s returned invalid JSON after %.2fs", command, elapsed)
-            raise IrisIdeClientError("invalid JSON from bridge") from exc
+            raise IrisIdeClientError("invalid JSON from bridge", code="protocol") from exc
         if not isinstance(data, dict):
-            raise IrisIdeClientError("unexpected bridge response")
+            raise IrisIdeClientError("unexpected bridge response", code="protocol")
         if not data.get("ok"):
             LOGGER.warning(
                 "iris_ide bridge %s returned error after %.2fs: %s",
@@ -64,7 +103,10 @@ class IrisIdeClient:
                 elapsed,
                 data.get("error"),
             )
-            raise IrisIdeClientError(str(data.get("error") or "bridge error"))
+            raise IrisIdeClientError(
+                str(data.get("error") or "bridge error"),
+                code=_body_code(data) or "execution",
+            )
         LOGGER.debug("iris_ide bridge <- %s ok in %.2fs", command, elapsed)
         result = data.get("result")
         return result if isinstance(result, dict) else {"value": result}
@@ -148,8 +190,13 @@ class IrisIdeClient:
     def create_terminal(self, name: str = "IRIS") -> dict[str, Any]:
         return self._request("createTerminal", {"name": name})
 
-    def run_terminal_command(self, command: str, *, cwd: str = "") -> dict[str, Any]:
-        return self._request("runTerminalCommand", {"command": command, "cwd": cwd})
+    def run_terminal_command(
+        self, command: str, *, cwd: str = "", argv: list[str] | None = None
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"command": command, "cwd": cwd}
+        if argv:
+            payload["argv"] = [str(a) for a in argv]
+        return self._request("runTerminalCommand", payload)
 
     def get_terminal_state(self) -> dict[str, Any]:
         return self._request("getTerminalState")

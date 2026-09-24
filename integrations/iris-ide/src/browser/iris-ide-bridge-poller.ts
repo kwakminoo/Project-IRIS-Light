@@ -15,6 +15,85 @@ interface PendingCommand {
     args: Record<string, unknown>;
 }
 
+type ShellKind = 'cmd' | 'powershell' | 'sh';
+
+async function shellOf(terminal: TerminalWidget): Promise<ShellKind> {
+    const raw = terminal as unknown as {
+        shellPath?: string;
+        options?: { shellPath?: string; executable?: string };
+        title?: { label?: string; caption?: string };
+        processInfo?: Promise<{ executable?: string; command?: string; shellPath?: string }>;
+    };
+    let infoText = '';
+    try {
+        const info = await raw.processInfo;
+        infoText = [info?.executable, info?.command, info?.shellPath].filter(Boolean).join(' ');
+    } catch {
+        /* terminal not started yet — fall through to widget hints */
+    }
+    const blob = [raw.shellPath, raw.options?.shellPath, raw.options?.executable, raw.title?.label, raw.title?.caption, infoText]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+    if (blob.includes('powershell') || blob.includes('pwsh')) {
+        return 'powershell';
+    }
+    if (blob.includes('cmd')) {
+        return 'cmd';
+    }
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    if (/windows/i.test(ua)) {
+        return 'cmd';
+    }
+    return 'sh';
+}
+
+function cdCommand(cwd: string, shell: ShellKind): string {
+    if (shell === 'cmd') {
+        return `cd /d "${cwd.replace(/"/g, '""')}"`;
+    }
+    if (shell === 'powershell') {
+        return `Set-Location -LiteralPath '${cwd.replace(/'/g, "''")}'`;
+    }
+    return `cd ${JSON.stringify(cwd)}`;
+}
+
+function cmdQuote(arg: string): string {
+    if (arg === '') {
+        return '""';
+    }
+    if (/[ \t&|<>^%!"]/.test(arg)) {
+        return `"${arg.replace(/"/g, '""')}"`;
+    }
+    return arg;
+}
+
+function wrapRun(argv: string[], shell: ShellKind): string {
+    if (shell === 'cmd') {
+        const quoted = argv.map(cmdQuote).join(' ');
+        return [
+            'if not exist .iris mkdir .iris',
+            'del /f /q .iris\\last_run.log 2>nul',
+            `${quoted} > .iris\\last_run.log 2>&1`,
+            'echo IRIS_EXIT:%ERRORLEVEL% >> .iris\\last_run.log',
+            'type .iris\\last_run.log',
+        ].join('\n');
+    }
+    if (shell === 'powershell') {
+        const invoke = '& ' + argv.map(arg => `'${arg.replace(/'/g, "''")}'`).join(' ');
+        return [
+            'New-Item -ItemType Directory -Force -Path .iris | Out-Null',
+            'Remove-Item -Force -ErrorAction SilentlyContinue .iris\\last_run.log',
+            `${invoke} 2>&1 | Tee-Object -FilePath .iris\\last_run.log`,
+            '$code = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }',
+            'Add-Content -Path .iris\\last_run.log -Value "IRIS_EXIT:$code"',
+            'exit $code',
+        ].join('; ');
+    }
+    const quoted = argv.map(arg => JSON.stringify(arg)).join(' ');
+    return `mkdir -p .iris; rm -f .iris/last_run.log; { ${quoted}; } 2>&1 | tee .iris/last_run.log; code=\${PIPESTATUS[0]}; printf "IRIS_EXIT:%s\\n" "$code" >> .iris/last_run.log; exit "$code"`;
+}
+
 @injectable()
 export class IrisIdeBridgePoller implements FrontendApplicationContribution {
 
@@ -145,16 +224,22 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
     }
 
     protected async runInTerminal(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+        const argv = Array.isArray(args.argv) ? args.argv.map(item => String(item)) : [];
         const command = String(args.command || '').trim();
-        if (!command) {
+        if (!command && argv.length === 0) {
             throw new Error('runTerminalCommand: empty command');
         }
         const cwd = String(args.cwd || '').trim();
         const terminal = await this.ensureTerminal(cwd);
-        // ponytail: Theia 1.74 sendText is (text) only — append \n for Enter
-        const text = command.endsWith('\n') ? command : `${command}\n`;
-        terminal.sendText(text);
-        return { command, queued: true, via: 'theia_terminal', cwd };
+        const shell = await shellOf(terminal);
+        const body = argv.length > 0 ? wrapRun(argv, shell) : command;
+        const lines = [...(cwd ? [cdCommand(cwd, shell)] : []), ...body.split(/\r?\n/)].filter(line => line.trim());
+        // cmd.exe submits a line on CR. A single LF-joined paste stays on one prompt.
+        for (const line of lines) {
+            terminal.sendText(`${line}\r\n`);
+            await new Promise(resolve => window.setTimeout(resolve, 150));
+        }
+        return { command: body, queued: true, via: 'theia_terminal', cwd, shell, delivered: true };
     }
 
     /** 기존 터미널 재사용 — newTerminal+start 가 Windows ConPTY에서 자주 멈춘다. */
@@ -163,11 +248,6 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
         if (reuse) {
             try {
                 this.terminalService.open(reuse);
-                if (cwd) {
-                    // cd into target — avoid spawning another PTY when one already works
-                    const escaped = cwd.replace(/'/g, "''");
-                    reuse.sendText(`Set-Location -LiteralPath '${escaped}'\n`);
-                }
                 return reuse;
             } catch {
                 /* fall through — create fresh */
