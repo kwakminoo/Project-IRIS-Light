@@ -1,4 +1,4 @@
-"""IRIS IDE companion 80:20 — A구조(슬롯 자식 orb) + 타일 계약."""
+"""IRIS IDE companion 80:20 — 컬럼 내부 구체 배경 + 타일 계약."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def _assert_no_orb_above_in_unified_source() -> None:
 
 
 def _assert_layout_orb_a_structure(app: QApplication) -> None:
-    """Visualizer가 orb_spacer 자식이고 cyberspace orb_layer가 비어 있음."""
+    """Visualizer가 컬럼 내부 배경 자식이고 cyberspace orb_layer가 비어 있음."""
     root = CyberspaceBackground()
     root.resize(1000, 600)
     root.show()
@@ -92,7 +92,7 @@ def _assert_layout_orb_a_structure(app: QApplication) -> None:
     assert chat.parent() is companion
     assert shell._split.handleWidth() == 6
 
-    # A: release + embed into spacer
+    # Release global orb, then embed behind this column's layout.
     root.set_orb_above_ui(False)
     root.release_orb_layer()
     companion.embed_orb(viz, spacer)
@@ -101,7 +101,8 @@ def _assert_layout_orb_a_structure(app: QApplication) -> None:
     app.processEvents()
 
     assert root._orb_layer is None
-    assert viz.parent() is spacer, viz.parent()
+    assert viz.parent() is companion._orb_host, viz.parent()
+    assert companion._orb_host.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
     assert companion.embedded_orb() is viz
     assert viz.is_layout_orb_mode()
     # 슬롯 중심 (창 중앙 아님)
@@ -215,7 +216,7 @@ def main() -> int:
 
     iris.close()
     app.processEvents()
-    print("iris_ide_companion_tile check ok", tiles.ide, tiles.iris, "unified", sizes, "A-layout-orb")
+    print("iris_ide_companion_tile check ok", tiles.ide, tiles.iris, "unified", sizes, "column-orb-backdrop")
     return 0
 
 

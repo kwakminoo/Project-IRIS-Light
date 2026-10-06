@@ -310,7 +310,7 @@ def _register_hwnd(hwnd: int, target: _ExplorerDropTarget, *, label: str) -> boo
     return True
 
 
-def _child_hwnds_with_foreign_drop(root: int, ours: int) -> list[int]:
+def _child_hwnds_with_drop(root: int) -> list[int]:
     import ctypes
 
     user32 = ctypes.windll.user32
@@ -320,7 +320,9 @@ def _child_hwnds_with_foreign_drop(root: int, ours: int) -> list[int]:
     def _cb(hwnd, _lp):
         child = int(hwnd)
         ole = _ole_prop(child)
-        if ole and ole != ours:
+        # Include our existing child targets too. Otherwise the next refresh
+        # treats them as removed and revokes WebEngine's drop registration.
+        if ole:
             found.append(child)
         return True
 
@@ -350,7 +352,7 @@ def ensure_explorer_drop_targets(hwnd: int, host: object, *, target: str = "main
         drop = _owned_target(host, target)
         ours = int(getattr(drop, "addr", 0) or 0)
         hwnds = [int(hwnd)]
-        hwnds.extend(h for h in _child_hwnds_with_foreign_drop(int(hwnd), ours) if h not in hwnds)
+        hwnds.extend(h for h in _child_hwnds_with_drop(int(hwnd)) if h not in hwnds)
         prev = set(getattr(host, "_explorer_ole_hwnds", ()))
         _revoke_hwnds(prev - set(hwnds))
         root_ok = _register_hwnd(int(hwnd), drop, label=target)

@@ -9050,12 +9050,12 @@ class MainWindow(QMainWindow):
 
     def _fit_companion_orb_to_width(self) -> None:
         """이메일 우측 Iris 패널과 동일 구체 슬롯·스케일."""
-        self._orb_spacer.setMinimumHeight(EMAIL_ORB_HEIGHT)
-        self._orb_spacer.setMaximumHeight(EMAIL_ORB_HEIGHT)
+        if self._chat._extra_h <= 0:
+            self._orb_spacer.setFixedHeight(EMAIL_ORB_HEIGHT)
         self._viz.particle_core().set_size_scale(EMAIL_ORB_SCALE)
 
     def _embed_viz_in_companion_slot(self) -> None:
-        """Companion A: Visualizer를 orb_spacer 자식으로 — IDE/채팅 위 전역 오버레이 금지."""
+        """Visualizer를 Companion 컬럼 내부 배경에 둔다."""
         # 히어로 잔여 오버레이가 Companion을 덮지 않게
         hero = getattr(self, "_ide_hero", None)
         if hero is not None:
@@ -9105,6 +9105,7 @@ class MainWindow(QMainWindow):
         self._embed_viz_in_companion_slot()
 
     def _unmount_companion_body(self) -> None:
+        self._chat.reset_height_expansion()
         self._restore_viz_to_cyberspace()
         self._orb_spacer.setMinimumHeight(self._orb_spacer_min_h)
         self._orb_spacer.setMaximumHeight(16777215)

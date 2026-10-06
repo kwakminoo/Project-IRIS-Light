@@ -69,11 +69,31 @@ def main():
                 ide._loaded_workspace, state["created"]
             )
             assert win._ide_snap_redirect._hook
+            if "--drag" in sys.argv:
+                assert win._chat._extra_h == 180
+                assert win._orb_spacer.height() == 80
+                win._chat.reset_height_expansion()
+                app.processEvents()
+                assert win._orb_spacer.height() == 260
             state["passed"] = True
             print("PASS created folder -> IDE loaded -> reopen -> IRIS alive", flush=True)
             finish()
 
         def reopen():
+            if "--drag" in sys.argv:
+                chat = win._chat
+                top = chat.y()
+                center = win._viz.particle_core().effective_center()
+                chat._height_handle.drag_started.emit(700)
+                for extra in range(0, 261, 5):
+                    chat._height_handle.dragged.emit(700 - extra)
+                    app.processEvents()
+                    assert chat.y() == top - extra, (extra, top, chat.y())
+                    assert win._viz.particle_core().effective_center() == center
+                chat._height_handle.dragged.emit(520)
+                app.processEvents()
+                win.grab().save("ide-chat-drag-preview.png")
+                print("PASS live IDE drag: continuous movement, stable orb and fade", flush=True)
             err = win._open_iris_ide_folder(state["created"], source="icon")
             if err:
                 finish(err)

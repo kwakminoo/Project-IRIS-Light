@@ -332,9 +332,16 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
             this.tabDrag = null;
             return;
         }
-        const uri = this.uriFromElement(tab)
-            || UriSelection.getUri(this.selectionService.selection)
-            || this.editorManager.currentEditor?.editor.uri;
+        // Close buttons must remain ordinary Lumino close gestures.
+        if ((ev.target as HTMLElement).closest('.lm-TabBar-tabCloseIcon, .p-TabBar-tabCloseIcon')) {
+            this.tabDrag = null;
+            return;
+        }
+        // Theia tab IDs identify widgets, not filesystem paths. Never fall back
+        // to the previously focused editor while pointerdown is still capturing.
+        const widget = this.editorManager.all.find(editor =>
+            tab.id === `shell-tab-${editor.id}` || tab.id === `shell-tab-${editor.id}-hidden`);
+        const uri = widget?.editor.uri;
         if (!uri) {
             this.tabDrag = null;
             return;
@@ -369,7 +376,8 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
             void this.finishCompanionDrag();
             return;
         }
-        void this.editorManager.open(drag.uri, { mode: 'activate' });
+        // Lumino already selects and activates the clicked title on pointerdown.
+        // Reopening here can steal focus and undo that selection with a stale URI.
     }
 
     protected onTabHtml5DragStart(ev: DragEvent): void {

@@ -1788,20 +1788,14 @@ class ChatPanel(QWidget):
                 out.append(widget)
         return out
 
-    def _above_spacing(self) -> int:
-        parent = self.parentWidget()
-        layout = parent.layout() if parent is not None else None
-        if layout is None:
-            return 0
-        count = len(self._above_snap) if self._above_snap else len(self._widgets_above())
-        return max(0, layout.spacing()) * count
-
     def _max_extra(self) -> int:
         if self._above_snap:
             stealable = sum(height for _, height, _, _ in self._above_snap)
         else:
             stealable = sum(widget.height() for widget in self._widgets_above())
-        return max(0, stealable + self._above_spacing())
+        # Keep the layout gaps visible even when a section reaches zero height;
+        # hiding it removes a whole gap in one frame during a continuous drag.
+        return max(0, stealable)
 
     def _ensure_height_snap(self) -> None:
         if self._above_snap:
@@ -1823,6 +1817,13 @@ class ChatPanel(QWidget):
         self._drag_extra0 = self._extra_h
         self._ensure_height_snap()
 
+    def reset_height_expansion(self) -> None:
+        """Restore constraints before moving the chat to another workspace."""
+        self._apply_chat_extra(0)
+        self._drag_y0 = None
+        self._drag_extra0 = 0
+        self._above_snap = []
+
     def _on_height_drag(self, global_y: int) -> None:
         if self._drag_y0 is None:
             return
@@ -1842,7 +1843,6 @@ class ChatPanel(QWidget):
         extra = max(0, min(int(extra), self._max_extra()))
         if extra == self._extra_h:
             return
-        prev = self._extra_h
         self._extra_h = extra
         if extra <= 0:
             self._restore_above()
@@ -1855,9 +1855,10 @@ class ChatPanel(QWidget):
         for widget, rest, _omin, _omax in self._above_snap:
             take = min(remaining, max(0, rest))
             new_h = max(0, rest - take)
-            widget.setMinimumHeight(0)
-            widget.setMaximumHeight(new_h)
-            widget.setVisible(new_h > 0)
+            # Fixed-policy widgets (IDE orb/activity) otherwise collapse to their
+            # sizeHint, often zero, as soon as their minimum is released.
+            widget.setFixedHeight(new_h)
+            widget.show()
             remaining -= take
         self.setMinimumHeight(max(self._natural_min_height(), self._rest_h + extra))
         self._activate_parent()

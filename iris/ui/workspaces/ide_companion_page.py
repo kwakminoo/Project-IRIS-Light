@@ -149,7 +149,7 @@ class IdeCompanionPage(QWidget):
     """
     위→아래: 구체 슬롯 · Live Activity · 채팅 (이메일 우측 패널과 동일 배치).
     addWidget만으로 reparent — remove/setParent(None) 금지.
-    세로 길이 드래그 조절 없음(고정 슬롯 + 채팅 stretch).
+    채팅 드래그가 예약 슬롯 높이를 줄여도 구체의 렌더링 위치는 유지한다.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -166,6 +166,16 @@ class IdeCompanionPage(QWidget):
         self._mounted: list[QWidget] = []
         self._orb_spacer: QWidget | None = None
         self._embedded_orb: QWidget | None = None
+        self._orb_height = EMAIL_ORB_HEIGHT
+        # Confine the backdrop to this column; shrinking the layout spacer must
+        # not resize, move or clip the orb before the chat fade reaches it.
+        self._orb_host = QWidget(self)
+        self._orb_host.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._orb_host.setStyleSheet("background: transparent;")
+        self._orb_lay = QVBoxLayout(self._orb_host)
+        self._orb_lay.setContentsMargins(0, 0, 0, 0)
+        self._orb_lay.setSpacing(0)
+        self._orb_host.lower()
 
     def mount(
         self,
@@ -176,6 +186,10 @@ class IdeCompanionPage(QWidget):
         orb_height: int = EMAIL_ORB_HEIGHT,
         activity_height: int,
     ) -> None:
+        self._orb_height = orb_height
+        reset = getattr(chat, "reset_height_expansion", None)
+        if callable(reset):
+            reset()
         orb_spacer.setMinimumHeight(orb_height)
         orb_spacer.setMaximumHeight(orb_height)
         orb_spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -194,25 +208,36 @@ class IdeCompanionPage(QWidget):
             w.show()
 
     def embed_orb(self, viz: QWidget, orb_spacer: QWidget | None = None) -> None:
-        """A구조: Visualizer를 orb_spacer 레이아웃 자식으로 (전역 오버레이 아님)."""
+        """컬럼 내부 배경에 구체를 두어 채팅 확장 시 블러 경계를 통과시킨다."""
         spacer = orb_spacer or self._orb_spacer
         if spacer is None:
             return
-        lay = spacer.layout()
-        if lay is None:
-            lay = QVBoxLayout(spacer)
-            lay.setContentsMargins(0, 0, 0, 0)
-            lay.setSpacing(0)
         viz.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # addWidget → cyberspace에서 원자적 reparent (setParent(None) 금지)
-        lay.addWidget(viz, 1)
+        self._orb_lay.addWidget(viz, 1)
+        self._sync_orb_backdrop()
+        self._orb_host.show()
+        self._orb_host.lower()
         viz.show()
         self._embedded_orb = viz
         self._orb_spacer = spacer
 
+    def _sync_orb_backdrop(self) -> None:
+        margins = self._lay.contentsMargins()
+        self._orb_host.setGeometry(
+            margins.left(), margins.top(),
+            max(0, self.width() - margins.left() - margins.right()),
+            self._orb_height,
+        )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_orb_backdrop()
+
     def release_embedded_orb(self) -> None:
         """포인터만 해제 — Visualizer reparent는 cyberspace.set_orb_layer가 담당."""
         self._embedded_orb = None
+        self._orb_host.hide()
 
     def embedded_orb(self) -> QWidget | None:
         return self._embedded_orb
@@ -222,6 +247,9 @@ class IdeCompanionPage(QWidget):
         if len(self._mounted) != 3:
             return
         orb, activity, chat = self._mounted
+        reset = getattr(chat, "reset_height_expansion", None)
+        if callable(reset):
+            reset()
         self._mounted = []
         self._orb_spacer = None
         self._embedded_orb = None
