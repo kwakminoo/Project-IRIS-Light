@@ -110,7 +110,7 @@ class EmailWorkspacePage(QWidget):
     mail_selected = pyqtSignal(str)  # uid
     refresh_requested = pyqtSignal()
     compose_requested = pyqtSignal(str, str, str)  # to, subject, body
-    email_chat_send = pyqtSignal(str)
+    email_chat_send = pyqtSignal(str, list)
     category_selected = pyqtSignal(int)  # 카테고리 탭 index
 
     def __init__(self, parent: QWidget | None = None) -> None:

@@ -5,10 +5,11 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QEvent
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.chat.chat_display import assistant_visible_text
 from iris.ui.chat.chat_blocks import parse_copy_anchor
-from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisChatLog
+from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisPanel
 
 
 class ResponseEndTests(unittest.TestCase):
@@ -31,7 +32,7 @@ class ResponseEndTests(unittest.TestCase):
                     for speech in (False, True):
                         with self.subTest(source=source[:40], size=size, final=final is not None, speech=speech):
                             panel = ChatPanel()
-                            workspace = WorkspaceIrisChatLog("ResponseEndLog")
+                            workspace = WorkspaceIrisPanel(name_prefix="ResponseEnd", placeholder="test")
                             panel.append_message_instant("You", "이전 메시지")
                             workspace.append_user("이전 메시지")
                             panel.begin_stream_message("Iris", speech_sync=speech)
@@ -44,7 +45,7 @@ class ResponseEndTests(unittest.TestCase):
                             panel.finish_typing()
                             workspace.end_iris(final)
                             main = panel._log.toPlainText()
-                            other = workspace.toPlainText()
+                            other = workspace._log.toPlainText()
                             self.assertIn("이전 메시지", main)
                             self.assertNotIn("**Iris", main)
                             self.assertEqual(main.count("Iris:"), 1)
@@ -53,10 +54,13 @@ class ResponseEndTests(unittest.TestCase):
                             self.assertIn(ending, main)
                             self.assertRegex(main, re.escape(ending) + r"\s*\n\[재생\]\s*$")
                             self.assertEqual(main.split("Iris:", 1)[1].replace("[재생]", "").strip(),
-                                             other.split("Iris:", 1)[1].strip())
+                                             other.split("Iris:", 1)[1].replace("[재생]", "").strip())
                             self.assertNotIn("[재생]", panel.get_tts_text("last"))
                             panel.close()
                             workspace.close()
+                            panel.deleteLater()
+                            workspace.deleteLater()
+                            self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_paths_keep_inline_code_delimiters(self):
         source = r'IDE에 `C:\Users\serin\Project-IRIS-Light`. 다음은 `value`입니다.'

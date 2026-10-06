@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QApplication, QStyle, QStyleOptionSlider, QVBoxLayou
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.shared.cyberspace_theme import build_cyberspace_qss
 from iris.ui.workspaces.ide_companion_page import IdeCompanionPage
+from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisPanel
 
 
 class ChatScrollTests(unittest.TestCase):
@@ -40,7 +41,7 @@ class ChatScrollTests(unittest.TestCase):
 
     def test_main_and_companion(self):
         wheel_distances = []
-        for mode in ("main", "ide"):
+        for mode in ("main", "ide", "email", "calendar"):
             with self.subTest(mode=mode):
                 host = QWidget()
                 host.setStyleSheet(build_cyberspace_qss())
@@ -50,7 +51,12 @@ class ChatScrollTests(unittest.TestCase):
                 layout.setSpacing(0)
                 panel = ChatPanel()
                 orb, activity = QWidget(), QWidget()
-                if mode == "ide":
+                if mode in ("email", "calendar"):
+                    workspace = WorkspaceIrisPanel(name_prefix=mode.title(), placeholder="test", parent=host)
+                    layout.addWidget(workspace)
+                    panel.deleteLater()
+                    panel = workspace.chat
+                elif mode == "ide":
                     companion = IdeCompanionPage(host)
                     layout.addWidget(companion)
                     companion.mount(orb_spacer=orb, live_activity=activity, chat=panel,

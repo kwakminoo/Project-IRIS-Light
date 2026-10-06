@@ -42,9 +42,9 @@ from iris.ui.chat.chat_renderer import (
     render_user_message,
     render_wiki_document,
 )
-from iris.ui.shared.theme_tokens import TOKENS
+from iris.ui.chat.typography import TOKENS
 from iris.ui.workspaces.obsidian_workspace_page import ObsidianWorkspacePage
-from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisChatLog
+from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisPanel
 
 _BACKTICK3 = "```"
 
@@ -303,14 +303,14 @@ def _smoke_chat_panel(app: QApplication) -> None:
 
 
 def _smoke_workspace_log(app: QApplication) -> None:
-    log = WorkspaceIrisChatLog("SmokeWsLog")
+    log = WorkspaceIrisPanel(name_prefix="SmokeWs", placeholder="test")
     log.show()
     app.processEvents()
     log.append_user("**workspace** question")
     log.append_iris_chunk("partial…")
     log.end_iris(FENCED_SAMPLE)
     app.processEvents()
-    html_doc = log.toHtml()
+    html_doc = log._log.toHtml()
     _assert_html_contains(
         html_doc,
         "font-weight:600",
@@ -318,10 +318,10 @@ def _smoke_workspace_log(app: QApplication) -> None:
         "Python",
         "iris-copy://",
         ">print<",
-        label="WorkspaceIrisChatLog smoke",
+        label="WorkspaceIrisPanel smoke",
     )
-    _assert_mono_in_html(html_doc, label="WorkspaceIrisChatLog smoke")
-    assert "iris-tts://" not in html_doc
+    _assert_mono_in_html(html_doc, label="WorkspaceIrisPanel smoke")
+    assert "iris-tts://" in html_doc
 
 
 def _smoke_obsidian_wiki(app: QApplication) -> None:

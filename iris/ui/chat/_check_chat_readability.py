@@ -10,7 +10,7 @@ from PyQt6.QtGui import QFontDatabase
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.chat.chat_renderer import render_iris_message
 from iris.ui.chat.chat_display import assistant_visible_text
-from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisChatLog
+from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisPanel
 
 SAMPLES = [
     ("TCP 3-way handshake 과정을 초보자도 이해할 수 있게 설명해줘.",
@@ -34,7 +34,7 @@ def main() -> None:
     out = Path(".iris_light_test_tmp/chat-readability")
     out.mkdir(parents=True, exist_ok=True)
     panel = ChatPanel()
-    workspace = WorkspaceIrisChatLog("QAWorkspace")
+    workspace = WorkspaceIrisPanel(name_prefix="QAWorkspace", placeholder="test")
     for width in (480, 1100):
         panel.resize(width, 850)
         workspace.resize(width, 850)
@@ -45,7 +45,7 @@ def main() -> None:
         app.processEvents()
         for index, (prompt, response) in enumerate(SAMPLES, 1):
             panel._log.clear()
-            workspace.clear()
+            workspace._log.clear()
             panel.append_message_instant("You", prompt)
             panel.begin_stream_message("Iris", speech_sync=False)
             workspace.append_user(prompt)
@@ -55,11 +55,11 @@ def main() -> None:
                 workspace.append_iris_chunk(response[offset:offset + 7])
                 app.processEvents()
                 assert panel._log.document().rootFrame().frameFormat().leftMargin() >= 12
-                assert workspace.document().rootFrame().frameFormat().leftMargin() >= 12
+                assert workspace._log.document().rootFrame().frameFormat().leftMargin() >= 12
             panel.end_stream_message(response)
             workspace.end_iris(response)
             app.processEvents()
-            for label, widget in (("main", panel._log), ("workspace", workspace)):
+            for label, widget in (("main", panel._log), ("workspace", workspace._log)):
                 text = widget.toPlainText()
                 assert "###" not in text and "**" not in text and "\\rightarrow" not in text, text
                 assert widget.document().defaultFont().pixelSize() == 15
@@ -68,7 +68,7 @@ def main() -> None:
                 widget.verticalScrollBar().setValue(0)
                 widget.grab().save(str(out / f"{label}-{width}-{index}.png"))
             if index == 1:
-                block = workspace.document().begin()
+                block = workspace._log.document().begin()
                 paragraphs = []
                 while block.isValid():
                     if "전화 통화" in block.text():
@@ -77,12 +77,12 @@ def main() -> None:
                 assert paragraphs and paragraphs[0].blockFormat().bottomMargin() >= 14
                 assert paragraphs[0].blockFormat().lineHeight() >= 160
         workspace.append_user('@"C:/example/report.txt"')
-        assert "report.txt" in workspace.toPlainText()
+        assert "report.txt" in workspace._log.toPlainText()
         workspace.append_iris_chunk("짧은 답변입니다.")
         workspace.end_iris()
         workspace.append_iris_chunk("```python\nprint(1)\n")
-        workspace._render_iris_buffer()
-        assert "print" in workspace.toPlainText() and "```" not in workspace.toPlainText()
+        workspace.chat._flush_stream_ui()
+        assert "print" in workspace._log.toPlainText() and "```" not in workspace._log.toPlainText()
         workspace.end_iris("```python\nprint(1)\n```")
     assert "\\rightarrow" in render_iris_message("```text\n\\rightarrow\n```")
     assert "sum" in assistant_visible_text(SAMPLES[1][1], streaming=False)

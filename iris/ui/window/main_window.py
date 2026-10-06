@@ -603,11 +603,13 @@ class MainWindow(QMainWindow):
         self._email_page.compose_requested.connect(self._send_email)
         self._email_page.mail_selected.connect(self._load_email_message)
         self._email_page.email_chat_send.connect(self._on_email_chat_send)
+        self._email_page.iris_panel.chat_stop.connect(lambda: self._stop_workspace_chat("email"))
         self._email_page.category_selected.connect(self._on_email_category)
         self._left_sidebar.email_folder.account_changed.connect(self._on_email_account_changed)
         self._left_sidebar.email_folder.compose_requested.connect(self._open_email_compose)
         self._left_sidebar.email_folder.folder_selected.connect(self._on_email_folder_selected)
         self._calendar_page.calendar_chat_send.connect(self._on_calendar_chat_send)
+        self._calendar_page.iris_panel.chat_stop.connect(lambda: self._stop_workspace_chat("calendar"))
         self._calendar_page.add_event_requested.connect(self._on_calendar_add_event)
         self._calendar_page.delete_event_requested.connect(self._on_calendar_delete_event)
         self._calendar_page.month_changed.connect(self._on_calendar_month_changed)
@@ -686,6 +688,15 @@ class MainWindow(QMainWindow):
         self._chat.update_action_clicked.connect(self._on_chat_update_action)
         self._chat.hermes_update_action_clicked.connect(self._on_hermes_update_action)
         self._chat.ollama_login_clicked.connect(self._on_ollama_cloud_login_clicked)
+        for page in (self._email_page, self._calendar_page):
+            workspace_chat = page.iris_panel.chat
+            workspace_chat.files_attached.connect(self._on_composer_files)
+            workspace_chat.skill_inserted.connect(self._on_composer_skill)
+            workspace_chat.mcp_inserted.connect(self._on_composer_mcp)
+            workspace_chat.composing.connect(self._warm_embedder_soon)
+            workspace_chat.speaker_clicked.connect(
+                lambda token, chat=workspace_chat: self._on_chat_speaker_clicked(token, chat)
+            )
         left_lay.addWidget(self._chat, 3)
 
         history_panel = self._left_sidebar.chat_history
@@ -3134,7 +3145,9 @@ class MainWindow(QMainWindow):
         clean = [str(p).strip() for p in paths if str(p).strip()]
         if not clean or not hasattr(self, "_chat") or self._chat is None:
             return False
-        self._chat.attach_drop_paths(clean)
+        panel = self._active_workspace_iris_panel()
+        chat = panel.chat if panel is not None else self._chat
+        chat.attach_drop_paths(clean)
         return True
 
     def _on_explorer_file_drag(self, phase: str, paths: list[str]) -> None:
@@ -3268,7 +3281,8 @@ class MainWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _note_chat_file_drag(self, active: bool) -> None:
-        chat = getattr(self, "_chat", None)
+        panel = self._active_workspace_iris_panel()
+        chat = panel.chat if panel is not None else getattr(self, "_chat", None)
         note = getattr(chat, "note_file_drag", None)
         if not callable(note):
             return
@@ -6114,14 +6128,15 @@ class MainWindow(QMainWindow):
         except ValueError:
             pass
 
-    def _on_chat_speaker_clicked(self, token: str) -> None:
-        text = self._chat.get_tts_text(token)
+    def _on_chat_speaker_clicked(self, token: str, chat=None) -> None:
+        chat = chat if chat is not None else self._chat
+        text = chat.get_tts_text(token)
         if not text and self._last_assistant_text:
             text = self._last_assistant_text
         if not text:
             self._live_activity.append_instant_line("재생할 답변이 없습니다.")
             return
-        msg_id = token if token and token != "last" else (self._chat._last_tts_id or "last")
+        msg_id = token if token and token != "last" else (chat._last_tts_id or "last")
         self._enqueue_tts(text, msg_id=msg_id)
 
     def _enqueue_tts(self, text: str, *, msg_id: str = "last") -> None:
@@ -6798,18 +6813,87 @@ class MainWindow(QMainWindow):
         if panel is not None:
             panel.set_listening_status(status)
 
+    def _prepare_workspace_chat_attachments(self, mode: str, text: str, attachments: list) -> None:
+        """Use the IDE's background extraction pipeline for workspace attachments."""
+        from iris.ui.workers.attachment_worker import AttachmentWorker
+
+        panel = getattr(self, f"_{mode}_page").iris_panel
+        worker = AttachmentWorker(attachments, query=text, parent=self)
+        setattr(self, f"_{mode}_busy", True)
+        setattr(self, f"_{mode}_chat_worker", worker)
+        panel.set_generating(True)
+        panel.set_orb_state("PROCESSING")
+
+        def ready(result):
+            if getattr(self, f"_{mode}_chat_worker") is not worker:
+                return
+            setattr(self, f"_{mode}_busy", False)
+            setattr(self, f"_{mode}_chat_worker", None)
+            panel.set_generating(False)
+            if result.notices:
+                panel.chat.show_attach_notice("\n".join(result.notices))
+            if not any(item.text for item in result.attachments):
+                panel.append_iris_error("첨부 파일에서 내용을 읽지 못했습니다.")
+                panel.set_orb_state("ERROR")
+                return
+            if any(item.truncated for item in result.attachments):
+                panel.chat.show_attach_notice("첨부 내용이 일부만 전달됩니다 (본문 최대 24,000자).")
+            getattr(self, f"_on_{mode}_chat_send")(text, attachments, result)
+
+        def failed(error):
+            if getattr(self, f"_{mode}_chat_worker") is worker:
+                setattr(self, f"_{mode}_busy", False)
+                setattr(self, f"_{mode}_chat_worker", None)
+                panel.set_generating(False)
+                panel.append_iris_error(error)
+                panel.set_orb_state("ERROR")
+                self._sync_voice_conversation_state()
+
+        worker.prepared.connect(ready)
+        worker.failed.connect(failed)
+        worker.start()
+
+    def _stop_workspace_chat(self, mode: str) -> None:
+        """Cancel extraction or generation and ignore queued output from that worker."""
+        worker = getattr(self, f"_{mode}_chat_worker", None)
+        if worker is None:
+            return
+        worker.request_cancel()
+        for name in ("prepared", "failed", "tool_progress", "content_chunk", "finished_ok"):
+            signal = getattr(worker, name, None)
+            if signal is not None:
+                try:
+                    signal.disconnect()
+                except TypeError:
+                    pass
+        setattr(self, f"_{mode}_chat_worker", None)
+        setattr(self, f"_{mode}_busy", False)
+        panel = getattr(self, f"_{mode}_page").iris_panel
+        partial = panel.chat.typing_buffer_text() if panel.chat._stream_active else ""
+        panel.end_iris()
+        history = getattr(self, f"_{mode}_history")
+        if partial:
+            history.append({"role": "assistant", "content": partial})
+        elif hasattr(worker, "finished_ok") and history and history[-1].get("role") == "user":
+            history.pop()
+        panel.set_generating(False)
+        panel.set_orb_state("IDLE")
+        self._stop_tts_playback()
+        self._sync_voice_conversation_state()
+
     def _workspace_chat_busy(self) -> bool:
         return bool(
             getattr(self, "_email_busy", False) or getattr(self, "_calendar_busy", False)
         )
 
-    def _on_calendar_chat_send(self, text: str) -> None:
+    def _on_calendar_chat_send(self, text: str, attachments: list | None = None, prepared=None) -> None:
         text = (text or "").strip()
-        if not text:
+        attachments = list(attachments or [])
+        if not text and not attachments:
             return
         from iris.runtime.agent_local_gate import hermes_owns_local_intents
 
-        if not hermes_owns_local_intents(self._settings.hermes_enabled) and self._try_local_workspace_control(text):
+        if not attachments and not hermes_owns_local_intents(self._settings.hermes_enabled) and self._try_local_workspace_control(text):
             return
         panel = self._calendar_page.iris_panel
         if self._calendar_busy:
@@ -6840,6 +6924,10 @@ class MainWindow(QMainWindow):
             panel.append_iris_error(str(exc))
             return
 
+        if attachments and prepared is None:
+            self._prepare_workspace_chat_attachments("calendar", text, attachments)
+            return
+
         from iris.infrastructure.calendar_agent import build_calendar_agent_context
         from iris.infrastructure.kr_holiday_client import load_cached_holidays
         from iris.storage.calendar_events import list_events
@@ -6856,11 +6944,15 @@ class MainWindow(QMainWindow):
             holidays=holiday_names,
         )
 
-        panel.append_user(text)
-        self._calendar_history.append({"role": "user", "content": text})
+        from iris.ui.chat.composer_attachments import attachment_filename
+        shown = "\n".join(filter(None, [text, *[f'@"{attachment_filename(path)}"' for path in attachments]]))
+        panel.append_user(shown)
+        model_content = prepared.model_content(text) if prepared is not None else text
+        self._calendar_history.append({"role": "user", "content": model_content})
         messages = [{"role": "system", "content": context}, *self._calendar_history]
 
         self._calendar_busy = True
+        panel.set_generating(True)
         panel.set_orb_state("PROCESSING")
         self._stop_tts_playback()
         self._begin_auto_tts_response()
@@ -6881,17 +6973,26 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _on_calendar_chat_tool(self, message: str) -> None:
+        sender = self.sender()
+        if sender is not None and sender is not self._calendar_chat_worker:
+            return
         text = (message or "").strip()
         if text:
             self._calendar_page.iris_panel.append_iris_tool(text)
             self._calendar_page.iris_panel.set_orb_state("EXECUTING")
 
     def _on_calendar_chat_chunk(self, chunk: str) -> None:
+        sender = self.sender()
+        if sender is not None and sender is not self._calendar_chat_worker:
+            return
         self._calendar_page.iris_panel.set_orb_state("RESPONDING")
         self._calendar_page.iris_panel.append_iris_chunk(chunk)
         self._feed_tts_stream(chunk)
 
     def _on_calendar_chat_finished(self, content: str) -> None:
+        sender = self.sender()
+        if sender is not None and sender is not self._calendar_chat_worker:
+            return
         from iris.infrastructure.calendar_agent import parse_calendar_ops, strip_calendar_ops
 
         text = (content or "").strip()
@@ -6909,17 +7010,22 @@ class MainWindow(QMainWindow):
                 self._settings,
                 hermes_online=True,
             )
+        self._calendar_page.iris_panel.set_generating(False)
         self._calendar_busy = False
         self._calendar_chat_worker = None
         self._calendar_page.iris_panel.set_orb_state("IDLE")
         self._sync_voice_conversation_state()
 
     def _on_calendar_chat_failed(self, err: str) -> None:
+        sender = self.sender()
+        if sender is not None and sender is not self._calendar_chat_worker:
+            return
         self._calendar_page.iris_panel.end_iris()
         self._feed_tts_stream("", flush=True)
         if self._calendar_history and self._calendar_history[-1].get("role") == "user":
             self._calendar_history.pop()
         self._calendar_page.iris_panel.append_iris_error(f"Hermes 오류: {err[:200]}")
+        self._calendar_page.iris_panel.set_generating(False)
         self._calendar_busy = False
         self._calendar_chat_worker = None
         self._calendar_page.iris_panel.set_orb_state("ERROR")
@@ -7053,13 +7159,14 @@ class MainWindow(QMainWindow):
 
     # ---- 이메일 전용 아이리스 챗 → Hermes 에이전트 ----
 
-    def _on_email_chat_send(self, text: str) -> None:
+    def _on_email_chat_send(self, text: str, attachments: list | None = None, prepared=None) -> None:
         text = (text or "").strip()
-        if not text:
+        attachments = list(attachments or [])
+        if not text and not attachments:
             return
         from iris.runtime.agent_local_gate import hermes_owns_local_intents
 
-        if not hermes_owns_local_intents(self._settings.hermes_enabled) and self._try_local_workspace_control(text):
+        if not attachments and not hermes_owns_local_intents(self._settings.hermes_enabled) and self._try_local_workspace_control(text):
             return
         panel = self._email_page.iris_panel
         if self._email_busy:
@@ -7090,6 +7197,10 @@ class MainWindow(QMainWindow):
             panel.append_iris_error(str(exc))
             return
 
+        if attachments and prepared is None:
+            self._prepare_workspace_chat_attachments("email", text, attachments)
+            return
+
         from iris.infrastructure.email_client import build_agent_context
 
         account = self._current_email_account()
@@ -7100,11 +7211,15 @@ class MainWindow(QMainWindow):
             inbox=self._email_page.current_mails(),
         )
 
-        panel.append_user(text)
-        self._email_history.append({"role": "user", "content": text})
+        from iris.ui.chat.composer_attachments import attachment_filename
+        shown = "\n".join(filter(None, [text, *[f'@"{attachment_filename(path)}"' for path in attachments]]))
+        panel.append_user(shown)
+        model_content = prepared.model_content(text) if prepared is not None else text
+        self._email_history.append({"role": "user", "content": model_content})
         messages = [{"role": "system", "content": context}, *self._email_history]
 
         self._email_busy = True
+        panel.set_generating(True)
         panel.set_orb_state("PROCESSING")
         self._stop_tts_playback()
         self._begin_auto_tts_response()
@@ -7125,17 +7240,26 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _on_email_chat_tool(self, message: str) -> None:
+        sender = self.sender()
+        if sender is not None and sender is not self._email_chat_worker:
+            return
         text = (message or "").strip()
         if text:
             self._email_page.iris_panel.append_iris_tool(text)
             self._email_page.iris_panel.set_orb_state("EXECUTING")
 
     def _on_email_chat_chunk(self, chunk: str) -> None:
+        sender = self.sender()
+        if sender is not None and sender is not self._email_chat_worker:
+            return
         self._email_page.iris_panel.set_orb_state("RESPONDING")
         self._email_page.iris_panel.append_iris_chunk(chunk)
         self._feed_tts_stream(chunk)
 
     def _on_email_chat_finished(self, content: str) -> None:
+        sender = self.sender()
+        if sender is not None and sender is not self._email_chat_worker:
+            return
         text = (content or "").strip()
         self._email_page.iris_panel.end_iris(text or None)
         self._feed_tts_stream("", flush=True)
@@ -7147,17 +7271,22 @@ class MainWindow(QMainWindow):
                 self._settings,
                 hermes_online=True,
             )
+        self._email_page.iris_panel.set_generating(False)
         self._email_busy = False
         self._email_chat_worker = None
         self._email_page.iris_panel.set_orb_state("IDLE")
         self._sync_voice_conversation_state()
 
     def _on_email_chat_failed(self, err: str) -> None:
+        sender = self.sender()
+        if sender is not None and sender is not self._email_chat_worker:
+            return
         self._email_page.iris_panel.end_iris()
         self._feed_tts_stream("", flush=True)
         if self._email_history and self._email_history[-1].get("role") == "user":
             self._email_history.pop()
         self._email_page.iris_panel.append_iris_error(f"Hermes 오류: {err[:200]}")
+        self._email_page.iris_panel.set_generating(False)
         self._email_busy = False
         self._email_chat_worker = None
         self._email_page.iris_panel.set_orb_state("ERROR")

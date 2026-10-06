@@ -296,7 +296,6 @@ def make_collapsible(box: QGroupBox, *, expanded: bool = True) -> QWidget:
     title = box.title() or "항목"
     box.setTitle("")
     box.setProperty("sectionBody", True)
-    box.setVisible(expanded)
 
     wrap = QWidget()
     lay = QVBoxLayout(wrap)
@@ -324,6 +323,9 @@ def make_collapsible(box: QGroupBox, *, expanded: bool = True) -> QWidget:
     btn.toggled.connect(_toggle)
     lay.addWidget(btn)
     lay.addWidget(box)
+    # Parent the body before showing it: an unparented visible widget becomes
+    # a temporary top-level window while the settings dialog is being built.
+    box.setVisible(expanded)
     return wrap
 
 

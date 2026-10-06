@@ -373,6 +373,41 @@ class IrisIdeRuntimeManager:
             return False, "번들에 IDE 확장 미포함 — rebundle 실패: " + ", ".join(missing)
         return True, "workspace build synced to install"
 
+    def _sync_prebuilt_frontend(self) -> None:
+        """Publish the built workspace frontend to the runtime actually served.
+
+        Starting Theia does not rebuild its bundle. Keep the installed bundle
+        and contribution together so a restart cannot silently load old code.
+        """
+        src = runtime_source_dir()
+        dest = runtime_install_dir()
+        if src.resolve() == dest.resolve():
+            return
+        bundle = src / "lib/frontend/bundle.js"
+        contribution = src / "lib/browser/iris-ide-frontend-contribution.js"
+        source = src / "src/browser/iris-ide-frontend-contribution.ts"
+        if not bundle.is_file() or not contribution.is_file():
+            return
+        # Never publish a stale build over a newer source edit.
+        if source.is_file() and source.stat().st_mtime > contribution.stat().st_mtime:
+            return
+        if contribution.stat().st_mtime > bundle.stat().st_mtime:
+            return
+        for rel in (
+            "lib/browser/iris-ide-frontend-contribution.js",
+            "lib/browser/iris-ide-frontend-contribution.js.map",
+            "lib/frontend/bundle.js",
+            "lib/frontend/bundle.js.map",
+        ):
+            built = src / rel
+            target = dest / rel
+            if not built.is_file():
+                continue
+            if target.is_file() and built.read_bytes() == target.read_bytes():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(built, target)
+
     def start(self, project_root_path: str = "") -> tuple[bool, str]:
         # 이전 Iris 세션 orphan Theia가 있으면 포트/워크스페이스 고착
         if not is_iris_ide_demo():
@@ -401,6 +436,10 @@ class IrisIdeRuntimeManager:
             ok, msg = self.verify_installation()
             if not ok:
                 return False, msg
+            try:
+                self._sync_prebuilt_frontend()
+            except OSError as exc:
+                return False, f"IRIS IDE frontend sync failed: {exc}"
             running = self._proc is not None and self._proc.poll() is None
             if running:
                 if not project_root_path:

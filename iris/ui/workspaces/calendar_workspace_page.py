@@ -290,7 +290,7 @@ class _AddEventDialog(QDialog):
 class CalendarWorkspacePage(QWidget):
     """중앙 월간 달력/일정 + 우측 아이리스 패널."""
 
-    calendar_chat_send = pyqtSignal(str)
+    calendar_chat_send = pyqtSignal(str, list)
     add_event_requested = pyqtSignal(str, str, str, str)  # title, start, note, place
     delete_event_requested = pyqtSignal(int)
     month_changed = pyqtSignal(int, int)

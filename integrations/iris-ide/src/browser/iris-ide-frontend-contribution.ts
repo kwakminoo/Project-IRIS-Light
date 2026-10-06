@@ -433,7 +433,7 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         const fsPath = FileUri.fsPath(uri).replace(/\\/g, '/');
         const roots = this.workspaceService.tryGetRoots();
         const root = roots.length ? FileUri.fsPath(roots[0].resource).replace(/\\/g, '/') : '';
-        if (root && fsPath.startsWith(root)) {
+        if (root && fsPath.startsWith(`${root.replace(/\/$/, '')}/`)) {
             const rel = fsPath.slice(root.length).replace(/^\//, '');
             return `@${rel}`;
         }

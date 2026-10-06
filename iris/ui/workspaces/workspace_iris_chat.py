@@ -1,380 +1,97 @@
-"""워크스페이스(이메일·캘린더 등) Iris 채팅 — IDE ChatPanel과 동일 크롬."""
-
+"""Mail/calendar shell around the same ChatPanel used by the IDE."""
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QMouseEvent, QPalette, QTextCursor
-from PyQt6.QtWidgets import (
-    QSizePolicy,
-    QTextEdit,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
-from iris.core.activity_privacy import prepare_chat_text, strip_emoji
-from iris.core.chat_block_parser import ChatBlockBuffer
-from iris.ui.chat.chat_display import (
-    assistant_visible_text,
-    normalize_chat_body,
-)
-from iris.ui.chat.chat_renderer import (
-    render_error_inline,
-    render_iris_message,
-    render_tool_shell,
-    render_user_message,
-)
-from iris.ui.chat.chat_image_view import (
-    attach_image_loader,
-    handle_chat_anchor_click,
-    prefetch_chat_html_images,
-)
-from iris.ui.chat.chat_blocks import (
-    ToolShellBlock,
-    handle_tool_collapse_click,
-)
-from iris.ui.chat.chat_panel import ChatLogTextEdit, _ChatInputArea
-from iris.ui.chat.message_regions import speaker_prefix_html
-from iris.ui.shared.theme_tokens import TOKENS
+from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.widgets.particle_visualizer import ParticleVisualizer
-from iris.ui.workspaces.ide_companion_page import EMAIL_ORB_SCALE
+from iris.ui.workspaces.ide_companion_page import IdeCompanionPage, EMAIL_ORB_HEIGHT, EMAIL_ORB_SCALE
 
 
-class WorkspaceIrisChatLog(ChatLogTextEdit):
-    """우측 Iris 패널 로그 — ChatLog와 동일 투명/패딩 + 마크다운."""
+class WorkspaceIrisPanel(IdeCompanionPage):
+    """Keep workspace APIs while delegating all chat behavior to ChatPanel."""
 
-    def __init__(self, object_name: str, parent=None) -> None:
+    chat_send = pyqtSignal(str, list)
+    chat_stop = pyqtSignal()
+
+    def __init__(self, *, name_prefix: str, placeholder: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName(object_name)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setReadOnly(True)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        transparent = self.palette()
-        from PyQt6.QtGui import QColor
-
-        transparent.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
-        transparent.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0, 0))
-        self.setPalette(transparent)
-        self.setStyleSheet(
-            f"""
-            QTextEdit#{object_name} {{
-                background: transparent;
-                border: none;
-                color: {TOKENS.chat_body};
-                padding: 12px 16px;
-            }}
-            """
-        )
-        attach_image_loader(self)
-        self._iris_active = False
-        self._iris_buf = ""
-        self._iris_body_start: int | None = None
-        self._block_buffer = ChatBlockBuffer()
-        self._tool_blocks: dict[str, ToolShellBlock] = {}
-        self._tool_seq = 0
-        self._render_timer = QTimer(self)
-        self._render_timer.setSingleShot(True)
-        self._render_timer.setInterval(48)
-        self._render_timer.timeout.connect(self._render_iris_buffer)
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        anchor = self.anchorAt(event.pos())
-        if anchor.startswith("iris-collapse://"):
-            if handle_tool_collapse_click(self, self._tool_blocks, anchor):
-                event.accept()
-                return
-        if handle_chat_anchor_click(self, anchor):
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def _scroll_bottom(self) -> None:
-        bar = self.verticalScrollBar()
-        bar.setValue(bar.maximum())
-
-    def _append_trailing_blank(self) -> None:
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertHtml("<br>")
-        self.setTextCursor(cursor)
-
-    def append_user(self, text: str) -> None:
-        self.end_iris()
-        body = normalize_chat_body("You", prepare_chat_text(text))
-        if not body:
-            return
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        html_body = render_user_message(body)
-        prefetch_chat_html_images(self, html_body)
-        cursor.insertHtml(speaker_prefix_html("You"))
-        cursor.insertHtml(html_body)
-        self.setTextCursor(cursor)
-        self._append_trailing_blank()
-        self._scroll_bottom()
-
-    def append_iris_chunk(self, text: str) -> None:
-        chunk = text or ""
-        if not chunk:
-            return
-        if not self._iris_active:
-            cursor = self.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.insertHtml(speaker_prefix_html("Iris"))
-            self._iris_body_start = cursor.position()
-            self.setTextCursor(cursor)
-            self._iris_active = True
-            self._iris_buf = ""
-            self._block_buffer.reset()
-        self._iris_buf += chunk
-        self._block_buffer.feed(chunk)
-        if not self._render_timer.isActive():
-            self._render_timer.start()
-
-    def _render_iris_buffer(self) -> None:
-        from iris.ui.chat.chat_display import assistant_visible_text
-
-        visible = assistant_visible_text(self._iris_buf, streaming=True)
-        self._replace_iris_body(render_iris_message(visible))
-
-    def _replace_iris_body(self, html_body: str) -> None:
-        if self._iris_body_start is None:
-            return
-        cursor = self.textCursor()
-        cursor.setPosition(self._iris_body_start)
-        cursor.movePosition(
-            QTextCursor.MoveOperation.End,
-            QTextCursor.MoveMode.KeepAnchor,
-        )
-        cursor.removeSelectedText()
-        cursor.insertHtml(html_body)
-        self.setTextCursor(cursor)
-        self._scroll_bottom()
-
-    def end_iris(self, final_text: str | None = None) -> None:
-        self._render_timer.stop()
-        if not self._iris_active and final_text is None:
-            return
-        if final_text is not None:
-            self._iris_buf = prepare_chat_text(final_text)
-            self._block_buffer.set_final(self._iris_buf)
-            if not self._iris_active:
-                cursor = self.textCursor()
-                cursor.movePosition(QTextCursor.MoveOperation.End)
-                cursor.insertHtml(speaker_prefix_html("Iris"))
-                self._iris_body_start = cursor.position()
-                self.setTextCursor(cursor)
-                self._iris_active = True
-        body = normalize_chat_body("Iris", self._iris_buf)
-        if self._iris_body_start is not None:
-            visible = assistant_visible_text(body, streaming=False)
-            html_body = render_iris_message(visible)
-            prefetch_chat_html_images(self, html_body)
-            self._replace_iris_body(html_body)
-            self._append_trailing_blank()
-        self._iris_active = False
-        self._iris_buf = ""
-        self._iris_body_start = None
-        self._block_buffer.reset()
-        self._scroll_bottom()
-
-    def append_iris_tool(self, text: str) -> None:
-        self.end_iris()
-        safe = strip_emoji(prepare_chat_text(text or ""))
-        if not safe:
-            return
-        self._tool_seq += 1
-        block_id = f"ws-tool{self._tool_seq}"
-        block = ToolShellBlock(
-            title="Tool",
-            command="",
-            output=safe,
-            status="ok",
-            block_id=block_id,
-            collapsed=False,
-        )
-        self._tool_blocks[block_id] = block
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertHtml(
-            render_tool_shell(
-                block.title,
-                block.command,
-                block.output,
-                block.status,
-                block.block_id,
-            )
-        )
-        self.setTextCursor(cursor)
-        self._scroll_bottom()
-
-    def insert_tool_block(
-        self,
-        *,
-        title: str,
-        command: str = "",
-        output: str = "",
-        status: str = "ok",
-        block_id: str | None = None,
-    ) -> str:
-        self.end_iris()
-        self._tool_seq += 1
-        bid = (block_id or f"ws-tool{self._tool_seq}").strip() or f"ws-tool{self._tool_seq}"
-        block = ToolShellBlock(
-            title=title or "Shell",
-            command=command or "",
-            output=output or "",
-            status=status or "ok",
-            block_id=bid,
-            collapsed=False,
-        )
-        self._tool_blocks[bid] = block
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertHtml(
-            render_tool_shell(
-                block.title,
-                block.command,
-                block.output,
-                block.status,
-                block.block_id,
-            )
-        )
-        self.setTextCursor(cursor)
-        self._scroll_bottom()
-        return bid
-
-    def append_iris_error(self, text: str) -> None:
-        self.end_iris()
-        safe = strip_emoji(prepare_chat_text(text or ""))
-        if not safe:
-            return
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertHtml(render_error_inline(safe))
-        self.setTextCursor(cursor)
-        self._scroll_bottom()
-
-
-class WorkspaceIrisPanel(QWidget):
-    """우측 — 오브 + IDE ChatPanel과 동일 입력/로그 크롬 (레이아웃은 워크스페이스 유지)."""
-
-    chat_send = pyqtSignal(str)
-
-    def __init__(
-        self,
-        *,
-        name_prefix: str,
-        placeholder: str,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        # EmailIrisPanel / CalendarIrisPanel — cyberspace_theme 셀렉터 유지
         self.setObjectName(f"{name_prefix}IrisPanel")
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-
-        col = QVBoxLayout(self)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(8)
-
-        # IDE Companion 과 동일 스택: 오브 · Live Activity · 채팅 로그 · 입력
+        self._default_placeholder = placeholder
         self.orb = ParticleVisualizer(self)
-        self.orb.setMinimumHeight(220)
-        self.orb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.orb.set_size_scale(EMAIL_ORB_SCALE)
-        col.addWidget(self.orb, 0)
-
-        # LiveActivityPanel 슬롯 — main_window가 addWidget으로 원자적 reparent
+        spacer = QWidget(self)
         self._activity_host = QWidget(self)
         self._activity_host.setObjectName(f"{name_prefix}ActivityHost")
         self._activity_host.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._activity_lay = QVBoxLayout(self._activity_host)
         self._activity_lay.setContentsMargins(0, 0, 0, 0)
         self._activity_lay.setSpacing(0)
-        self._activity_host.setMinimumHeight(0)
-        self._activity_host.setMaximumHeight(0)
-        self._activity_host.hide()
         self._live_mounted: QWidget | None = None
-        col.addWidget(self._activity_host, 0)
-
-        self._log = WorkspaceIrisChatLog(f"{name_prefix}ChatLog")
-        col.addWidget(self._log, 1)
-
-        # ponytail: IDE ChatPanel 입력 크롬 그대로 (+ · 입력 · 전송 · 파형).
-        # 모델 콤보는 메인 ChatPanel이 소유 — 이중 피커 방지로 숨김.
-        self._default_placeholder = placeholder
-        self._input_area = _ChatInputArea()
-        bar = self._input_area.input_bar
-        bar._model_shell.hide()
-        bar.input.setPlaceholderText(placeholder)
-        bar.input.submit_requested.connect(self._emit_send)
-        bar.send_button.clicked.connect(self._emit_send)
-        bar.input.textChanged.connect(self._sync_send_enabled)
-        self._sync_send_enabled()
-        col.addWidget(self._input_area, 0)
-
-    def _sync_send_enabled(self) -> None:
-        has = bool(self._input_area.input_bar.input.text().strip())
-        self._input_area.input_bar.send_button.setEnabled(has)
+        self.chat = ChatPanel()
+        self.chat._orb_visualizer = self.orb
+        self.chat._input.setPlaceholderText(placeholder)
+        # The main panel owns the application's model selection.
+        self.chat._input_area.input_bar._model_shell.hide()
+        self.chat.send_clicked.connect(self.chat_send.emit)
+        self.chat.stop_clicked.connect(self.chat_stop.emit)
+        self._log = self.chat._log
+        self._input_area = self.chat._input_area
+        self.mount(orb_spacer=spacer, live_activity=self._activity_host,
+                   chat=self.chat, orb_height=EMAIL_ORB_HEIGHT, activity_height=0)
+        self._activity_host.hide()
+        self.embed_orb(self.orb, spacer)
 
     def set_listening_status(self, status: str) -> None:
-        """상시 듣기 상태 문구 — IDE ChatPanel placeholder와 동일 역할."""
-        text = (status or "").strip()
-        self._input_area.input_bar.input.setPlaceholderText(
-            text or self._default_placeholder
-        )
+        self.chat._input.setPlaceholderText((status or "").strip() or self._default_placeholder)
 
     def reset_listening_status(self) -> None:
-        self._input_area.input_bar.input.setPlaceholderText(self._default_placeholder)
+        self.set_listening_status("")
 
     def set_mic_level(self, level: float) -> None:
-        self._input_area.waveform.set_level(level)
+        self.chat.set_mic_level(level)
 
-    def _emit_send(self) -> None:
-        text = self._input_area.input_bar.input.text().strip()
-        if not text:
-            return
-        self._input_area.input_bar.input.clear()
-        self._sync_send_enabled()
-        self.chat_send.emit(text)
+    def set_generating(self, active: bool) -> None:
+        self.chat.set_generating(active)
 
     def append_user(self, text: str) -> None:
-        self._log.append_user(text)
+        self.end_iris()
+        self.chat.append_message_instant("You", text)
 
     def append_iris_chunk(self, text: str) -> None:
-        self._log.append_iris_chunk(text)
+        if not text:
+            return
+        if not self.chat._stream_active:
+            self.chat.begin_stream_message("Iris", speech_sync=False)
+        self.chat.append_stream_chunk(text)
 
     def end_iris(self, final_text: str | None = None) -> None:
-        self._log.end_iris(final_text)
+        if self.chat._stream_active:
+            self.chat.end_stream_message(final_text)
+        elif final_text:
+            self.chat.append_message_instant("Iris", final_text)
 
     def append_iris_tool(self, text: str) -> None:
-        self._log.append_iris_tool(text)
+        self.end_iris()
+        if text:
+            self.chat.insert_tool_block(title="Tool", output=text, status="ok")
 
-    def insert_tool_block(
-        self,
-        *,
-        title: str,
-        command: str = "",
-        output: str = "",
-        status: str = "ok",
-        block_id: str | None = None,
-    ) -> str:
-        return self._log.insert_tool_block(
-            title=title,
-            command=command,
-            output=output,
-            status=status,
-            block_id=block_id,
-        )
+    def insert_tool_block(self, **kwargs) -> str:
+        self.end_iris()
+        return self.chat.insert_tool_block(**kwargs)
 
     def append_iris_error(self, text: str) -> None:
-        self._log.append_iris_error(text)
+        self.end_iris()
+        if text:
+            self.chat.append_error_message(text, text)
 
     def set_orb_state(self, state_name: str) -> None:
         self.orb.set_state(state_name)
 
     def mount_live_activity(self, live: QWidget, *, height: int = 96) -> None:
         """IDE Companion과 같은 위치(오브 아래)에 Live Activity 마운트."""
+        self.chat.reset_height_expansion()
         h = max(72, min(140, int(height)))
         live.setMinimumHeight(h)
         live.setMaximumHeight(h)
@@ -392,25 +109,8 @@ class WorkspaceIrisPanel(QWidget):
 
     def clear_live_slot(self) -> None:
         """슬롯만 비움 — 위젯 reparent는 호출측 addWidget이 담당."""
+        self.chat.reset_height_expansion()
         self._live_mounted = None
         self._activity_host.setMinimumHeight(0)
         self._activity_host.setMaximumHeight(0)
         self._activity_host.hide()
-
-
-if __name__ == "__main__":
-    from PyQt6.QtWidgets import QApplication
-    import sys
-
-    app = QApplication(sys.argv)
-    log = WorkspaceIrisChatLog("WorkspaceIrisChatLog")
-    log.append_user("첫 줄\n둘째 줄")
-    log.append_iris_chunk("**굵게**와\n줄바꿈")
-    log.end_iris()
-    assert "br" in log.toHtml().lower() or "\n" in log.toPlainText()
-    assert "You" in log.toPlainText() and "Iris" in log.toPlainText()
-    panel = WorkspaceIrisPanel(name_prefix="Email", placeholder="test")
-    assert panel.objectName() == "EmailIrisPanel"
-    assert panel._input_area.objectName() == "ChatInputArea"
-    assert not panel._input_area.input_bar._model_shell.isVisible()
-    print("workspace_iris_chat ok")

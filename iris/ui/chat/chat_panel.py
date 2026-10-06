@@ -1377,6 +1377,7 @@ class ChatPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAcceptDrops(True)
         self._generating = False
+        self._orb_visualizer = None
         self._workspace_root = ""
         self._log = ChatLogTextEdit()
         self._log.setObjectName("ChatLog")
@@ -1867,9 +1868,9 @@ class ChatPanel(QWidget):
     def _sync_orb_fade(self) -> None:
         """채팅 상단을 구체 페이드 경계로. 단색 스크림은 그리지 않는다."""
         window = self.window()
-        viz = getattr(window, "_viz", None)
+        viz = self._orb_visualizer or getattr(window, "_viz", None)
         core = getattr(viz, "particle_core", None)
-        particle = core() if callable(core) else None
+        particle = core() if callable(core) else viz
         if particle is None or not hasattr(particle, "set_chat_fade_y"):
             return
         if self._extra_h <= 0:

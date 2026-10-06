@@ -62,6 +62,9 @@ async function drag(paths) {
     await drag(['C:/workspace/src/app.py']);
     await drag(['C:/workspace/한글 폴더/보고서 #1%.txt', 'C:/workspace/other/app.py']);
     await drag(['C:/outside/app.py']);
+    await drag(['C:/workspace/IRIS_TEST_A']);
+    await drag(['C:/workspace/한글 폴더', 'C:/outside/IRIS_TEST_B']);
+    await drag(['C:/workspace']);
     const dt = new DataTransfer();
     dt.setData('theia-editor-dnd', 'untitled:Untitled-1');
     assert.equal(handlers.companionDragPaths.length, 0);
