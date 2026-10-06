@@ -81,6 +81,8 @@ def _run_and_watch(py: Path, root: Path) -> subprocess.Popen:
     log = _log_path()
     try:
         sink = open(log, "w", encoding="utf-8", errors="replace")
+        sink.write(f"Python: {py}\nProject: {root}\nCommand: -m iris\n\n")
+        sink.flush()
     except OSError:
         sink = None
 
@@ -107,7 +109,12 @@ def _run_and_watch(py: Path, root: Path) -> subprocess.Popen:
             tail = log.read_text(encoding="utf-8", errors="replace")[-LOG_TAIL_CHARS:]
         except OSError:
             pass
-    _die(f"IRIS를 시작하지 못했습니다.\n\n{_diagnose(tail)}\n\n로그: {log}")
+    try:
+        with log.open("a", encoding="utf-8") as report:
+            report.write(f"\nIRIS exited: {rc} (0x{rc & 0xffffffff:08X})\n")
+    except OSError:
+        pass
+    _die(f"IRIS를 시작하지 못했습니다.\n\n{_diagnose(tail)}\n종료 코드: 0x{rc & 0xffffffff:08X}\n\n로그: {log}")
     return proc
 
 

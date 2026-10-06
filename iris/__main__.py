@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import traceback
 
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication
@@ -37,6 +38,21 @@ def _maybe_elevate_on_startup() -> bool:
 
 
 def main() -> None:
+    # Qt aborts on an unhandled Python slot exception. Persist the traceback
+    # even under pythonw, whose stderr is normally None.
+    def report_exception(exc_type, value, tb):
+        from IRIS_launcher import _log_path
+
+        try:
+            with _log_path().open("a", encoding="utf-8") as log:
+                traceback.print_exception(exc_type, value, tb, file=log)
+        finally:
+            sys.__excepthook__(exc_type, value, tb)
+            app = QApplication.instance()
+            if app is not None:
+                app.exit(1)
+
+    sys.excepthook = report_exception
     if _maybe_elevate_on_startup():
         sys.exit(0)
 

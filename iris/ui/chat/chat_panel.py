@@ -18,6 +18,7 @@ from PyQt6.QtGui import (
     QFont,
     QGuiApplication,
     QImage,
+    QLinearGradient,
     QKeyEvent,
     QMouseEvent,
     QPainter,
@@ -31,6 +32,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
+    QGraphicsEffect,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -49,9 +51,6 @@ _ROLE_PROVIDER_NAME = int(Qt.ItemDataRole.UserRole) + 3
 _COLOR_MODEL_DEFAULT = QColor("#38bdf8")  # 도구 지원·일반 선택 가능 — 밝은 푸른색
 _COLOR_MODEL_NO_TOOLS = QColor("#9ca3af")  # 도구 미지원 — 회색
 _COLOR_MODEL_PRO = QColor("#fca5a5")  # Pro/구독 — 옅은 붉은색
-# 이 픽셀 안으로 돌아오면 다시 답변 시작 줄에 붙인다.
-_SCROLL_HOLD_SLACK = 24
-
 from iris.core.activity_privacy import prepare_chat_text
 from iris.core.chat_block_parser import (
     ChatBlockBuffer,
@@ -608,6 +607,30 @@ class ChatComposerInput(QPlainTextEdit):
         super().dropEvent(event)
 
 
+class _ChatTopFade(QGraphicsEffect):
+    """Fade the actual viewport pixels, preserving the transparent background."""
+
+    def draw(self, painter: QPainter) -> None:
+        log = self.parent()
+        if log.verticalScrollBar().value() <= 0:
+            self.drawSource(painter)
+            return
+        pixmap, offset = self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates)
+        if pixmap.isNull():
+            return
+        masked = pixmap.copy()
+        mask = QPainter(masked)
+        mask.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        # A short transition, independent of line boundaries; no opaque overlay.
+        height = min(24, log.verticalScrollBar().value())
+        gradient = QLinearGradient(0, -offset.y(), 0, height - offset.y())
+        gradient.setColorAt(0, QColor(0, 0, 0, 0))
+        gradient.setColorAt(1, QColor(0, 0, 0, 255))
+        mask.fillRect(masked.rect(), gradient)
+        mask.end()
+        painter.drawPixmap(offset, masked)
+
+
 class ChatLogTextEdit(QTextEdit):
     speaker_clicked = pyqtSignal(str)
     update_action_clicked = pyqtSignal(str)  # apply | later
@@ -621,6 +644,9 @@ class ChatLogTextEdit(QTextEdit):
         self.setAcceptDrops(True)
         self.viewport().setAcceptDrops(True)
         self.viewport().installEventFilter(self)
+        self._top_fade = _ChatTopFade(self)
+        self.viewport().setGraphicsEffect(self._top_fade)
+        self.verticalScrollBar().valueChanged.connect(self._top_fade.update)
         self._tool_blocks: dict[str, ToolShellBlock] = {}
         self._error_details: dict[str, str] = {}
         attach_image_loader(self)
@@ -655,11 +681,12 @@ class ChatLogTextEdit(QTextEdit):
         view_w = max(1, self.viewport().width())
         side = max(12, (view_w - 720) // 2)
         frame = self.document().rootFrame().frameFormat()
-        if int(frame.leftMargin()) == side and int(frame.rightMargin()) == side:
+        if (int(frame.leftMargin()) == side and int(frame.rightMargin()) == side
+                and int(frame.topMargin()) == 28 and int(frame.bottomMargin()) == 8):
             return
         frame.setLeftMargin(float(side))
         frame.setRightMargin(float(side))
-        frame.setTopMargin(6)
+        frame.setTopMargin(28)
         frame.setBottomMargin(8)
         self.document().rootFrame().setFrameFormat(frame)
 
@@ -681,6 +708,13 @@ class ChatLogTextEdit(QTextEdit):
         super().wheelEvent(event)
         # 픽셀 휠은 스크롤바 actionTriggered를 안 낸다. 출력 중 위치 고정 해제용.
         self.scrolled_by_user.emit()
+
+    def setTextCursor(self, cursor: QTextCursor) -> None:  # noqa: N802
+        # Insertion cursors must not pull a read-only transcript to the caret.
+        bar = self.verticalScrollBar()
+        value = bar.value()
+        super().setTextCursor(cursor)
+        bar.setValue(min(value, bar.maximum()))
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if _mime_has_attachable(event.mimeData()):
@@ -1353,8 +1387,21 @@ class ChatPanel(QWidget):
             | Qt.TextInteractionFlag.TextSelectableByKeyboard
             | Qt.TextInteractionFlag.LinksAccessibleByMouse
         )
-        # 스크롤바는 숨기고 마우스 휠로만 스크롤
-        self._log.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._log.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Keep the thumb usable even under the global hidden-scrollbar theme
+        # and the companion's transparent stylesheet.
+        self._log.verticalScrollBar().setStyleSheet("""
+            QScrollBar:vertical {
+                background: transparent; width: 8px; margin: 0;
+                min-height: 0; max-height: 16777215px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(148, 163, 184, 100); min-height: 28px; border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover { background: rgba(148, 163, 184, 170); }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
         self._log.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         transparent = QColor(0, 0, 0, 0)
         log_pal = self._log.palette()
@@ -1391,10 +1438,9 @@ class ChatPanel(QWidget):
         self._stream_block_start: int | None = None
         self._typing_body_start: int | None = None
         self._typing_render_markdown = False
-        self._typing_anchor_y: int | None = None
-        # 출력 중 사용자가 휠로 벗어나면 앵커로 끌어당기지 않는다.
+        # 사용자가 이전 메시지를 읽는 동안에는 출력이 늘어나도 위치를 유지한다.
         self._scroll_user_hold = False
-        self._scroll_follow_tail = False
+        self._scroll_follow_tail = True
         self._scroll_hold_value: int | None = None
         self._scroll_programmatic = 0
         self._applying_held_scroll = False
@@ -1445,6 +1491,7 @@ class ChatPanel(QWidget):
         self._log.files_attached.connect(self._on_composer_drop_paths)
         self._log.scrolled_by_user.connect(self._note_user_log_scroll)
         self._log.verticalScrollBar().actionTriggered.connect(self._on_log_scroll_action)
+        self._log.verticalScrollBar().sliderMoved.connect(self._on_log_slider_moved)
         self._log.verticalScrollBar().rangeChanged.connect(self._reapply_held_log_scroll)
 
         self._height_handle = _ChatHeightHandle()
@@ -1680,6 +1727,12 @@ class ChatPanel(QWidget):
             prefetch_chat_html_images(self._log, html_body)
             cursor.insertHtml(html_body)
         self._store_message_body(msg_id, body)
+        # QTextCursor.insertHtml(<p>...) merges its first paragraph with the
+        # current block. Create the control row explicitly, outside body markup.
+        from PyQt6.QtGui import QTextCharFormat
+
+        cursor.insertBlock()
+        cursor.setCharFormat(QTextCharFormat())
         cursor.insertHtml(self._speaker_link_html(msg_id))
         return msg_id
 
@@ -1878,14 +1931,13 @@ class ChatPanel(QWidget):
 
     def _speaker_link_html(self, msg_id: str) -> str:
         return (
-            f' <a href="iris-tts://{html.escape(msg_id)}" '
-            f'style="color:#7dd3fc;text-decoration:none;">[재생]</a>'
+            f'<p><a href="iris-tts://{html.escape(msg_id)}" '
+            f'style="color:#7dd3fc;text-decoration:none;">[재생]</a></p>'
         )
 
     def append_update_prompt(self, *, detail: str = "") -> None:
         """GitHub 업데이트 안내 + Update / Late 링크."""
         self.finish_typing()
-        self._typing_anchor_y = None
         text = "업데이트가 가능합니다. 업데이트를 하시겠습니까?"
         extra = (detail or "").strip()
         if extra:
@@ -1904,7 +1956,6 @@ class ChatPanel(QWidget):
     def append_ollama_cloud_login_prompt(self, text: str) -> None:
         """클라우드 미로그인 안내 + [로그인] 링크 (푸른색)."""
         self.finish_typing()
-        self._typing_anchor_y = None
         body = (text or "").strip() or (
             "Ollama 클라우드 미로그인입니다. Ollama 앱에서 로그인하거나 로컬 모델로 바꾸세요."
         )
@@ -1940,7 +1991,6 @@ class ChatPanel(QWidget):
     def append_hermes_update_prompt(self, *, detail: str = "") -> None:
         """Hermes 업데이트 안내 + 업데이트 / 나중에 링크."""
         self.finish_typing()
-        self._typing_anchor_y = None
         text = "Hermes 업데이트가 가능합니다. 업데이트를 하시겠습니까?"
         extra = (detail or "").strip()
         if extra:
@@ -2009,8 +2059,9 @@ class ChatPanel(QWidget):
 
         self._model_guard_silent = True
         self._model_combo.blockSignals(True)
+        selected = selected.strip() or self.current_model()
         self._model_combo.clear()
-        if not models:
+        if not models and not selected:
             self._picker_models = []
             self._model_combo.addItem("(모델 없음 — Ollama 확인)", "")
             self._model_combo.blockSignals(False)
@@ -2053,6 +2104,9 @@ class ChatPanel(QWidget):
                     entries.append(
                         (display_name_from_runtime(runtime), runtime, True, False, "", "")
                     )
+
+        if selected and not any(selected in (entry[0], entry[1]) for entry in entries):
+            entries.append((display_name_from_runtime(selected), selected, True, False, "", ""))
 
         self._picker_models = []
         for i, (label, runtime, supports_tools, requires_sub, provider, tool_state) in enumerate(
@@ -2107,7 +2161,6 @@ class ChatPanel(QWidget):
         self._model_guard_silent = False
         self._update_model_tooltip()
         self._input_area.input_bar.fit_model_picker()
-        self.model_changed.emit(self.current_model())
 
     def set_model_status(self, text: str) -> None:
         """목록 로드 중/실패 상태 문구. 기존 런타임 id는 data에 유지."""
@@ -2261,33 +2314,15 @@ class ChatPanel(QWidget):
         self.model_changed.emit(self.current_model())
 
     def _scroll_log_to_bottom(self, *, deferred: bool = False) -> None:
-        """새 메시지·음성 인식 결과가 항상 보이도록 출력창을 맨 아래로 스크롤.
-
-        타이핑 앵커가 잡혀 있으면 맨 아래 대신 답변 시작 줄에서 멈춘다.
-        사용자가 휠로 벗어나면 그 위치를 유지하고, 맨 아래까지 내리면 새 글을 따라간다.
-        """
-
+        """Follow new output only while the user is at the tail."""
         def _do_scroll() -> None:
             bar = self._log.verticalScrollBar()
             self._scroll_programmatic += 1
             try:
-                if self._typing_anchor_y is not None:
-                    if self._scroll_user_hold and self._scroll_hold_value is not None:
-                        bar.setValue(min(self._scroll_hold_value, bar.maximum()))
-                        return
-                    if self._scroll_follow_tail:
-                        bar.setValue(bar.maximum())
-                        return
-                    # 답변 시작 줄이 화면 상단에 올 때까지만 내려가고 그 뒤로는 고정.
-                    target = min(self._typing_anchor_y, bar.maximum())
-                    if bar.value() < target:
-                        bar.setValue(target)
-                    return
-                cursor = self._log.textCursor()
-                cursor.movePosition(QTextCursor.MoveOperation.End)
-                self._log.setTextCursor(cursor)
-                self._log.ensureCursorVisible()
-                bar.setValue(bar.maximum())
+                if self._scroll_user_hold and self._scroll_hold_value is not None:
+                    bar.setValue(min(self._scroll_hold_value, bar.maximum()))
+                elif self._scroll_follow_tail:
+                    bar.setValue(bar.maximum())
             finally:
                 self._scroll_programmatic -= 1
 
@@ -2297,40 +2332,24 @@ class ChatPanel(QWidget):
             _do_scroll()
 
     def _on_log_scroll_action(self, _action: int) -> None:
-        self._note_user_log_scroll()
+        # actionTriggered precedes valueChanged: sliderPosition is the new value.
+        self._note_user_log_scroll(self._log.verticalScrollBar().sliderPosition())
 
-    def _note_user_log_scroll(self) -> None:
-        """휠·키로 로그를 움직이면 출력 중 앵커 고정을 놓는다."""
-        if self._scroll_programmatic or self._typing_anchor_y is None:
+    def _on_log_slider_moved(self, value: int) -> None:
+        self._note_user_log_scroll(value)
+
+    def _note_user_log_scroll(self, value: int | None = None) -> None:
+        if self._scroll_programmatic:
             return
         bar = self._log.verticalScrollBar()
-        value = bar.value()
-        anchor = min(self._typing_anchor_y, bar.maximum())
-        if abs(value - anchor) <= _SCROLL_HOLD_SLACK:
-            self._scroll_user_hold = False
-            self._scroll_follow_tail = False
-            self._scroll_hold_value = None
-            return
-        # 맨 아래를 보고 있으면 이어지는 글을 따라간다. 그 사이는 둔 자리에 둔다.
-        if (
-            bar.maximum() > anchor + _SCROLL_HOLD_SLACK
-            and value >= bar.maximum() - _SCROLL_HOLD_SLACK
-        ):
-            self._scroll_user_hold = False
-            self._scroll_follow_tail = True
-            self._scroll_hold_value = None
-            return
-        self._scroll_user_hold = True
-        self._scroll_follow_tail = False
-        self._scroll_hold_value = value
+        if value is None:
+            value = bar.value()
+        self._scroll_follow_tail = value >= bar.maximum() - 2
+        self._scroll_user_hold = not self._scroll_follow_tail
+        self._scroll_hold_value = value if self._scroll_user_hold else None
 
     def _reapply_held_log_scroll(self, _minimum: int, maximum: int) -> None:
-        """본문을 다시 그릴 때 문서가 줄었다 늘며 스크롤이 잘리는 것을 되돌린다."""
         if self._scroll_programmatic or self._applying_held_scroll:
-            return
-        if self._typing_anchor_y is None:
-            return
-        if not self._scroll_user_hold and not self._scroll_follow_tail:
             return
         bar = self._log.verticalScrollBar()
         self._applying_held_scroll = True
@@ -2343,24 +2362,6 @@ class ChatPanel(QWidget):
         finally:
             self._scroll_programmatic -= 1
             self._applying_held_scroll = False
-
-    def _begin_typing_anchor(self) -> None:
-        """답변 시작 줄을 기준점으로 잡아 타이핑 중 화면이 계속 밀리지 않게 한다."""
-        self._scroll_user_hold = False
-        self._scroll_follow_tail = False
-        self._scroll_hold_value = None
-        self._typing_anchor_y = None
-        self._scroll_log_to_bottom()
-        QTimer.singleShot(0, self._capture_typing_anchor)
-
-    def _capture_typing_anchor(self) -> None:
-        """레이아웃 확정 후 답변 시작 줄의 문서 Y 좌표를 기록."""
-        if self._typing_body_start is None:
-            return
-        cursor = self._log.textCursor()
-        cursor.setPosition(self._typing_body_start)
-        bar = self._log.verticalScrollBar()
-        self._typing_anchor_y = max(0, bar.value() + self._log.cursorRect(cursor).top())
 
     def set_mic_level(self, level: float) -> None:
         """상시 듣기 마이크 레벨 — 하단 주파수 바에 반영."""
@@ -2395,7 +2396,6 @@ class ChatPanel(QWidget):
         if self._stt_pending:
             return
         self.finish_typing()
-        self._typing_anchor_y = None
         cursor = self._begin_chat_message_cursor()
         cursor.insertHtml(
             f'<b>You</b>: <a href="iris-stt://pending" '
@@ -2506,8 +2506,10 @@ class ChatPanel(QWidget):
         self._typing_body_start = None
         self._typing_text = ""
         self._typing_index = 0
-        self._typing_anchor_y = None
         self._typing_wait_for_tts_completion = False
+        self._scroll_user_hold = False
+        self._scroll_follow_tail = True
+        self._scroll_hold_value = None
         self._tts_texts.clear()
         self._message_bodies.clear()
         self._last_tts_id = ""
@@ -2583,7 +2585,6 @@ class ChatPanel(QWidget):
     def append_message_instant(self, who: str, text: str) -> None:
         """사용자 입력 등 — 타이핑 없이 본문 전체를 즉시 표시."""
         self.finish_typing()
-        self._typing_anchor_y = None
         body = normalize_chat_body(who, prepare_chat_text(text))
         if not body:
             return
@@ -2634,7 +2635,6 @@ class ChatPanel(QWidget):
         label = (title or "구조도").strip() or "구조도"
         href = html.escape(diagram_href(html_path), quote=True)
         self.finish_typing()
-        self._typing_anchor_y = None
         cursor = self._begin_chat_message_cursor()
         cursor.insertHtml(
             f'<span style="color:{TOKENS.text_secondary};font-size:12px;">'
@@ -2678,7 +2678,6 @@ class ChatPanel(QWidget):
         if not body:
             return
         self.finish_typing()
-        self._typing_anchor_y = None
         cursor = self._begin_chat_message_cursor()
         cursor.insertHtml(
             f'<span style="color:{TOKENS.text_secondary};font-size:12px;">'
@@ -2699,7 +2698,6 @@ class ChatPanel(QWidget):
     ) -> str:
         """Cursor식 도구/셸 실행 카드를 채팅 로그에 인라인 삽입."""
         self.finish_typing()
-        self._typing_anchor_y = None
         self._tool_seq += 1
         bid = (block_id or f"tool{self._tool_seq}").strip() or f"tool{self._tool_seq}"
         block = ToolShellBlock(
@@ -2751,7 +2749,7 @@ class ChatPanel(QWidget):
         self._typing_wait_for_tts_completion = bool(speech_sync and wait_for_tts_completion)
         self._typing_timer.stop()
         self._block_buffer.reset()
-        self._begin_typing_anchor()
+        self._scroll_log_to_bottom()
 
     def append_stream_chunk(self, text: str) -> None:
         """스트리밍 청크 — speech_sync면 버퍼만, 아니면 누적 본문을 즉시 표시."""
@@ -2787,9 +2785,8 @@ class ChatPanel(QWidget):
                 self.append_message("Iris", final_text)
             return
         who = getattr(self, "_stream_who", "Iris")
-        if final_text is not None:
-            self._finalize_typing_buffer(who, final_text)
-            self._block_buffer.set_final(self._typing_text)
+        self._finalize_typing_buffer(who, final_text if final_text is not None else self._typing_text)
+        self._block_buffer.set_final(self._typing_text)
         self._stream_ui_timer.stop()
         self._flush_stream_ui()
         self._stream_active = False
@@ -2825,7 +2822,7 @@ class ChatPanel(QWidget):
         else:
             self._typing_timer.setInterval(TYPING_INTERVAL_MS)
             self._typing_timer.start()
-        self._begin_typing_anchor()
+        self._scroll_log_to_bottom()
 
     def sync_typing_to_speech(
         self,
@@ -3039,8 +3036,7 @@ class ChatPanel(QWidget):
             self._typing_body_start = None
             self._typing_render_markdown = False
             self._append_trailing_blank_line()
-            if self._typing_anchor_y is not None:
-                self._scroll_log_to_bottom()
+            self._scroll_log_to_bottom()
             return
 
         if self._typing_speech_sync and self._typing_speech_duration_ms:

@@ -12,14 +12,18 @@ from iris.core.markdown_text import (
 )
 from iris.ui.chat.typography import TOKENS
 
-_IRIS_PREFIX = re.compile(r"^\s*Iris\s*:\s*", re.IGNORECASE)
+_IRIS_PREFIX = re.compile(
+    r"^\s*(?:\*\*Iris\*\*\s*:|\*\*Iris\s*:\*\*|Iris\s*:)\s*",
+    re.IGNORECASE,
+)
 
 
 def strip_speaker_prefix(who: str, text: str) -> str:
     """채팅 UI가 이미 화자 이름을 붙이므로 본문의 'Iris:' 접두사는 제거한다."""
     body = (text or "").strip()
     if who.strip().lower() == "iris":
-        body = _IRIS_PREFIX.sub("", body, count=1).strip()
+        while _IRIS_PREFIX.match(body):
+            body = _IRIS_PREFIX.sub("", body, count=1).strip()
     return body
 
 
@@ -52,7 +56,7 @@ def assistant_visible_text(raw: str, *, streaming: bool) -> str:
     from iris.core.chat_block_parser import CodeSegment, ProseSegment, parse_chat_segments
 
     parts: list[str] = []
-    for seg in parse_chat_segments(raw or ""):
+    for seg in parse_chat_segments(strip_speaker_prefix("Iris", raw or ""), final=not streaming):
         if isinstance(seg, ProseSegment):
             prose = _drop_dangling_tool(seg.text)
             if streaming:
@@ -117,7 +121,7 @@ def _replace_unnecessary_paths(text: str) -> str:
     path_re = re.compile(
         rf"(?<![A-Za-z0-9_./:\\-])(?<!://)"
         rf"("
-        rf"[A-Za-z]:[\\/][^\\/:*?\"<>|\r\n]+(?:[\\/][^\\/:*?\"<>|\r\n]+)*"
+        rf"[A-Za-z]:[\\/][^\\/:*?\"<>|`\r\n]+(?:[\\/][^\\/:*?\"<>|`\r\n]+)*"
         rf"|\\\\[A-Za-z0-9_.\-\\/:]+"
         rf"|/(?:Users|home|var|tmp|opt|usr)/[A-Za-z0-9_.\-\\/:]+"
         rf"|(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+\.{_FILE_EXT}{line}"

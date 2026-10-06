@@ -53,7 +53,7 @@ def prose_char_count(text: str) -> int:
     return sum(len(seg.text) for seg in parse_chat_segments(text) if isinstance(seg, ProseSegment))
 
 
-def parse_chat_segments(text: str) -> list[ChatSegment]:
+def parse_chat_segments(text: str, *, final: bool = False) -> list[ChatSegment]:
     """전체 버퍼를 prose / code / tool 세그먼트로 분해."""
     raw = text or ""
     if not raw:
@@ -101,7 +101,7 @@ def parse_chat_segments(text: str) -> list[ChatSegment]:
             tail = raw[code_start:]
             close_idx = _find_closing_fence(tail)
             if close_idx < 0:
-                safe_code = _safe_partial_code(tail)
+                safe_code = tail if final else _safe_partial_code(tail)
                 segments.append(
                     CodeSegment(language=lang, code=safe_code, complete=False)
                 )

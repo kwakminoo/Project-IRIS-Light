@@ -584,10 +584,10 @@ function Invoke-PipInstallRequirements {
     param([string[]]$ExtraArgs = @())
     Set-PipSafePath
     if (-not (Ensure-VenvPip)) { return 1 }
-    & $VenvPy -m pip install --upgrade pip --disable-pip-version-check --no-input -q
+    & $VenvPy -m pip install --upgrade pip --disable-pip-version-check --no-input -q | Out-Host
     & $VenvPy -m pip install -r $Requirements --log $PipLog `
         --disable-pip-version-check --no-input --retries 8 --timeout 120 `
-        @ExtraArgs
+        @ExtraArgs | Out-Host
     return $LASTEXITCODE
 }
 

@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 from iris.core.activity_privacy import prepare_chat_text, strip_emoji
 from iris.core.chat_block_parser import ChatBlockBuffer
 from iris.ui.chat.chat_display import (
+    assistant_visible_text,
     normalize_chat_body,
 )
 from iris.ui.chat.chat_renderer import (
@@ -165,8 +166,9 @@ class WorkspaceIrisChatLog(ChatLogTextEdit):
                 self.setTextCursor(cursor)
                 self._iris_active = True
         body = normalize_chat_body("Iris", self._iris_buf)
-        if body and self._iris_body_start is not None:
-            html_body = render_iris_message(body)
+        if self._iris_body_start is not None:
+            visible = assistant_visible_text(body, streaming=False)
+            html_body = render_iris_message(visible)
             prefetch_chat_html_images(self, html_body)
             self._replace_iris_body(html_body)
             self._append_trailing_blank()

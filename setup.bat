@@ -6,7 +6,8 @@ REM  PowerShell 실행 정책 때문에 setup.ps1 이 막히는 것을
 REM  Bypass 로 우회해서 대신 실행해 줍니다.
 REM =====================================================
 setlocal
-cd /d "%~dp0"
+set "IRIS_ROOT=%~dp0"
+cd /d "%IRIS_ROOT%"
 
 where powershell >nul 2>&1
 if errorlevel 1 (
@@ -17,7 +18,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1" %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%IRIS_ROOT%setup.ps1" %*
 set "RC=%ERRORLEVEL%"
 
 echo.

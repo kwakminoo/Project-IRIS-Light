@@ -336,7 +336,11 @@ class IdeSnapRedirect:
             return True
         import ctypes
 
-        from iris.learning.win32_hooks import KBDLLHOOKSTRUCT, LowLevelProc
+        try:
+            from iris.learning.win32_hooks import KBDLLHOOKSTRUCT, LowLevelProc
+        except (ImportError, OSError):
+            log.exception("IDE snap hook initialization failed")
+            return False
 
         user32 = ctypes.windll.user32
         WH_KEYBOARD_LL = 13

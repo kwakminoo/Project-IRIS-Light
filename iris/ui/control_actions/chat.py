@@ -15,20 +15,7 @@ def register_chat_actions(window: ChatHost, reg: ActionRegistry) -> None:
     )
 
     def chat_set_model(args: dict[str, Any]) -> dict[str, Any]:
-        model = str(args.get("model") or "").strip()
-        if not model:
-            return err_result("chat.set_model", "model required")
-        window._apply_selected_model(model, persist=True)
-        combo = getattr(window._chat, "_model_combo", None)
-        if combo is not None:
-            for i in range(combo.count()):
-                if combo.itemData(i) == model or combo.itemText(i) == model:
-                    combo.blockSignals(True)
-                    combo.setCurrentIndex(i)
-                    combo.blockSignals(False)
-                    break
-        _log(window, "chat.set_model", True)
-        return ok_result("chat.set_model", {"model": model})
+        return err_result("chat.set_model", "Choose a model directly in the model picker UI")
 
     def chat_clear_history(_a: dict[str, Any]) -> dict[str, Any]:
         window.reset_current_conversation()

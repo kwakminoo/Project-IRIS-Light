@@ -60,15 +60,12 @@ def register_settings_actions(window: SettingsHost, reg: ActionRegistry) -> None
         s = window._settings
         if "hermes_api_key" in args and not bool(args.get("confirm")):
             return err_result("settings.set", "confirm=true required to set hermes_api_key")
+        if "ollama_model" in args or "model" in args:
+            return err_result("settings.set", "Choose a model directly in the model picker UI")
         changed: list[str] = []
         if "ollama_base_url" in args:
             s.ollama_base_url = str(args["ollama_base_url"] or "").strip() or s.ollama_base_url
             changed.append("ollama_base_url")
-        if "ollama_model" in args or "model" in args:
-            model = str(args.get("ollama_model") or args.get("model") or "").strip()
-            if model:
-                window._apply_selected_model(model, persist=True)
-                changed.append("ollama_model")
         # Hermes는 도구 호출의 유일한 경로이므로 끌 수 없음. 조용히 무시하면
         # 모델이 자기 도구를 잃은 채 성공했다고 답하게 됨.
         if "hermes_enabled" in args and not bool(args["hermes_enabled"]):

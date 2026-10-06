@@ -5,17 +5,18 @@ from __future__ import annotations
 import logging
 import threading
 from ctypes import (
-    CFUNCTYPE,
+    WINFUNCTYPE,
     POINTER,
     Structure,
     byref,
     c_int,
     c_long,
+    c_ssize_t,
     c_void_p,
     sizeof,
     windll,
 )
-from ctypes.wintypes import DWORD, HINSTANCE, HWND, LPARAM, LRESULT, MSG, WPARAM
+from ctypes.wintypes import BOOL, DWORD, HANDLE, HINSTANCE, HWND, LPARAM, MSG, WPARAM
 from typing import Callable
 
 log = logging.getLogger("iris.learning.win32_hooks")
@@ -81,7 +82,18 @@ class KBDLLHOOKSTRUCT(Structure):
     ]
 
 
-LowLevelProc = CFUNCTYPE(LRESULT, c_int, WPARAM, LPARAM)
+# LRESULT is LONG_PTR; ctypes.wintypes does not expose it on Python 3.12.
+LRESULT = c_ssize_t
+LowLevelProc = WINFUNCTYPE(LRESULT, c_int, WPARAM, LPARAM)
+
+# Without signatures ctypes assumes a 32-bit int result, truncating HHOOK and
+# LRESULT on 64-bit Windows. Both the recorder and IDE snap redirect use these.
+windll.user32.SetWindowsHookExW.argtypes = [c_int, LowLevelProc, HINSTANCE, DWORD]
+windll.user32.SetWindowsHookExW.restype = HANDLE
+windll.user32.CallNextHookEx.argtypes = [HANDLE, c_int, WPARAM, LPARAM]
+windll.user32.CallNextHookEx.restype = LRESULT
+windll.user32.UnhookWindowsHookEx.argtypes = [HANDLE]
+windll.user32.UnhookWindowsHookEx.restype = BOOL
 
 
 class Win32InputHooks:

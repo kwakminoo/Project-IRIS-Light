@@ -17,6 +17,9 @@ def normalize_markdown_source(source: str) -> str:
     parts = _CODE.split((source or "").replace("\r\n", "\n"))
     for i in range(0, len(parts), 2):
         text = parts[i]
+        # CommonMark hard breaks use backslash-newline; Python-Markdown's
+        # nl2br extension otherwise leaves the escape visible. Never touch code.
+        text = re.sub(r"(?<!\\)\\\n", "  \n", text)
 
         def decode(match: re.Match[str]) -> str:
             value = html.unescape(html.unescape(match[0]))
