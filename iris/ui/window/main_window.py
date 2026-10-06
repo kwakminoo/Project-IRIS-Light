@@ -394,6 +394,18 @@ class MainWindow(QMainWindow):
         self._saved_model = load_selected_model(self._db) or self._settings.ollama_model.strip()
         self._ollama_login_watch = None
         self._cloud_model_pending_login = ""
+        # 미로그인 클라우드를 초기 선택으로 두지 않음 — 목록 로드 후 로컬로 확정.
+        # 로그인 확인 시 이 이름으로 되돌린다.
+        try:
+            from iris.infrastructure.hermes_errors import cloud_model_blocked_without_login
+
+            if cloud_model_blocked_without_login(self._saved_model):
+                self._cloud_model_pending_login = self._saved_model
+                self._saved_model = ""
+                self._settings.ollama_model = ""
+                self._settings.model_name = ""
+        except Exception:
+            pass
         if self._saved_model:
             self._settings.ollama_model = self._saved_model
             self._settings.model_name = self._saved_model
@@ -1187,13 +1199,15 @@ class MainWindow(QMainWindow):
         applied = True
         self._ollama_login_applying = True
         try:
-            if pending and pending == self._saved_model:
+            if pending:
                 self._saved_model = pending
                 self._settings.ollama_model = pending
                 self._settings.model_name = pending
                 self._cloud_model_pending_login = ""
+                if self._db is not None:
+                    save_selected_model(self._db, pending)
                 if self._chat.select_model_silent(pending):
-                    self._apply_selected_model(pending, persist=False)
+                    self._apply_selected_model(pending, persist=True)
                     applied = (self._settings.ollama_model or "").strip() == pending
                 elif getattr(self, "_listed_models", None):
                     self._login_model_restore = pending
@@ -1384,10 +1398,17 @@ class MainWindow(QMainWindow):
             model
         ):
             self._remember_blocked_cloud_model(model)
+            local = self._first_local_picker_model()
             self._live_activity.append_instant_line(
                 f"Hermes model sync skip (클라우드 미로그인): {model}"
             )
-            return
+            if local and local != model and self._chat.select_model_silent(local):
+                self._settings.ollama_model = local
+                self._settings.model_name = local
+                self._saved_model = local
+                model = local
+            else:
+                return
         if self._hermes_model_worker is not None and self._hermes_model_worker.isRunning():
             return
         try:
@@ -1493,12 +1514,43 @@ class MainWindow(QMainWindow):
 
     def _publish_model_list(self, items: list[OllamaModelInfo], *, boot: bool) -> None:
         visible = self._visible_models(items)
-        preferred = self._saved_model or self._settings.ollama_model or self._settings.model_name
-        if preferred == "(unset)":
+        forced = (getattr(self, "_login_model_restore", "") or "").strip()
+        if forced:
+            self._login_model_restore = ""
+        preferred = forced or (
+            self._chat.current_model()
+            or self._saved_model
+            or self._settings.ollama_model
+            or self._settings.model_name
+        )
+        if preferred in ("(unset)",):
             preferred = ""
-        self._chat.set_models(visible, selected=preferred)
-        if visible or preferred:
-            self._apply_selected_model(self._chat.current_model(), persist=False)
+        from iris.infrastructure.hermes_errors import resolve_initial_model
+
+        names = [str(m.name).strip() for m in visible if str(getattr(m, "name", "") or "").strip()]
+        resolved = resolve_initial_model(preferred, names)
+        if resolved and resolved != preferred and boot:
+            self._live_activity.append_instant_line(
+                f"클라우드 미로그인 — 초기 모델을 로컬 '{resolved}'로 선택"
+            )
+        self._chat.set_models(visible, selected=resolved or preferred)
+        if visible:
+            chosen = self._chat.current_model()
+            persist = bool(resolved and resolved != preferred)
+            self._apply_selected_model(chosen, persist=persist)
+            if boot:
+                n_api = sum(1 for m in visible if is_api_runtime_model(m.name))
+                n_cloud = sum(
+                    1
+                    for m in visible
+                    if getattr(m, "is_cloud", False) and not is_api_runtime_model(m.name)
+                )
+                n_local = len(visible) - n_cloud - n_api
+                self._live_activity.append_instant_line(
+                    f"Models: {n_local} local + {n_cloud} cloud + {n_api} API"
+                )
+            if self._settings.hermes_enabled and chosen:
+                self._sync_hermes_model(chosen)
         else:
             self._chat.set_model_status("(모델 없음)")
         if boot:
@@ -1662,7 +1714,7 @@ class MainWindow(QMainWindow):
         return prefer_chat_model(names) or ""
 
     def _guard_cloud_model_selection(self, model: str) -> str:
-        """로그인이 필요하면 안내하되 사용자가 선택한 모델은 유지한다."""
+        """미로그인 클라우드면 로컬로 폴백하고 안내. 반환=실제 쓸 모델명."""
         from iris.infrastructure.hermes_errors import (
             CLOUD_AUTH_USER_MSG,
             cloud_model_blocked_without_login,
@@ -1673,7 +1725,19 @@ class MainWindow(QMainWindow):
         if not cloud_model_blocked_without_login(model):
             return model
         self._remember_blocked_cloud_model(model)
+        local = self._first_local_picker_model()
+        self._live_activity.append_instant_line(
+            f"클라우드 미로그인 — '{model}' 사용 불가"
+            + (f", 로컬 '{local}'로 전환" if local else "")
+        )
         self._chat.append_ollama_cloud_login_prompt(CLOUD_AUTH_USER_MSG)
+        if local and self._chat.select_model_silent(local):
+            try:
+                if self._db is not None:
+                    save_selected_model(self._db, local)
+            except Exception:
+                pass
+            return local
         return model
 
     def _apply_selected_model(self, model: str, *, persist: bool) -> None:
@@ -1681,8 +1745,7 @@ class MainWindow(QMainWindow):
         if not model:
             return
         previous = (self._settings.ollama_model or "").strip()
-        if persist:
-            model = self._guard_cloud_model_selection(model)
+        model = self._guard_cloud_model_selection(model)
         self._settings.ollama_model = model
         self._settings.model_name = model
         self._saved_model = model
@@ -2714,6 +2777,15 @@ class MainWindow(QMainWindow):
                 self._chat.end_stream_message("")
             except Exception:  # noqa: BLE001
                 pass
+        try:
+            self._chat.select_model_silent(model)
+            self._settings.ollama_model = model
+            self._saved_model = model
+            self._status_header.set_model_name(model)
+            if self._db is not None:
+                save_selected_model(self._db, model)
+        except Exception:  # noqa: BLE001
+            pass
         self._chat.append_note(f"{reason} — {model} 으로 이어서 답합니다.")
 
     def _kick_history_embed(self) -> None:
@@ -4012,9 +4084,14 @@ class MainWindow(QMainWindow):
 
         if cloud_model_blocked_without_login(model):
             self._remember_blocked_cloud_model(model)
-            self._chat.append_ollama_cloud_login_prompt(CLOUD_AUTH_USER_MSG)
-            self._finish_current_turn(turn.id, open_followup=False)
-            return
+            local = self._first_local_picker_model()
+            if local and self._chat.select_model_silent(local):
+                self._apply_selected_model(local, persist=True)
+                model = local
+            else:
+                self._chat.append_ollama_cloud_login_prompt(CLOUD_AUTH_USER_MSG)
+                self._finish_current_turn(turn.id, open_followup=False)
+                return
         if self._use_hermes_backend() and not self._hermes_online:
             self._live_activity.append_instant_line(
                 "Hermes gateway Offline — 기동 후 연결을 시도합니다…"
@@ -9282,9 +9359,11 @@ class MainWindow(QMainWindow):
             # 무엇이 달라졌는지 History 에도 남긴다.
             QTimer.singleShot(0, self._sync_iris_wiki)
             self._settings.ollama_base_url = sel.ollama_base_url
+            self._settings.ollama_model = sel.ollama_model
             self._settings.hermes_command = sel.hermes_command
             self._settings.hermes_base_url = sel.hermes_base_url
             self._settings.hermes_api_key = sel.hermes_api_key
+            self._settings.model_name = sel.ollama_model or self._settings.model_name
             previous_tts_model = self._voice_prefs.tts_model
             previous_tts_mode = self._voice_prefs.tts_mode
             previous_runtime_url = self._voice_prefs.voice_runtime_url
@@ -9349,6 +9428,9 @@ class MainWindow(QMainWindow):
                 if not self._test_mode:
                     self._learning.set_learner(self._build_aloha_learner())
             self._status_header.set_tts_status(self._tts_idle_status())
+            self._saved_model = sel.ollama_model.strip()
+            if self._saved_model:
+                save_selected_model(self._db, self._saved_model)
             self._status_header.set_model_name(self._settings.model_name or "(unset)")
             self._refresh_hermes_health()
             if self._settings.hermes_enabled and self._saved_model:
