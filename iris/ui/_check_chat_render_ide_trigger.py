@@ -36,6 +36,14 @@ class _ChatStub:
         self.messages.append(f"{who}: {text}")
 
 
+class _ActivityStub:
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def append_instant_line(self, text: str) -> None:
+        self.lines.append(text)
+
+
 class _TriggerProbe:
     """MainWindow의 라이브 vibe 경로만 떼어 구동한다 — 창·DB·IDE 없이 개방 시도를 계수."""
 
@@ -50,6 +58,8 @@ class _TriggerProbe:
         self._pending_local_vibe_prompt = PROMPT
         self._live_vibe: dict | None = None
         self._chat = _ChatStub()
+        self._live_activity = _ActivityStub()
+        self._suppress_reveal_write = False
         self.opens: list[str] = []
 
     def _live_vibe_open_target(self, state: dict, lang: str) -> bool:
@@ -107,7 +117,8 @@ def _check_fence_fallback_still_works() -> None:
     assert not state.get("tool_written"), "도구 표시가 잘못 섰음"
 
     probe._try_reveal_local_vibe_code(ASSISTANT_RAW)
-    assert probe._chat.messages, "표시 없을 때 턴 종료 경로가 무동작"
+    assert probe._chat.messages == [], f"고정 문장이 붙음: {probe._chat.messages!r}"
+    assert probe._live_activity.lines, "턴 종료 경로가 무동작"
 
 
 def main() -> int:

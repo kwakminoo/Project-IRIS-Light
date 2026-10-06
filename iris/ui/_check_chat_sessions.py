@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QPushButton
 
 from iris.storage.chat_title import apply_generated_title
 from iris.storage.conversations import (
+    ChatConversation,
     append_message,
     create_conversation,
     list_conversations,
@@ -115,6 +116,48 @@ def _check_history_panel(app: QApplication, db: Database) -> None:
     assert any("no chats yet" in h for h in hints), hints
 
 
+def _right_in(panel: ChatHistoryPanel, widget) -> int:
+    return widget.mapTo(panel, widget.rect().bottomRight()).x()
+
+
+def _check_row_actions_visible(app: QApplication) -> None:
+    """긴 제목이어도 수정·삭제 아이콘이 패널 안에 남는다. IDE 목록·기본 사이드바 최소 폭."""
+    title = "이미지테스트2라는 파일을 하나 만들고 그 안에 이 사진속 코드를 작성해줘"
+    conv = ChatConversation(1, title, "", "", 1)
+    panel = ChatHistoryPanel()
+    panel.set_conversations([conv], active_id=1)
+    for width in (200, 212, 220):
+        panel.setFixedWidth(width)
+        panel.show()
+        app.processEvents()
+        row = next(
+            f for f in panel._inner.findChildren(QFrame) if f.objectName() == "HudChatRow"
+        )
+        pencil = row.findChild(QPushButton, "ChatTitleEditButton")
+        close = next(
+            b for b in row.findChildren(QPushButton) if str(b.toolTip()).startswith("대화 삭제")
+        )
+        assert pencil is not None and pencil.isVisible(), width
+        assert close.isVisible(), width
+        assert pencil.width() >= 16 and close.width() >= 20, (width, pencil.width(), close.width())
+        assert _right_in(panel, pencil) <= panel.width(), (width, _right_in(panel, pencil))
+        assert _right_in(panel, close) <= panel.width(), (width, _right_in(panel, close))
+        assert pencil.x() < close.x(), (width, pencil.x(), close.x())
+
+    from PyQt6.QtCore import QEvent, QSize
+    from PyQt6.QtGui import QResizeEvent
+
+    saved_edit = row._edit
+    del row._edit
+    try:
+        assert row.eventFilter(row._btn, QEvent(QEvent.Type.Show)) is False
+        resize = QResizeEvent(QSize(40, 24), QSize(80, 24))
+        assert row.eventFilter(row._btn, resize) is False
+    finally:
+        row._edit = saved_edit
+    app.processEvents()
+
+
 def _check_transcript_restore(app: QApplication) -> None:
     chat = ChatPanel()
     chat.append_message_instant("You", "첫 세션 질문")
@@ -163,6 +206,7 @@ def main() -> int:
         db = Database(Path(tmp) / "chat_sessions_check.db")
         try:
             _check_history_panel(app, db)
+            _check_row_actions_visible(app)
         finally:
             db._conn.close()
     _check_transcript_restore(app)

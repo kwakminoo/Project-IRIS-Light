@@ -1,17 +1,25 @@
-"""IDE Companion — 우측 20% 전용 세로 레이아웃 (사이드바 없음)."""
+"""IDE Companion — 우측 세로 레이아웃. 채팅 목록은 기본 화면과 같은 패널."""
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from collections.abc import Callable
+
+from PyQt6.QtCore import QEvent, QSize, Qt
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QSizePolicy,
     QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from iris.ui.monitor.chat_history_panel import ChatHistoryPanel
 from iris.ui.shared.theme_tokens import TOKENS
+
+# 기본 화면 좌측 스플리터 초기 폭(main_window setSizes 220)과 같음
+CHAT_LIST_WIDTH = 220
 
 # 상단 구체 슬롯 — 좁은 20% 컬럼에서 3.0 스케일은 슬롯 밖으로 번져 로그와 겹쳤음
 EMAIL_ORB_HEIGHT = 260
@@ -120,6 +128,20 @@ class IdeUnifiedShell(QWidget):
         iris_w = w - ide_w
         self._split.setSizes([ide_w, max(1, iris_w)])
 
+    def shift_iris_width(self, delta: int) -> None:
+        """채팅 목록 폭만큼 기존 스플리터 비율을 옮긴다. 드래그와 같은 기억 경로."""
+        sizes = self._split.sizes()
+        if len(sizes) != 2 or not delta:
+            return
+        total = sizes[0] + sizes[1]
+        if total <= 0:
+            return
+        iris = sizes[1] + int(delta)
+        iris = max(self._iris_host.minimumWidth(), min(total - self._ide_host.minimumWidth(), iris))
+        self._split.setSizes([total - iris, iris])
+        # setSizes는 splitterMoved를 안 쏘므로, 드래그가 쓰는 기억 경로를 그대로 호출
+        self._remember_split()
+
     def _remember_split(self, *_args) -> None:
         sizes = self._split.sizes()
         total = sum(sizes)
@@ -145,9 +167,27 @@ class IdeUnifiedShell(QWidget):
         return self._ide_host
 
 
+def _secondary_sidebar_icon(*, active: bool) -> QIcon:
+    """Cursor 보조 사이드바 버튼과 같은 오른쪽 칸 아이콘."""
+    pix = QPixmap(16, 16)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    color = QColor(TOKENS.neon_cyan if active else TOKENS.text_muted)
+    painter.setPen(QPen(color, 1.2))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawRoundedRect(1, 2, 13, 12, 1.5, 1.5)
+    painter.setBrush(color)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawRect(10, 3, 3, 10)
+    painter.end()
+    return QIcon(pix)
+
+
 class IdeCompanionPage(QWidget):
     """
     위→아래: 구체 슬롯 · Live Activity · 채팅 (이메일 우측 패널과 동일 배치).
+    우측 상단 버튼으로 기본 화면과 같은 채팅 목록을 연다.
     addWidget만으로 reparent — remove/setParent(None) 금지.
     채팅 드래그가 예약 슬롯 높이를 줄여도 구체의 렌더링 위치는 유지한다.
     """
@@ -159,10 +199,70 @@ class IdeCompanionPage(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.setStyleSheet("background: transparent;")
-        self._lay = QVBoxLayout(self)
+
+        root = QHBoxLayout(self)
         # IDE 좌측 가장자리 그립(8px)과 겹치지 않게 우측 패널만 살짝 여백
-        self._lay.setContentsMargins(0, 6, 6, 6)
+        root.setContentsMargins(0, 6, 6, 6)
+        root.setSpacing(0)
+
+        self._column = QWidget(self)
+        self._column.setObjectName("IdeCompanionColumn")
+        self._column.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._column.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self._column.setStyleSheet("background: transparent;")
+        self._lay = QVBoxLayout(self._column)
+        self._lay.setContentsMargins(0, 0, 0, 0)
         self._lay.setSpacing(6)
+
+        self._history_wrap = QWidget(self)
+        self._history_wrap.setObjectName("IdeChatListColumn")
+        self._history_wrap.setFixedWidth(CHAT_LIST_WIDTH)
+        self._history_wrap.setStyleSheet(
+            "QWidget#IdeChatListColumn {"
+            f" border-left: 1px solid {TOKENS.panel_border};"
+            " background: transparent;"
+            "}"
+        )
+        history_lay = QVBoxLayout(self._history_wrap)
+        history_lay.setContentsMargins(8, 0, 4, 0)
+        history_lay.setSpacing(0)
+        self._history = ChatHistoryPanel(self._history_wrap)
+        history_lay.addWidget(self._history)
+        self._history_wrap.hide()
+
+        root.addWidget(self._column, 1)
+        root.addWidget(self._history_wrap, 0)
+
+        self._sidebar_btn = QToolButton(self._column)
+        self._sidebar_btn.setObjectName("IdeChatListToggle")
+        self._sidebar_btn.setFixedSize(28, 28)
+        self._sidebar_btn.setIconSize(QSize(16, 16))
+        self._sidebar_btn.setCheckable(True)
+        self._sidebar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sidebar_btn.setToolTip("채팅 목록")
+        self._sidebar_btn.setStyleSheet(
+            """
+            QToolButton#IdeChatListToggle {
+                background: transparent;
+                border: none;
+                padding: 0;
+                border-radius: 4px;
+            }
+            QToolButton#IdeChatListToggle:hover {
+                background: rgba(37, 99, 235, 0.14);
+            }
+            QToolButton#IdeChatListToggle:checked {
+                background: rgba(34, 211, 238, 0.12);
+            }
+            """
+        )
+        self._chat_list_open = False
+        self._width_delta_cb: Callable[[int], None] | None = None
+        self._sidebar_btn.clicked.connect(self._toggle_chat_list)
+        self._sidebar_btn.show()
+        self._sync_sidebar_icon()
+        self._column.installEventFilter(self)
+
         self._mounted: list[QWidget] = []
         self._orb_spacer: QWidget | None = None
         self._embedded_orb: QWidget | None = None
@@ -176,6 +276,56 @@ class IdeCompanionPage(QWidget):
         self._orb_lay.setContentsMargins(0, 0, 0, 0)
         self._orb_lay.setSpacing(0)
         self._orb_host.lower()
+
+    @property
+    def chat_history(self) -> ChatHistoryPanel:
+        return self._history
+
+    @property
+    def chat_list_open(self) -> bool:
+        return self._chat_list_open
+
+    def chat_list_width(self) -> int:
+        return CHAT_LIST_WIDTH
+
+    def set_width_delta_callback(self, cb: Callable[[int], None] | None) -> None:
+        """목록 폭이 늘거나 줄 때 IDE/Iris 스플리터에 넘긴다."""
+        self._width_delta_cb = cb
+
+    def set_chat_list_open(self, open_: bool) -> None:
+        open_ = bool(open_)
+        if open_ == self._chat_list_open:
+            return
+        self._chat_list_open = open_
+        if open_:
+            self._history_wrap.show()
+            delta = CHAT_LIST_WIDTH
+        else:
+            self._history_wrap.hide()
+            delta = -CHAT_LIST_WIDTH
+        self._sidebar_btn.setChecked(open_)
+        self._sync_sidebar_icon()
+        cb = self._width_delta_cb
+        if callable(cb):
+            cb(delta)
+        self._place_sidebar_button()
+
+    def _toggle_chat_list(self, _checked: bool = False) -> None:
+        self.set_chat_list_open(not self._chat_list_open)
+
+    def _sync_sidebar_icon(self) -> None:
+        self._sidebar_btn.setIcon(_secondary_sidebar_icon(active=self._chat_list_open))
+
+    def _place_sidebar_button(self) -> None:
+        btn = self._sidebar_btn
+        x = max(0, self._column.width() - btn.width() - 4)
+        btn.move(x, 2)
+        btn.raise_()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if obj is self._column and event.type() == QEvent.Type.Resize:
+            self._place_sidebar_button()
+        return super().eventFilter(obj, event)
 
     def mount(
         self,
@@ -206,6 +356,7 @@ class IdeCompanionPage(QWidget):
         self._orb_spacer = orb_spacer
         for w in self._mounted:
             w.show()
+        self._place_sidebar_button()
 
     def embed_orb(self, viz: QWidget, orb_spacer: QWidget | None = None) -> None:
         """컬럼 내부 배경에 구체를 두어 채팅 확장 시 블러 경계를 통과시킨다."""
@@ -221,6 +372,7 @@ class IdeCompanionPage(QWidget):
         viz.show()
         self._embedded_orb = viz
         self._orb_spacer = spacer
+        self._place_sidebar_button()
 
     def _sync_orb_backdrop(self) -> None:
         margins = self._lay.contentsMargins()

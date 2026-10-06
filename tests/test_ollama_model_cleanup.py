@@ -42,13 +42,28 @@ class OllamaCleanupVerdictTest(unittest.TestCase):
             ("ok", "no"),
         )
 
-    def test_apply_hides_unavailable(self) -> None:
+    def test_apply_keeps_unavailable(self) -> None:
         model = OllamaModelInfo(name="gemma:2b")
-        self.assertIsNone(apply_ollama_cleanup(model, {"state": "unavailable", "tool": "unknown"}))
+        kept_dead = apply_ollama_cleanup(model, {"state": "unavailable", "tool": "unknown"})
+        self.assertEqual(kept_dead.availability, "unavailable")
+        self.assertEqual(kept_dead.name, "gemma:2b")
         kept = apply_ollama_cleanup(model, {"state": "ok", "tool": "no"})
-        assert kept is not None
         self.assertFalse(kept.supports_tools)
         self.assertIs(apply_ollama_cleanup(model, None), model)
+
+    def test_tier_order(self) -> None:
+        from iris.infrastructure.ollama_client import model_list_tier
+
+        usable = model_list_tier("gemma:7b", state="ok", tool="yes")
+        unusable = model_list_tier("gemma:7b", state="unavailable", tool="unknown")
+        unfit_embed = model_list_tier("bge-m3:latest", state="ok", tool="yes")
+        unfit_tools = model_list_tier("qwen:7b", state="ok", tool="no")
+        self.assertLess(usable[0], unusable[0])
+        self.assertLess(unusable[0], unfit_embed[0])
+        self.assertEqual(unfit_embed[0], unfit_tools[0])
+        self.assertEqual(usable[1], "쓸 수 있음")
+        self.assertEqual(unusable[1], "쓸 수 없음")
+        self.assertEqual(unfit_embed[1], "적합하지 않음")
 
     def test_probe_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

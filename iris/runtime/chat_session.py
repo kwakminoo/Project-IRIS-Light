@@ -109,3 +109,22 @@ def workspace_needs_fresh_chat(
     if mode in ("welcome", "hero") and not prev_active:
         return True
     return False
+
+
+def should_open_fresh_work_chat(
+    *,
+    ide_id: str,
+    prev_active: bool,
+    prev_root: str,
+    mode: str,
+    root: str,
+) -> bool:
+    """IRIS IDE는 기본 화면에서 쓰던 채팅을 유지한다."""
+    if (ide_id or "").strip().lower() == "iris_ide":
+        return False
+    return workspace_needs_fresh_chat(
+        prev_active=prev_active,
+        prev_root=prev_root,
+        mode=mode,
+        root=root,
+    )

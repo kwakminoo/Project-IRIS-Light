@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from iris.system.control_surface import ActionRegistry
-from iris.ui.chat.file_write_claim import CHAT_ONLY, extracted_code, extract_image_code
+from iris.ui.chat.file_write_claim import extracted_code, extract_image_code
 from iris.ui.control_actions.project import project_write_file
 
 
@@ -131,7 +131,7 @@ def register_agent_turn_actions(window: Any, reg: ActionRegistry) -> None:
         )
         code = extracted_code(raw)
         if not code:
-            return err_result("project.write_image_code", CHAT_ONLY)
+            return err_result("project.write_image_code", "extraction had no code")
         root = str(args.get("project_root") or snap.get("project_root") or "").strip()
         payload = {
             "project_root": root,
@@ -145,7 +145,7 @@ def register_agent_turn_actions(window: Any, reg: ActionRegistry) -> None:
         if not written.get("ok"):
             return err_result(
                 "project.write_image_code",
-                str(written.get("error") or CHAT_ONLY),
+                str(written.get("error") or "write failed"),
                 written.get("result") if isinstance(written.get("result"), dict) else {},
             )
         out = dict(written)

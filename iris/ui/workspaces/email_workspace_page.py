@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 
 from iris.infrastructure.email_client import MailMessage, MailSummary
 from iris.storage.email_accounts import EmailAccount
-from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisPanel
+from iris.ui.workspaces.workspace_iris_chat import mount_chat_host, shift_chat_column
 
 _CATEGORY_TABS = ("기본", "프로모션", "소셜", "업데이트")
 
@@ -126,23 +126,33 @@ class EmailWorkspacePage(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(0)
+        splitter.setHandleWidth(6)
+        self._splitter = splitter
+        self._chat_list_extra = 0
 
         splitter.addWidget(self._build_center())
 
-        self.iris_panel = WorkspaceIrisPanel(
-            name_prefix="Email",
-            placeholder="이메일 업무를 요청하세요 (예: 이 메일 답장 초안)",
-        )
-        self.iris_panel.setMinimumWidth(240)
-        self.iris_panel.setMaximumWidth(380)
-        self.iris_panel.chat_send.connect(self.email_chat_send.emit)
-        splitter.addWidget(self.iris_panel)
+        # IDE Companion과 같은 채팅 호스트가 여기로 옮겨진다.
+        self._chat_host = QWidget()
+        self._chat_host.setObjectName("EmailChatHost")
+        self._chat_host.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._chat_host.setStyleSheet("QWidget#EmailChatHost { background: transparent; }")
+        self._chat_host.setMinimumWidth(300)
+        self._chat_lay = QVBoxLayout(self._chat_host)
+        self._chat_lay.setContentsMargins(0, 0, 0, 0)
+        self._chat_lay.setSpacing(0)
+        splitter.addWidget(self._chat_host)
 
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
-        splitter.setSizes([820, 320])
+        splitter.setSizes([820, 420])
         outer.addWidget(splitter)
+
+    def place_chat_host(self, host: QWidget) -> None:
+        mount_chat_host(self, host)
+
+    def shift_chat_column(self, delta: int) -> None:
+        shift_chat_column(self, delta)
 
     # ---- 중앙(검색 + 탭 + 리스트/리더) ----
     def _build_center(self) -> QWidget:

@@ -378,17 +378,37 @@ def extract_first_code_block(text: str) -> dict | None:
     return {"lang": lang, "code": code}
 
 
+_LANG_SUFFIX = {
+    "python": ".py",
+    "py": ".py",
+    "javascript": ".js",
+    "js": ".js",
+    "typescript": ".ts",
+    "ts": ".ts",
+}
+
+
+def _lang_suffix(lang: str) -> str:
+    return _LANG_SUFFIX.get((lang or "").lower(), ".py")
+
+
 def default_generated_rel_path(prompt: str, lang: str) -> str:
-    stem = "gugudan" if "구구단" in (prompt or "") else "iris_generated"
-    suffixes = {
-        "python": ".py",
-        "py": ".py",
-        "javascript": ".js",
-        "js": ".js",
-        "typescript": ".ts",
-        "ts": ".ts",
-    }
-    return stem + suffixes.get((lang or "").lower(), ".py")
+    """펜스 폴백용 고정 이름. 사용자 문장에서 파일명을 읽지 않는다."""
+    del prompt
+    return "iris_generated" + _lang_suffix(lang)
+
+
+def rename_project_file(project_root: str | Path, src_rel: str, dest_rel: str) -> str:
+    """작업 폴더 안에서 이름을 바꾼다. 새 상대경로. 못 바꾸면 빈 문자열."""
+    _root, src, src_norm = resolve_under_root(project_root, src_rel)
+    _root, dest, dest_norm = resolve_under_root(project_root, dest_rel)
+    if src_norm == dest_norm:
+        return dest_norm
+    if not src.is_file() or dest.exists():
+        return ""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(dest)
+    return dest_norm
 
 
 def write_project_file_stream(
@@ -944,4 +964,10 @@ if __name__ == "__main__":
         listed = list_workspace_files(parent, query="iris_adt")
         assert listed["files"] == ["pkg/Iris_adt.py"], listed
         assert list_workspace_files(parent, limit=1)["truncated"] is True
+        assert default_generated_rel_path("이미지테스트2를 만들고 코드를 작성", "python") == "iris_generated.py"
+        (parent / "iris_generated.py").write_text("print(1)\n", encoding="utf-8")
+        moved = rename_project_file(parent, "iris_generated.py", "이미지테스트2.py")
+        assert moved == "이미지테스트2.py"
+        assert (parent / "이미지테스트2.py").read_text(encoding="utf-8") == "print(1)\n"
+        assert not (parent / "iris_generated.py").exists()
     print("project_ops ok", hits[0]["name"], hits[0]["score"], reason)

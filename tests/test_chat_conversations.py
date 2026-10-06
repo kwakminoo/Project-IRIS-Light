@@ -6,7 +6,11 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase
 
-from iris.runtime.chat_session import ChatSession, workspace_needs_fresh_chat
+from iris.runtime.chat_session import (
+    ChatSession,
+    should_open_fresh_work_chat,
+    workspace_needs_fresh_chat,
+)
 from iris.storage.conversations import (
     DEFAULT_TITLE,
     TITLE_BASIS_FIRST,
@@ -243,6 +247,35 @@ class ChatConversationTests(TestCase):
             ],
         )
         self.assertIn(old_id, [item.id for item in session.list_items()])
+
+    def test_iris_ide_keeps_current_chat(self) -> None:
+        self.assertFalse(
+            should_open_fresh_work_chat(
+                ide_id="iris_ide",
+                prev_active=False,
+                prev_root="",
+                mode="hero",
+                root="",
+            )
+        )
+        self.assertFalse(
+            should_open_fresh_work_chat(
+                ide_id="iris_ide",
+                prev_active=True,
+                prev_root="",
+                mode="workspace",
+                root="C:/proj-a",
+            )
+        )
+        self.assertTrue(
+            should_open_fresh_work_chat(
+                ide_id="cursor",
+                prev_active=True,
+                prev_root="",
+                mode="workspace",
+                root="C:/proj-a",
+            )
+        )
 
     def test_workspace_change_asks_for_fresh_chat(self) -> None:
         self.assertTrue(

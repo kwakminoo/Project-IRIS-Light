@@ -180,6 +180,33 @@ class AttachmentTests(FixtureCase):
         with patch("iris.runtime.attachment_context._ocr_image", side_effect=RuntimeError("missing OCR")):
             self.assertTrue(prepare_attachments([str(path)]).attachments[0].error)
 
+    def test_image_vision_then_path(self):
+        from iris.runtime.attachment_context import bind_chat_image_reader, reset_chat_image_reader
+
+        path = self.root / "shot.png"
+        path.write_bytes(b"not-a-real-png")
+        seen: list[bytes] = []
+
+        def reader(png: bytes) -> str:
+            seen.append(png)
+            return "import cv2 as cv\nsoccer.jpg"
+
+        token = bind_chat_image_reader(reader)
+        try:
+            with patch("iris.knowledge.content_extract._png_bytes", return_value=b"PNGBYTES"), patch(
+                "iris.knowledge.content_extract._ocr_png_bytes",
+                return_value=("", "ocr should not run"),
+            ):
+                prepared = prepare_attachments([str(path)])
+        finally:
+            reset_chat_image_reader(token)
+        item = prepared.attachments[0]
+        self.assertIn("import cv2", item.text)
+        self.assertEqual(seen, [b"PNGBYTES"])
+        body = prepared.model_content("추출해줘")
+        self.assertIn("Attachment path: " + str(path), body)
+        self.assertNotIn('@"', body)
+
 
 class QtAttachmentTests(FixtureCase):
     @classmethod

@@ -74,25 +74,25 @@ class EvidenceTests(TestCase):
         self.assertIn("반도체주 급락", block)
         self.assertIn("한국경제", block)
         self.assertIn("https://example.com/1", block)
-        self.assertIn("여기 없는 내용을 덧붙이지 마라", block)
+        self.assertNotIn("덧붙이지 마라", block)
 
     def test_headline_only_results_tell_the_model_titles_are_the_content(self) -> None:
         """google_news 는 본문을 안 준다 — 안 알려주면 '내용을 알 수 없다'고 답한다."""
         out = SearchOutcome(hits=parse_results(_NEWS_PAYLOAD), query="q")
-        self.assertIn("제목이 곧 내용", format_evidence(out))
+        self.assertIn("본문 요약 없음", format_evidence(out))
 
     def test_results_with_snippets_do_not_get_that_hint(self) -> None:
         out = SearchOutcome(
             hits=[SearchHit(title="t", snippet="본문 요약이 있다")], query="q"
         )
-        self.assertNotIn("제목이 곧 내용", format_evidence(out))
+        self.assertNotIn("본문 요약 없음", format_evidence(out))
 
     def test_failure_is_stated_not_silently_dropped(self) -> None:
         """빈 문자열을 주면 모델은 검색이 없었던 줄 알고 지어낸다."""
         block = format_evidence(SearchOutcome(query="뉴스", error="SerpApi 키가 없습니다"))
-        self.assertIn("검색을 하지 못했습니다", block)
+        self.assertIn("상태: 실패", block)
         self.assertIn("SerpApi 키가 없습니다", block)
-        self.assertIn("지어내지 말고", block)
+        self.assertNotIn("지어내지 말고", block)
         self.assertTrue(block.strip())
 
 
@@ -188,7 +188,8 @@ class RunPromptTests(TestCase):
         """이 문장이 빠지면 gemma4 가 가짜 헤드라인을 지어냈다."""
         content = build_run_messages(self.r, tools_available=False)[0]["content"]
         self.assertIn("웹 검색", content)
-        self.assertIn("실시간 정보를 가져올 수 없습니다", content)
+        self.assertIn("쓸 수 없다", content)
+        self.assertNotIn("실시간 정보를 가져올 수 없습니다", content)
 
     def test_backend_with_tools_is_not_told_that(self) -> None:
         self.assertNotIn("웹 검색", build_run_messages(self.r)[0]["content"])
@@ -200,4 +201,5 @@ class RunPromptTests(TestCase):
             self.r, evidence=format_evidence(out), tools_available=False
         )[0]["content"]
         self.assertIn("반도체주 급락", content)
-        self.assertIn("실시간 정보를 가져올 수 없습니다", content)
+        self.assertIn("쓸 수 없다", content)
+        self.assertNotIn("실시간 정보를 가져올 수 없습니다", content)

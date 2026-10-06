@@ -29,6 +29,10 @@ class OllamaModelInfo:
     requires_subscription: bool = False
     # 커스텀 API 전용 3-상태 (yes|no|unknown). 빈 문자열이면 supports_tools를 씀
     tool_support: str = ""
+    # 모델 정리 결과. ok | unverified | unavailable | ""
+    availability: str = ""
+    # 커스텀 API Base URL. 로컬 피커 분류용. Ollama 모델은 비움.
+    endpoint: str = ""
 
     def __post_init__(self) -> None:
         if not self.catalog_name:
@@ -73,15 +77,14 @@ def cleanup_verdict(
 
 def apply_ollama_cleanup(
     model: OllamaModelInfo, record: dict[str, str] | None
-) -> OllamaModelInfo | None:
-    """저장된 정리 결과. unavailable이면 None(피커에서 제외)."""
+) -> OllamaModelInfo:
+    """저장된 정리 결과. 거절된 모델도 목록에 남기고 availability 만 채운다."""
     if not record:
         return model
-    if record.get("state") == "unavailable":
-        return None
+    state = str(record.get("state") or "")
     tool = str(record.get("tool") or "")
     if tool not in ("yes", "no", "unknown"):
-        return model
+        tool = model.tool_support or "unknown"
     return OllamaModelInfo(
         name=model.name,
         catalog_name=model.catalog_name,
@@ -90,7 +93,37 @@ def apply_ollama_cleanup(
         supports_tools=tool != "no",
         requires_subscription=model.requires_subscription,
         tool_support=tool,
+        availability=state,
+        endpoint=model.endpoint,
     )
+
+
+def model_list_tier(name: str, *, state: str = "", tool: str = "") -> tuple[int, str]:
+    """피커 정렬. 0 쓸 수 있음, 1 쓸 수 없음, 2 적합하지 않음."""
+    bare = (name or "").strip()
+    if bare.lower().startswith("api:") and bare.count(":") >= 2:
+        bare = bare.split(":", 2)[2]
+    if is_embedding_model_name(bare) or tool == "no":
+        return 2, "적합하지 않음"
+    if state == "unavailable":
+        return 1, "쓸 수 없음"
+    return 0, "쓸 수 있음"
+
+
+def roster_summary(names: list[str], states: dict[str, str], tools: dict[str, str]) -> str:
+    """설정 화면용. 세 묶음으로 이름을 적는다."""
+    buckets: dict[int, list[str]] = {0: [], 1: [], 2: []}
+    titles = {0: "쓸 수 있는 모델", 1: "쓸 수 없는 모델", 2: "적합하지 않은 모델"}
+    for name in names:
+        rank, _label = model_list_tier(
+            name, state=str(states.get(name) or ""), tool=str(tools.get(name) or "")
+        )
+        buckets[rank].append(name)
+    lines = []
+    for rank in (0, 1, 2):
+        if buckets[rank]:
+            lines.append(titles[rank] + ": " + ", ".join(buckets[rank]))
+    return "\n".join(lines)
 
 
 def display_name_from_runtime(runtime_name: str) -> str:
@@ -632,8 +665,13 @@ if __name__ == "__main__":
         "no",
     )
     kept = apply_ollama_cleanup(OllamaModelInfo(name="a"), {"state": "ok", "tool": "no"})
-    assert kept is not None and kept.supports_tools is False and kept.tool_support == "no"
-    assert apply_ollama_cleanup(OllamaModelInfo(name="dead"), {"state": "unavailable"}) is None
+    assert kept.supports_tools is False and kept.tool_support == "no"
+    dead = apply_ollama_cleanup(OllamaModelInfo(name="dead"), {"state": "unavailable"})
+    assert dead.availability == "unavailable" and dead.name == "dead"
+    assert model_list_tier("gemma:7b", state="ok", tool="yes") == (0, "쓸 수 있음")
+    assert model_list_tier("gemma:7b", state="unavailable", tool="unknown") == (1, "쓸 수 없음")
+    assert model_list_tier("bge-m3:latest", state="ok", tool="yes")[0] == 2
+    assert model_list_tier("qwen:7b", state="ok", tool="no")[0] == 2
     m = OllamaModelInfo(name="x:cloud", supports_tools=False, requires_subscription=True)
     assert m.supports_tools is False and m.requires_subscription is True
     assert display_name_from_runtime("gemma4:31b-cloud") == "gemma4:31b"

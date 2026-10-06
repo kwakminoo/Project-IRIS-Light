@@ -64,6 +64,14 @@ class QuotaGaugeColorTests(unittest.TestCase):
         )[0]
         self.assertIn("약간의 시간이 소요될 수 있습니다", ok_src)
 
+    def test_ide_entry_skips_ready_status(self) -> None:
+        from iris.ui.window.startup_intro import suppress_ready_status
+
+        self.assertTrue(suppress_ready_status(ui_mode="ide_companion"))
+        self.assertTrue(suppress_ready_status(ui_mode="ide_hero"))
+        self.assertTrue(suppress_ready_status(ui_mode="normal", hero_enter_pending=True))
+        self.assertFalse(suppress_ready_status(ui_mode="normal"))
+
 
 if __name__ == "__main__":
     unittest.main()

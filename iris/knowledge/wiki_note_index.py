@@ -25,9 +25,7 @@ _TOP_K = 3
 
 _HEADER = (
     "# Iris Wiki 노트 (저장된 자료)\n\n"
-    "아래는 위키에 저장해 둔 노트 발췌다. 이전 대화 기록과 다른 출처다. "
-    "이 발췌에 있는 문장만 저장된 사실로 써라. 여기에 없으면 위키에 그 사실이 없다고 해라. "
-    "발췌에 없는 내용을 이 노트의 내용인 것처럼 잇지 마라.\n"
+    "아래는 위키에 저장해 둔 노트 발췌다. 이전 대화 기록과 다른 출처다.\n"
 )
 
 
@@ -489,8 +487,7 @@ def empty_stored_block(query: str) -> str:
     q = " ".join((query or "").split())[:80] or "(빈 질문)"
     return (
         "# Iris Wiki 노트 (저장된 자료)\n\n"
-        f"「{q}」로 저장 노트를 찾았고 0건이다. "
-        "위키에 그 사실이 없다. 일반 지식으로 메우지 말고 없다고만 해라.\n"
+        f"「{q}」로 저장 노트를 찾았고 0건이다.\n"
     )
 
 
@@ -545,6 +542,6 @@ if __name__ == "__main__":
     assert format_note_prompt([]) == ""
     assert note_prompt_or_empty("", "환율", False) == ""
     empty = note_prompt_or_empty("", "강화학습", True)
-    assert "0건" in empty and "없다고만" in empty
+    assert "0건" in empty and "없다고만" not in empty
     assert note_prompt_or_empty("발췌 있음", "강화학습", True) == "발췌 있음"
     print("wiki_note_index empty-block ok")

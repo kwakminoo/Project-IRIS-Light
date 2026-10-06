@@ -302,6 +302,11 @@ class _HeroGlitchProxy(QObject):
         self._effect = None  # type: ignore[assignment]
 
 
+def suppress_ready_status(*, ui_mode: str, hero_enter_pending: bool = False) -> bool:
+    """IDE 화면에서는 부팅 준비완료 문구를 채팅에 넣지 않는다."""
+    return bool(hero_enter_pending) or ui_mode in ("ide_hero", "ide_companion")
+
+
 class StartupIntroAnimator(QObject):
     """
     빈 창 → 좌우 세로바 슬라이드 → 구체 치지직 → 로그/채팅 페이드·슬라이드
@@ -444,10 +449,12 @@ class StartupIntroAnimator(QObject):
             return
         if self._group is not None:
             self._group.stop()
-        self._completed = False
-        self._motion_done = False
-        self._started = True
-        self._models_ready = True  # 패널만 — 모델 대기 없음
+        # 부팅이 이미 끝났으면 finished를 다시 쏘지 않는다 — 준비완료 문구가 IDE 채팅에 반복된다.
+        boot_done = self._completed
+        if not boot_done:
+            self._motion_done = False
+            self._started = True
+            self._models_ready = True
 
         self._live.arm(-32.0)
         self._chat.arm(-36.0)
@@ -468,8 +475,20 @@ class StartupIntroAnimator(QObject):
         wave.setEasingCurve(QEasingCurve.Type.OutCubic)
         seq.addAnimation(wave)
 
-        seq.finished.connect(self._on_motion_finished)
+        if boot_done:
+            seq.finished.connect(self._finish_panel_proxies)
+        else:
+            seq.finished.connect(self._on_motion_finished)
         seq.start()
+
+    def _finish_panel_proxies(self) -> None:
+        """로그·채팅·파형만 제자리로. 부팅 finished는 내지 않는다."""
+        if self._live is not None:
+            self._live.finish()
+        if self._chat is not None:
+            self._chat.finish()
+        if self._wave is not None:
+            self._wave.finish()
 
     def start_exit_to_void(self) -> None:
         """기본화면 → 히어로: 주변 UI가 기동 때와 반대로 들어감."""

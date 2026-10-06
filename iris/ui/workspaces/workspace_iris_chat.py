@@ -114,3 +114,35 @@ class WorkspaceIrisPanel(IdeCompanionPage):
         self._activity_host.setMinimumHeight(0)
         self._activity_host.setMaximumHeight(0)
         self._activity_host.hide()
+
+
+def mount_chat_host(page: QWidget, host: QWidget) -> None:
+    """메일/캘린더 오른쪽 칸에 IDE 채팅 호스트를 붙인다."""
+    if page._chat_lay.indexOf(host) < 0:
+        page._chat_lay.addWidget(host)
+    host.show()
+    open_ = bool(getattr(host, "chat_list_open", False))
+    width = int(host.chat_list_width()) if hasattr(host, "chat_list_width") else 0
+    sync_chat_list_width(page, open_, width)
+
+
+def shift_chat_column(page: QWidget, delta: int) -> None:
+    """채팅 목록 폭만큼 오른쪽 칸을 늘리거나 줄인다."""
+    sizes = page._splitter.sizes()
+    if len(sizes) != 2 or not delta:
+        return
+    total = sizes[0] + sizes[1]
+    if total <= 0:
+        return
+    chat = sizes[1] + int(delta)
+    chat = max(300, min(total - 240, chat))
+    page._splitter.setSizes([total - chat, chat])
+
+
+def sync_chat_list_width(page: QWidget, open_: bool, width: int) -> None:
+    want = int(width) if open_ else 0
+    extra = int(getattr(page, "_chat_list_extra", 0))
+    delta = want - extra
+    page._chat_list_extra = want
+    if delta:
+        shift_chat_column(page, delta)

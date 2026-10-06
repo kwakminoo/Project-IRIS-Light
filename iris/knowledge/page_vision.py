@@ -11,6 +11,17 @@ _PROMPT = (
 )
 
 
+def _ask(prompt: str) -> str:
+    text = (prompt or "").strip()
+    if not text:
+        return _PROMPT
+    return (
+        text
+        + "\n\n보이는 글자만 적어라. 글자가 없으면 그림이 무엇인지 짧게 적어라. "
+        "보이지 않는 내용은 만들지 마라."
+    )
+
+
 def transcribe_images(
     pngs: list[bytes],
     *,
@@ -19,18 +30,20 @@ def transcribe_images(
     api_base_url: str = "",
     api_key: str = "",
     auth_style: str = "bearer",
+    prompt: str = "",
 ) -> str:
     """PNG 바이트를 한 번 보내고 옮긴 글자만 받는다. 실패하면 빈 문자열."""
     images = [png for png in pngs if png]
     name = (model or "").strip()
     if not images or not name:
         return ""
+    ask = _ask(prompt)
     if not (api_base_url or "").strip():
         from iris.infrastructure.ollama_client import OllamaClient
 
         try:
             return OllamaClient(ollama_base_url).chat_once_with_images(
-                name, _PROMPT, images, timeout_sec=60.0
+                name, ask, images, timeout_sec=60.0
             )
         except Exception:
             return ""
@@ -39,7 +52,7 @@ def transcribe_images(
     root = normalize_base_url(api_base_url)
     if not root:
         return ""
-    content: list[dict[str, object]] = [{"type": "text", "text": _PROMPT}]
+    content: list[dict[str, object]] = [{"type": "text", "text": ask}]
     for png in images:
         data_url = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
         content.append({"type": "image_url", "image_url": {"url": data_url}})

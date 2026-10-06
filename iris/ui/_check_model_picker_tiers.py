@@ -85,19 +85,22 @@ def main() -> None:
         )
         for i in range(BRAND_MIN_MODELS)
     ]
-    ollama, brands, singles = split_picker_groups(
+    local, ollama, brands, singles = split_picker_groups(
         [
             PickerModel("a:cloud", "a", True),
+            PickerModel("llama3.2:latest", "llama", True),
             PickerModel(
                 "api:oa:gpt-4o",
                 "OpenAI · gpt-4o",
                 True,
                 provider_name="OpenAI",
+                provider_base="https://api.openai.com/v1",
                 is_api=True,
             ),
             *gemini_many,
         ]
     )
+    assert [m.runtime for m in local] == ["llama3.2:latest"]
     assert len(ollama) == 1
     assert list(brands) == ["gm"], brands  # Gemini는 이름이 아니라 개수로 묶임
     assert len(brands["gm"]) == BRAND_MIN_MODELS

@@ -171,26 +171,18 @@ def format_evidence(outcome: SearchOutcome) -> str:
             [
                 "# 웹 검색 결과",
                 "",
-                f"검색을 하지 못했습니다 — {outcome.error}",
-                f"(검색어: {outcome.query or '(없음)'})",
-                "",
-                "**이 경우 내용을 지어내지 말고, 자료를 가져오지 못했다고만 알려라.**",
+                "상태: 실패",
+                f"오류: {outcome.error}",
+                f"검색어: {outcome.query or '(없음)'}",
             ]
         )
     lines = [
         "# 웹 검색 결과",
         "",
         f"검색어: {outcome.query} · {outcome.fetched_at} 기준 · {len(outcome.hits)}건",
-        "",
-        "**아래 자료만 근거로 삼아라. 여기 없는 내용을 덧붙이지 마라.**",
     ]
     if not any(hit.snippet for hit in outcome.hits):
-        # google_news 는 본문 요약을 주지 않는다. 그때 "내용을 알 수 없다"고 답하면
-        # 사용자는 빈손이 된다 — 뉴스에서는 제목 자체가 알맹이라고 알려 준다.
-        lines.append(
-            "본문 요약 없이 제목만 있는 자료다. 뉴스는 제목이 곧 내용이니 "
-            "제목을 근거로 정리하라. '내용을 알 수 없다'고 답하지 마라."
-        )
+        lines.append("본문 요약 없음. 제목만 있다.")
     lines.append("")
     lines.extend(hit.as_line() for hit in outcome.hits)
     return "\n".join(lines)
@@ -225,25 +217,23 @@ if __name__ == "__main__":
     assert ok.ok is True
     block = format_evidence(ok)
     assert "웹 검색 결과" in block and "2건" in block
-    assert "여기 없는 내용을 덧붙이지 마라" in block
+    assert "덧붙이지 마라" not in block
     assert "JTBC" in block
-    # 첫 항목에 snippet 이 있으니 "제목만" 안내는 붙지 않는다
-    assert "제목이 곧 내용" not in block
+    assert "본문 요약 없음" not in block
 
     titles_only = SearchOutcome(
         hits=[SearchHit(title="반도체주 급락"), SearchHit(title="환율 상승")],
         query="경제",
         fetched_at="2026-09-29T09:00:00",
     )
-    # google_news 처럼 본문이 없을 때만 안내가 붙어야 한다
-    assert "제목이 곧 내용" in format_evidence(titles_only)
+    assert "본문 요약 없음" in format_evidence(titles_only)
 
     bad = SearchOutcome(query="주요 뉴스", error="SerpApi 키가 없습니다")
     assert bad.ok is False
     fail_block = format_evidence(bad)
-    # 실패를 빈 문자열로 만들면 모델이 지어낸다 — 반드시 사실을 적어야 한다
-    assert "검색을 하지 못했습니다" in fail_block
-    assert "지어내지 말고" in fail_block
+    assert "상태: 실패" in fail_block
+    assert "SerpApi 키가 없습니다" in fail_block
+    assert "지어내지 말고" not in fail_block
 
     # 네트워크 없이 확인할 수 있는 것만 여기서 본다 — 실제 검색은 테스트에서 모킹한다.
     assert run_search("").error == "검색어 없음"

@@ -14,9 +14,9 @@ from iris.system.hermes_iris_control_sync import hermes_home
 
 
 
-_MARKER = "<!-- iris-control-nudge-v20 -->"
+_MARKER = "<!-- iris-control-nudge-v21 -->"
 
-_BLOCK = """<!-- iris-control-nudge-v20 -->
+_BLOCK = """<!-- iris-control-nudge-v21 -->
 
 ## Iris Light UI control
 
@@ -44,7 +44,8 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 11. Parents for search come from Iris settings (`project_parents`); inspect via `project.list_parents`.
 
-12. After creating/writing code: `project.write_file` with `open=true` (default live write: empty tab → wait visible → stream chunks into the file). Use `typewriter:false` only for instant dump.
+12. After creating/writing code: `project.write_file` with `open=true` (default live write: empty tab → wait visible → stream chunks into the file). `rel_path` is the filename the user asked for. If they did not name a file, ask before writing. Do not invent `iris_generated.py`. Use `typewriter:false` only for instant dump.
+12b. Rename: `project.rename_file` with `path` (current relative path) and `new_path`. Find `path` with `project.list_files` or the open editor. If either path is unknown, ask. Do not claim the name changed unless ok.
 
 13. On run/npm/pip/python/node/shell requests: **only** `project.run` — full output in IDE terminal; chat summary only. Keyword auto-run is off while Hermes is on.
 
@@ -150,6 +151,8 @@ def ensure_memory_nudge() -> str:
 
         and "ide.diagnostics" in existing
 
+        and "project.rename_file" in existing
+
     ):
 
         return "memory nudge already present"
@@ -160,7 +163,7 @@ def ensure_memory_nudge() -> str:
 
     path.write_text(text, encoding="utf-8")
 
-    return "memory nudge updated (v20)"
+    return "memory nudge updated (v21)"
 
 
 

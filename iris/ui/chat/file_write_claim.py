@@ -14,8 +14,6 @@ from pathlib import Path
 from iris.system.project_ops import extract_first_code_block
 
 CHAT_ONLY = "채팅에만 있고 파일은 만들지 않았다"
-ASK_FILENAME = "열린 파일이 없습니다. 파일명을 알려 주세요."
-ASK_WHICH = "열린 파일이 여러 개입니다. 어느 파일에 쓸지 알려 주세요."
 _CODE_ONLY_PROMPT = "코드만 출력. 설명·파일명·완료 문장 금지"
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 _WRITE_RE = re.compile(r"작성|넣어|써|스크립트|코드")
@@ -70,24 +68,9 @@ def settle_completion_claim(
     verified_path: str = "",
     try_write: Callable[[str, str], dict | None] | None = None,
 ) -> GateResult:
-    """완료를 말했으면 파일 실재 경로만 남긴다. 없으면 실패 한 줄."""
-    raw = text or ""
-    path = verified_path if verified_path and Path(verified_path).is_file() else ""
-    claims = contains_completion_claim(raw)
-    if path and claims:
-        return GateResult(reveal_line(path), True)
-    if not claims:
-        return GateResult(raw, False)
-    block = extract_first_code_block(raw)
-    if block and try_write is not None:
-        try:
-            result = try_write(str(block.get("code") or ""), str(block.get("lang") or ""))
-        except Exception:
-            result = None
-        got = verified_write_path(result if isinstance(result, dict) else None)
-        if got:
-            return GateResult(reveal_line(got), True)
-    return GateResult(CHAT_ONLY, True)
+    """모델이 쓴 답을 그대로 둔다. 완료 단어로 파일을 쓰거나 문장을 바꾸지 않는다."""
+    del verified_path, try_write
+    return GateResult(text or "", False)
 
 
 def image_write_request(text: str, attachments: list[str] | tuple[str, ...]) -> bool:
@@ -140,13 +123,6 @@ def _editor_paths(editors: list[dict], project_root: str) -> list[Path]:
     return out
 
 
-def _missing_message(candidates: list[str]) -> str:
-    shown = [c for c in candidates if c][:5]
-    if not shown:
-        return "경로가 없습니다."
-    return "경로가 없습니다. 가까운 후보: " + " · ".join(shown)
-
-
 def prepare_image_code_pipe(
     text: str,
     attachments: list[str],
@@ -171,14 +147,14 @@ def prepare_image_code_pipe(
             search_roots=search_roots,
         )
         if hit["kind"] == "missing":
-            return {"action": "ask", "message": _missing_message(list(hit["candidates"]))}
+            return {"action": "passthrough"}
         if hit["kind"] == "folder" and open_folder is not None:
             open_folder(str(hit["path"]))
         elif hit["kind"] == "file" and open_file is not None:
             open_file(str(hit["path"]))
     editors = _editor_paths(list_editors() or [], project_root)
     if len(editors) != 1:
-        return {"action": "ask", "message": ASK_WHICH if len(editors) > 1 else ASK_FILENAME}
+        return {"action": "passthrough"}
     root = Path(project_root).expanduser().resolve()
     rel = editors[0].relative_to(root).as_posix()
     return {"action": "ready", "rel": rel, "image": _image_path(list(attachments))}

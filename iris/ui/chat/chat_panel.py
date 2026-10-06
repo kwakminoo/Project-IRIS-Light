@@ -2074,8 +2074,9 @@ class ChatPanel(QWidget):
         from iris.infrastructure.model_descriptions import describe_model
         from iris.storage.api_providers import is_api_runtime_model
 
-        # label, runtime, supports_tools, requires_subscription, provider_name, tool_support
-        entries: list[tuple[str, str, bool, bool, str, str]] = []
+        # label, runtime, supports_tools, requires_subscription, provider_name, tool_support, availability
+        entries: list[tuple[str, str, bool, bool, str, str, str]] = []
+        endpoints: dict[str, str] = {}
         for item in models:
             if isinstance(item, OllamaModelInfo):
                 label = item.catalog_name or display_name_from_runtime(item.name)
@@ -2098,20 +2099,31 @@ class ChatPanel(QWidget):
                         bool(item.requires_subscription),
                         provider,
                         item.tool_support,
+                        item.availability,
                     )
                 )
+                if (item.endpoint or "").strip():
+                    endpoints[item.name] = item.endpoint.strip()
             else:
                 runtime = str(item).strip()
                 if runtime:
                     entries.append(
-                        (display_name_from_runtime(runtime), runtime, True, False, "", "")
+                        (display_name_from_runtime(runtime), runtime, True, False, "", "", "")
                     )
 
         if selected and not any(selected in (entry[0], entry[1]) for entry in entries):
-            entries.append((display_name_from_runtime(selected), selected, True, False, "", ""))
+            entries.append((display_name_from_runtime(selected), selected, True, False, "", "", ""))
+
+        from iris.infrastructure.ollama_client import model_list_tier
+
+        def _tier(entry: tuple[str, str, bool, bool, str, str, str]) -> tuple[int, str]:
+            tool = entry[5] or ("no" if not entry[2] else "")
+            return model_list_tier(entry[1], state=entry[6], tool=tool)
+
+        entries.sort(key=lambda entry: (_tier(entry)[0], entry[0].lower()))
 
         self._picker_models = []
-        for i, (label, runtime, supports_tools, requires_sub, provider, tool_state) in enumerate(
+        for i, (label, runtime, supports_tools, requires_sub, provider, tool_state, availability) in enumerate(
             entries
         ):
             self._model_combo.addItem(label, runtime)
@@ -2145,15 +2157,17 @@ class ChatPanel(QWidget):
                     supports_tools=supports_tools,
                     requires_subscription=requires_sub,
                     provider_name=provider,
+                    provider_base=endpoints.get(runtime, ""),
                     is_api=is_api_runtime_model(runtime),
                     tool_support=tool_state,
+                    availability=availability,
                 )
             )
 
         pick = selected.strip()
         idx = 0
         if pick:
-            for i, (label, runtime, _t, _s, _p, _ts) in enumerate(entries):
+            for i, (label, runtime, _t, _s, _p, _ts, _av) in enumerate(entries):
                 if pick in (runtime, label):
                     idx = i
                     break
@@ -2235,15 +2249,26 @@ class ChatPanel(QWidget):
             self._model_picker_menu.hide()
             self._model_picker_menu.deleteLater()
             self._model_picker_menu = None
-        ollama, brands, singles = split_picker_groups(self._picker_models)
+        local, ollama, brands, singles = split_picker_groups(self._picker_models)
         brand_rows = [
             (pid, brand_label(items, pid), len(items)) for pid, items in brands.items()
         ]
         menu = ModelPickerMenu(
+            local=local,
             has_ollama=bool(ollama),
             brands=brand_rows,
             singles=singles,
             parent=self,
+        )
+        menu.open_local.connect(
+            lambda: QTimer.singleShot(
+                0,
+                lambda: self._show_brand_dialog(
+                    "로컬 모델",
+                    local,
+                    hint="이 기기의 모델입니다. 어디서 불러왔든 여기서 고르면 그 모델로 답합니다.",
+                ),
+            )
         )
         menu.open_ollama.connect(
             lambda: QTimer.singleShot(0, lambda: self._show_brand_dialog("Ollama", ollama))
@@ -2254,18 +2279,21 @@ class ChatPanel(QWidget):
         menu.popup_above(self._input_area.input_bar._model_shell)
 
     def _on_open_brand(self, brand_id: str) -> None:
-        _ollama, brands, _singles = split_picker_groups(self._picker_models)
+        _local, _ollama, brands, _singles = split_picker_groups(self._picker_models)
         items = brands.get(brand_id) or []
         title = brand_label(items, brand_id)
         QTimer.singleShot(0, lambda: self._show_brand_dialog(title, items))
 
-    def _show_brand_dialog(self, title: str, models: list[PickerModel]) -> None:
+    def _show_brand_dialog(
+        self, title: str, models: list[PickerModel], *, hint: str = ""
+    ) -> None:
         dlg = ModelBrandDialog(
             title,
             models,
             self.window(),
-            hint=(
-                "시안=도구 가능 · 회색=도구 미지원 · 주황=미확인(선택 시 1회 확인) · 붉음=유료/구독. "
+            hint=hint
+            or (
+                "시안=도구 가능 · 회색=도구 미지원 · 주황=미확인 · 붉음=유료/구독. "
                 "모델을 고른 뒤 「사용」을 누르세요."
             ),
         )

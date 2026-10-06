@@ -387,8 +387,8 @@ def record_model_probe(
 
 
 def usable_models(provider: ApiProvider) -> list[str]:
-    """프로브가 4xx로 거부한 모델은 제외 — 미프로브는 그대로 노출함."""
-    return [m for m in provider.models if provider.model_states.get(m) != "unavailable"]
+    """피커에 보여줄 모델. 정리에서 거절해도 이름 목록에서 빼지 않는다."""
+    return list(provider.models)
 
 
 def ok_providers_for_picker(db: Database | None) -> list[ApiProvider]:
@@ -428,5 +428,5 @@ if __name__ == "__main__":
         models=["good", "dead"],
         model_states={"dead": "unavailable"},
     )
-    assert usable_models(marked) == ["good"]
+    assert usable_models(marked) == ["good", "dead"]
     print("api_providers self-check ok")

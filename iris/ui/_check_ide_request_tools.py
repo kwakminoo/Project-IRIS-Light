@@ -35,15 +35,16 @@ def check_pdf() -> None:
         assert resolve_pdf_dest("", str(root)) == root / "iris-note.pdf"
         assert resolve_pdf_dest("", "") == Path.home() / "Documents" / "IRIS" / "iris-note.pdf"
 
-    missing = settle_completion_claim("PDF로 저장했습니다.", verified_path="")
-    assert missing.display != "PDF로 저장했습니다."
-    assert "저장했습니다" not in missing.display
+    said = "PDF로 저장했습니다."
+    missing = settle_completion_claim(said, verified_path="")
+    assert missing.display == said
     with tempfile.TemporaryDirectory(prefix="iris-pdf-gate-") as td:
         path = Path(td) / "out.pdf"
         path.write_bytes(b"%PDF-1.4")
-        gate = settle_completion_claim("저장했습니다", verified_path=str(path))
-        assert "PDF로 저장했습니다" in gate.display
-        assert str(path.resolve()) in gate.display
+        kept = "저장했습니다"
+        gate = settle_completion_claim(kept, verified_path=str(path))
+        assert gate.display == kept
+        assert "PDF로 저장했습니다" not in gate.display
 
 
 def check_scope() -> None:

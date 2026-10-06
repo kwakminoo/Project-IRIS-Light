@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, QPointF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QPointF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QKeyEvent, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QFrame,
@@ -93,6 +93,7 @@ class ChatHistoryPanel(QWidget):
         self._scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         self._inner = QWidget()
         self._inner.setObjectName("SidebarInner")
+        self._inner.setMinimumWidth(0)
         self._inner_lay = QVBoxLayout(self._inner)
         self._inner_lay.setContentsMargins(0, 0, 0, 0)
         self._inner_lay.setSpacing(SECTION_CONTENT_GAP)
@@ -184,6 +185,9 @@ class _ChatRow(QFrame):
     ) -> None:
         super().__init__()
         self.setObjectName("HudChatRow")
+        # 레이아웃이 이벤트를 먼저 보내도 eventFilter 가 AttributeError 로 앱을 죽이지 않게 둔다.
+        self._btn = None
+        self._edit = None
         self._conv_id = conv.id
         self._title = (conv.title or DEFAULT_TITLE).strip() or DEFAULT_TITLE
         self._active = active
@@ -194,18 +198,21 @@ class _ChatRow(QFrame):
         self._on_edit_end = on_edit_end
         self._editing = False
         self._ignore_focus_out = False
+        self._fitting = False
+        self._fit_pending = False
+        self.setMinimumWidth(0)
 
         h = QHBoxLayout(self)
         h.setContentsMargins(2, 2, 2, 2)
         h.setSpacing(2)
 
-        display = self._title if len(self._title) <= 24 else self._title[:22] + "…"
         color = TOKENS.neon_cyan if active else TOKENS.text_secondary
         bg = TOKENS.panel_hover if active else "transparent"
-        self._btn = QPushButton(display)
+        self._btn = _ShrinkingTitleButton(self._title)
         self._btn.setToolTip(self._title)
         self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._btn.setMinimumWidth(0)
         self._btn.setStyleSheet(
             f"""
             QPushButton {{
@@ -243,6 +250,7 @@ class _ChatRow(QFrame):
         )
         self._edit.returnPressed.connect(self._commit_edit)
         self._edit.installEventFilter(self)
+        self._btn.installEventFilter(self)
         self._edit.hide()
         h.addWidget(self._edit, 1)
 
@@ -253,6 +261,7 @@ class _ChatRow(QFrame):
         x = _icon_button("×", f"대화 삭제: {self._title}", TOKENS.error, font_size=14)
         x.clicked.connect(lambda _=False, i=conv.id: on_delete(i))
         h.addWidget(x, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._schedule_fit_title()
 
     def _on_title_clicked(self) -> None:
         if self._active:
@@ -303,8 +312,42 @@ class _ChatRow(QFrame):
             return
         self._end_edit()
 
+    def _schedule_fit_title(self) -> None:
+        if self._fit_pending:
+            return
+        self._fit_pending = True
+        QTimer.singleShot(0, self._fit_title_later)
+
+    def _fit_title_later(self) -> None:
+        self._fit_pending = False
+        try:
+            self._fit_title()
+        except RuntimeError:
+            return
+
+    def _fit_title(self) -> None:
+        if self._editing or self._fitting:
+            return
+        self._fitting = True
+        try:
+            avail = max(0, self._btn.width() - 12)
+            shown = self._btn.fontMetrics().elidedText(
+                self._title, Qt.TextElideMode.ElideRight, avail
+            )
+            if self._btn.text() != shown:
+                self._btn.setText(shown)
+        finally:
+            self._fitting = False
+
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
-        if obj is self._edit:
+        btn = getattr(self, "_btn", None)
+        edit = getattr(self, "_edit", None)
+        if btn is None or edit is None:
+            return False
+        if obj is btn and event.type() == QEvent.Type.Resize:
+            self._schedule_fit_title()
+            return False
+        if obj is edit:
             if event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
                 if event.key() == Qt.Key.Key_Escape:
                     self._cancel_edit()
@@ -314,6 +357,16 @@ class _ChatRow(QFrame):
                     self._commit_edit()
                 return False
         return super().eventFilter(obj, event)
+
+
+class _ShrinkingTitleButton(QPushButton):
+    """제목이 길어도 옆 아이콘 폭을 밀지 않는다.
+
+    sizeHint 를 다시 부르면 Qt 가 minimumSizeHint 와 순환한다.
+    """
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, 24)
 
 
 class _EditTitleButton(QPushButton):

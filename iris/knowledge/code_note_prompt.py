@@ -23,8 +23,7 @@ _STOP = {"어떻게", "무엇", "이거", "여기", "되지", "있어", "하는"
 
 _HEADER = (
     "# 아이리스 소스 노트\n\n"
-    "아래는 아이리스 구조 노트의 발췌다. 사용자 위키 노트와 다른 출처다. "
-    "이 발췌에 있는 문장만 아이리스 구조의 사실로 써라. 여기에 없으면 노트에 없다고 해라.\n"
+    "아래는 아이리스 구조 노트의 발췌다. 사용자 위키 노트와 다른 출처다.\n"
 )
 
 _PROJECT = Path(__file__).resolve().parents[2]
@@ -144,8 +143,7 @@ def empty_code_block(query: str) -> str:
     q = " ".join((query or "").split())[:80] or "(빈 질문)"
     return (
         "# 아이리스 소스 노트\n\n"
-        f"「{q}」로 코드 노트를 찾았고 0건이다. "
-        "아이리스 구조는 노트에 없다. 일반 지식으로 메우지 말고 없다고만 해라.\n"
+        f"「{q}」로 코드 노트를 찾았고 0건이다.\n"
     )
 
 
@@ -199,7 +197,7 @@ def _check() -> None:
     assert "저장된 자료" not in _HEADER
     assert "아이리스 소스 노트" not in format_note_prompt([])
     empty = code_prompt_for_query(Path("."), "없는모듈xyz", on_empty=True)
-    assert "0건" in empty and "없다고만" in empty
+    assert "0건" in empty and "없다고만" not in empty
     assert code_prompt_for_query(Path("."), "없는모듈xyz", on_empty=False) == ""
 
     with tempfile.TemporaryDirectory() as tmp:

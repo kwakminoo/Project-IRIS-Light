@@ -88,8 +88,9 @@ def _assert_layout_orb_a_structure(app: QApplication) -> None:
 
     # 세로 드래그 스플리터 없음 — 고정 슬롯 + stretch
     assert not hasattr(companion, "_v_split")
-    assert live.parent() is companion
-    assert chat.parent() is companion
+    assert live.parent() is companion._column
+    assert chat.parent() is companion._column
+    assert companion._column.parent() is companion
     assert shell._split.handleWidth() == 6
 
     # Release global orb, then embed behind this column's layout.
@@ -191,6 +192,20 @@ def main() -> int:
     sizes = shell._split.sizes()
     total = sum(sizes) or 1
     assert abs(sizes[0] / total - 0.8) < 0.02, sizes
+    before = list(sizes)
+    companion.set_width_delta_callback(shell.shift_iris_width)
+    assert companion.chat_history.objectName() == "ChatHistoryPanel"
+    assert not companion.chat_list_open
+    companion.set_chat_list_open(True)
+    app.processEvents()
+    opened = shell._split.sizes()
+    assert opened[1] == before[1] + companion.chat_list_width(), (before, opened)
+    assert opened[0] + opened[1] == before[0] + before[1], (before, opened)
+    assert shell._user_ratio is not None
+    assert abs(shell._user_ratio - (opened[0] / sum(opened))) < 0.001
+    companion.set_chat_list_open(False)
+    closed = shell._split.sizes()
+    assert closed == before, (before, closed)
     assert shell.split_handle_width() == 6
     ide2.set_embedded(True, host=shell)
     assert ide2.is_embedded()

@@ -92,9 +92,10 @@ class CompletionGateTests(unittest.TestCase):
             result = {"ok": True, "result": {"path": str(path)}}
             line = reveal_line(verified_write_path(result))
             self.assertIn(str(path.resolve()), line)
-            gate = settle_completion_claim("처리 완료", verified_path=str(path))
-            self.assertIn(str(path.resolve()), gate.display)
-            self.assertNotIn("처리 완료", gate.display)
+            said = "처리 완료"
+            gate = settle_completion_claim(said, verified_path=str(path))
+            self.assertEqual(gate.display, said)
+            self.assertFalse(gate.suppress_followup_write)
 
     def test_ok_without_file_is_not_success(self) -> None:
         with tempfile.TemporaryDirectory(prefix="iris-gate-") as td:
@@ -106,15 +107,10 @@ class CompletionGateTests(unittest.TestCase):
             self.assertNotIn("처리 완료", line)
 
     def test_claim_without_tool_is_not_success(self) -> None:
-        gate = settle_completion_claim(
-            "interpolation_test.py 를 생성하겠습니다. 처리 완료",
-            verified_path="",
-            try_write=None,
-        )
-        self.assertEqual(gate.display, CHAT_ONLY)
-        self.assertNotIn("처리 완료", gate.display)
-        self.assertNotIn("생성하겠습니다", gate.display)
-        self.assertNotIn("열었습니다", gate.display)
+        said = "interpolation_test.py 를 생성하겠습니다. 처리 완료"
+        gate = settle_completion_claim(said, verified_path="", try_write=None)
+        self.assertEqual(gate.display, said)
+        self.assertNotIn("채팅에만 있고", gate.display)
 
     def test_claim_with_fence_writes_once(self) -> None:
         with tempfile.TemporaryDirectory(prefix="iris-gate-") as td:
@@ -127,24 +123,11 @@ class CompletionGateTests(unittest.TestCase):
                 path.write_text(code, encoding="utf-8")
                 return {"ok": True, "result": {"path": str(path)}}
 
-            gate = settle_completion_claim(
-                "작성했습니다\n```python\nprint(1)\n```",
-                verified_path="",
-                try_write=try_write,
-            )
-            self.assertEqual(calls, ["python"])
-            self.assertIn(str((root / "from_fence.py").resolve()), gate.display)
-            self.assertNotIn("작성했습니다", gate.display)
-
-            def missing_write(code: str, lang: str) -> dict:
-                return {"ok": True, "result": {"path": str(root / "ghost.py")}}
-
-            failed = settle_completion_claim(
-                "처리 완료\n```python\nprint(1)\n```",
-                try_write=missing_write,
-            )
-            self.assertEqual(failed.display, CHAT_ONLY)
-            self.assertFalse((root / "ghost.py").exists())
+            said = "작성했습니다\n```python\nprint(1)\n```"
+            gate = settle_completion_claim(said, verified_path="", try_write=try_write)
+            self.assertEqual(calls, [])
+            self.assertEqual(gate.display, said)
+            self.assertFalse((root / "from_fence.py").exists())
 
 
 class ImagePipeTests(unittest.TestCase):
@@ -199,11 +182,10 @@ class ImagePipeTests(unittest.TestCase):
                 extract=lambda _image: "print(1)",
                 write_file=write_file,
             )
-            self.assertTrue(missing["handled"])
+            self.assertFalse(missing["handled"])
             self.assertEqual(missing["write_count"], 0)
             self.assertEqual(writes["n"], 0)
-            self.assertIn("경로가 없습니다", missing["message"])
-            self.assertIn("alpha notes", missing["message"])
+            self.assertNotIn("경로가 없습니다", missing["message"])
 
             opened: list[str] = []
             folder = root / "pack"
@@ -220,7 +202,8 @@ class ImagePipeTests(unittest.TestCase):
             self.assertEqual(no_editor["write_count"], 0)
             self.assertEqual(writes["n"], 0)
             self.assertTrue(opened)
-            self.assertIn("파일명", no_editor["message"])
+            self.assertFalse(no_editor["handled"])
+            self.assertNotIn("파일명", no_editor["message"])
 
             many = apply_image_code_pipe(
                 "코드를 작성해줘",
@@ -232,7 +215,8 @@ class ImagePipeTests(unittest.TestCase):
             )
             self.assertEqual(many["write_count"], 0)
             self.assertEqual(writes["n"], 0)
-            self.assertIn("여러 개", many["message"])
+            self.assertFalse(many["handled"])
+            self.assertNotIn("여러 개", many["message"])
 
             plain = apply_image_code_pipe(
                 "안녕",

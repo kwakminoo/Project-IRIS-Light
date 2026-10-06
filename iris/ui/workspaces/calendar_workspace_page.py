@@ -42,7 +42,7 @@ from iris.ui.settings.hud_dialog import (
     make_title,
 )
 from iris.ui.shared.theme_tokens import TOKENS
-from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisPanel
+from iris.ui.workspaces.workspace_iris_chat import mount_chat_host, shift_chat_column
 
 _WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
 
@@ -314,21 +314,31 @@ class CalendarWorkspacePage(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(0)
+        splitter.setHandleWidth(6)
+        self._splitter = splitter
+        self._chat_list_extra = 0
         splitter.addWidget(self._build_center())
 
-        self.iris_panel = WorkspaceIrisPanel(
-            name_prefix="Calendar",
-            placeholder="일정 추가·관리를 요청하세요 (예: 내일 3시 회의 잡아줘)",
-        )
-        self.iris_panel.setMinimumWidth(240)
-        self.iris_panel.setMaximumWidth(380)
-        self.iris_panel.chat_send.connect(self.calendar_chat_send.emit)
-        splitter.addWidget(self.iris_panel)
+        # IDE Companion과 같은 채팅 호스트가 여기로 옮겨진다.
+        self._chat_host = QWidget()
+        self._chat_host.setObjectName("CalendarChatHost")
+        self._chat_host.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._chat_host.setStyleSheet("QWidget#CalendarChatHost { background: transparent; }")
+        self._chat_host.setMinimumWidth(300)
+        self._chat_lay = QVBoxLayout(self._chat_host)
+        self._chat_lay.setContentsMargins(0, 0, 0, 0)
+        self._chat_lay.setSpacing(0)
+        splitter.addWidget(self._chat_host)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
-        splitter.setSizes([820, 320])
+        splitter.setSizes([820, 420])
         outer.addWidget(splitter)
+
+    def place_chat_host(self, host: QWidget) -> None:
+        mount_chat_host(self, host)
+
+    def shift_chat_column(self, delta: int) -> None:
+        shift_chat_column(self, delta)
 
     def _build_center(self) -> QWidget:
         center = QWidget()

@@ -16,7 +16,12 @@ description: >
 2. **Write + reveal live:**
    `iris_invoke` → `project.write_file` with
    `args`: `{ project_root?, rel_path, content, open: true }`
+   `rel_path` is the file the user named. If they did not name one, ask before writing. Do not invent `iris_generated.py`.
    → Iris opens an empty tab, waits until the filename is visible in the IDE title, then streams small chunks into the file so the IDE file watcher shows the code growing. Do not set `typewriter:false` unless the user wants an instant dump.
+2b. **Rename:**
+   `iris_invoke` → `project.rename_file` with
+   `args`: `{ path, new_path }`
+   `path` is the current file (from `project.list_files` or the open editor). `new_path` is the name the user asked for. If either is unknown, ask. Do not rename by matching words in the sentence inside the app.
 3. Optional speed: `chunk_delay_ms` and `chunk_chars`. `typewriter:false` / `stream:false` = write all at once after open.
 4. **Run:**
    - **Scripts (.py / .js / …):** `project.run` with `{ file: "…" }` or `{ command: "…" }`

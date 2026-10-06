@@ -133,12 +133,9 @@ def build_run_messages(
         system.extend(
             [
                 "",
-                "중요 — 지금 너는 **웹 검색·브라우징·외부 API 를 전혀 쓸 수 없다.**",
-                "뉴스·날씨·주가·환율·스포츠 결과처럼 오늘의 실시간 정보를 요구받으면"
-                " 절대 지어내지 마라. 그럴듯한 항목을 만들어 내는 것이 가장 나쁜 답이다.",
-                "그 경우 정확히 이렇게만 답하라: "
-                "'실시간 정보를 가져올 수 없습니다 — 도구가 연결돼 있지 않습니다.'"
-                " 그리고 무엇이 필요한지 한 줄 덧붙여라.",
+                "지금 웹 검색·브라우징·외부 API 를 쓸 수 없다.",
+                "뉴스·날씨·주가·환율·스포츠 결과처럼 지금 시각의 정보가 필요하면 "
+                "확인하지 못한 사실을 결과처럼 적지 마라.",
                 "학습된 지식만으로 끝낼 수 있는 일(계산·번역·요약·글쓰기)은 그대로 하라.",
             ]
         )
@@ -258,12 +255,10 @@ if __name__ == "__main__":
         assert "아침 뉴스" in msgs[0]["content"]
         assert "웹 검색" not in msgs[0]["content"]  # 도구가 있으면 굳이 말하지 않는다
 
-        # 도구가 없으면 지어내지 말라고 못박아야 한다.
-        # gemma4 로 실측: 이 문장이 없으면 "오늘 뉴스 3개"에 가짜 헤드라인을 만들어 냈고,
-        # 넣은 뒤에는 "실시간 정보를 가져올 수 없습니다" 로 정직하게 거절했다.
         no_tools = build_run_messages(news, tools_available=False)[0]["content"]
         assert "웹 검색" in no_tools
-        assert "실시간 정보를 가져올 수 없습니다" in no_tools
+        assert "쓸 수 없다" in no_tools
+        assert "실시간 정보를 가져올 수 없습니다" not in no_tools
         assert "계산·번역·요약·글쓰기" in no_tools
         with_ev = build_run_messages(news, evidence="# History 발췌\n지난주 뉴스")
         assert "지난주 뉴스" in with_ev[0]["content"]

@@ -834,7 +834,11 @@ class SettingsDialog(QDialog):
             key_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             tip_parts = [p.base_url or "(base url 없음)", p.status]
             if p.models:
-                tip_parts.append("models: " + ", ".join(p.models[:8]))
+                from iris.infrastructure.ollama_client import roster_summary
+
+                tip_parts.append(
+                    roster_summary(list(p.models), p.model_states, p.tool_support)
+                )
             if p.last_error:
                 tip_parts.append(p.last_error[:160])
             key_lbl.setToolTip(" · ".join(tip_parts))
@@ -846,9 +850,8 @@ class SettingsDialog(QDialog):
             btn_verify = QPushButton("모델 정리")
             btn_verify.setFixedWidth(74)
             btn_verify.setToolTip(
-                "등록된 모델을 하나씩 호출해 사용 가능 여부와 도구 지원을 확인합니다. "
-                "제공자가 모델 없음·비채팅이라고 한 경우만 목록에서 뺍니다. "
-                "요청 형식 오류나 시간 초과로는 빼지 않습니다."
+                "등록된 모델을 하나씩 호출해 쓸 수 있음·쓸 수 없음·적합하지 않음을 표시합니다. "
+                "목록에서 빼지 않습니다."
             )
             btn_verify.clicked.connect(lambda _=False, pid=p.id: self._on_api_verify_models(pid))
             btn_del = QPushButton("삭제")
@@ -1046,8 +1049,22 @@ class SettingsDialog(QDialog):
         self._api_providers = load_api_providers(self._db)
         self._reload_api_provider_rows()
         name = next((p.name for p in self._api_providers if p.id == provider_id), provider_id)
+        provider = next((p for p in self._api_providers if p.id == provider_id), None)
+        if provider is None:
+            self._api_status.setText(f"{name}: 정리 완료 — 전체 {total}")
+            return
+        from iris.infrastructure.ollama_client import model_list_tier
+
+        counts = [0, 0, 0]
+        for model in provider.models:
+            rank, _label = model_list_tier(
+                model,
+                state=provider.model_states.get(model, ""),
+                tool=provider.tool_support.get(model, ""),
+            )
+            counts[rank] += 1
         self._api_status.setText(
-            f"{name}: 정리 완료 — 사용 가능 {usable} / 전체 {total} (제외 {total - usable})"
+            f"{name}: 쓸 수 있음 {counts[0]} · 쓸 수 없음 {counts[1]} · 적합하지 않음 {counts[2]} / 전체 {len(provider.models)}"
         )
 
     def _on_api_probe_done(self, provider_id: str, result: object) -> None:

@@ -509,6 +509,65 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
         payload,
     )
 
+def project_rename_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
+    """호출자가 넘긴 두 경로만 바꾼다. 문장에서 이름을 고르지 않는다."""
+    from iris.system.project_ops import rename_project_file, resolve_under_root
+    from iris.ui.control_bindings import (
+        _bound_session,
+        _log,
+        err_result,
+        load_user_profile,
+        ok_result,
+    )
+
+    root = str(args.get("project_root") or args.get("root") or "").strip()
+    if not root:
+        profile = load_user_profile(window._db)
+        root = (profile.project_root or "").strip()
+    src = str(args.get("path") or args.get("from") or args.get("src") or "").strip()
+    dest = str(args.get("new_path") or args.get("to") or args.get("dest") or "").strip()
+    if not root or not src or not dest:
+        return err_result("project.rename_file", "project_root, path, and new_path required")
+    try:
+        _root, src_path, src_rel = resolve_under_root(root, src)
+        _root, dest_path, dest_rel = resolve_under_root(root, dest)
+    except (OSError, ValueError) as exc:
+        return err_result("project.rename_file", str(exc))
+    if src_rel == dest_rel:
+        return ok_result(
+            "project.rename_file",
+            {"path": str(src_path), "rel_path": src_rel, "from": src_rel},
+        )
+    if not src_path.is_file():
+        return err_result("project.rename_file", "source file missing", {"path": src_rel})
+    if dest_path.exists():
+        return err_result("project.rename_file", "destination exists", {"new_path": dest_rel})
+    session, _session_err = _bound_session(window, require_workspace=False)
+    if session is not None and session.ide_id == "iris_ide" and not dest_path.exists():
+        try:
+            client = window._iris_ide_bridge_client()
+            client.rename_file(src_rel, dest_rel)
+        except Exception:
+            pass
+    if not dest_path.is_file():
+        try:
+            moved = rename_project_file(root, src_rel, dest_rel)
+        except (OSError, ValueError) as exc:
+            return err_result("project.rename_file", str(exc))
+        if not moved:
+            return err_result(
+                "project.rename_file",
+                "rename failed",
+                {"path": src_rel, "new_path": dest_rel},
+            )
+        _root, dest_path, dest_rel = resolve_under_root(root, moved)
+    _log(window, "project.rename_file", True)
+    return ok_result(
+        "project.rename_file",
+        {"path": str(dest_path), "rel_path": dest_rel, "from": src_rel},
+    )
+
+
 def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
     from iris.ui.control_bindings import (
         Path,
@@ -745,7 +804,24 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
     reg.register(
         "project.write_file",
         _first_class_ide_trigger(window, lambda args: project_write_file(window, args)),
-        summary="Write file under the bound IDE workspace; open=true reveals tab then streams chunks",
+        summary=(
+            "Write file under the bound IDE workspace. "
+            "rel_path and content are required and come from the user request. "
+            "If the user did not name a file, ask before writing. "
+            "open=true reveals the tab then streams chunks."
+        ),
+        risk="medium",
+    )
+
+    reg.register(
+        "project.rename_file",
+        _first_class_ide_trigger(window, lambda args: project_rename_file(window, args)),
+        summary=(
+            "Rename a file inside the open project. "
+            "Required: path (current relative path), new_path (new relative path). "
+            "Look up path with project.list_files or the open editor. "
+            "If either path is unknown, ask. Do not invent a filename."
+        ),
         risk="medium",
     )
 
