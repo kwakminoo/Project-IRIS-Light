@@ -197,7 +197,9 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         const original = proto.setData;
         proto.setData = function (this: DataTransfer, type: string, data: string): void {
             original.call(this, type, data);
-            if (type === 'theia-editor-dnd' || type === 'selected-tree-nodes' || type === 'tree-node') {
+            // Explorer writes workspace-prefixed tree IDs first. Only the final
+            // editor MIME contains authoritative URIs for every dragged file.
+            if (type === 'theia-editor-dnd') {
                 self.onTheiaExplorerDragMime(this);
             }
         };
@@ -229,46 +231,10 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
     /** Theia explorer MIME + UriSelection. DOM의 file: 속성은 탐색기에 없다. */
     protected urisFromDragDataTransfer(dt: DataTransfer): URI[] {
         try {
-            const fromShell = ApplicationShell.getDraggedEditorUris(dt);
-            if (fromShell.length) {
-                return fromShell;
-            }
+            return ApplicationShell.getDraggedEditorUris(dt).filter(uri => uri.scheme === 'file');
         } catch {
-            /* ignore */
+            return [];
         }
-        try {
-            const raw = dt.getData('selected-tree-nodes') || '';
-            if (raw) {
-                const ids = JSON.parse(raw) as string[];
-                const out: URI[] = [];
-                for (const id of ids) {
-                    const uri = this.uriFromTreeNodeId(id);
-                    if (uri) {
-                        out.push(uri);
-                    }
-                }
-                if (out.length) {
-                    return out;
-                }
-            }
-        } catch {
-            /* ignore */
-        }
-        try {
-            const one = dt.getData('tree-node');
-            const uri = this.uriFromTreeNodeId(one);
-            if (uri) {
-                return [uri];
-            }
-        } catch {
-            /* ignore */
-        }
-        const selected = UriSelection.getUris(this.selectionService.selection);
-        if (selected.length) {
-            return selected;
-        }
-        const editor = this.editorManager.currentEditor?.editor.uri;
-        return editor ? [editor] : [];
     }
 
     /**
