@@ -37,6 +37,31 @@ def _maybe_elevate_on_startup() -> bool:
     return False
 
 
+def _setup_file_logging() -> None:
+    """iris.* 로그를 ~/.iris-light/logs/iris.log 에 남긴다.
+
+    설정이 없으면 log.info 는 어디에도 안 남고 warning 도 숨긴 콘솔로만 가서,
+    핀 감시처럼 백그라운드에서 도는 기능이 왜 멈췄는지 알 길이 없었다."""
+    import logging
+    from logging.handlers import RotatingFileHandler
+    from pathlib import Path
+
+    try:
+        log_dir = Path.home() / ".iris-light" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            log_dir / "iris.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+        )
+    except Exception:
+        return
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%m-%d %H:%M:%S")
+    )
+    logger = logging.getLogger("iris")
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+
+
 def main() -> None:
     # Qt aborts on an unhandled Python slot exception. Persist the traceback
     # even under pythonw, whose stderr is normally None.
@@ -55,6 +80,8 @@ def main() -> None:
     sys.excepthook = report_exception
     if _maybe_elevate_on_startup():
         sys.exit(0)
+
+    _setup_file_logging()
 
     # GUI 전용 — 단독 콘솔이면 숨기고, 백그라운드 자식도 창 없이
     try:

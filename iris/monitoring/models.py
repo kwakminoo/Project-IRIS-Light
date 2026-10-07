@@ -57,6 +57,8 @@ class DetectionResult:
     confidence: float
     reason: str
     recommended_action: str
+    # 화면에 무엇이 보이는지 한 문장 — 상태가 '정상'이어도 쓸모 있는 정보
+    summary: str = ""
 
 
 @dataclass

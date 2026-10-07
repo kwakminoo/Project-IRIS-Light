@@ -439,7 +439,7 @@
   },
   {
     "name": "learning.run",
-    "summary": "Execute a learned workflow via Aloha Actor",
+    "summary": "Run a learned skill on screen (moves mouse/keyboard). args: id, params={name: value} from learning.list",
     "risk": "high",
     "confirm_required": true
   },

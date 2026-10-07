@@ -321,13 +321,22 @@ class UnifiedMonitorPanel(QWidget):
         rows: list[tuple[_WindowSnap, Optional[_MonitorMeta], Optional[PinnedTarget], tuple]] = []
         for snap in snaps:
             meta = _match_monitor(snap.info.title, monitors)
-            pin = self._pins.get(snap.info.title) if self._pins else None
+            pin = self._pins.match(snap.info.title, snap.info.hwnd) if self._pins else None
             if pin is not None and pin.last_checked_at:
                 # 이번 세션에서 분석된 창은 위의 AI 감시 위젯이 같은 내용을
                 # 더 자세히 보여 준다. DB 스냅샷은 재시작 직후처럼 아직
                 # 분석 결과가 없을 때만 쓴다.
                 meta = None
             rows.append((snap, meta, pin, _card_key(snap, pin, meta)))
+        # 고정했는데 지금 없는 창(닫힘·재부팅) — 카드가 없으면 고정을 풀 길이 없어
+        # 최대 3칸 중 한 칸을 계속 차지한다. 캡처 없는 카드로 보여 준다.
+        if self._pins is not None:
+            shown = {row[2].title.lower() for row in rows if row[2] is not None}
+            for pin in self._pins.list_pins():
+                if pin.title.lower() in shown:
+                    continue
+                snap = _WindowSnap(WindowInfo(pin.title, 0, 0, 0, 0, hwnd=0), None)
+                rows.append((snap, None, pin, _card_key(snap, pin, None)))
         keys = tuple(row[3] for row in rows)
         if keys == self._card_keys and len(self._thumbs) == len(rows):
             self._thumb_update_count += 1
@@ -414,6 +423,8 @@ class UnifiedMonitorPanel(QWidget):
         QTimer.singleShot(4_000, self._update_pin_hint)
 
     def _focus_window(self, info: WindowInfo) -> None:
+        if not info.hwnd and info.width <= 0:
+            return  # 닫힌 고정 창 카드 — 제목만 비슷한 다른 창을 0×0 으로 옮기지 않게
         ok = False
         if info.hwnd:
             ok = focus_window_by_hwnd(info.hwnd)
@@ -460,6 +471,7 @@ def _card_key(
             bool(pin.analyzing),
             pin.reason,
             pin.recommended_action,
+            pin.summary,
             pin.last_checked_at,
         )
     meta_key = None if meta is None else (meta.status, meta.last_event, meta.last_checked_at)
@@ -586,6 +598,14 @@ def _make_pin_status_widget(pin: PinnedTarget) -> QWidget:
     head_wrap.setStyleSheet("background: transparent;")
     head_wrap.setLayout(head)
     lay.addWidget(head_wrap)
+
+    if pin.summary and not pin.analyzing:
+        summary = QLabel(pin.summary[:200])
+        summary.setWordWrap(True)
+        summary.setStyleSheet(
+            "color: #cbd5e1; font-size: 10px; background: transparent; border: none;"
+        )
+        lay.addWidget(summary)
 
     if pin.reason and not pin.analyzing:
         reason = QLabel(pin.reason[:200])

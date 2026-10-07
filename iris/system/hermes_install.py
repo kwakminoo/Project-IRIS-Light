@@ -8,8 +8,10 @@ interpreter 만 받는다. OneDrive/필터 등으로 minor-version junction 생�
 의존성은 uv.lock 이 있으면 uv sync --frozen 이 우선이고, 없을 때만 pip.
 pip 는 uv.lock pin 을 재현하지 않으며 requirements.txt 는 쓰지 않는다.
 
-Python: NousResearch/hermes-agent requires-python >=3.11,<3.14 (2026-09-24).
-선호 순서는 3.11, 3.12, 3.13.
+Python: 처음엔 3.11 → 3.12 → 3.13 을 고르고, clone 한 뒤 그 저장소의 uv.lock·pyproject 가
+요구하는 범위(hermes_python_range)를 벗어나면 다시 고른다. 2026-10-02 upstream 은
+requires-python 이 >=3.11,<3.15 인데 의존성이 전부 `python_version >= '3.14'` 로 묶여
+3.11 로는 핵심 패키지가 하나도 깔리지 않았다 (ruamel 없음, 실제 사례).
 """
 
 from __future__ import annotations
@@ -104,18 +106,68 @@ def python_version(path: Path) -> tuple[int, int] | None:
     return (int(match.group(1)), int(match.group(2))) if proc.returncode == 0 and match else None
 
 
-def is_supported_hermes_python(path: Path) -> bool:
+PyRange = tuple[tuple[int, int], tuple[int, int]]  # (최소, 미만)
+
+
+def is_supported_hermes_python(path: Path, want: PyRange | None = None) -> bool:
+    lo, hi = want or (_HERMES_PYTHON_MIN, _HERMES_PYTHON_MAX_EXCLUSIVE)
     version = python_version(path)
-    return version is not None and _HERMES_PYTHON_MIN <= version < _HERMES_PYTHON_MAX_EXCLUSIVE
+    return version is not None and lo <= version < hi
 
 
-def _py_launcher_python() -> Path | None:
+def _ver(text: str) -> tuple[int, int]:
+    major, minor = text.split(".")[:2]
+    return int(major), int(minor)
+
+
+def hermes_python_range(repo: Path) -> PyRange:
+    """그 checkout 이 실제로 설치되는 Python 범위.
+
+    pyproject 의 requires-python 과 uv.lock 의 supported-markers 중 좁은 쪽."""
+    lo, hi = _HERMES_PYTHON_MIN, _HERMES_PYTHON_MAX_EXCLUSIVE
+    lock = ""
+    for name in ("pyproject.toml", "uv.lock"):
+        try:
+            text = (repo / name).read_text(encoding="utf-8", errors="replace")[:20000]
+        except OSError:
+            continue
+        if name == "uv.lock":
+            lock = text
+        m = re.search(r'(?m)^requires-python\s*=\s*"([^"]+)"', text)
+        if m:
+            if (g := re.search(r">=\s*(\d+\.\d+)", m.group(1))):
+                lo = _ver(g.group(1))
+            if (g := re.search(r"<\s*(\d+)(?:\.(\d+))?", m.group(1))):
+                hi = (int(g.group(1)), int(g.group(2) or 0))  # '<4' 처럼 주 버전만 쓰기도 한다
+    m = re.search(r"(?ms)^supported-markers\s*=\s*\[(.*?)\]", lock)
+    if m:
+        markers = re.findall(r'"([^"]+)"', m.group(1))
+        floors = [re.search(r"python_full_version\s*>=\s*'(\d+\.\d+)", x) for x in markers]
+        if markers and all(floors):  # 모든 marker 에 하한이 있을 때만 좁힌다
+            lo = max(lo, min(_ver(f.group(1)) for f in floors))
+    if hi <= lo:
+        # 상한이 없거나('>=3.11') 기본 상한보다 하한이 올라간 경우 — 빈 범위면 어떤 Python 도
+        # 통과 못 해 설치가 늘 'Python 없음'으로 끝난다. 하한 버전 하나는 받게 둔다
+        hi = (lo[0], lo[1] + 1)
+    return lo, hi
+
+
+def _launcher_flags(want: PyRange | None) -> list[str]:
+    if want is None:
+        return list(_PY_LAUNCHER_FLAGS)
+    (lo_major, lo_minor), (hi_major, hi_minor) = want
+    if lo_major != hi_major:
+        return [f"-{lo_major}"]
+    return [f"-{lo_major}.{m}" for m in range(lo_minor, hi_minor)]
+
+
+def _py_launcher_python(want: PyRange | None = None) -> Path | None:
     if sys.platform != "win32":
         return None
     py = shutil.which("py")
     if not py:
         return None
-    for flag in _PY_LAUNCHER_FLAGS:
+    for flag in _launcher_flags(want):
         try:
             proc = _run([py, flag, "-c", "import sys; print(sys.executable)"], timeout=20)
         except (OSError, subprocess.TimeoutExpired):
@@ -123,14 +175,14 @@ def _py_launcher_python() -> Path | None:
         line = (proc.stdout or "").strip().splitlines()
         if proc.returncode == 0 and line:
             p = Path(line[-1].strip())
-            if p.is_file() and is_supported_hermes_python(p):
+            if p.is_file() and is_supported_hermes_python(p, want):
                 return p
     return None
 
 
-def find_bootstrap_python() -> Path | None:
-    """Hermes venv 베이스. 3.11 → 3.12 → 3.13. Iris .venv 는 그 다음."""
-    launched = _py_launcher_python()
+def find_bootstrap_python(want: PyRange | None = None) -> Path | None:
+    """Hermes venv 베이스. 3.11 → 3.12 → 3.13 (want 가 있으면 그 범위). Iris .venv 는 그 다음."""
+    launched = _py_launcher_python(want)
     if launched is not None:
         return launched
     try:
@@ -143,21 +195,15 @@ def find_bootstrap_python() -> Path | None:
         root / ".venv" / "Scripts" / "python.exe",
         root / ".venv" / "bin" / "python",
     ):
-        if cand.is_file() and is_supported_hermes_python(cand):
+        if cand.is_file() and is_supported_hermes_python(cand, want):
             return cand
-    for name in ("python3.11", "python3.12", "python3.13", "python3", "python"):
+    for name in [f"python{f[1:]}" for f in _launcher_flags(want)] + ["python3", "python"]:
         found = shutil.which(name)
-        if found and is_supported_hermes_python(Path(found)):
+        if found and is_supported_hermes_python(Path(found), want):
             return Path(found)
-    for cand in (
-        root / ".venv" / "Scripts" / "python.exe",
-        root / ".venv" / "bin" / "python",
-    ):
-        if cand.is_file() and is_supported_hermes_python(cand):
-            return cand
     if sys.executable:
         p = Path(sys.executable)
-        if p.is_file() and is_supported_hermes_python(p):
+        if p.is_file() and is_supported_hermes_python(p, want):
             return p
     return None
 
@@ -166,9 +212,10 @@ def ensure_system_python_winget(
     *,
     run_streamed: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     on_stream: StreamFn | None = None,
+    want: PyRange | None = None,
 ) -> Path | None:
-    """winget 으로 Python 3.11 설치 시도. 이미 있으면 find_bootstrap_python."""
-    existing = find_bootstrap_python()
+    """winget 으로 Python 설치 시도 (기본 3.11, want 가 있으면 그 하한). 이미 있으면 find_bootstrap_python."""
+    existing = find_bootstrap_python(want)
     if existing is not None:
         return existing
     if sys.platform != "win32":
@@ -180,14 +227,15 @@ def ensure_system_python_winget(
         winget = str(cand) if cand.is_file() else None
     if not winget:
         return None
+    major, minor = want[0] if want else _HERMES_PYTHON_MIN
     if on_stream:
-        on_stream("시스템 Python 3.11 설치 (winget)…")
+        on_stream(f"시스템 Python {major}.{minor} 설치 (winget)…")
     cmd = [
         winget,
         "install",
         "-e",
         "--id",
-        "Python.Python.3.11",
+        f"Python.Python.{major}.{minor}",
         "--accept-package-agreements",
         "--accept-source-agreements",
         "--disable-interactivity",
@@ -218,7 +266,7 @@ def ensure_system_python_winget(
         pass
     if user or machine:
         os.environ["PATH"] = f"{user};{machine}"
-    return find_bootstrap_python()
+    return find_bootstrap_python(want)
 
 
 def _kill_hermes_tree_holders(agent: Path) -> None:
@@ -965,6 +1013,17 @@ def install_hermes_with_system_python(
             if clone.returncode != 0 or not staging.is_dir():
                 _discard_tree(staging)
                 return _fail("clone", "git clone 실패", "\n".join(log))
+            want = hermes_python_range(staging)
+            have = python_version(py)
+            log.append(f"repo python range={want} chosen={have}")
+            if have is None or not (want[0] <= have < want[1]):
+                _emit(f"이 Hermes 는 Python {want[0][0]}.{want[0][1]} 이상이 필요해요 — 다시 고릅니다…")
+                py = ensure_system_python_winget(run_streamed=run_streamed, on_stream=on_stream, want=want)
+                if py is None:
+                    _discard_tree(staging)
+                    return _fail("python", "맞는 Python 없음", f"필요 범위 {want}: py launcher·winget 실패")
+                _emit(f"베이스 Python 다시 고름 = {py} ({python_version(py)})")
+                log.append(f"rechosen python={py} version={python_version(py)}")
             return _finish_staged_install(
                 staging=staging,
                 home=home,

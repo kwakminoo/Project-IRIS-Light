@@ -63,7 +63,7 @@ class _FakeClient:
         self.raises = raises
         self.calls: list[dict] = []
 
-    def chat_once_with_images(self, model, prompt, images, *, system="", timeout_sec=90.0):
+    def chat_once_with_images(self, model, prompt, images, *, system="", timeout_sec=90.0, **_kw):
         self.calls.append(
             {"model": model, "prompt": prompt, "images": images, "system": system}
         )

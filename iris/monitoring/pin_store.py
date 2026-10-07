@@ -1,7 +1,8 @@
 """고정(pin)된 모니터링 대상 관리 — 최대 3개.
 
-hwnd는 앱을 다시 켜면 달라지므로 영속화는 창 제목으로 한다.
-실제 캡처 대상은 매 갱신마다 제목으로 현재 창 목록에서 다시 찾는다."""
+핀의 이름(키)은 고정할 때의 창 제목이다. 하지만 브라우저·편집기 제목은 탭이나
+파일을 바꿀 때마다 바뀌므로, 실제 창은 hwnd 로 먼저 찾고 제목은 그다음이다.
+hwnd 도 함께 저장한다 — IRIS 만 다시 켠 경우 대상 창은 그대로 살아 있다."""
 
 from __future__ import annotations
 
@@ -31,6 +32,43 @@ class PinnedTarget:
     recommended_action: str = ""
     last_checked_at: str = ""
     analyzing: bool = False
+    # 지금 그 창에 떠 있는 제목 (탭을 바꾸면 고정할 때 제목과 달라진다)
+    current_title: str = ""
+    summary: str = ""
+
+
+def _app_suffix(title: str) -> str:
+    """'문서 - Google Chrome' → 'google chrome'. 구분자가 없으면 빈 문자열."""
+    for sep in (" - ", " — ", " – "):
+        if sep in title:
+            return title.rsplit(sep, 1)[1].strip().lower()
+    return ""
+
+
+def _saved_hwnd_still_valid(hwnd: int, title: str) -> bool:
+    """지난 세션에 저장한 hwnd 가 아직 그 창인지.
+
+    창을 닫거나 재부팅하면 Windows 가 같은 번호를 엉뚱한 창에 다시 준다 — 그대로 믿으면
+    다른 앱 화면을 분석해 알린다. 제목이 같거나 같은 앱(제목 끝)일 때만 믿는다."""
+    import sys
+
+    if not hwnd or sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        if not user32.IsWindow(hwnd):
+            return False
+        buf = ctypes.create_unicode_buffer(512)
+        user32.GetWindowTextW(hwnd, buf, 512)
+        now = buf.value.strip()
+    except Exception:
+        return False
+    if now.lower() == title.strip().lower():
+        return True
+    suffix = _app_suffix(title)
+    return bool(suffix) and _app_suffix(now) == suffix
 
 
 class PinStore:
@@ -55,6 +93,19 @@ class PinStore:
     def is_pinned(self, title: str) -> bool:
         with self._lock:
             return self._key(title) in self._pins
+
+    def _match_locked(self, title: str, hwnd: int) -> Optional[PinnedTarget]:
+        if hwnd:
+            for t in self._pins.values():
+                if t.hwnd and t.hwnd == int(hwnd):
+                    return t
+        return self._pins.get(self._key(title))
+
+    def match(self, title: str, hwnd: int = 0) -> Optional[PinnedTarget]:
+        """창 하나가 어느 핀인지 — hwnd 가 같으면 제목이 바뀌었어도 같은 창이다."""
+        with self._lock:
+            t = self._match_locked(title, hwnd)
+            return PinnedTarget(**vars(t)) if t else None
 
     def is_full(self) -> bool:
         with self._lock:
@@ -91,8 +142,9 @@ class PinStore:
 
     def toggle(self, title: str, hwnd: int = 0) -> tuple[bool, str]:
         """(성공 여부, 사유). 실패 사유는 UI 안내용."""
-        if self.is_pinned(title):
-            self.unpin(title)
+        existing = self.match(title, hwnd)
+        if existing is not None:
+            self.unpin(existing.title)
             return True, "unpinned"
         if self.is_full():
             return False, "full"
@@ -115,11 +167,17 @@ class PinStore:
             t = self._pins.get(self._key(title))
             return PinnedTarget(**vars(t)) if t else None
 
-    def set_hwnd(self, title: str, hwnd: int) -> None:
+    def set_hwnd(self, title: str, hwnd: int, current_title: str = "") -> None:
         with self._lock:
             t = self._pins.get(self._key(title))
-            if t is not None:
-                t.hwnd = int(hwnd or 0)
+            if t is None:
+                return
+            changed = t.hwnd != int(hwnd or 0)
+            t.hwnd = int(hwnd or 0)
+            if current_title:
+                t.current_title = current_title.strip()
+            if changed:
+                self._save()
 
     def set_analyzing(self, title: str, analyzing: bool) -> None:
         with self._lock:
@@ -135,6 +193,7 @@ class PinStore:
         reason: str,
         recommended_action: str,
         checked_at: str,
+        summary: str = "",
     ) -> Optional[StatusCategory]:
         """분석 결과 반영. 직전 상태를 반환(변화 감지용, 처음이면 None)."""
         with self._lock:
@@ -146,6 +205,7 @@ class PinStore:
             t.confidence = confidence
             t.reason = reason
             t.recommended_action = recommended_action
+            t.summary = summary
             t.last_checked_at = checked_at
             t.analyzing = False
             persist_title = t.title
@@ -168,11 +228,22 @@ class PinStore:
             return
         restored: list[str] = []
         with self._lock:
-            for title in titles[:MAX_PINS]:
-                key = self._key(str(title))
+            for item in titles[:MAX_PINS]:
+                # 예전 형식은 제목 문자열 목록, 지금은 {"title", "hwnd"}
+                if isinstance(item, dict):
+                    title, hwnd = str(item.get("title") or ""), item.get("hwnd") or 0
+                else:
+                    title, hwnd = str(item), 0
+                key = self._key(title)
                 if key:
-                    name = str(title).strip()
-                    self._pins[key] = PinnedTarget(title=name)
+                    name = title.strip()
+                    try:
+                        hwnd = int(hwnd)
+                    except (TypeError, ValueError):
+                        hwnd = 0
+                    if not _saved_hwnd_still_valid(hwnd, name):
+                        hwnd = 0
+                    self._pins[key] = PinnedTarget(title=name, hwnd=hwnd)
                     restored.append(name)
         # 재시작 후에도 카드가 지난 세션의 마지막 상태를 보여줄 수 있도록 되살린다
         for name in restored:
@@ -264,7 +335,11 @@ class PinStore:
             return
         try:
             self._db.set_preference(
-                _PREF_KEY, json.dumps([t.title for t in self._pins.values()])
+                _PREF_KEY,
+                json.dumps(
+                    [{"title": t.title, "hwnd": t.hwnd} for t in self._pins.values()],
+                    ensure_ascii=False,
+                ),
             )
         except Exception:
             pass

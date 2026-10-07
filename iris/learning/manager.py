@@ -16,6 +16,7 @@ from iris.learning.models import LearningState, LearnedWorkflow, WorkflowRun
 from iris.learning.naming import generate_workflow_name
 from iris.learning.permission import PermissionPolicy, policy_for
 from iris.learning.recorder import DemonstrationRecorder
+from iris.learning.skill import Skill, SkillParam, apply_params, is_skill_file
 from iris.learning.workflow_registry import LearnedWorkflowRepository
 from iris.storage.database import Database
 from iris.storage.learning_prefs import LearningPreferences, load_learning_preferences
@@ -135,6 +136,11 @@ class LearningManager:
             raise
 
         name, summary = generate_workflow_name(events, trace)
+        # 로컬 학습기는 화면을 보고 스킬 이름·설명을 직접 짓는다
+        raw_name = str((trace.raw or {}).get("name") or "").strip()
+        if raw_name:
+            name = raw_name
+            summary = str((trace.raw or {}).get("summary") or summary)
         apps = Counter(
             e.process_name
             for e in events
@@ -206,19 +212,65 @@ class LearningManager:
     def get_learned_workflow(self, workflow_id: int) -> LearnedWorkflow | None:
         return self._registry.get(workflow_id)
 
-    def execute_workflow(self, trace_id: str, task: str = "") -> WorkflowRun:
+    def execute_workflow(
+        self, trace_id: str, task: str = "", params: dict[str, str] | None = None
+    ) -> WorkflowRun:
         wf = self._registry.get_by_trace_id(trace_id)
         workflow_id = wf.id if wf else 0
         task_text = task or (wf.name if wf else trace_id)
+        if wf is not None and is_skill_file(Path(wf.trace_path)):
+            return self._executor.execute(
+                trace_id=trace_id,
+                task=task_text,
+                workflow_id=workflow_id,
+                params=params or {},
+                skill_path=wf.trace_path,
+            )
         return self._executor.execute(
             trace_id=trace_id, task=task_text, workflow_id=workflow_id
         )
 
-    def run_learned_workflow(self, workflow_id: int, task: str = "") -> WorkflowRun:
+    def run_learned_workflow(
+        self, workflow_id: int, task: str = "", params: dict[str, str] | None = None
+    ) -> WorkflowRun:
         wf = self._registry.get(workflow_id)
         if wf is None:
             raise KeyError(f"workflow {workflow_id} not found")
-        return self.execute_workflow(wf.trace_id, task or wf.name)
+        return self.execute_workflow(wf.trace_id, task or wf.name, params)
+
+    def workflow_skill(self, workflow_id: int) -> Skill | None:
+        """로컬 학습으로 만든 업무면 스킬(단계·바꿔 넣을 칸)."""
+        wf = self._registry.get(workflow_id)
+        if wf is None or not is_skill_file(Path(wf.trace_path)):
+            return None
+        try:
+            return Skill.load(Path(wf.trace_path))
+        except Exception:
+            log.exception("skill load failed: %s", wf.trace_path)
+            return None
+
+    def update_skill_info(
+        self, workflow_id: int, *, name: str, description: str, params: list[SkillParam]
+    ) -> None:
+        """학습 직후 사용자가 이름·설명·바꿔 넣을 칸을 고친 것을 저장."""
+        wf = self._registry.get(workflow_id)
+        if wf is None:
+            raise KeyError(f"workflow {workflow_id} not found")
+        skill = self.workflow_skill(workflow_id)
+        if skill is not None:
+            skill.name, skill.description = name, description
+            apply_params(skill, params)
+            skill.save(Path(wf.trace_path))
+        self._registry.upsert(
+            trace_id=wf.trace_id,
+            name=name or wf.name,
+            summary=description,
+            status=wf.status,
+            source_session_id=wf.source_session_id,
+            trace_path=wf.trace_path,
+            primary_apps=wf.primary_apps,
+            enabled=wf.enabled,
+        )
 
     def get_workflow_run_status(self, run_id: str) -> WorkflowRun | None:
         return self._executor.get_status(run_id)

@@ -13,7 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from iris.system import hermes_install as hi
 from iris.system.setup_protocol import SetupProtocol
@@ -461,6 +461,72 @@ class HermesInstallProtocolTests(unittest.TestCase):
                 self.assertIn(str(scripts).lower(), os.environ.get("PATH", "").lower())
             finally:
                 os.environ["PATH"] = before
+
+
+class HermesPythonRangeTests(unittest.TestCase):
+    def _repo(self, td: str, pyproject: str, lock: str = "") -> Path:
+        repo = Path(td)
+        (repo / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+        if lock:
+            (repo / "uv.lock").write_text(lock, encoding="utf-8")
+        return repo
+
+    def test_lock_markers_raise_the_floor(self) -> None:
+        # 2026-10-02 upstream: requires-python 은 3.11 부터인데 lock 은 3.14 전용
+        lock = (
+            'version = 1\nrequires-python = ">=3.11, <3.15"\n'
+            "supported-markers = [\n    \"python_full_version >= '3.14'\",\n]\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._repo(td, '[project]\nrequires-python = ">=3.11,<3.15"\n', lock)
+            self.assertEqual(hi.hermes_python_range(repo), ((3, 14), (3, 15)))
+            self.assertEqual(hi._launcher_flags(((3, 14), (3, 15))), ["-3.14"])
+
+    def test_without_lock_uses_requires_python(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._repo(td, '[project]\nrequires-python = ">=3.11,<3.14"\n')
+            self.assertEqual(hi.hermes_python_range(repo), ((3, 11), (3, 14)))
+
+    def test_mixed_markers_do_not_narrow(self) -> None:
+        lock = (
+            'requires-python = ">=3.11, <3.15"\n'
+            "supported-markers = [\n    \"python_full_version >= '3.14'\",\n    \"sys_platform == 'win32'\",\n]\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._repo(td, '[project]\nrequires-python = ">=3.11,<3.15"\n', lock)
+            self.assertEqual(hi.hermes_python_range(repo), ((3, 11), (3, 15)))
+
+    def test_wrong_python_is_rechosen_after_clone(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "hermes"
+            home.mkdir()
+            seen: list = []
+
+            def run(cmd, **kwargs):
+                if "clone" in cmd:
+                    dest = Path(cmd[-1])
+                    dest.mkdir(parents=True)
+                    (dest / "pyproject.toml").write_text('requires-python = ">=3.14,<3.15"\n', encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            def ensure(**kwargs):
+                seen.append(kwargs.get("want"))
+                return Path("py314") if kwargs.get("want") else Path("py311")
+
+            finish = MagicMock(return_value=hi.InstallResult(True, "ok", "ok"))
+            with (
+                patch.object(hi.gw, "hermes_home", return_value=home),
+                patch.object(hi.gw, "probe_hermes_runtime", return_value=(False, "missing")),
+                patch.object(hi, "ensure_system_python_winget", side_effect=ensure),
+                patch.object(hi, "python_version", side_effect=lambda p: (3, 14) if str(p) == "py314" else (3, 11)),
+                patch.object(hi.shutil, "which", side_effect=lambda n: "git" if n == "git" else None),
+                patch.object(hi, "_run", side_effect=run),
+                patch.object(hi, "_finish_staged_install", finish),
+            ):
+                result = hi.install_hermes_with_system_python()
+            self.assertTrue(result.ok)
+            self.assertEqual(seen, [None, ((3, 14), (3, 15))])
+            self.assertEqual(finish.call_args.kwargs["py"], Path("py314"))
 
 
 if __name__ == "__main__":

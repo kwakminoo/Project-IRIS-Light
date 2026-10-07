@@ -38,7 +38,7 @@ from iris.audio.workers import (
     TTSWarmupWorker,
 )
 from iris.config.settings import load_settings
-from iris.core.activity_sink import register_activity_sink
+from iris.core.activity_sink import push_activity_line, register_activity_sink
 from iris.core.state_machine import AppState, StateMachine
 from iris.infrastructure.ollama_client import OllamaModelInfo, apply_ollama_cleanup
 from iris.knowledge.iris_wiki import IrisWiki
@@ -160,22 +160,16 @@ from iris.ui.workers.api_provider_workers import OpenAICompatChatWorker
 from iris.ui.workers.learning_workers import LearningProcessWorker
 from iris.learning.manager import LearningManager
 from iris.learning.models import LearningState
-from iris.learning.aloha_learner import AlohaLearner, MockLearner
+from iris.learning.aloha_learner import MockLearner
+from iris.learning.local_executor import LocalSkillExecutor
+from iris.learning.local_learner import LocalSkillLearner
 from iris.learning.aloha_executor import MockExecutor
-from iris.learning.vlm_policy import (
-    evaluate_api_fallback,
-    evaluate_ollama_model,
-    list_learning_vlm_models,
-)
-from iris.learning.aloha_learner import _load_vlm_keys
 from iris.learning.hook_probe import probe_input_hooks
 from iris.learning.permission import policy_for, request_elevation_hint
 from iris.storage.learning_prefs import (
     LearningPreferences,
     load_learning_preferences,
-    save_learning_preferences,
 )
-from iris.ui.learning.vlm_guide_dialog import VlmGuideDialog
 from iris.infrastructure.ollama_client import OllamaClient
 from iris.ui.settings.settings_dialog import SettingsDialog
 from iris.ui.window.startup_intro import StartupIntroAnimator, suppress_ready_status
@@ -227,6 +221,39 @@ _TODAY_SEARCH_WAIT_MS = 8000
 _EMBED_REWARM_SEC = 600
 _ASSISTANT_RIGHT_MIN = 220
 _ASSISTANT_CENTER_MIN = 340
+
+
+def is_pinned_status_question(text: str) -> bool:
+    """'고정한 창 어때?'처럼 감시 결과를 묻는 말인지.
+
+    다른 경로보다 먼저 가로채므로 좁게 잡는다 — '고정한 창 해제해줘', '모니터링 화면 열어줘',
+    '핀터레스트 화면 열어줘' 같은 요청을 상태 보고로 삼키면 안 된다."""
+    import re
+
+    t = text.strip()
+    if not re.search(r"(고정|📌|감시|모니터링)", t):
+        return False
+    if re.search(r"(해제|풀어|풀기|빼줘|빼 줘|열어|닫아|켜줘|켜 줘|꺼줘|꺼 줘|추가|삭제|고정해|감시해)", t):
+        return False
+    return bool(re.search(r"(어때|어떻|상태|괜찮|문제|에러|별일|뭐\s*(하|해|떠|보))", t))
+
+
+def _pinned_status_block(window: object) -> str:
+    """고정(📌)해서 감시 중인 창의 최신 분석 — "고정한 창 지금 어때?"에 답하려고."""
+    monitor = getattr(window, "_pinned_monitor", None)
+    if monitor is None:
+        return ""
+    try:
+        lines = monitor.status_lines()
+    except Exception:
+        return ""
+    if not lines:
+        return ""
+    return (
+        "[고정 창 감시 현황] 사용자가 📌로 고정한 창을 IRIS가 화면이 바뀔 때마다 화면으로 "
+        "분석한 최신 결과다. 고정한 창·감시 중인 창·모니터링에 대해 물으면 이걸로 답하고, "
+        "여기 없는 내용을 화면에서 본 것처럼 지어내지 마라.\n" + "\n".join(lines)
+    )
 
 
 class MainWindow(QMainWindow):
@@ -510,9 +537,17 @@ class MainWindow(QMainWindow):
                 learning_prefs=self._learning_prefs,
             )
         else:
+            from iris.learning.workflow_registry import LearnedWorkflowRepository
+
             self._learning = LearningManager(
                 self._db,
-                learner=self._build_aloha_learner(),
+                learner=self._build_learner(),
+                executor=LocalSkillExecutor(
+                    LearnedWorkflowRepository(self._db),
+                    ollama_base_url=self._settings.ollama_base_url,
+                    model_provider=self._learning_vision_model,
+                    on_progress=push_activity_line,
+                ),
                 on_state=self._on_learning_state,
                 on_activity=lambda line: self._live_activity.append_instant_line(line)
                 if hasattr(self, "_live_activity")
@@ -705,7 +740,7 @@ class MainWindow(QMainWindow):
         self._monitor.set_database(self._db)
         self._monitor.setMinimumHeight(160)
 
-        # 고정(📌) 창 AI 감시 — 최대 3개, 30초 주기로 화면을 분석해 상태 변화를 알림
+        # 고정(📌) 창 AI 감시 — 최대 3개, 1초마다 화면 변화를 보고 바뀌면 바로 분석해 상태 변화를 알림
         self._pin_store = PinStore(self._db)
         self._pinned_monitor = PinnedMonitorService(
             self._pin_store,
@@ -717,6 +752,8 @@ class MainWindow(QMainWindow):
         self._monitor.pin_changed.connect(self._on_pin_changed)
         self._pinned_monitor.updated.connect(self._monitor.rerender_pins)
         self._pinned_monitor.report.connect(self._on_pinned_report)
+        self._pinned_monitor.vision_missing.connect(self._on_monitor_vision_missing)
+        self._vision_pull_running = False
         self._pinned_monitor.start()
 
         # 알림·전화 낭독 — 채팅 TTS와 분리된 저지연 경로
@@ -3094,18 +3131,84 @@ class MainWindow(QMainWindow):
 
         return False
 
+    def _pin_target_id(self, title: str) -> int:
+        """고정 창의 targets 행 id — 알림 쿨다운을 창마다 따로 세려고 쓴다."""
+        key = (title or "").strip().lower()
+        try:
+            for row in self._db.list_targets(True):
+                if str(row["title"] or "").strip().lower() == key:
+                    return int(row["id"])
+        except Exception:
+            pass
+        return 0
+
+    def _on_monitor_vision_missing(self, reason: str) -> None:
+        """고정 감시·업무 학습에 쓸 '화면을 보는' 모델이 없다 — 받을지 묻는다."""
+        if self._vision_pull_running:
+            return
+        from PyQt6.QtWidgets import QMessageBox
+
+        from iris.infrastructure.local_vision import (
+            DEFAULT_VISION_MODEL_SIZE_GB,
+            preferred_vision_model,
+        )
+
+        model = preferred_vision_model()
+        box = QMessageBox(self)
+        box.setWindowTitle("화면 분석 모델 필요")
+        box.setIcon(QMessageBox.Icon.Question)
+        feature = "업무 학습" if reason == "업무 학습" else "고정한 창 분석"
+        box.setText(f"{feature}에는 화면을 볼 수 있는 로컬 모델이 필요해요.")
+        box.setInformativeText(
+            f"{model} (약 {DEFAULT_VISION_MODEL_SIZE_GB:.0f}GB)을 Ollama로 받을까요?\n"
+            "받는 동안에도 IRIS는 그대로 쓸 수 있어요. 고정 창 분석과 업무 학습이 같이 써요."
+        )
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            self._live_activity.append_instant_line("화면 분석 모델 설치를 건너뜀")
+            return
+        self._start_vision_model_pull(model)
+
+    def _start_vision_model_pull(self, model: str) -> None:
+        import threading
+
+        from iris.infrastructure.local_vision import pull_model
+
+        self._vision_pull_running = True
+        self._live_activity.append_instant_line(f"{model} 받는 중…")
+
+        def progress(status: str, pct: object) -> None:
+            if isinstance(pct, int) and pct % 10 == 0:
+                push_activity_line(f"{model} 받는 중 {pct}%")
+
+        def run() -> None:
+            err = pull_model(self._settings.ollama_base_url, model, progress)
+            self._vision_pull_running = False
+            if err:
+                push_activity_line(f"{model} 설치 실패: {err}")
+                self._pinned_monitor.allow_vision_prompt_again()
+            else:
+                push_activity_line(f"{model} 설치 완료 — 고정 창 분석을 시작해요")
+                self._pinned_monitor.allow_vision_prompt_again()
+                self._pinned_monitor._rerun_requested.emit()
+
+        threading.Thread(target=run, daemon=True, name="iris-vision-pull").start()
+
     def _on_pinned_report(self, title: str, category: str, headline: str, detail: str) -> None:
         """감시 중인 창의 상태가 주의 필요로 바뀐 순간 — 알림 패널에 띄운다."""
+        # 쿨다운은 창마다 — 한 창의 에러 알림이 다른 창의 에러 알림을 막지 않게
+        target_id = self._pin_target_id(title)
         suppressed = None
         try:
-            # target_id 0 = 고정 감시(테이블 등록 대상 아님) — 카테고리 쿨다운만 적용
-            suppressed = self._notif_policy.should_suppress(0, category)
+            suppressed = self._notif_policy.should_suppress(target_id, category)
         except Exception:
             suppressed = None
         if suppressed:
             return
         self._notes.try_add_alert(
-            target_id=0,
+            target_id=target_id,
             category=category,
             title=f"{headline} — {title[:40]}",
             message=detail or headline,
@@ -3115,8 +3218,10 @@ class MainWindow(QMainWindow):
         self._speak_alert(notification_announcement(headline, title[:40]))
         self._refresh_voice_hint()
         try:
-            self._notif_policy.mark_shown(0, category)
-            self._notif_policy.log_notification(0, 0, category, title, detail or headline)
+            self._notif_policy.mark_shown(target_id, category)
+            self._notif_policy.log_notification(
+                target_id or None, 0, category, title, detail or headline
+            )
         except Exception:
             pass
 
@@ -3672,6 +3777,108 @@ class MainWindow(QMainWindow):
         self._ext_context = None
         self._reply_extension(turn_id, f"MCP/Skill 설치 실패: {err}")
 
+    def _try_local_pinned_status(self, turn: UserTurn) -> bool:
+        """'고정한 창 지금 어때?' — 감시 결과를 모델 없이 그대로 답한다 (지어낼 일이 없게)."""
+        if not is_pinned_status_question(turn.text or ""):
+            return False
+        monitor = getattr(self, "_pinned_monitor", None)
+        if monitor is None:
+            return False
+        lines = monitor.status_lines()
+        if lines:
+            msg = "고정한 창 상태예요 (화면이 바뀌면 몇 초 안에 다시 봐요).\n" + "\n".join(lines)
+            monitor.analyze_soon()
+        else:
+            msg = "고정한 창이 없어요. 모니터 패널에서 창 카드의 📌를 누르면 그 창을 지켜볼게요."
+        display = self._format_user_turn_content(turn)
+        self._chat.append_message_instant("You", display)
+        self._record_history("user", display)
+        self._chat.append_message_instant("Iris", msg)
+        self._record_history("assistant", msg)
+        self._finish_current_turn(turn.id, open_followup=False)
+        return True
+
+    def _try_local_skill_run(self, turn: UserTurn) -> bool:
+        """'나와의 채팅에 "안녕"이라고 보내줘' → 배운 스킬을 확인 창을 거쳐 실행."""
+        from iris.learning.skill_router import SkillInfo, match_skill
+
+        mgr = getattr(self, "_learning", None)
+        if mgr is None or not hasattr(mgr, "workflow_skill"):
+            return False
+        infos: list[SkillInfo] = []
+        skills = {}
+        try:
+            for wf in mgr.list_learned_workflows(enabled_only=True):
+                sk = mgr.workflow_skill(wf.id)
+                if sk is None:
+                    continue
+                skills[wf.id] = sk
+                infos.append(
+                    SkillInfo(wf.id, wf.name, wf.summary, wf.primary_apps,
+                              [(p.name, p.label, p.example) for p in sk.params])
+                )
+        except Exception:
+            return False
+        match = match_skill(turn.text or "", infos)
+        if match is None:
+            return False
+
+        display = self._format_user_turn_content(turn)
+        self._chat.append_message_instant("You", display)
+        self._record_history("user", display)
+
+        def reply(msg: str) -> None:
+            self._chat.append_message_instant("Iris", msg)
+            self._record_history("assistant", msg)
+
+        from iris.ui.learning.skill_review_dialog import SkillRunDialog
+
+        skill = skills[match.workflow_id]
+        dlg = SkillRunDialog(skill, match.params, parent=self)
+        if not dlg.exec():
+            reply(f"'{match.name}' 실행을 취소했어요.")
+            self._finish_current_turn(turn.id, open_followup=False)
+            return True
+        try:
+            run = mgr.run_learned_workflow(match.workflow_id, turn.text or "", dlg.values())
+        except Exception as exc:  # noqa: BLE001
+            reply(f"'{match.name}'을(를) 실행하지 못했어요: {exc}")
+            self._finish_current_turn(turn.id, open_followup=False)
+            return True
+        if run.status == "failed":
+            reply(f"'{match.name}'을(를) 실행하지 못했어요: {run.message}")
+            self._finish_current_turn(turn.id, open_followup=False)
+            return True
+        reply(
+            f"'{match.name}'을(를) 실행할게요. 마우스를 움직이거나 Esc를 누르면 멈춰요."
+        )
+        self._finish_current_turn(turn.id, open_followup=False)
+        self._watch_skill_run(run.run_id, match.name)
+        return True
+
+    def _watch_skill_run(self, run_id: str, name: str) -> None:
+        """실행이 끝나면 결과를 채팅에 남긴다."""
+        timer = QTimer(self)
+        timer.setInterval(500)
+
+        def poll() -> None:
+            run = self._learning.get_workflow_run_status(run_id)
+            if run is None or run.status in {"running", "queued"}:
+                return
+            timer.stop()
+            timer.deleteLater()
+            if run.status == "succeeded":
+                msg = f"'{name}' 끝났어요 ({run.message})."
+            elif run.status == "cancelled":
+                msg = f"'{name}'을(를) 멈췄어요 — {run.message}"
+            else:
+                msg = f"'{name}' 실행이 중간에 막혔어요 — {run.message}"
+            self._chat.append_message_instant("Iris", msg)
+            self._record_history("assistant", msg)
+
+        timer.timeout.connect(poll)
+        timer.start()
+
     def _try_local_wiki_save(self, turn: UserTurn) -> bool:
         from iris.knowledge.wiki_import_ops import import_to_wiki, save_answer_to_wiki
         from iris.knowledge.wiki_save_intent import parse_wiki_save_request
@@ -3863,6 +4070,13 @@ class MainWindow(QMainWindow):
 
         if not wiki_requests_go_to_hermes() and try_wiki_command(self, turn):
             return
+        # 배운 업무(스킬) — Hermes 가 연결돼 있으면 모델이 learning.run 을 부르고,
+        # 꺼져 있거나 죽어 있으면 여기서 이름으로 바로 고른다 (실제로 Hermes 가 죽어 실행 못 함)
+        if self._try_local_pinned_status(turn):
+            return
+        if not (self._use_hermes_backend() and self._hermes_online):
+            if self._try_local_skill_run(turn):
+                return
         # Hermes가 켜져 있으면 여섯 의도는 모델의 iris_invoke. 꺼져 있을 때만 로컬 정규식.
         owns = hermes_owns_local_intents(self._use_hermes_backend())
         if owns:
@@ -5488,18 +5702,22 @@ class MainWindow(QMainWindow):
             return
         self._sync_voice_conversation_state()
 
-    def _build_aloha_learner(self) -> AlohaLearner:
-        prefs = getattr(self, "_learning_prefs", None) or load_learning_preferences(self._db)
-        model = prefs.vlm_model or (self._settings.ollama_model or "").strip()
-        provider = prefs.vlm_provider or "auto"
-        if provider == "auto":
-            provider = "ollama"
-        return AlohaLearner(
-            api_provider=provider,
-            ollama_model=model if provider == "ollama" else prefs.vlm_model,
-            openai_model=prefs.api_fallback_model or "gpt-4o",
-            claude_model=prefs.api_fallback_model or "claude-sonnet-4-20250514",
-            ollama_base_url=self._settings.ollama_base_url,
+    def _learning_vision_model(self) -> str | None:
+        """업무 학습·실행에 쓸 '화면을 보는' 로컬 모델 (없으면 None)."""
+        from iris.infrastructure.local_vision import resolve_vision_model
+
+        model, _why = resolve_vision_model(
+            OllamaClient(self._settings.ollama_base_url),
+            (self._learning_prefs.vlm_model or "").strip(),
+        )
+        return model
+
+    def _build_learner(self) -> LocalSkillLearner:
+        """녹화 → 스킬. 클라우드 API 없이 로컬 비전 모델(qwen2.5vl:3b)로 클릭마다 화면을 본다."""
+        return LocalSkillLearner(
+            self._settings.ollama_base_url,
+            self._learning_vision_model,
+            on_progress=push_activity_line,
         )
 
     def _iris_learning_hwnds(self) -> list[int]:
@@ -5527,102 +5745,13 @@ class MainWindow(QMainWindow):
             self._learning.recover_to_idle()
 
     def _resolve_learning_vlm_or_guide(self) -> bool:
-        """True면 녹화 시작 진행. False면 취소."""
-        prefs = self._learning_prefs
-        client = OllamaClient(self._settings.ollama_base_url)
-        current = (prefs.vlm_model or self._settings.ollama_model or "").strip()
-        verdict = evaluate_ollama_model(client, current)
+        """True면 녹화 시작. 화면을 보는 모델이 없으면 받을지 묻는다.
 
-        # prefs에 API fallback이 명시되고 ollama가 실패면 API 평가
-        keys = _load_vlm_keys()
-        if not verdict.ok and prefs.api_fallback_provider and prefs.api_fallback_model:
-            has = bool(
-                keys.get("OPENAI_API_KEY")
-                or keys.get("IRIS_OPENAI_API_KEY")
-                or keys.get("ANTHROPIC_API_KEY")
-                or keys.get("IRIS_ANTHROPIC_API_KEY")
-            )
-            api_v = evaluate_api_fallback(
-                prefs.api_fallback_provider, prefs.api_fallback_model, has_key=has
-            )
-            if api_v.ok:
-                self._learning.set_learner(
-                    AlohaLearner(
-                        api_provider=api_v.provider,
-                        openai_model=api_v.model,
-                        claude_model=api_v.model,
-                        ollama_base_url=self._settings.ollama_base_url,
-                    )
-                )
-                self._learning.set_record_only(False)
-                return True
-
-        if verdict.ok:
-            self._learning.set_learner(
-                AlohaLearner(
-                    api_provider="ollama",
-                    ollama_model=verdict.model,
-                    ollama_base_url=self._settings.ollama_base_url,
-                )
-            )
-            self._learning.set_record_only(False)
-            prefs.vlm_provider = "ollama"
-            prefs.vlm_model = verdict.model
-            self._learning_prefs = prefs
-            save_learning_preferences(self._db, prefs)
+        모델이 없어도 녹화는 한다 — 학습은 녹화를 끝낼 때 하므로 그 사이에 받아지면 되고,
+        끝까지 없으면 클릭 설명 없이(그림 맞추기로만 실행하는) 스킬이 된다."""
+        if self._learning_vision_model():
             return True
-
-        # 안내 다이얼로그
-        ollama_opts = [
-            (m.name, reason) for m, reason in list_learning_vlm_models(client)
-        ]
-        api_opts: list[tuple[str, str, str]] = []
-        if keys.get("OPENAI_API_KEY") or keys.get("IRIS_OPENAI_API_KEY"):
-            api_opts.append(("openai", "gpt-4o", "gpt-4o (OpenAI Vision)"))
-            api_opts.append(("openai", "gpt-4.1", "gpt-4.1 (OpenAI Vision)"))
-        if keys.get("ANTHROPIC_API_KEY") or keys.get("IRIS_ANTHROPIC_API_KEY"):
-            api_opts.append(
-                ("anthropic", "claude-sonnet-4-20250514", "Claude Sonnet (Vision)")
-            )
-
-        dlg = VlmGuideDialog(
-            verdict=verdict,
-            ollama_options=ollama_opts,
-            api_options=api_opts,
-            parent=self,
-        )
-        if not dlg.exec():
-            return False
-        choice = dlg.choice()
-        if choice == VlmGuideDialog.RESULT_CANCEL:
-            return False
-        if choice == VlmGuideDialog.RESULT_RECORD_ONLY:
-            self._learning.set_record_only(True)
-            self._live_activity.append_instant_line(
-                "VLM 없이 녹화만 진행합니다 (pending_vlm)."
-            )
-            return True
-        # USE_VLM
-        provider = dlg.selected_provider()
-        model = dlg.selected_model()
-        prefs.vlm_provider = provider
-        prefs.vlm_model = model
-        if provider in {"openai", "anthropic"}:
-            prefs.api_fallback_provider = provider
-            prefs.api_fallback_model = model
-        self._learning_prefs = prefs
-        save_learning_preferences(self._db, prefs)
-        self._learning.set_learning_prefs(prefs)
-        self._learning.set_learner(
-            AlohaLearner(
-                api_provider=provider,
-                ollama_model=model if provider == "ollama" else "",
-                openai_model=model if provider == "openai" else "gpt-4o",
-                claude_model=model if provider in {"anthropic", "claude"} else "",
-                ollama_base_url=self._settings.ollama_base_url,
-            )
-        )
-        self._learning.set_record_only(False)
+        self._on_monitor_vision_missing("업무 학습")
         return True
 
     def _start_learning_session(self) -> None:
@@ -5687,7 +5816,34 @@ class MainWindow(QMainWindow):
         self._learning_worker = None
         payload = result if isinstance(result, dict) else {}
         self._learning.mark_success(payload)
+        self._review_learned_skill(payload)
         self._sync_learning_wiki()
+
+    def _review_learned_skill(self, payload: dict) -> None:
+        """방금 배운 스킬의 이름·바꿔 넣을 칸을 사용자가 확인한다."""
+        try:
+            wid = int(payload.get("workflow_id") or 0)
+        except (TypeError, ValueError):
+            return
+        skill = self._learning.workflow_skill(wid) if wid else None
+        if skill is None:
+            return
+        from iris.ui.learning.skill_review_dialog import SkillReviewDialog
+
+        dlg = SkillReviewDialog(skill, parent=self)
+        if not dlg.exec():
+            self._live_activity.append_instant_line(f"스킬 '{skill.name}' 저장됨 (이름은 나중에 바꿀 수 있어요)")
+            return
+        try:
+            self._learning.update_skill_info(
+                wid,
+                name=dlg.result_name(),
+                description=dlg.result_description(),
+                params=dlg.result_params(),
+            )
+            self._live_activity.append_instant_line(f"스킬 등록: {dlg.result_name()}")
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(f"스킬 저장 실패: {str(exc)[:80]}")
 
     def _on_learning_failed(self, err: str) -> None:
         self._learning_worker = None
@@ -7065,7 +7221,11 @@ class MainWindow(QMainWindow):
             "(search thumbnail, og image, or page asset), include it inline as "
             "markdown ![short label](https://...png|jpg|gif|webp). "
             "Iris shows those images in the chat; users can click to enlarge. "
-            "업무 학습(화면 조작 녹화 시작/종료): learning.start / learning.stop. 이미 배운 업무 실행: learning.run. "
+            "업무 학습(화면 조작 녹화 시작/종료): learning.start / learning.stop. "
+            "이미 배운 업무(스킬) 실행: learning.list 로 이름·params 를 보고 learning.run (id, params). "
+            "params 는 스킬마다 다르다 (예: {\"text\": \"내일 9시 회의\"}). 사용자가 값을 말하지 않았으면 "
+            "녹화 때 값(example)으로 실행하지 말고 무엇을 넣을지 먼저 물어라. "
+            "learning.run 은 마우스·키보드를 실제로 움직이니 실행 전에 무엇을 할지 한 줄로 알려라. "
             "위키에 저장: Hermes가 켜져 있으면 문장 키워드로 가로채지 않는다. "
             "PDF·URL·파일은 wiki.import_content (source, mode=raw|summarize). "
             "직전 답변은 wiki.write_user_note (title + content, optional source_url). "
@@ -7152,6 +7312,7 @@ class MainWindow(QMainWindow):
             payload.insert(at, {"role": "system", "content": content})
 
         _before_user(traits)
+        _before_user(_pinned_status_block(self))
         _before_user(wiki_notes)
         _before_user(code_notes)
         if past:
@@ -9106,7 +9267,7 @@ class MainWindow(QMainWindow):
                 self._learning_prefs = sel.learning_prefs
                 self._learning.set_learning_prefs(self._learning_prefs)
                 if not self._test_mode:
-                    self._learning.set_learner(self._build_aloha_learner())
+                    self._learning.set_learner(self._build_learner())
             self._status_header.set_tts_status(self._tts_idle_status())
             self._saved_model = sel.ollama_model.strip()
             if self._saved_model:

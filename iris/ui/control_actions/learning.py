@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from iris.system.control_surface import (
     ActionRegistry,
 )
 from iris.ui.control_actions.hosts import LearningHost
+
+def _skill_params(mgr: Any, workflow_id: int) -> list[dict[str, str]]:
+    """실행할 때 바꿔 넣을 칸 — learning.run 의 params 키."""
+    skill = mgr.workflow_skill(workflow_id) if hasattr(mgr, "workflow_skill") else None
+    if skill is None:
+        return []
+    return [{"name": p.name, "label": p.label, "example": p.example} for p in skill.params]
+
 
 def register_learning_actions(window: LearningHost, reg: ActionRegistry) -> None:
     from iris.ui.control_bindings import (
@@ -33,6 +43,7 @@ def register_learning_actions(window: LearningHost, reg: ActionRegistry) -> None
                     "run_count": wf.run_count,
                     "enabled": bool(wf.enabled),
                     "trace_path": wf.trace_path,
+                    "params": _skill_params(mgr, wf.id),
                 }
             )
         return ok_result("learning.list", {"workflows": items})
@@ -70,11 +81,15 @@ def register_learning_actions(window: LearningHost, reg: ActionRegistry) -> None
         task = str(args.get("task") or "").strip()
         wid = args.get("id") or args.get("workflow_id")
         trace_id = str(args.get("trace_id") or "").strip()
+        raw_params = args.get("params") or {}
+        params = (
+            {str(k): str(v) for k, v in raw_params.items()} if isinstance(raw_params, dict) else {}
+        )
         try:
             if wid is not None:
-                run = mgr.run_learned_workflow(int(wid), task)
+                run = mgr.run_learned_workflow(int(wid), task, params)
             elif trace_id:
-                run = mgr.execute_workflow(trace_id, task)
+                run = mgr.execute_workflow(trace_id, task, params)
             else:
                 return err_result("learning.run", "id or trace_id required")
         except Exception as exc:
@@ -183,7 +198,10 @@ def register_learning_actions(window: LearningHost, reg: ActionRegistry) -> None
     reg.register(
         "learning.run",
         learning_run,
-        summary="Execute a learned workflow via Aloha Actor",
+        summary=(
+            "Run a learned skill on screen (moves mouse/keyboard). "
+            "args: id, params={name: value} from learning.list"
+        ),
         risk="high",
         confirm_required=not policy_for(
             getattr(getattr(window, "_learning_prefs", None), "permission_level", "normal")

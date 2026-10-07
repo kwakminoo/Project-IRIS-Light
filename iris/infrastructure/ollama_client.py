@@ -554,8 +554,14 @@ class OllamaClient:
         *,
         system: str = "",
         timeout_sec: float = 90.0,
+        num_ctx: int | None = None,
+        keep_alive: str | None = None,
     ) -> str:
         """멀티모달 단발 호출 — 스트림 없이 최종 content만 반환.
+
+        num_ctx 를 주지 않으면 Ollama 기본 컨텍스트로 올라간다. 이 PC(6GB GPU)에서는
+        qwen2.5vl:3b 가 8GB 로 잡혀 대부분 CPU 에서 돌았고 한 번에 3분이 넘게 걸렸다.
+        8192 를 주면 3GB 로 GPU 에 다 올라가 2~3초면 끝난다.
 
         이미지는 /api/chat의 messages[].images (base64 PNG)로 보낸다.
         모델이 멀티모달이 아니면 이미지를 무시하고 텍스트만 보므로,
@@ -573,12 +579,16 @@ class OllamaClient:
             messages.append({"role": "system", "content": system.strip()})
         messages.append(message)
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
             "think": False,
         }
+        if num_ctx:
+            payload["options"] = {"num_ctx": int(num_ctx), "temperature": 0}
+        if keep_alive:
+            payload["keep_alive"] = keep_alive
         req = Request(
             f"{self.base_url}/api/chat",
             data=json.dumps(payload).encode("utf-8"),
