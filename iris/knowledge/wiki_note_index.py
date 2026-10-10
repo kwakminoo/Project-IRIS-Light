@@ -19,8 +19,6 @@ from iris.storage.database import Database
 
 _RRF_K = 60
 _POOL = 40
-_EXCERPT = 800
-_TOTAL = 2400
 _TOP_K = 3
 
 _HEADER = (
@@ -467,8 +465,6 @@ def search_notes(
         if is_sensitive(body):
             continue
         excerpt = body.strip()
-        if len(excerpt) > _EXCERPT:
-            excerpt = excerpt[:_EXCERPT]
         hits.append(
             NoteHit(
                 rel_path=str(row["rel_path"]),
@@ -503,19 +499,12 @@ def format_note_prompt(hits: list[NoteHit]) -> str:
     if not hits:
         return ""
     blocks = [_HEADER]
-    used = 0
     for hit in hits:
         piece = hit.excerpt.strip()
-        room = _TOTAL - used
-        if room <= 0:
-            break
-        if len(piece) > room:
-            piece = piece[:room]
         if not piece:
             continue
         title = hit.title or hit.rel_path
         blocks.append(f"### {title} (user/{hit.rel_path})\n{piece}\n")
-        used += len(piece)
     if len(blocks) == 1:
         return ""
     return "\n".join(blocks).strip() + "\n"

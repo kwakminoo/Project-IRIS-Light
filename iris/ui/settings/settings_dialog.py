@@ -58,11 +58,6 @@ from iris.infrastructure.external_api_keys import (
 )
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.storage.database import Database
-from iris.storage.email_accounts import (
-    add_email_account,
-    load_email_accounts,
-    remove_email_account,
-)
 from iris.storage.voice_prefs import (
     VoicePreferences,
     default_voice_data_dir,
@@ -91,11 +86,11 @@ from iris.learning.aloha_runtime import bootstrap_runtime, runtime_status
 from iris.learning.hook_probe import probe_input_hooks
 from iris.storage.user_profile import UserProfile, load_user_profile, save_user_profile
 from iris.system.ide_launcher import get_ide_spec, ide_catalog, is_ide_installed
-from iris.ui.workers.email_workers import EmailVerifyWorker
 from iris.ui.widgets.ide_icons import ide_icon_for, show_ide_not_installed_dialog
 from iris.ui.widgets.mic_input_meter import MicThresholdBar
 from iris.ui.settings import settings_service
-from iris.ui.settings.email_connect_guide import build_email_connect_panel
+from iris.ui.settings.busy_ring import SettingsBusyOverlay
+from iris.ui.settings.email_connect_guide import EmailAccountBox
 from iris.ui.settings.free_llm_list import build_free_llm_list
 from iris.ui.settings.hud_dialog import (
     build_chat_title_box,
@@ -112,6 +107,7 @@ from iris.ui.settings.history_failover_box import (
     save_history_failover,
 )
 from iris.ui.settings.routines_box import build_routines_box
+from iris.ui.settings.update_notify_box import UpdateNotifyBox, save_update_notify_box
 from iris.ui.settings.voice_runtime_status import VoiceRuntimeStatusWidget
 from iris.ui.shared.theme_tokens import TOKENS
 
@@ -267,7 +263,7 @@ class SettingsDialog(QDialog):
         self._db = db
         self._wiki = IrisWiki()
         self._result: LightSettingsSelection | None = None
-        self._accounts = load_email_accounts(db) if db is not None else []
+        self._email_box: EmailAccountBox | None = None
         self._voice_prefs = load_voice_preferences(db) if db is not None else VoicePreferences()
         self._learning_prefs = (
             load_learning_preferences(db) if db is not None else LearningPreferences()
@@ -293,7 +289,6 @@ class SettingsDialog(QDialog):
         self._voice_refs_worker: _DeferredVoiceRefsWorker | None = None
         self._aloha_status_worker: _DeferredAlohaStatusWorker | None = None
         self._setup_network_worker: _DeferredSetupNetworkWorker | None = None
-        self._verify_worker: EmailVerifyWorker | None = None
         self._api_providers: list[ApiProvider] = (
             load_api_providers(db) if db is not None else []
         )
@@ -321,9 +316,59 @@ class SettingsDialog(QDialog):
         )
 
         scroll, content_lay = make_scroll_body()
-        from iris.ui.settings.typography_box import build_typography_box
-        content_lay.addWidget(build_typography_box(db))
+        self._body_scroll = scroll
+        self._content_lay = content_lay
+        root.addWidget(scroll, 1)
 
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        self._buttons = buttons
+        save_btn = buttons.button(QDialogButtonBox.StandardButton.Save)
+        if save_btn is not None:
+            save_btn.setEnabled(False)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+        self._settings_section_queue: list = []
+        self._settings_sections_started = False
+        self._settings_pump_stop = False
+        self._fill_settings_section_queue()
+        self._busy_overlay = SettingsBusyOverlay(self)
+        self._busy_overlay.show()
+        # 첫 페인트 전에 불투명으로 되돌리면 Windows 기본 흰 클라이언트가 한 장 보인다.
+        self._settings_revealed = False
+        self.setWindowOpacity(0.0)
+
+    def _fill_settings_section_queue(self) -> None:
+        """무거운 섹션은 창이 보인 뒤 한 칸씩 붙인다."""
+        q = self._settings_section_queue
+        q.append(self._section_typography)
+        q.append(self._section_connection)
+        q.append(self._section_update_notify)
+        q.append(self._section_api)
+        if self._db is None:
+            return
+        q.append(self._section_chat_title)
+        q.append(self._section_history_failover)
+        q.append(self._section_routines)
+        q.append(self._section_voice)
+        q.append(self._section_permission)
+        q.append(self._section_learning)
+        q.append(self._section_email)
+        q.append(self._section_ide)
+        q.append(self._section_project_parents)
+        q.append(self._section_hermes_control)
+        q.append(self._section_setup_protocol)
+
+    def _section_typography(self) -> None:
+        from iris.ui.settings.typography_box import build_typography_box
+
+        self._content_lay.addWidget(build_typography_box(self._db))
+
+    def _section_connection(self) -> None:
+        settings = self._settings
         conn_box = QGroupBox("연결 (Ollama / Hermes)")
         conn_lay = QVBoxLayout(conn_box)
         conn_lay.setSpacing(TOKENS.spacing_sm)
@@ -361,46 +406,109 @@ class SettingsDialog(QDialog):
         form.addRow(make_form_label("Hermes API Key"), self._hermes_key)
         form.addRow(make_form_label("Hermes 명령"), self._hermes_cmd)
         conn_lay.addLayout(form)
-        content_lay.addWidget(make_collapsible(conn_box))
-        content_lay.addWidget(make_collapsible(self._build_api_box()))
+        self._content_lay.addWidget(make_collapsible(conn_box))
 
-        if db is not None:
-            chat_box = build_chat_title_box(db)
-            self._chat_title_basis = chat_box.title_basis
-            content_lay.addWidget(make_collapsible(chat_box))
-            self._history_failover_box = build_history_failover_box(db)
-            content_lay.addWidget(make_collapsible(self._history_failover_box))
-            self._routines_box = build_routines_box(
-                db,
-                model_names=self._known_model_names(),
-                on_run_now=self._request_routine_run,
-            )
-            content_lay.addWidget(make_collapsible(self._routines_box))
-            content_lay.addWidget(make_collapsible(self._build_voice_box()))
-            content_lay.addWidget(make_collapsible(self._build_permission_box()))
-            content_lay.addWidget(make_collapsible(self._build_learning_runtime_box()))
-            content_lay.addWidget(make_collapsible(self._build_email_box()))
-            content_lay.addWidget(make_collapsible(self._build_ide_box()))
-            content_lay.addWidget(make_collapsible(self._build_project_parents_box()))
-            content_lay.addWidget(make_collapsible(self._build_hermes_control_box()))
-            content_lay.addWidget(make_collapsible(self._build_setup_protocol_box()))
+    def _section_update_notify(self) -> None:
+        self._update_notify_box = UpdateNotifyBox(self._db)
+        self._content_lay.addWidget(make_collapsible(self._update_notify_box))
 
-        content_lay.addStretch(1)
-        root.addWidget(scroll, 1)
+    def _section_api(self) -> None:
+        self._content_lay.addWidget(make_collapsible(self._build_api_box()))
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+    def _section_chat_title(self) -> None:
+        chat_box = build_chat_title_box(self._db)
+        self._chat_title_basis = chat_box.title_basis
+        self._content_lay.addWidget(make_collapsible(chat_box))
+
+    def _section_history_failover(self) -> None:
+        self._history_failover_box = build_history_failover_box(self._db)
+        self._content_lay.addWidget(make_collapsible(self._history_failover_box))
+
+    def _section_routines(self) -> None:
+        self._routines_box = build_routines_box(
+            self._db,
+            model_names=self._known_model_names(),
+            on_run_now=self._request_routine_run,
         )
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        self._content_lay.addWidget(make_collapsible(self._routines_box))
 
-        if db is not None:
-            self._sync_ide_selection_ui_quick()
-            self._reload_account_list()
-        # 첫 Show 전에 흰 클라이언트가 한 프레임 보인다. 레이아웃 다음 틱에 드러낸다.
-        self._settings_revealed = False
-        self.setWindowOpacity(0.0)
+    def _section_voice(self) -> None:
+        self._content_lay.addWidget(make_collapsible(self._build_voice_box()))
+
+    def _section_permission(self) -> None:
+        self._content_lay.addWidget(make_collapsible(self._build_permission_box()))
+
+    def _section_learning(self) -> None:
+        self._content_lay.addWidget(make_collapsible(self._build_learning_runtime_box()))
+
+    def _section_email(self) -> None:
+        self._content_lay.addWidget(make_collapsible(self._build_email_box()))
+
+    def _section_ide(self) -> None:
+        self._content_lay.addWidget(make_collapsible(self._build_ide_box()))
+
+    def _section_project_parents(self) -> None:
+        self._content_lay.addWidget(make_collapsible(self._build_project_parents_box()))
+
+    def _section_hermes_control(self) -> None:
+        self._content_lay.addWidget(make_collapsible(self._build_hermes_control_box()))
+
+    def _section_setup_protocol(self) -> None:
+        self._content_lay.addWidget(make_collapsible(self._build_setup_protocol_box()))
+
+    def _stop_settings_pump(self) -> None:
+        self._settings_pump_stop = True
+        self._settings_section_queue.clear()
+
+    def _pump_settings_section(self) -> None:
+        if self._settings_pump_stop:
+            return
+        queue = self._settings_section_queue
+        if not queue:
+            self._finish_settings_sections()
+            return
+        step = queue.pop(0)
+        try:
+            step()
+        except Exception as exc:  # noqa: BLE001
+            self._settings_section_queue.clear()
+            self._content_lay.addWidget(
+                make_hint(f"설정을 불러오지 못했습니다: {exc}")
+            )
+            self._finish_settings_sections(failed=True)
+            return
+        self._place_settings_busy()
+        QTimer.singleShot(0, self._pump_settings_section)
+
+    def _finish_settings_sections(self, *, failed: bool = False) -> None:
+        if self._settings_pump_stop:
+            return
+        if not failed:
+            self._content_lay.addStretch(1)
+            if self._db is not None and hasattr(self, "_ide_buttons"):
+                self._sync_ide_selection_ui_quick()
+            save = self._buttons.button(QDialogButtonBox.StandardButton.Save)
+            if save is not None:
+                save.setEnabled(True)
+        self._busy_overlay.hide()
+        if failed or not self.isVisible():
+            return
+        if not self._deferred_status_started:
+            self._deferred_status_started = True
+            QTimer.singleShot(0, self._start_deferred_status_loads)
+        if hasattr(self, "_voice_runtime_status"):
+            self._voice_runtime_status.start_watching()
+        if hasattr(self, "_voice_stt_device"):
+            self._connect_mic_meter()
+            QTimer.singleShot(0, self._sync_mic_meter)
+
+    def _place_settings_busy(self) -> None:
+        overlay = getattr(self, "_busy_overlay", None)
+        scroll = getattr(self, "_body_scroll", None)
+        if overlay is None or scroll is None or not overlay.isVisible():
+            return
+        overlay.setGeometry(scroll.geometry())
+        overlay.raise_()
 
     def _known_model_names(self) -> list[str]:
         """루틴 모델 고정 콤보를 채울 후보. 조회 실패는 빈 목록으로 넘긴다."""
@@ -1349,46 +1457,8 @@ class SettingsDialog(QDialog):
         return bool(worker is not None and worker.isRunning())
 
     def _build_email_box(self) -> QGroupBox:
-        email_box = QGroupBox("이메일 계정 (Gmail · Naver 등)")
-        email_lay = QVBoxLayout(email_box)
-        email_lay.setSpacing(TOKENS.spacing_sm)
-        email_lay.addWidget(
-            make_hint(
-                "IMAP/SMTP로 직접 연결합니다. 일반 로그인 비밀번호 대신 앱 비밀번호를 입력하세요."
-            )
-        )
-        email_lay.addWidget(build_email_connect_panel())
-        self._account_list = QListWidget()
-        self._account_list.setMinimumHeight(100)
-        self._account_list.setMaximumHeight(140)
-        email_lay.addWidget(self._account_list)
-
-        add_form = QFormLayout()
-        configure_form(add_form)
-        self._new_label = QLineEdit()
-        self._new_label.setPlaceholderText("예: 개인 Gmail")
-        self._new_address = QLineEdit()
-        self._new_address.setPlaceholderText("예: you@gmail.com")
-        self._new_password = QLineEdit()
-        self._new_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._new_password.setPlaceholderText("앱/애플리케이션 비밀번호")
-        for edit in (self._new_label, self._new_address, self._new_password):
-            edit.setMinimumHeight(32)
-        add_form.addRow(make_form_label("표시 이름"), self._new_label)
-        add_form.addRow(make_form_label("이메일 주소"), self._new_address)
-        add_form.addRow(make_form_label("비밀번호"), self._new_password)
-        email_lay.addLayout(add_form)
-
-        btn_row = QHBoxLayout()
-        self._add_btn = QPushButton("계정 추가")
-        self._add_btn.clicked.connect(self._add_account)
-        self._remove_btn = QPushButton("선택 삭제")
-        self._remove_btn.clicked.connect(self._remove_selected_account)
-        btn_row.addWidget(self._add_btn)
-        btn_row.addWidget(self._remove_btn)
-        btn_row.addStretch(1)
-        email_lay.addLayout(btn_row)
-        return email_box
+        self._email_box = EmailAccountBox(self._db, self)
+        return self._email_box
 
     def _voice_profile_summary(self) -> str:
         """커밋된 보이스 프로필 요약. 런타임이 안 떠 있어도 보여야 하므로 파일을 직접 읽는다."""
@@ -2397,21 +2467,67 @@ class SettingsDialog(QDialog):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        self._clamp_to_screen()
         if not self._settings_revealed:
-            QTimer.singleShot(0, self._reveal_settings_window)
-        if not self._deferred_status_started:
-            self._deferred_status_started = True
-            QTimer.singleShot(0, self._start_deferred_status_loads)
+            # 페인트가 안 오면 그대로 투명해지지 않게만 늦춘다.
+            QTimer.singleShot(32, self._reveal_settings_window)
+        self._place_settings_busy()
+        if not self._settings_sections_started or self._busy_overlay.isVisible():
+            return
         if hasattr(self, "_voice_runtime_status"):
             self._voice_runtime_status.start_watching()
-        self._connect_mic_meter()
-        QTimer.singleShot(0, self._sync_mic_meter)
+        if hasattr(self, "_voice_stt_device"):
+            self._connect_mic_meter()
+            QTimer.singleShot(0, self._sync_mic_meter)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if not self._settings_revealed:
+            self._settings_revealed = True
+            QTimer.singleShot(0, self._reveal_settings_window)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if not getattr(self, "_fitting_scroll", False):
+            scroll = getattr(self, "_body_scroll", None)
+            inner = scroll.widget() if scroll is not None else None
+            viewport = scroll.viewport() if scroll is not None else None
+            if (
+                inner is not None
+                and viewport is not None
+                and viewport.width() > 0
+                and inner.minimumWidth() != viewport.width()
+            ):
+                self._fitting_scroll = True
+                try:
+                    inner.setMinimumWidth(viewport.width())
+                finally:
+                    self._fitting_scroll = False
+        self._place_settings_busy()
+
+    def _clamp_to_screen(self) -> None:
+        screen = self.screen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        margin = 32
+        max_w = max(520, avail.width() - margin)
+        max_h = max(420, avail.height() - margin)
+        self.setMaximumSize(max_w, max_h)
+        self.setMinimumSize(min(760, max_w), min(560, max_h))
+        width = min(max(self.width(), self.minimumWidth()), max_w)
+        height = min(max(self.height(), self.minimumHeight()), max_h)
+        if width != self.width() or height != self.height():
+            self.resize(width, height)
 
     def _reveal_settings_window(self) -> None:
-        if self._settings_revealed:
-            return
         self._settings_revealed = True
-        self.setWindowOpacity(1.0)
+        if self.windowOpacity() < 1.0:
+            self.setWindowOpacity(1.0)
+        self._place_settings_busy()
+        if not self._settings_sections_started:
+            self._settings_sections_started = True
+            QTimer.singleShot(0, self._pump_settings_section)
 
     def hideEvent(self, event) -> None:  # noqa: N802
         if hasattr(self, "_voice_runtime_status"):
@@ -2786,11 +2902,6 @@ class SettingsDialog(QDialog):
                 text[:1800],
             )
 
-    def _reload_account_list(self) -> None:
-        self._account_list.clear()
-        for acc in self._accounts:
-            self._account_list.addItem(QListWidgetItem(acc.display_name))
-
     def _sync_ide_selection_ui_quick(self) -> None:
         """열기 직후 — IRIS IDE 설치 여부 네트워크/런타임 검사 없이."""
         ide_id = self._preferred_ide
@@ -2897,59 +3008,6 @@ class SettingsDialog(QDialog):
         self._ide_exe_path = ""
         self._sync_ide_selection_ui()
 
-    def _add_account(self) -> None:
-        if self._db is None:
-            return
-        address = self._new_address.text().strip()
-        password = self._new_password.text()
-        label = self._new_label.text().strip()
-        if not address or "@" not in address:
-            QMessageBox.warning(self, "이메일 계정", "올바른 이메일 주소를 입력하세요.")
-            return
-        if not password:
-            QMessageBox.warning(self, "이메일 계정", "앱/애플리케이션 비밀번호를 입력하세요.")
-            return
-        self._add_btn.setEnabled(False)
-        worker = EmailVerifyWorker(address, password, parent=self)
-        self._verify_worker = worker
-        worker.finished_ok.connect(lambda: self._on_verify_ok(address, password, label))
-        worker.failed.connect(self._on_verify_failed)
-        worker.start()
-
-    def _on_verify_ok(self, address: str, password: str, label: str) -> None:
-        self._add_btn.setEnabled(True)
-        self._verify_worker = None
-        if self._db is None:
-            return
-        add_email_account(self._db, address, password, label=label)
-        self._accounts = load_email_accounts(self._db)
-        self._reload_account_list()
-        self._new_address.clear()
-        self._new_password.clear()
-        self._new_label.clear()
-        QMessageBox.information(self, "이메일 계정", f"{address} 연결 확인됨 — 저장 목록에 추가했습니다.")
-
-    def _on_verify_failed(self, err: str) -> None:
-        self._add_btn.setEnabled(True)
-        self._verify_worker = None
-        QMessageBox.warning(
-            self,
-            "이메일 계정",
-            f"연결에 실패했습니다.\n\n{err[:400]}\n\n"
-            "IMAP/SMTP 사용·2단계 인증·앱 비밀번호를 확인하세요.",
-        )
-
-    def _remove_selected_account(self) -> None:
-        if self._db is None:
-            return
-        row = self._account_list.currentRow()
-        if row < 0 or row >= len(self._accounts):
-            return
-        acc = self._accounts[row]
-        remove_email_account(self._db, acc.id)
-        self._accounts = load_email_accounts(self._db)
-        self._reload_account_list()
-
     def _save_profile_ide(self) -> bool:
         if self._db is None:
             return True
@@ -2969,12 +3027,17 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "설정 저장", str(exc))
             return False
         save_user_profile(self._db, profile)
+        accounts = self._email_box.accounts if self._email_box is not None else []
         self._wiki.sync_email_accounts_index(
-            [{"address": a.address, "label": a.label} for a in self._accounts]
+            [{"address": a.address, "label": a.label} for a in accounts]
         )
         return True
 
     def _accept(self) -> None:
+        if getattr(self, "_busy_overlay", None) is not None and self._busy_overlay.isVisible():
+            return
+        if not hasattr(self, "_ollama_url"):
+            return
         if self._aloha_runtime_busy():
             self._aloha_runtime_status.setText("Runtime 설치가 끝난 뒤 설정을 닫아주세요.")
             return
@@ -2991,6 +3054,9 @@ class SettingsDialog(QDialog):
             box = getattr(self, "_history_failover_box", None)
             if box is not None:
                 save_history_failover(self._db, box)
+            notify = getattr(self, "_update_notify_box", None)
+            if notify is not None:
+                save_update_notify_box(self._db, notify)
         self._persist_search_calendar_api_keys()
         try:
             from iris.infrastructure.hermes_credentials import resolve_hermes_api_key
@@ -3067,6 +3133,7 @@ class SettingsDialog(QDialog):
         if self._aloha_runtime_busy():
             self._aloha_runtime_status.setText("Runtime 설치가 끝난 뒤 설정을 닫아주세요.")
             return
+        self._stop_settings_pump()
         self._cancel_deferred_status_workers()
         self._disconnect_mic_meter()
         try:
@@ -3093,6 +3160,7 @@ class SettingsDialog(QDialog):
             self._aloha_runtime_status.setText("Runtime 설치가 끝난 뒤 설정을 닫아주세요.")
             event.ignore()
             return
+        self._stop_settings_pump()
         self._cancel_deferred_status_workers()
         self._disconnect_mic_meter()
         try:

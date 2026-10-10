@@ -103,7 +103,7 @@ def file_user_note(
     }
 
 
-def open_classifier(base_url: str, history_settings, model: str):
+def open_classifier(base_url: str, history_settings, model: str, *, db=None, settings=None):
     """임베더와 JSON 분류 호출. 실패하면 None. 키워드 대체는 없다."""
     embedder = None
     namer = None
@@ -119,22 +119,24 @@ def open_classifier(base_url: str, history_settings, model: str):
     model_name = (model or "").strip()
     if not model_name:
         return embedder, None
-    try:
-        from iris.infrastructure.ollama_client import OllamaClient
+    from iris.runtime.backend_route import ask_selected_model, settings_for_model
 
-        chat = OllamaClient(base, timeout_sec=60.0)
+    bound = settings_for_model(settings, base)
 
-        def namer(prompt: str, _chat=chat, _model=model_name) -> str:
-            return _chat.chat_once_with_images(
-                _model, prompt, [], system=CLASSIFY_SYSTEM, timeout_sec=45.0,
-            )
-    except Exception:
-        namer = None
+    def namer(prompt: str, _model=model_name, _settings=bound, _db=db) -> str:
+        return ask_selected_model(
+            _settings, _db, _model, prompt, system=CLASSIFY_SYSTEM, timeout_sec=45.0,
+        )
+
     return embedder, namer
 
 
-def filing_kwargs(*, db, base_url: str, history_settings, model: str, project_root: str) -> dict:
-    embedder, namer = open_classifier(base_url, history_settings, model)
+def filing_kwargs(
+    *, db, base_url: str, history_settings, model: str, project_root: str, settings=None,
+) -> dict:
+    embedder, namer = open_classifier(
+        base_url, history_settings, model, db=db, settings=settings,
+    )
     return {
         "db": db,
         "embedder": embedder,

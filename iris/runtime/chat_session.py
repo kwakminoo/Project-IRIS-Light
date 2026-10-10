@@ -65,10 +65,15 @@ class ChatSession:
         clear_conversation_messages(self.db, self.conversation_id)
         self.history = []
 
-    def start_new(self) -> int:
+    def start_new(self, project_id: int = 0) -> int:
         from .attachment_store import AttachmentStore
         self.attachments = AttachmentStore()
-        return start_new_conversation(self.db)
+        return start_new_conversation(self.db, project_id=int(project_id or 0))
+
+    def list_projects(self):
+        from iris.storage.chat_projects import list_projects
+
+        return list_projects(self.db)
 
     def open_launch_chat(self) -> int:
         """프로그램·창을 열 때. 이전 대화는 두고 빈 채팅을 연다."""

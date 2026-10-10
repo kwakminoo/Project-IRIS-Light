@@ -31,8 +31,10 @@ _COLOR_MODEL_NO_TOOLS = "#9ca3af"
 _COLOR_MODEL_PRO = "#fca5a5"
 _COLOR_MODEL_UNKNOWN = "#fbbf24"  # 도구지원 미확인 — 선택 시 1회 프로브함
 
-# 이 수 이상 모델을 가진 제공자는 하위 목록 창으로 묶음 (제공자 이름과 무관)
+# 이 수 이상 모델을 가진 원격 제공자는 하위 목록 창으로 묶음 (제공자 이름과 무관).
+# 로컬은 개수와 상관없이 LOCAL MODEL 한 항목으로만 연다.
 BRAND_MIN_MODELS = 6
+LOCAL_MODEL_MENU_LABEL = "LOCAL MODEL"
 
 
 @dataclass(frozen=True)
@@ -255,12 +257,21 @@ class ModelPickerMenu(QFrame):
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(1)
 
-        self._add_local_section(root, list(local or []))
-
-        if has_ollama or brands:
+        local = list(local or [])
+        if local or has_ollama or brands:
             sec = QLabel("PROVIDERS")
             sec.setObjectName("ComposerPlusSection")
             root.addWidget(sec)
+
+        if local:
+            row = _MenuRow(
+                "LM",
+                LOCAL_MODEL_MENU_LABEL,
+                f"이 기기 · {len(local)}개",
+                show_arrow=True,
+            )
+            row.clicked.connect(self._on_local)
+            root.addWidget(row)
 
         if has_ollama:
             row = _MenuRow("OL", "Ollama", "클라우드", show_arrow=True)
@@ -302,29 +313,6 @@ class ModelPickerMenu(QFrame):
             root.addWidget(empty)
 
         outer.addWidget(main)
-
-    def _add_local_section(self, root: QVBoxLayout, local: list[PickerModel]) -> None:
-        """맨 위. 출처와 상관없이 이 기기 모델만 모은다."""
-        if not local:
-            return
-        sec = QLabel("로컬 모델")
-        sec.setObjectName("ComposerPlusSection")
-        root.addWidget(sec)
-        if len(local) >= BRAND_MIN_MODELS:
-            row = _MenuRow("LM", "로컬 모델", f"이 기기 · {len(local)}개", show_arrow=True)
-            row.clicked.connect(self._on_local)
-            root.addWidget(row)
-            return
-        for m in local:
-            row = _MenuRow(
-                "LM",
-                m.label,
-                "이 기기",
-                show_arrow=False,
-                title_color=picker_tier_color(m),
-            )
-            row.clicked.connect(lambda _=False, rt=m.runtime: self._pick(rt))
-            root.addWidget(row)
 
     def _on_local(self) -> None:
         self.hide()
@@ -432,6 +420,10 @@ if __name__ == "__main__":
     assert not is_local_endpoint("https://integrate.api.nvidia.com/v1")
     assert is_local_picker_model(o) and is_local_picker_model(local_api)
     assert not is_local_picker_model(cloud) and not is_local_picker_model(n)
+    # 로컬은 1개여도 메뉴에 펼치지 않고 LOCAL MODEL 한 줄로만 연다.
+    assert LOCAL_MODEL_MENU_LABEL == "LOCAL MODEL"
+    one_local, _ol, _br, _si = split_picker_groups([o])
+    assert len(one_local) == 1 and len(one_local) < BRAND_MIN_MODELS
     # 모델 2개인 제공자는 그대로 노출, BRAND_MIN_MODELS 이상이면 브랜드로 묶음
     local, ol, brands, si = split_picker_groups([o, cloud, local_api, n, g])
     assert [m.runtime for m in local] == ["gemma4:latest", "api:lm:llama"]

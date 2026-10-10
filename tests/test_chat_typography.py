@@ -29,12 +29,16 @@ class TypographyTests(unittest.TestCase):
             box = build_typography_box(db)
             sizes = box.findChild(QSpinBox, "chat_font_size")
             sizes.setValue(22)
+            speed = box.findChild(QSpinBox, "typing_chars_per_sec")
+            speed.setValue(40)
             self.assertEqual(manager.get().chat_font_size, 22)
+            self.assertEqual(manager.get().typing_chars_per_sec, 40)
             db._conn.close()
             reopened = Database(path)
             manager.apply(defaults())
             manager.load(reopened)
             self.assertEqual(manager.get().chat_font_size, 22)
+            self.assertEqual(manager.get().typing_chars_per_sec, 40)
             box.deleteLater()
             box = build_typography_box(reopened)
             box.findChild(QPushButton, "restore_chat_typography").click()
@@ -43,10 +47,30 @@ class TypographyTests(unittest.TestCase):
             box.deleteLater()
 
     def test_invalid_preferences(self):
-        p = normalize({"chat_font_family": "missing-font-123", "chat_font_size": 1000, "code_font_size": "invalid"})
+        p = normalize({"chat_font_family": "missing-font-123", "chat_font_size": 1000, "code_font_size": "invalid",
+                       "typing_chars_per_sec": 1000})
         self.assertEqual(p.chat_font_family, defaults().chat_font_family)
         self.assertEqual(p.chat_font_size, 28)
         self.assertEqual(p.code_font_size, defaults().code_font_size)
+        self.assertEqual(p.typing_chars_per_sec, 80)
+        kept = normalize({"typing_chars_per_sec": "nope"})
+        self.assertEqual(kept.typing_chars_per_sec, defaults().typing_chars_per_sec)
+
+    def test_typing_speed_changes_how_many_characters_appear(self):
+        from iris.ui.chat.chat_display import plain_typing_step
+
+        self.assertEqual(plain_typing_step(20), (50, 1))
+        self.assertEqual(plain_typing_step(80), (25, 2))
+        fast = defaults()
+        fast.typing_chars_per_sec = 80
+        manager.apply(fast)
+        panel = ChatPanel()
+        panel.begin_stream_message("Iris", speech_sync=False)
+        panel.append_stream_chunk("가나다라마바사아")
+        panel._typing_timer.stop()
+        panel._type_next_chunk()
+        self.assertEqual(panel._typing_index, 2)
+        panel.close()
 
     def test_new_markdown_heading_size(self):
         panel = ChatPanel()
@@ -144,6 +168,7 @@ class TypographyTests(unittest.TestCase):
         self.assertIn("iris-msg-", panel._log.document().toHtml())
         panel.append_stream_chunk(" 추가 내용")
         panel.end_stream_message()
+        panel.finish_typing()
         self.assertIn("추가 내용", panel._log.toPlainText())
         panel.deleteLater()
 

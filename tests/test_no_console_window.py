@@ -108,6 +108,29 @@ class HotPathTests(TestCase):
         self.assertEqual(snap.state.value, "unknown")
 
 
+class AttachmentConsoleGuardTests(TestCase):
+    def test_media_preview_does_not_launch_opencv(self) -> None:
+        body = (
+            Path(__file__).resolve().parents[1]
+            / "iris"
+            / "ui"
+            / "chat"
+            / "composer_attachments.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("import cv2", body)
+        self.assertIn("def _shell_thumbnail", body)
+
+    def test_tesseract_spawn_uses_no_window(self) -> None:
+        body = (
+            Path(__file__).resolve().parents[1]
+            / "iris"
+            / "knowledge"
+            / "content_extract.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("def _hide_tesseract_console", body)
+        self.assertIn("no_window_kwargs()", body)
+
+
 class VoiceRuntimeGuardTests(TestCase):
     def test_voice_runtime_manager_resolves_cross_platform_venv(self) -> None:
         path = (

@@ -43,8 +43,14 @@ def _check_history_panel(app: QApplication, db: Database) -> None:
     created: list[int] = []
     renamed: list[tuple[int, str]] = []
     panel.conversation_selected.connect(opened.append)
-    panel.conversation_delete_requested.connect(deleted.append)
-    panel.conversation_rename_requested.connect(lambda i, t: renamed.append((i, t)))
+    panel.items_delete_requested.connect(
+        lambda keys: deleted.extend(item_id for kind, item_id in keys if kind == "c")
+    )
+    panel.items_rename_requested.connect(
+        lambda keys, title: renamed.extend(
+            (item_id, title) for kind, item_id in keys if kind == "c"
+        )
+    )
     panel.new_chat_requested.connect(lambda: created.append(1))
 
     rows = [

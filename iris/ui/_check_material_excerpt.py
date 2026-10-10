@@ -107,7 +107,8 @@ def main() -> None:
         long = root / "long.txt"
         long.write_text("가" * 13_000, encoding="utf-8")
         long_block = build_material_block("길어", [str(long)])
-        assert "잘림: 채팅 발췌 상한에서 끊었습니다." in long_block
+        assert "가" * 13_000 in long_block
+        assert "잘림: 채팅 발췌 상한에서 끊었습니다." not in long_block
 
         import iris.knowledge.content_extract as content_extract
 

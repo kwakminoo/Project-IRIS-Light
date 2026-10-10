@@ -73,7 +73,6 @@ from iris.ui.chat.chat_image_view import (
     prefetch_chat_html_images,
 )
 from iris.ui.chat.chat_display import (
-    TYPING_CHARS_PER_TICK,
     TYPING_INTERVAL_MS,
     TYPING_SPEECH_MAX_CHARS_PER_TICK,
     TYPING_SPEECH_MIN_CHARS_PER_SEC,
@@ -81,6 +80,7 @@ from iris.ui.chat.chat_display import (
     effective_typing_duration_ms,
     extend_typing_timeline_ms,
     normalize_chat_body,
+    plain_typing_step,
     scale_typing_duration_ms,
     streaming_segments_html,
     typing_body_to_html,
@@ -125,8 +125,6 @@ _IMAGE_FILTER = (
 )
 _FILE_FILTER = "All Files (*.*)"
 _DEFAULT_INPUT_PLACEHOLDER = "Iris에게 메시지를 입력하세요…"
-# ponytail: prose-only 스트림 UI 갱신 상한 (~20fps). 더 촘촘하면 QTextEdit HTML 재삽입이 UI를 막는다.
-_STREAM_UI_MS = 48
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 # 입력창 placeholder — 푸른색 유지하되 흐릿하게
 _PLACEHOLDER_COLOR = QColor(56, 189, 248, 110)  # neon_blue @ ~43%
@@ -1423,12 +1421,8 @@ class ChatPanel(QWidget):
         )
         self._apply_log_fill()
         self._typing_timer = QTimer(self)
-        self._typing_timer.setInterval(TYPING_INTERVAL_MS)
+        self._typing_timer.setInterval(plain_typing_step()[0])
         self._typing_timer.timeout.connect(self._type_next_chunk)
-        self._stream_ui_timer = QTimer(self)
-        self._stream_ui_timer.setSingleShot(True)
-        self._stream_ui_timer.setInterval(_STREAM_UI_MS)
-        self._stream_ui_timer.timeout.connect(self._flush_stream_ui)
         self._typing_text = ""
         self._typing_index = 0
         self._typing_speech_sync = False
@@ -2264,7 +2258,7 @@ class ChatPanel(QWidget):
             lambda: QTimer.singleShot(
                 0,
                 lambda: self._show_brand_dialog(
-                    "로컬 모델",
+                    "LOCAL MODEL",
                     local,
                     hint="이 기기의 모델입니다. 어디서 불러왔든 여기서 고르면 그 모델로 답합니다.",
                 ),
@@ -2529,7 +2523,6 @@ class ChatPanel(QWidget):
         self.finish_typing()
         self.cancel_user_listening()
         self.cancel_stt_pending()
-        self._stream_ui_timer.stop()
         self._typing_timer.stop()
         self._stream_active = False
         self._stream_block_start = None
@@ -2761,7 +2754,7 @@ class ChatPanel(QWidget):
         speech_sync: bool = True,
         wait_for_tts_completion: bool = False,
     ) -> None:
-        """LLM 스트리밍 — speech_sync면 TTS와 동기 타이핑, 아니면 청크 즉시 표시."""
+        """LLM 스트리밍 — speech_sync면 TTS 동기, 아니면 글자 타이핑."""
         self.finish_typing()
         self._stream_active = True
         self._stream_who = who
@@ -2782,7 +2775,7 @@ class ChatPanel(QWidget):
         self._scroll_log_to_bottom()
 
     def append_stream_chunk(self, text: str) -> None:
-        """스트리밍 청크 — speech_sync면 버퍼만, 아니면 누적 본문을 즉시 표시."""
+        """스트리밍 청크 — 버퍼에 쌓고, TTS 동기 전이면 글자 타이핑으로 연다."""
         if not text:
             return
         if not self._stream_active:
@@ -2791,14 +2784,9 @@ class ChatPanel(QWidget):
         ops = self._block_buffer.feed(text)
         has_fixed_block = any(o.kind != RenderOpKind.REPLACE_PROSE for o in ops)
         if not self._typing_speech_sync:
-            self._typing_index = prose_char_count(self._typing_text)
-            self._schedule_stream_ui_flush()
+            self._start_plain_typing_timer()
         elif has_fixed_block:
             self._flush_stream_ui()
-
-    def _schedule_stream_ui_flush(self) -> None:
-        if not self._stream_ui_timer.isActive():
-            self._stream_ui_timer.start()
 
     def _flush_stream_ui(self) -> None:
         if not self._stream_active or self._typing_body_start is None:
@@ -2817,14 +2805,15 @@ class ChatPanel(QWidget):
         who = getattr(self, "_stream_who", "Iris")
         self._finalize_typing_buffer(who, final_text if final_text is not None else self._typing_text)
         self._block_buffer.set_final(self._typing_text)
-        self._stream_ui_timer.stop()
         self._flush_stream_ui()
         self._stream_active = False
         self._stream_block_start = None
         self._ensure_buffered_typing_fallback()
         if not self._typing_speech_sync:
-            self._typing_index = prose_char_count(self._typing_text)
-            self.finish_typing()
+            if self._typing_index >= prose_char_count(self._typing_text):
+                self.finish_typing()
+            else:
+                self._start_plain_typing_timer()
         self._scroll_log_to_bottom(deferred=True)
 
     def append_message_typed(
@@ -2850,7 +2839,7 @@ class ChatPanel(QWidget):
         if speech_sync:
             self._typing_timer.stop()
         else:
-            self._typing_timer.setInterval(TYPING_INTERVAL_MS)
+            self._typing_timer.setInterval(plain_typing_step()[0])
             self._typing_timer.start()
         self._scroll_log_to_bottom()
 
@@ -2991,8 +2980,15 @@ class ChatPanel(QWidget):
         ):
             return
         self._typing_speech_sync = False
-        self._typing_timer.setInterval(TYPING_INTERVAL_MS)
-        self._typing_timer.start()
+        self._start_plain_typing_timer()
+
+    def _start_plain_typing_timer(self) -> None:
+        """TTS 속도가 없을 때 한 글자씩 연다. 이미 따라잡았으면 그대로 둔다."""
+        if self._typing_index >= prose_char_count(self._typing_text):
+            return
+        if not self._typing_timer.isActive():
+            self._typing_timer.setInterval(plain_typing_step()[0])
+            self._typing_timer.start()
 
     def fallback_typing_if_waiting_for_tts(self) -> None:
         """TTS 시작/합성이 실패한 경우만 타이핑 대기를 해제하고 폴백 시작."""
@@ -3037,6 +3033,7 @@ class ChatPanel(QWidget):
         )
         cursor.removeSelectedText()
         if html_body:
+            prefetch_chat_html_images(self._log, html_body)
             cursor.insertHtml(html_body)
         # setTextCursor는 캐럿을 보이게 하려고 뷰를 끌어내린다 — 읽기 전용 로그라 생략.
 
@@ -3056,6 +3053,8 @@ class ChatPanel(QWidget):
         prose_len = prose_char_count(self._typing_text)
         if self._typing_index >= prose_len:
             self._typing_timer.stop()
+            if self._stream_active:
+                return
             if self._typing_render_markdown and self._typing_body_start is not None:
                 self._render_markdown_body()
             self._typing_text = ""
@@ -3086,9 +3085,12 @@ class ChatPanel(QWidget):
                 self._typing_index + TYPING_SPEECH_MAX_CHARS_PER_TICK,
             )
         else:
+            interval, chars = plain_typing_step()
+            if self._typing_timer.interval() != interval:
+                self._typing_timer.setInterval(interval)
             self._typing_index = min(
                 prose_len,
-                self._typing_index + TYPING_CHARS_PER_TICK,
+                self._typing_index + chars,
             )
 
         self._replace_typing_body()

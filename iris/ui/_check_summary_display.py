@@ -140,6 +140,7 @@ def _check_panel(app: QApplication) -> None:
         app.processEvents()
         assert "secret_stream" not in panel._log.toPlainText(), panel._log.toPlainText()
     panel.end_stream_message(buf + "여기까지입니다.")
+    panel.finish_typing()
     app.processEvents()
     plain = panel._log.toPlainText()
     assert "secret_stream" not in plain
@@ -176,6 +177,7 @@ def _check_panel(app: QApplication) -> None:
     panel.append_stream_chunk("오류 전 설명\n```py\nprint(")
     panel._flush_stream_ui()
     panel.end_stream_message(None)
+    panel.finish_typing()
     app.processEvents()
     assert "print" not in panel._log.toPlainText()
     assert "오류 전 설명" in panel._log.toPlainText()

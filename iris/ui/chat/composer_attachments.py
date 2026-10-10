@@ -1,13 +1,15 @@
-"""Composer 파일 첨부 칩 스트립 — Cursor식 이름 + 아이콘."""
+"""Composer 파일 첨부 칩 스트립 — 이미지·영상은 미리보기, 그 외는 이름."""
 
 from __future__ import annotations
 
+import hashlib
 import html
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 from PyQt6.QtCore import QFileInfo, Qt, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
     QFileIconProvider,
     QHBoxLayout,
@@ -20,6 +22,11 @@ from PyQt6.QtWidgets import (
 
 _ICON_PROVIDER = QFileIconProvider()
 _ICON_PX = 16
+_THUMB_PX = 88
+_CHAT_MAX_W = 280
+_CHAT_MAX_H = 200
+_IMAGE_EXT = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_VIDEO_EXT = frozenset({".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v", ".wmv"})
 
 
 def at_ref_path(raw: str) -> str:
@@ -185,8 +192,308 @@ def _chip_icon_src(path: str, *, workspace_root: str = "") -> str:
         return ""
 
 
+def media_kind(path: str, *, workspace_root: str = "") -> str:
+    """있는 로컬 파일이 이미지면 image, 영상이면 video. 아니면 빈 문자열."""
+    fs = chip_fs_path(path, workspace_root=workspace_root)
+    if fs is None:
+        return ""
+    try:
+        if not fs.is_file():
+            return ""
+    except OSError:
+        return ""
+    suffix = fs.suffix.lower()
+    if suffix in _IMAGE_EXT:
+        return "image"
+    if suffix in _VIDEO_EXT:
+        return "video"
+    return ""
+
+
+def format_user_attachment_block(text: str, attachments: list[str]) -> str:
+    """채팅에 올릴 사용자 문장. 이미지·영상은 전체 경로, 그 외는 파일명."""
+    body = (text or "").strip()
+    paths = [str(p).strip() for p in attachments if str(p).strip()]
+    if not paths:
+        return body
+    media: list[str] = []
+    files: list[str] = []
+    for raw in paths:
+        kind = media_kind(raw)
+        shown = raw if kind else attachment_filename(raw)
+        line = '@"' + shown.replace('"', "") + '"'
+        (media if kind else files).append(line)
+    parts: list[str] = []
+    if body:
+        parts.append(body)
+    if media:
+        parts.append("\n".join(media))
+    if files:
+        parts.append("[첨부 파일]\n" + "\n".join(files))
+    return "\n\n".join(parts)
+
+
+def _fit_image(img: QImage, max_w: int, max_h: int) -> QImage:
+    if img.width() <= max_w and img.height() <= max_h:
+        return img
+    return img.scaled(
+        max_w,
+        max_h,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+
+
+def _stamp_play(img: QImage) -> QImage:
+    out = img.convertToFormat(QImage.Format.Format_ARGB32)
+    painter = QPainter(out)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        side = min(out.width(), out.height())
+        diameter = max(28, side // 5)
+        cx = out.width() // 2
+        cy = out.height() // 2
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(15, 23, 42, 170))
+        painter.drawEllipse(cx - diameter // 2, cy - diameter // 2, diameter, diameter)
+        painter.setBrush(QColor(255, 255, 255))
+        tri = QPainterPath()
+        left = cx - diameter // 8
+        top = cy - diameter // 5
+        tri.moveTo(left, top)
+        tri.lineTo(left, cy + diameter // 5)
+        tri.lineTo(cx + diameter // 5, cy)
+        tri.closeSubpath()
+        painter.drawPath(tri)
+    finally:
+        painter.end()
+    return out
+
+
+def _blank_video_frame() -> QImage:
+    img = QImage(320, 180, QImage.Format.Format_RGB32)
+    img.fill(QColor(15, 23, 42))
+    return img
+
+
+def _shell_thumbnail(path: Path, side: int = 480) -> QImage | None:
+    """탐색기 썸네일. 콘솔 프로그램(ffmpeg)을 띄우지 않는다."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return None
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", ctypes.c_ulong),
+            ("Data2", ctypes.c_ushort),
+            ("Data3", ctypes.c_ushort),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    class _SIZE(ctypes.Structure):
+        _fields_ = [("cx", ctypes.c_int), ("cy", ctypes.c_int)]
+
+    class _BITMAP(ctypes.Structure):
+        _fields_ = [
+            ("bmType", ctypes.c_long),
+            ("bmWidth", ctypes.c_long),
+            ("bmHeight", ctypes.c_long),
+            ("bmWidthBytes", ctypes.c_long),
+            ("bmPlanes", ctypes.c_ushort),
+            ("bmBitsPixel", ctypes.c_ushort),
+            ("bmBits", ctypes.c_void_p),
+        ]
+
+    class _HEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize", wintypes.DWORD),
+            ("biWidth", wintypes.LONG),
+            ("biHeight", wintypes.LONG),
+            ("biPlanes", wintypes.WORD),
+            ("biBitCount", wintypes.WORD),
+            ("biCompression", wintypes.DWORD),
+            ("biSizeImage", wintypes.DWORD),
+            ("biXPelsPerMeter", wintypes.LONG),
+            ("biYPelsPerMeter", wintypes.LONG),
+            ("biClrUsed", wintypes.DWORD),
+            ("biClrImportant", wintypes.DWORD),
+        ]
+
+    ole32 = ctypes.OleDLL("ole32")
+    shell32 = ctypes.OleDLL("shell32")
+    gdi32 = ctypes.WinDLL("gdi32")
+    ole32.CoInitialize(None)
+    iid = _GUID()
+    if ole32.CLSIDFromString(
+        ctypes.c_wchar_p("{bcc18b79-ba16-442f-80c4-8a59c30c463b}"), ctypes.byref(iid)
+    ):
+        return None
+    factory = ctypes.c_void_p()
+    if shell32.SHCreateItemFromParsingName(
+        ctypes.c_wchar_p(str(path)), None, ctypes.byref(iid), ctypes.byref(factory)
+    ):
+        return None
+    if not factory.value:
+        return None
+    funcs = ctypes.cast(
+        ctypes.cast(factory, ctypes.POINTER(ctypes.c_void_p))[0],
+        ctypes.POINTER(ctypes.c_void_p),
+    )
+    get_image = ctypes.WINFUNCTYPE(
+        ctypes.HRESULT, ctypes.c_void_p, _SIZE, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)
+    )(funcs[3])
+    release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(funcs[2])
+    bitmap = ctypes.c_void_p()
+    try:
+        # THUMBNAILONLY | BIGGERSIZEOK — 아이콘이 아니라 그림·첫 장면
+        if get_image(factory, _SIZE(side, side), 0x8 | 0x1, ctypes.byref(bitmap)) or not bitmap.value:
+            return None
+        info = _BITMAP()
+        gdi32.GetObjectW(bitmap, ctypes.sizeof(info), ctypes.byref(info))
+        width, height = int(info.bmWidth), abs(int(info.bmHeight))
+        if width <= 0 or height <= 0:
+            return None
+        header = _HEADER()
+        header.biSize = ctypes.sizeof(_HEADER)
+        header.biWidth = width
+        header.biHeight = -height
+        header.biPlanes = 1
+        header.biBitCount = 32
+        buf = ctypes.create_string_buffer(width * height * 4)
+        hdc = gdi32.CreateCompatibleDC(None)
+        try:
+            if gdi32.GetDIBits(hdc, bitmap, 0, height, buf, ctypes.byref(header), 0) <= 0:
+                return None
+        finally:
+            gdi32.DeleteDC(hdc)
+        image = QImage(buf, width, height, width * 4, QImage.Format.Format_ARGB32_Premultiplied)
+        copied = image.copy()
+        return None if copied.isNull() else copied
+    finally:
+        if bitmap.value:
+            gdi32.DeleteObject(bitmap)
+        release(factory)
+
+
+def _video_frame(path: Path) -> QImage | None:
+    return _shell_thumbnail(path)
+
+
+def load_media_frame(path: str, *, workspace_root: str = "") -> QImage | None:
+    kind = media_kind(path, workspace_root=workspace_root)
+    fs = chip_fs_path(path, workspace_root=workspace_root)
+    if not kind or fs is None:
+        return None
+    if kind == "image":
+        image = QImage(str(fs))
+        return None if image.isNull() else image
+    return _video_frame(fs)
+
+
+def chat_media_thumb(path: str, *, workspace_root: str = "") -> str:
+    """채팅에 넣을 미리보기 PNG. 원본이 바뀌면 다시 만든다."""
+    kind = media_kind(path, workspace_root=workspace_root)
+    fs = chip_fs_path(path, workspace_root=workspace_root)
+    if not kind or fs is None:
+        return ""
+    try:
+        st = fs.stat()
+        digest = hashlib.sha1(
+            f"{fs}|{st.st_mtime_ns}|{st.st_size}|{kind}".encode()
+        ).hexdigest()[:16]
+    except OSError:
+        return ""
+    dest = Path.home() / ".iris-light" / "media-thumbs" / f"{digest}.png"
+    if dest.is_file():
+        return str(dest)
+    frame = load_media_frame(path, workspace_root=workspace_root)
+    if frame is None:
+        if kind != "video":
+            return ""
+        frame = _blank_video_frame()
+    if kind == "video":
+        frame = _stamp_play(frame)
+    frame = _fit_image(frame, _CHAT_MAX_W, _CHAT_MAX_H)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not frame.save(str(dest), "PNG"):
+            return ""
+    except OSError:
+        return ""
+    return str(dest)
+
+
+def _rounded_cover(src: QPixmap, side: int, radius: int) -> QPixmap:
+    scaled = src.scaled(
+        side,
+        side,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    x = max(0, (scaled.width() - side) // 2)
+    y = max(0, (scaled.height() - side) // 2)
+    cropped = scaled.copy(x, y, side, side)
+    out = QPixmap(side, side)
+    out.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(out)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        clip = QPainterPath()
+        clip.addRoundedRect(0, 0, side, side, radius, radius)
+        painter.setClipPath(clip)
+        painter.drawPixmap(0, 0, cropped)
+    finally:
+        painter.end()
+    return out
+
+
+def composer_media_pixmap(path: str, *, workspace_root: str = "", side: int = _THUMB_PX) -> QPixmap:
+    kind = media_kind(path, workspace_root=workspace_root)
+    if not kind:
+        return QPixmap()
+    frame = load_media_frame(path, workspace_root=workspace_root)
+    if frame is None:
+        if kind != "video":
+            return QPixmap()
+        frame = _blank_video_frame()
+    if kind == "video":
+        frame = _stamp_play(frame)
+    return _rounded_cover(QPixmap.fromImage(frame), side, 12)
+
+
+def media_preview_html(path: str, *, workspace_root: str = "") -> str:
+    """채팅 말풍선용 미리보기. 이미지는 클릭 시 크게, 영상은 기본 앱으로."""
+    kind = media_kind(path, workspace_root=workspace_root)
+    thumb = chat_media_thumb(path, workspace_root=workspace_root)
+    fs = chip_fs_path(path, workspace_root=workspace_root)
+    if not kind or not thumb or fs is None:
+        return ""
+    image = QImage(thumb)
+    if image.isNull():
+        return ""
+    target = str(fs.resolve())
+    if kind == "video":
+        href = "iris-video:" + quote(target, safe="")
+    else:
+        from iris.core.markdown_text import iris_image_href
+
+        href = iris_image_href(target)
+    src = html.escape(thumb.replace("\\", "/"), quote=True)
+    return (
+        f'<a href="{html.escape(href, quote=True)}" style="text-decoration:none;">'
+        f'<img src="{src}" width="{image.width()}" height="{image.height()}" /></a>'
+    )
+
+
 def attachment_chip_html(path: str, *, workspace_root: str = "") -> str:
-    """파일 선택·드롭·전송 메시지 공통 칩. 보이는 텍스트는 이름과 형식만."""
+    """파일 선택·드롭·전송 메시지 공통. 이미지·영상은 미리보기, 나머지는 이름."""
+    preview = media_preview_html(path, workspace_root=workspace_root)
+    if preview:
+        return preview
     name = html.escape(composer_chip_label(path))
     meta = html.escape(composer_chip_meta(path, workspace_root=workspace_root))
     src = _chip_icon_src(path, workspace_root=workspace_root)
@@ -290,6 +597,9 @@ class ComposerAttachmentStrip(QWidget):
         self.changed.emit()
 
     def _make_chip(self, path: str) -> QWidget:
+        pix = composer_media_pixmap(path, workspace_root=self._workspace_root)
+        if not pix.isNull():
+            return self._make_media_chip(path, pix)
         wrap = QWidget()
         wrap.setObjectName("ComposerAttachmentChip")
         lay = QHBoxLayout(wrap)
@@ -338,6 +648,31 @@ class ComposerAttachmentStrip(QWidget):
             }
             """
         )
+        return wrap
+
+    def _make_media_chip(self, path: str, pix: QPixmap) -> QWidget:
+        side = pix.width()
+        wrap = QWidget()
+        wrap.setObjectName("ComposerAttachmentChip")
+        wrap.setFixedSize(side, side)
+        wrap.setStyleSheet(
+            "QWidget#ComposerAttachmentChip { background: transparent; border: none; }"
+        )
+        image = QLabel(wrap)
+        image.setPixmap(pix)
+        image.setFixedSize(side, side)
+        image.move(0, 0)
+        image.setToolTip(composer_chip_label(path))
+        btn = QPushButton("×", wrap)
+        btn.setFixedSize(18, 18)
+        btn.move(side - 20, 2)
+        btn.setFlat(True)
+        btn.setToolTip("첨부 취소")
+        btn.setStyleSheet(
+            "QPushButton { color: white; background: rgba(15, 23, 42, 0.72);"
+            " border: none; border-radius: 9px; font-size: 12px; }"
+        )
+        btn.clicked.connect(lambda _=False, p=path: self._remove(p))
         return wrap
 
     def _remove(self, path: str) -> None:

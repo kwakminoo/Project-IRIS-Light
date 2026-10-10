@@ -2,7 +2,14 @@
 from PyQt6.QtCore import Qt, QSignalBlocker
 from PyQt6.QtGui import QFontDatabase
 from PyQt6.QtWidgets import QGroupBox, QFormLayout, QComboBox, QSpinBox, QTextEdit, QPushButton, QLabel, QCompleter
-from iris.ui.chat.typography import manager, defaults, Typography, font
+from iris.ui.chat.typography import (
+    TYPING_CHARS_PER_SEC_MAX,
+    TYPING_CHARS_PER_SEC_MIN,
+    manager,
+    defaults,
+    Typography,
+    font,
+)
 from iris.ui.chat.chat_renderer import render_user_message, render_iris_message
 
 
@@ -31,6 +38,14 @@ def build_typography_box(db):
         control.setObjectName(key)
         controls[key] = control
         form.addRow(label, control)
+    speed = QSpinBox()
+    speed.setRange(TYPING_CHARS_PER_SEC_MIN, TYPING_CHARS_PER_SEC_MAX)
+    speed.setValue(p.typing_chars_per_sec)
+    speed.setSuffix(" 글자/초")
+    speed.setObjectName("typing_chars_per_sec")
+    speed.setToolTip("아이리스 답변이 한 글자씩 나오는 속도입니다.")
+    controls["typing_chars_per_sec"] = speed
+    form.addRow("타이핑 속도", speed)
     preview = QTextEdit()
     preview.setObjectName("chat_font_preview")
     preview.setReadOnly(True)

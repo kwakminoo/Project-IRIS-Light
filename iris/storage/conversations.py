@@ -35,6 +35,7 @@ class ChatConversation:
     updated_at: str
     message_count: int = 0
     title_locked: bool = False
+    project_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -338,7 +339,8 @@ def ensure_chat_schema(db: Database) -> None:
             title TEXT NOT NULL DEFAULT '새 채팅',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            title_locked INTEGER NOT NULL DEFAULT 0
+            title_locked INTEGER NOT NULL DEFAULT 0,
+            project_id INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -366,6 +368,11 @@ def ensure_chat_schema(db: Database) -> None:
             "ALTER TABLE chat_conversations "
             "ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0"
         )
+    if "project_id" not in cols:
+        db._execute(
+            "ALTER TABLE chat_conversations "
+            "ADD COLUMN project_id INTEGER NOT NULL DEFAULT 0"
+        )
     # 예전 버전이 중단 안내문으로 붙여 둔 제목을 기본 제목으로 되돌린다(직접 붙인 제목 제외).
     db._execute(
         "UPDATE chat_conversations SET title = ? WHERE title = ? AND title_locked = 0",
@@ -387,6 +394,10 @@ def _conv_from_row(row) -> ChatConversation:
         locked = bool(int(row["title_locked"] or 0))
     except (KeyError, IndexError, TypeError, ValueError):
         locked = False
+    try:
+        project_id = int(row["project_id"] or 0)
+    except (KeyError, IndexError, TypeError, ValueError):
+        project_id = 0
     return ChatConversation(
         id=int(row["id"]),
         title=str(row["title"] or DEFAULT_TITLE),
@@ -394,19 +405,26 @@ def _conv_from_row(row) -> ChatConversation:
         updated_at=str(row["updated_at"] or ""),
         message_count=int(row["message_count"] or 0),
         title_locked=locked,
+        project_id=project_id,
     )
 
 
-def create_conversation(db: Database, *, title: str = DEFAULT_TITLE) -> ChatConversation:
+def create_conversation(
+    db: Database,
+    *,
+    title: str = DEFAULT_TITLE,
+    project_id: int = 0,
+) -> ChatConversation:
     ensure_chat_schema(db)
     stamp = _now()
     name = (title or "").strip() or DEFAULT_TITLE
+    folder = int(project_id or 0)
     cur = db._execute(
         """
-        INSERT INTO chat_conversations(title, created_at, updated_at, title_locked)
-        VALUES(?, ?, ?, 0)
+        INSERT INTO chat_conversations(title, created_at, updated_at, title_locked, project_id)
+        VALUES(?, ?, ?, 0, ?)
         """,
-        (name, stamp, stamp),
+        (name, stamp, stamp, folder),
     )
     db._commit()
     cid = int(cur.lastrowid or 0)
@@ -417,6 +435,7 @@ def create_conversation(db: Database, *, title: str = DEFAULT_TITLE) -> ChatConv
         updated_at=stamp,
         message_count=0,
         title_locked=False,
+        project_id=folder,
     )
 
 
@@ -424,7 +443,7 @@ def get_conversation(db: Database, conversation_id: int) -> ChatConversation | N
     ensure_chat_schema(db)
     row = db._execute(
         """
-        SELECT c.id, c.title, c.created_at, c.updated_at, c.title_locked,
+        SELECT c.id, c.title, c.created_at, c.updated_at, c.title_locked, c.project_id,
                (SELECT COUNT(*) FROM chat_messages m WHERE m.conversation_id = c.id)
                  AS message_count
           FROM chat_conversations c
@@ -475,7 +494,7 @@ def list_conversations(
     ensure_chat_schema(db)
     rows = db._execute(
         """
-        SELECT c.id, c.title, c.created_at, c.updated_at, c.title_locked,
+        SELECT c.id, c.title, c.created_at, c.updated_at, c.title_locked, c.project_id,
                (SELECT COUNT(*) FROM chat_messages m WHERE m.conversation_id = c.id)
                  AS message_count
           FROM chat_conversations c
@@ -625,14 +644,15 @@ def delete_conversation(db: Database, conversation_id: int) -> None:
     db._commit()
 
 
-def start_new_conversation(db: Database) -> int:
-    """현재 빈 세션이 있으면 재사용, 아니면 새로 만든다."""
+def start_new_conversation(db: Database, *, project_id: int = 0) -> int:
+    """현재 빈 세션이 같은 폴더에 있으면 재사용, 아니면 새로 만든다."""
     ensure_chat_schema(db)
+    folder = int(project_id or 0)
     current = active_conversation_id(db)
     if current is not None:
         conv = get_conversation(db, current)
-        if conv is not None and conv.message_count <= 0:
+        if conv is not None and conv.message_count <= 0 and conv.project_id == folder:
             return current
-    conv = create_conversation(db)
+    conv = create_conversation(db, project_id=folder)
     set_active_conversation_id(db, conv.id)
     return conv.id

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import sys
+import time
 from unittest import TestCase
 
 from PyQt6.QtCore import QCoreApplication, Qt
 from PyQt6.QtGui import QPalette
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QDialogButtonBox, QLabel, QWidget
 
+from iris.audio.mic_state import MicState
 from iris.core.state_machine import AppState
 from iris.ui.window.top_status_header import TopStatusHeader
 
@@ -90,3 +92,82 @@ class SttUxTests(TestCase):
         self.assertEqual(header.status_label.text(), "TTS")
         header.set_app_state(AppState.LISTENING, label="LISTEN")
         self.assertEqual(header.status_label.text(), "LISTEN")
+
+    def test_status_row_is_agent_and_stt(self) -> None:
+        from iris.config.settings import Settings
+
+        header = TopStatusHeader()
+        prefixes = [
+            lab.text()
+            for lab in header.status_widget().findChildren(QLabel)
+            if lab.objectName() == "StatusChipPrefix"
+        ]
+        self.assertEqual(
+            prefixes,
+            ["STATE", "MODEL", "TTS", "IRIS LOCAL", "AGENT", "STT"],
+        )
+        self.assertNotIn("OPENCLAW", prefixes)
+        self.assertNotIn("HERMES", prefixes)
+        header.set_stt_status("off")
+        header.refresh_backend_status(Settings(), hermes_online=True)
+        values = [
+            lab.text()
+            for lab in header.status_widget().findChildren(QLabel)
+            if lab.objectName() == "StatusChipValue"
+        ]
+        self.assertIn("OFF", values)
+        self.assertIn("CONNECTED", values)
+        header.set_stt_status("on")
+        values = [
+            lab.text()
+            for lab in header.status_widget().findChildren(QLabel)
+            if lab.objectName() == "StatusChipValue"
+        ]
+        self.assertIn("ON", values)
+
+    def test_voice_mark_follows_mic(self) -> None:
+        from iris.ui.widgets.drag_tab import DragTab
+
+        drag = DragTab(QWidget())
+        mark = drag.findChild(QLabel, "VoiceListenMark")
+        self.assertIsNotNone(mark)
+        assert mark is not None
+        self.assertEqual(mark.text(), "OFF")
+        drag.set_mic_state(MicState.LISTENING)
+        self.assertEqual(mark.text(), "ON")
+        drag.set_mic_state(MicState.OFF)
+        self.assertEqual(mark.text(), "OFF")
+
+    def test_settings_shell_before_sections(self) -> None:
+        from iris.config.settings import Settings
+        from iris.ui.settings.busy_ring import BusyRing
+        from iris.ui.settings.settings_dialog import SettingsDialog
+
+        ring = BusyRing()
+        ring.show()
+        start = ring.angle()
+        deadline = time.monotonic() + 0.4
+        while ring.angle() == start and time.monotonic() < deadline:
+            _APP.processEvents()
+            time.sleep(0.01)
+        self.assertNotEqual(ring.angle(), start)
+        ring.close()
+
+        dlg = SettingsDialog(Settings(), None)
+        self.assertFalse(hasattr(dlg, "_ollama_url"))
+        self.assertFalse(dlg._busy_overlay.isHidden())
+        dlg.show()
+        deadline = time.monotonic() + 8.0
+        covered = 0
+        while dlg._busy_overlay.isVisible() and time.monotonic() < deadline:
+            _APP.processEvents()
+            covered = max(covered, dlg._busy_overlay.height())
+            time.sleep(0.01)
+        self.assertGreater(covered, 80)
+        self.assertFalse(dlg._busy_overlay.isVisible())
+        self.assertTrue(hasattr(dlg, "_ollama_url"))
+        save = dlg._buttons.button(QDialogButtonBox.StandardButton.Save)
+        self.assertIsNotNone(save)
+        assert save is not None
+        self.assertTrue(save.isEnabled())
+        dlg.close()

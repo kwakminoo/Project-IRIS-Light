@@ -88,16 +88,16 @@ class TopStatusHeader:
         self._model_chip = _StatusChip("MODEL", mono_value=True)
         self._tts_chip = _StatusChip("TTS")
         self._local_chip = _StatusChip("IRIS LOCAL")
-        self._openclaw_chip = _StatusChip("OPENCLAW")
-        self._hermes_chip = _StatusChip("HERMES")
+        self._agent_chip = _StatusChip("AGENT")
+        self._stt_chip = _StatusChip("STT")
 
         cell_align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         grid.addWidget(self._state_chip, 0, 0, alignment=cell_align)
         grid.addWidget(self._model_chip, 0, 1, alignment=cell_align)
         grid.addWidget(self._tts_chip, 0, 2, alignment=cell_align)
         grid.addWidget(self._local_chip, 1, 0, alignment=cell_align)
-        grid.addWidget(self._openclaw_chip, 1, 1, alignment=cell_align)
-        grid.addWidget(self._hermes_chip, 1, 2, alignment=cell_align)
+        grid.addWidget(self._agent_chip, 1, 1, alignment=cell_align)
+        grid.addWidget(self._stt_chip, 1, 2, alignment=cell_align)
 
         self._state_chip.set_value("IDLE", dot_kind="idle")
         self._model_chip.set_value("-", dot_kind="idle")
@@ -108,6 +108,8 @@ class TopStatusHeader:
         self.tts_status_label = self._tts_chip._value  # noqa: SLF001
 
         self._local_chip.set_value("CONNECTED", dot_kind="connected")
+        self._agent_chip.set_value("UNAVAILABLE", dot_kind="unavailable")
+        self._stt_chip.set_value("OFF", dot_kind="unavailable")
 
         # place_status_rows 레거시 — 그리드에 backend가 포함되어 빈 슬롯만 제공
         # ponytail: 반드시 status_block 자식으로 둠. parent=None + show() → 흰 top-level 창
@@ -169,27 +171,31 @@ class TopStatusHeader:
             kind = "processing"
         self._tts_chip.set_value(text.upper(), dot_kind=kind)
 
+    def set_stt_status(self, text: str) -> None:
+        lower = text.lower()
+        kind = "ready"
+        if "error" in lower or "fail" in lower:
+            kind = "error"
+        elif "off" in lower:
+            kind = "unavailable"
+        elif "busy" in lower or "listen" in lower:
+            kind = "processing"
+        self._stt_chip.set_value(text.upper(), dot_kind=kind)
+
     def refresh_backend_status(
         self,
         settings: Settings | None,
         *,
         hermes_online: bool = False,
     ) -> None:
-        """OpenClaw/Hermes 가용성 갱신."""
+        """AGENT(Hermes) 가용성 갱신."""
         line = external_backend_status_line(settings, hermes_online=hermes_online)
-        oc = "UNAVAILABLE"
         hm = "UNAVAILABLE"
-        if "OpenClaw (Connected)" in line:
-            oc = "CONNECTED"
         if "Hermes (Connected)" in line:
             hm = "CONNECTED"
         elif "Hermes (Offline)" in line:
             hm = "OFFLINE"
-        self._openclaw_chip.set_value(
-            oc,
-            dot_kind="connected" if oc == "CONNECTED" else "unavailable",
-        )
-        self._hermes_chip.set_value(
+        self._agent_chip.set_value(
             hm,
             dot_kind="connected" if hm == "CONNECTED" else "unavailable",
         )

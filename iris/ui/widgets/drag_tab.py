@@ -238,6 +238,12 @@ class DragTab(QWidget):
         self._btn_learning.setCheckable(True)
         self._btn_learning.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._btn_learning.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._voice_mark = QLabel("OFF")
+        self._voice_mark.setObjectName("VoiceListenMark")
+        self._voice_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._voice_mark.setFixedSize(36, _MIC_BTN_H)
+        self._voice_mark.setProperty("listening", False)
+        self._voice_mark.setToolTip("음성 인식 꺼짐")
         self._btn_mic = QPushButton()
         self._btn_mic.setObjectName("WinCtrlMic")
         self._btn_mic.setToolTip("음성 인식 켜기")
@@ -257,6 +263,7 @@ class DragTab(QWidget):
         for btn in (
             self._btn_ide,
             self._btn_learning,
+            self._voice_mark,
             self._btn_mic,
             self._btn_profile,
             self._btn_settings,
@@ -333,6 +340,11 @@ class DragTab(QWidget):
         self._btn_mic.blockSignals(True)
         self._btn_mic.setChecked(on)
         self._btn_mic.blockSignals(False)
+        self._voice_mark.setText("ON" if on else "OFF")
+        self._voice_mark.setToolTip("음성 인식 켜짐" if on else "음성 인식 꺼짐")
+        self._voice_mark.setProperty("listening", on)
+        self._voice_mark.style().unpolish(self._voice_mark)
+        self._voice_mark.style().polish(self._voice_mark)
         if starting:
             self._btn_mic.setIcon(_waveform_mic_icon(active=False))
             self._btn_mic.setToolTip("마이크를 여는 중")

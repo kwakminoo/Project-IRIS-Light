@@ -167,6 +167,7 @@ def _filing(window: object) -> dict:
             history_settings=window._model_switch.history_settings,
             model=model,
             project_root=root,
+            settings=window._settings,
         )
     except Exception:
         return {}
@@ -218,6 +219,7 @@ def _start(window: object, command: WikiCommand, turn_id: str) -> None:
         ollama_base_url=window._settings.ollama_base_url,
         db=window._db,
         project_root=window._current_project_root(),
+        settings=window._settings,
         parent=window,
     )
     job.finished_ok.connect(lambda result, tid=turn_id: _on_ok(window, tid, result))

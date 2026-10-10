@@ -135,6 +135,7 @@ class ModelSwitchService:
         source: str = "",
         model: str = "",
         tags: str = "",
+        rel_path: str = "",
     ) -> HistoryEntry | None:
         """History 한 건 기록 + 즉시 색인. 설정으로 꺼둔 종류는 건너뛴다."""
         settings = self.history_settings
@@ -151,6 +152,7 @@ class ModelSwitchService:
             model=model,
             tags=tags,
             wiki=self.wiki,
+            rel_path=rel_path,
         )
         if entry is not None:
             index_entry(self.db, entry, embedder=self.embedder)

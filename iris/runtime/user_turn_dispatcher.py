@@ -4,13 +4,15 @@ from collections import deque
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from .chat_run_slot import MAX_CONCURRENT
 from .user_turn import UserTurn, UserTurnSource
 
 
 class UserTurnDispatcher(QObject):
-    """텍스트·음성 입력을 한 턴으로 큐잉한다.
+    """텍스트·음성 입력을 대화 id별 턴으로 큐잉한다.
 
     추론과 HTTP는 하지 않는다. UI는 ``turn_ready``를 구독해 실행한다.
+    같은 대화는 한 줄로 기다리고, 서로 다른 대화는 ``max_concurrent``까지 동시에 나간다.
     새 에이전트 도구는 여기가 아니라 Hermes 스킬/MCP에 둔다.
     """
 
@@ -18,21 +20,43 @@ class UserTurnDispatcher(QObject):
     turn_queued = pyqtSignal(object, str)  # UserTurn, reason
     turn_dropped = pyqtSignal(object, str)  # UserTurn, reason
 
-    def __init__(self, parent: QObject | None = None, *, max_pending: int = 8) -> None:
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        *,
+        max_pending: int = 8,
+        max_concurrent: int = MAX_CONCURRENT,
+    ) -> None:
         super().__init__(parent)
         self._max_pending = max(1, int(max_pending))
-        self._active: UserTurn | None = None
-        self._pending: deque[UserTurn] = deque()
+        self._max_concurrent = max(1, int(max_concurrent))
+        self._active: dict[int | None, UserTurn] = {}
+        self._pending: dict[int | None, deque[UserTurn]] = {}
+        self._wait_order: deque[int | None] = deque()
 
     @property
     def active_turn(self) -> UserTurn | None:
-        return self._active
+        if len(self._active) == 1:
+            return next(iter(self._active.values()))
+        return None
+
+    def turn_by_id(self, turn_id: str) -> UserTurn | None:
+        for turn in self._active.values():
+            if turn.id == turn_id:
+                return turn
+        return None
 
     def is_busy(self) -> bool:
-        return self._active is not None
+        return bool(self._active)
+
+    def is_session_busy(self, session_id: int | None) -> bool:
+        return session_id in self._active
 
     def pending_count(self) -> int:
-        return len(self._pending)
+        return sum(len(queue) for queue in self._pending.values())
+
+    def pending_count_for(self, session_id: int | None) -> int:
+        return len(self._pending.get(session_id, ()))
 
     def submit(
         self,
@@ -56,41 +80,71 @@ class UserTurnDispatcher(QObject):
             session_id=session_id,
             attachments=att,
         )
-        if self._active is None:
-            self._active = turn
+        if session_id not in self._active and self._running() < self._max_concurrent:
+            self._active[session_id] = turn
             self.turn_ready.emit(turn)
             return turn
-        self._enqueue(turn, enqueue_front=enqueue_front)
+        self._enqueue(session_id, turn, enqueue_front=enqueue_front)
         return turn
 
     def finish_active_turn(self, turn_id: str | None = None) -> UserTurn | None:
-        active = self._active
-        if active is None:
+        missing = object()
+        sid: int | None | object = missing
+        if turn_id:
+            for key, active in self._active.items():
+                if active.id == turn_id:
+                    sid = key
+                    break
+            if sid is missing:
+                return None
+        elif len(self._active) == 1:
+            sid = next(iter(self._active))
+        else:
             return None
-        if turn_id and active.id != turn_id:
-            return None
-        finished = active
-        self._active = None
-        self._dispatch_next()
+        finished = self._active.pop(sid)
+        self._promote(sid)
         return finished
 
     def clear_pending(self) -> list[UserTurn]:
-        dropped = list(self._pending)
-        self._pending.clear()
+        dropped: list[UserTurn] = []
+        for queue in self._pending.values():
+            dropped.extend(queue)
+            queue.clear()
+        self._wait_order.clear()
         return dropped
 
-    def _enqueue(self, turn: UserTurn, *, enqueue_front: bool) -> None:
-        if len(self._pending) >= self._max_pending:
-            dropped = self._pending.popleft()
+    def _running(self) -> int:
+        return len(self._active)
+
+    def _enqueue(self, sid: int | None, turn: UserTurn, *, enqueue_front: bool) -> None:
+        queue = self._pending.setdefault(sid, deque())
+        if len(queue) >= self._max_pending:
+            dropped = queue.popleft()
             self.turn_dropped.emit(dropped, "queue_overflow")
         if enqueue_front:
-            self._pending.appendleft(turn)
+            queue.appendleft(turn)
         else:
-            self._pending.append(turn)
-        self.turn_queued.emit(turn, "busy")
+            queue.append(turn)
+        if sid not in self._active and sid not in self._wait_order:
+            self._wait_order.append(sid)
+        reason = "busy" if sid in self._active else "concurrent_cap"
+        self.turn_queued.emit(turn, reason)
 
-    def _dispatch_next(self) -> None:
-        if self._active is not None or not self._pending:
-            return
-        self._active = self._pending.popleft()
-        self.turn_ready.emit(self._active)
+    def _promote(self, preferred: int | None) -> None:
+        self._start_queued(preferred)
+        while self._running() < self._max_concurrent and self._wait_order:
+            sid = self._wait_order.popleft()
+            if sid == preferred or sid in self._active or not self._pending.get(sid):
+                continue
+            self._start_queued(sid)
+
+    def _start_queued(self, sid: int | None) -> bool:
+        if sid in self._active or self._running() >= self._max_concurrent:
+            return False
+        queue = self._pending.get(sid)
+        if not queue:
+            return False
+        turn = queue.popleft()
+        self._active[sid] = turn
+        self.turn_ready.emit(turn)
+        return True

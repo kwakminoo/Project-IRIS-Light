@@ -106,9 +106,9 @@ class _HtmlTextExtractor(HTMLParser):
         return raw.strip()
 
 
-def _truncate(text: str, *, limit: int = _MAX_CHARS) -> tuple[str, bool]:
+def _truncate(text: str, *, limit: int | None = _MAX_CHARS) -> tuple[str, bool]:
     text = (text or "").strip()
-    if len(text) <= limit:
+    if limit is None or len(text) <= limit:
         return text, False
     cut = text[:limit].rsplit("\n", 1)[0].strip() or text[:limit]
     return cut + f"\n\n… (truncated at {limit} chars)", True
@@ -210,8 +210,27 @@ def _bootstrap_tessdata(tesseract_cmd: str) -> Path:
     return user
 
 
+def _hide_tesseract_console(pytesseract: object) -> None:
+    """tesseract.exe는 콘솔 프로그램이라 SW_HIDE만으로는 창이 깜빡인다."""
+    module = pytesseract.pytesseract  # type: ignore[attr-defined]
+    if getattr(module, "_iris_no_window", False):
+        return
+    original = module.subprocess_args
+
+    def _args(include_stdout: bool = True) -> dict:
+        kwargs = original(include_stdout)
+        from iris.system.win_subprocess import no_window_kwargs
+
+        kwargs.update(no_window_kwargs())
+        return kwargs
+
+    module.subprocess_args = _args
+    module._iris_no_window = True
+
+
 def _configure_tesseract(pytesseract: object) -> None:
     global _tessdata_dir
+    _hide_tesseract_console(pytesseract)
     cmd = _resolve_tesseract_cmd()
     pytesseract.pytesseract.tesseract_cmd = cmd  # type: ignore[attr-defined]
     _tessdata_dir = _bootstrap_tessdata(cmd)
@@ -271,8 +290,13 @@ def read_pdf_pages(
     *,
     page_limit: int | None = None,
     vision_reader=None,
+    vision_all: bool = False,
 ) -> dict[str, str | bool]:
-    """쪽마다 글자 층 → OCR → (있으면) 비전. 본문이 없으면 ValueError."""
+    """쪽마다 글자 층 → OCR → (있으면) 비전. 본문이 없으면 ValueError.
+
+    vision_all 이면 글자 층·OCR이 비는 쪽을 세고, 한 장씩 순서대로 읽는다.
+    끄면 채팅 발췌처럼 최대 VISION_PAGE_CAP 장을 한 번에 보낸다.
+    """
     try:
         import pymupdf
     except ImportError as exc:
@@ -298,10 +322,13 @@ def read_pdf_pages(
         vision_indexes: list[int] = []
         ocr_used = False
         ocr_error = ""
+        vision_needed = 0
+        short_layers: list[tuple[int, str]] = []
         for index in range(limit):
             raw = page_texts[index] if index < len(page_texts) else ""
-            if _letters(raw) >= _LAYER_MIN:
-                parts.append(f"[쪽 {index + 1}]\n{raw.strip()}")
+            layer = raw.strip()
+            if _letters(layer) >= _LAYER_MIN:
+                parts.append(f"[쪽 {index + 1}]\n{layer}")
                 continue
             png = _page_png(doc[index])
             ocr_text, err = _ocr_png_bytes(png)
@@ -311,10 +338,30 @@ def read_pdf_pages(
                 ocr_used = True
                 parts.append(f"[쪽 {index + 1}]\n{ocr_text.strip()}")
                 continue
+            if layer:
+                short_layers.append((index + 1, layer))
+            if vision_reader is None:
+                if layer:
+                    parts.append(f"[쪽 {index + 1}]\n{layer}")
+                else:
+                    vision_needed += 1
+                continue
+            vision_needed += 1
+            if vision_all:
+                one = ""
+                try:
+                    one = str(vision_reader([png]) or "").strip()
+                except Exception as exc:  # noqa: BLE001
+                    ocr_error = ocr_error or str(exc)
+                if one:
+                    parts.append(f"[쪽 {index + 1} 이미지]\n{one}")
+                elif layer:
+                    parts.append(f"[쪽 {index + 1}]\n{layer}")
+                continue
             if len(vision) < VISION_PAGE_CAP:
                 vision.append(png)
                 vision_indexes.append(index + 1)
-        vision_used = False
+        vision_used = any(part.startswith("[쪽 ") and " 이미지]" in part.split("\n", 1)[0] for part in parts)
         if vision and vision_reader is not None:
             try:
                 transcribed = str(vision_reader(vision) or "").strip()
@@ -325,12 +372,17 @@ def read_pdf_pages(
                 vision_used = True
                 label = ", ".join(str(number) for number in vision_indexes)
                 parts.append(f"[쪽 {label} 이미지]\n{transcribed}")
+            else:
+                for number, layer in short_layers:
+                    parts.append(f"[쪽 {number}]\n{layer}")
         text = "\n\n".join(part for part in parts if part.strip()).strip()
         notes: list[str] = []
         if page_limit and total > limit:
             notes.append(f"앞 {limit}쪽만 읽었습니다. 전체 {total}쪽.")
-        if vision and not vision_used and vision_reader is None:
-            notes.append("글자가 없는 이미지 쪽은 OCR이 비어 있고, 비전 읽기가 없습니다.")
+        if vision_needed and not vision_used and vision_reader is None:
+            notes.append(
+                f"글자가 없는 이미지 쪽 {vision_needed}장은 OCR이 비어 있고, 비전 읽기가 없습니다."
+            )
         if not text:
             reason = ocr_error or "이미지로만 된 PDF에서 글자를 읽지 못했습니다."
             if notes:
@@ -560,11 +612,15 @@ def _extract_ooxml(path: Path) -> str:
 def extract_from_source(
     source: str,
     *,
-    char_limit: int = _MAX_CHARS,
+    char_limit: int | None = _MAX_CHARS,
     page_limit: int | None = None,
     vision_reader=None,
+    vision_all: bool = False,
 ) -> dict[str, str | bool]:
-    """파일 경로 또는 http(s) URL → {kind, title, text, source, truncated}."""
+    """파일 경로 또는 http(s) URL → {kind, title, text, source, truncated}.
+
+    char_limit 가 None 이면 위키 저장용으로 글자를 자르지 않는다.
+    """
     src = (source or "").strip().strip('"').strip("'")
     if not src:
         raise ValueError("source required (file path or http(s) URL)")
@@ -589,7 +645,12 @@ def extract_from_source(
         raise ValueError("한글(HWP) 파일은 아직 본문을 읽지 못합니다.")
 
     if suffix in _PDF_SUFFIXES:
-        data = read_pdf_pages(path, page_limit=page_limit, vision_reader=vision_reader)
+        data = read_pdf_pages(
+            path,
+            page_limit=page_limit,
+            vision_reader=vision_reader,
+            vision_all=vision_all,
+        )
         text, truncated = _truncate(str(data.get("text") or ""), limit=char_limit)
         note = str(data.get("note") or "").strip()
         if note:

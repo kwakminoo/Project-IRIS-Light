@@ -15,8 +15,6 @@ from iris.knowledge.history_index import like_terms, like_variants
 from iris.knowledge.obsidian_vault import DEFAULT_VAULT_ROOT
 
 _FOLDERS = ("코드", "Iris Light")
-_EXCERPT = 800
-_TOTAL = 2400
 _TOP_K = 3
 _PY_IN_NOTE = re.compile(r"`(iris/[^`\s]+?\.py)`")
 _STOP = {"어떻게", "무엇", "이거", "여기", "되지", "있어", "하는", "해서", "그게"}
@@ -131,8 +129,6 @@ def search_code_notes(
     hits: list[CodeHit] = []
     for score, rel, path, body in scored[: int(limit)]:
         fresh = body_for_prompt(path, body, project=project_root).strip()
-        if len(fresh) > _EXCERPT:
-            fresh = fresh[:_EXCERPT]
         if not fresh:
             continue
         hits.append(CodeHit(rel_path=rel, title=path.stem, excerpt=fresh, score=score))
@@ -151,18 +147,11 @@ def format_code_prompt(hits: list[CodeHit]) -> str:
     if not hits:
         return ""
     blocks = [_HEADER]
-    used = 0
     for hit in hits:
         piece = hit.excerpt.strip()
-        room = _TOTAL - used
-        if room <= 0:
-            break
-        if len(piece) > room:
-            piece = piece[:room]
         if not piece:
             continue
         blocks.append(f"### {hit.title} (docs/{hit.rel_path})\n{piece}\n")
-        used += len(piece)
     if len(blocks) == 1:
         return ""
     return "\n".join(blocks).strip() + "\n"

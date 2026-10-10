@@ -143,16 +143,81 @@ def _wiki_filing(window: WikiHost) -> dict:
         history_settings=window._model_switch.history_settings,
         model=model,
         project_root=root,
+        settings=window._settings,
     )
 
 
 def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
     from iris.ui.control_bindings import (
         Path,
+        _call_on_ui,
         _log,
         err_result,
         ok_result,
     )
+
+    def _model_name(args: dict[str, Any]) -> str:
+        return str(
+            args.get("model")
+            or window._chat.current_model()
+            or getattr(window, "_saved_model", "")
+            or window._settings.ollama_model
+            or ""
+        ).strip()
+
+    def _summary_and_vision(args: dict[str, Any]):
+        from iris.knowledge.page_vision import transcribe_images
+        from iris.knowledge.wiki_summarize import summarize_for_wiki
+
+        model = _model_name(args)
+        if not model:
+            return None, None
+        base = (window._settings.ollama_base_url or "http://127.0.0.1:11434/v1").strip()
+
+        def _sum(text: str) -> str:
+            return summarize_for_wiki(
+                text,
+                model=model,
+                ollama_base_url=base,
+                settings=window._settings,
+                db=window._db,
+            )
+
+        spec = {
+            "model": model,
+            "ollama_base_url": base,
+            "api_base_url": "",
+            "api_key": "",
+            "auth_style": "bearer",
+        }
+        getter = getattr(window, "_material_vision_spec", None)
+        if callable(getter):
+            try:
+                spec = dict(getter(model))
+            except Exception:
+                pass
+
+        def _vision(pngs: list[bytes]) -> str:
+            return transcribe_images(
+                pngs,
+                model=str(spec.get("model") or model),
+                ollama_base_url=str(spec.get("ollama_base_url") or base),
+                api_base_url=str(spec.get("api_base_url") or ""),
+                api_key=str(spec.get("api_key") or ""),
+                auth_style=str(spec.get("auth_style") or "bearer"),
+            )
+
+        return _sum, _vision
+
+    def _show_saved(rel: str, *, open_note: bool) -> None:
+        def _do() -> None:
+            window._on_obsidian_icon()
+            window._obsidian_page.reload_graph()
+            window._left_sidebar.obsidian_detail.reload()
+            if open_note and rel:
+                window._obsidian_page.show_note(rel)
+
+        _call_on_ui(window, _do)
 
     def wiki_list(_a: dict[str, Any]) -> dict[str, Any]:
         notes = [
@@ -197,7 +262,12 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         if not content:
             return err_result("wiki.write_user_note", "content required")
         from iris.knowledge.wiki_filing import file_user_note
+        from iris.knowledge.wiki_original import compose_wiki_body, insert_original_marker, store_original
 
+        summarize_fn, _vision = _summary_and_vision(args)
+        if not content.lstrip().startswith("## 전체 요약"):
+            summary = summarize_fn(content).strip() if summarize_fn else ""
+            content = compose_wiki_body(summary=summary, original=content)
         try:
             filed = file_user_note(
                 window._iris_wiki,
@@ -211,12 +281,18 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             return err_result("wiki.write_user_note", str(exc))
         except OSError as exc:
             return err_result("wiki.write_user_note", str(exc))
+        kind = ""
+        low = source_url.lower()
+        if low.startswith(("http://", "https://")):
+            kind = "url"
+        elif low.endswith(".pdf"):
+            kind = "pdf"
+        if kind:
+            asset = store_original(Path(str(filed["path"])), kind=kind, source=source_url)
+            if asset:
+                insert_original_marker(Path(str(filed["path"])), asset)
         wiki_rel = str(filed["rel_path"])
-        window._on_obsidian_icon()
-        window._obsidian_page.reload_graph()
-        window._left_sidebar.obsidian_detail.reload()
-        if open_note:
-            window._obsidian_page.show_note(wiki_rel)
+        _show_saved(wiki_rel, open_note=open_note)
         _log(window, "wiki.write_user_note", True)
         return ok_result(
             "wiki.write_user_note",
@@ -269,7 +345,6 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
     def wiki_import_content(args: dict[str, Any]) -> dict[str, Any]:
         from iris.knowledge.content_extract import UnsupportedAttachmentTypeError
         from iris.knowledge.wiki_import_ops import import_to_wiki
-        from iris.knowledge.wiki_summarize import summarize_for_wiki
 
         source = str(args.get("source") or args.get("path") or args.get("url") or "").strip()
         title_in = str(args.get("title") or "").strip() or None
@@ -280,23 +355,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             mode = "raw"
         if not source:
             return err_result("wiki.import_content", "source required (file path or http(s) URL)")
-        summarize_fn = None
-        if mode == "summarize":
-            model = str(
-                args.get("model")
-                or window._chat.current_model()
-                or getattr(window, "_saved_model", "")
-                or window._settings.ollama_model
-                or ""
-            ).strip()
-            if not model:
-                return err_result("wiki.import_content", "model required for summarize mode")
-            base = (window._settings.ollama_base_url or "http://127.0.0.1:11434/v1").strip()
-
-            def _sum(text: str) -> str:
-                return summarize_for_wiki(text, model=model, ollama_base_url=base)
-
-            summarize_fn = _sum
+        summarize_fn, vision = _summary_and_vision(args)
         try:
             result = import_to_wiki(
                 window._iris_wiki,
@@ -305,6 +364,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
                 mode=mode,
                 rel_path=rel_in,
                 summarize_fn=summarize_fn,
+                vision_reader=vision,
                 **_wiki_filing(window),
             )
         except UnsupportedAttachmentTypeError as exc:
@@ -320,18 +380,13 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         except (ValueError, OSError, RuntimeError) as exc:
             return err_result("wiki.import_content", str(exc))
         wiki_rel = str(result["rel_path"])
-        window._on_obsidian_icon()
-        window._obsidian_page.reload_graph()
-        window._left_sidebar.obsidian_detail.reload()
-        if open_note:
-            window._obsidian_page.show_note(wiki_rel)
+        _show_saved(wiki_rel, open_note=open_note)
         _log(window, "wiki.import_content", True)
         result = {**result, "opened": open_note}
         return ok_result("wiki.import_content", result)
 
     def wiki_import_pages(args: dict[str, Any]) -> dict[str, Any]:
         from iris.knowledge.wiki_import_ops import import_pages
-        from iris.knowledge.wiki_summarize import summarize_for_wiki
 
         sources = _page_sources(args)
         if not sources:
@@ -339,23 +394,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         mode = str(args.get("mode") or "raw").strip().lower()
         if mode not in ("raw", "summarize"):
             mode = "raw"
-        summarize_fn = None
-        if mode == "summarize":
-            model = str(
-                args.get("model")
-                or window._chat.current_model()
-                or getattr(window, "_saved_model", "")
-                or window._settings.ollama_model
-                or ""
-            ).strip()
-            if not model:
-                return err_result("wiki.import_pages", "model required for summarize mode")
-            base = (window._settings.ollama_base_url or "http://127.0.0.1:11434/v1").strip()
-
-            def _sum(text: str) -> str:
-                return summarize_for_wiki(text, model=model, ollama_base_url=base)
-
-            summarize_fn = _sum
+        summarize_fn, vision = _summary_and_vision(args)
         limit = _page_limit(args.get("limit"))
         merged, truncated = _merge_discovered(sources, args, limit, _fetch_html)
         data = import_pages(
@@ -363,6 +402,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             merged,
             mode=mode,
             summarize_fn=summarize_fn,
+            vision_reader=vision,
             **_wiki_filing(window),
         )
         data["truncated"] = truncated
@@ -371,8 +411,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             "",
         )
         if data["saved"] and last:
-            window._on_obsidian_icon()
-            window._obsidian_page.show_note(last)
+            _show_saved(last, open_note=True)
         _log(
             window,
             f"wiki.import_pages saved={data['saved']} failed={data['failed']}",
@@ -520,7 +559,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         rel = str(args.get("rel_path") or args.get("path") or "").strip()
         if not rel:
             return err_result("wiki.reprocess_note", "rel_path required")
-        model = str(args.get("model") or window._settings.ollama_model or "").strip()
+        model = _model_name(args)
         if not model:
             return err_result("wiki.reprocess_note", "model required")
         base = (window._settings.ollama_base_url or "http://127.0.0.1:11434/v1").strip()
@@ -528,10 +567,16 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         translate = _truthy(args.get("translate", True))
 
         def _sum(text: str) -> str:
-            return summarize_for_wiki(text, model=model, ollama_base_url=base)
+            return summarize_for_wiki(
+                text, model=model, ollama_base_url=base,
+                settings=window._settings, db=window._db,
+            )
 
         def _tr(text: str) -> str:
-            return translate_for_wiki(text, model=model, ollama_base_url=base)
+            return translate_for_wiki(
+                text, model=model, ollama_base_url=base,
+                settings=window._settings, db=window._db,
+            )
 
         from iris.knowledge.wiki_filing import filing_kwargs
         from iris.storage.failover_prefs import load_history_settings
@@ -543,6 +588,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
                 history_settings=load_history_settings(window._db),
                 model=model,
                 project_root="",
+                settings=window._settings,
             )
             result = execute_wiki_command(
                 window._iris_wiki,
@@ -635,7 +681,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
     reg.register(
         "wiki.import_content",
         wiki_import_content,
-        summary="Extract PDF/URL/file text, classify into Iris Wiki folders, then open in UI (mode=raw|summarize)",
+        summary="Save PDF/URL/file into Iris Wiki with a full summary and key concepts on top, and the original below. PDF is copied; web is one HTML file. No text cap. Image pages are read one by one.",
         risk="medium",
     )
 

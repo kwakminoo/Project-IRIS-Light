@@ -41,7 +41,21 @@ def article_from_note(markdown: str) -> tuple[str, str, str]:
             continue
         kept.append(line)
     body = "\n".join(kept).strip()
-    if "## 원문" in body:
+    if "## 원본" in body:
+        original = body.split("## 원본", 1)[1]
+        paragraphs: list[str] = []
+        for block in re.split(r"\n\s*\n", original):
+            lines = [
+                line
+                for line in block.splitlines()
+                if not line.strip().lower().startswith("> ko:")
+                and not line.strip().lower().startswith("- iris-original:")
+            ]
+            text = "\n".join(lines).strip()
+            if text and not text.startswith("## "):
+                paragraphs.append(text)
+        body = "\n\n".join(paragraphs).strip()
+    elif "## 원문" in body:
         original = body.split("## 원문", 1)[1]
         paragraphs: list[str] = []
         for block in re.split(r"\n\s*\n", original):
@@ -171,6 +185,7 @@ def execute_wiki_command(
     *,
     summarize_fn: SummarizeFn | None = None,
     translate_fn: TranslateFn | None = None,
+    vision_reader=None,
     filing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     filing = dict(filing or {})
@@ -187,6 +202,7 @@ def execute_wiki_command(
             wiki,
             title=command.title or "검색 결과",
             content=command.content,
+            summarize_fn=summarize_fn,
             **filing,
         )
         return _result(
@@ -201,12 +217,14 @@ def execute_wiki_command(
             body=command.content,
         )
 
-    if op == "save" and not command.needs_model():
+    if op == "save" and command.source:
         filed = import_to_wiki(
             wiki,
             source=command.source,
             title=command.title or None,
-            mode="raw",
+            mode="summarize" if summarize_fn else "raw",
+            summarize_fn=summarize_fn,
+            vision_reader=vision_reader,
             **filing,
         )
         return _result(
@@ -217,58 +235,7 @@ def execute_wiki_command(
             wrote=True,
             changed=True,
             opened=True,
-            mode="raw",
-        )
-
-    if op == "save" and command.keep_original:
-        from iris.knowledge.wiki_filing import file_user_note
-        from iris.knowledge.wiki_import_ops import prepare_wiki_body
-
-        prepared = prepare_wiki_body(command.source, mode="raw")
-        body = _reprocess_body(
-            str(prepared["body"]),
-            summarize=command.summarize,
-            translate=command.translate,
-            summarize_fn=summarize_fn,
-            translate_fn=translate_fn,
-        )
-        filed = file_user_note(
-            wiki,
-            str(prepared["title"] or command.title or "untitled"),
-            body,
-            source_url=str(prepared["source_url"] or ""),
-            **filing,
-        )
-        return _result(
-            op="save",
-            rel_path=str(filed.get("rel_path") or ""),
-            path=str(filed.get("path") or ""),
-            title=str(filed.get("title") or prepared["title"]),
-            wrote=True,
-            changed=True,
-            opened=True,
-            mode="reprocess",
-            body=body,
-        )
-
-    if op == "save" and command.summarize and not command.keep_original:
-        filed = import_to_wiki(
-            wiki,
-            source=command.source,
-            title=command.title or None,
-            mode="summarize",
-            summarize_fn=summarize_fn,
-            **filing,
-        )
-        return _result(
-            op="save",
-            rel_path=str(filed.get("rel_path") or ""),
-            path=str(filed.get("path") or ""),
-            title=str(filed.get("title") or ""),
-            wrote=True,
-            changed=True,
-            opened=True,
-            mode="summarize",
+            mode="summarize" if summarize_fn else "raw",
         )
 
     if op == "reprocess":

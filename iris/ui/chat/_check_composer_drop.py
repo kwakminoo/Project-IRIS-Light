@@ -16,6 +16,7 @@ from iris.ui.chat.composer_attachments import (
     composer_chip_label,
     composer_chip_meta,
     format_byte_size,
+    format_user_attachment_block,
     partition_attachment_paths,
 )
 from iris.knowledge.content_extract import extract_from_source
@@ -130,7 +131,38 @@ def main() -> None:
         shown = [w.text() for w in panel._input_area.attachment_strip.findChildren(QLabel)]
         assert any(t.startswith("PDF · ") for t in shown), shown
         assert any(t.startswith("TXT · ") for t in shown), shown
-        assert any(t.startswith("PNG · ") for t in shown), shown
+        thumbs = [
+            w for w in panel._input_area.attachment_strip.findChildren(QLabel)
+            if w.pixmap() is not None and not w.pixmap().isNull()
+        ]
+        assert thumbs, shown
+        assert not any(t.startswith("PNG · ") for t in shown), shown
+        preview = render_user_message(format_user_attachment_block("사진", [str(png)]))
+        assert "<img " in preview, preview
+        assert "iris-image:" in preview, preview
+        assert "PNG ·" not in preview, preview
+        video = Path(tempfile.gettempdir()) / "iris_drop_sample.mp4"
+        try:
+            import cv2
+            import numpy as np
+
+            writer = cv2.VideoWriter(
+                str(video),
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                5,
+                (64, 48),
+            )
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[:, :] = (30, 160, 40)
+            writer.write(frame)
+            writer.release()
+            if video.is_file() and video.stat().st_size > 0:
+                video_html = render_user_message(format_user_attachment_block("", [str(video)]))
+                assert "<img " in video_html, video_html
+                assert "iris-video:" in video_html, video_html
+                assert "MP4 ·" not in video_html, video_html
+        finally:
+            video.unlink(missing_ok=True)
         sent: list[tuple[str, list]] = []
         panel.send_clicked.connect(lambda text, images: sent.append((text, list(images))))
         panel.set_input_text("첨부 확인")

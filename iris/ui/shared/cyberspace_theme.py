@@ -222,6 +222,18 @@ def build_cyberspace_qss() -> str:
             background-color: rgba(8, 51, 68, 0.92);
             border-color: rgba(34, 211, 238, 0.55);
         }}
+        QLabel#VoiceListenMark {{
+            color: {t.text_muted};
+            background: transparent;
+            border: none;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            padding: 0;
+        }}
+        QLabel#VoiceListenMark[listening="true"] {{
+            color: {t.neon_cyan};
+        }}
         QLabel#DragTitle {{
             font-weight: 400;
             font-size: 25px;

@@ -7,6 +7,9 @@ from PyQt6.QtWidgets import QApplication
 from iris.ui.shared.theme_tokens import TOKENS as THEME
 
 KEY = "chat_typography_v1"
+TYPING_CHARS_PER_SEC_MIN = 5
+TYPING_CHARS_PER_SEC_MAX = 80
+TYPING_CHARS_PER_SEC_DEFAULT = 20
 
 
 @dataclass
@@ -15,6 +18,7 @@ class Typography:
     chat_font_size: int
     code_font_family: str
     code_font_size: int
+    typing_chars_per_sec: int = TYPING_CHARS_PER_SEC_DEFAULT
 
 
 def defaults():
@@ -42,6 +46,13 @@ def normalize(data):
             setattr(base, key, max(10, min(28, int(data.get(key, getattr(base, key))))))
         except (TypeError, ValueError, OverflowError):
             pass
+    try:
+        base.typing_chars_per_sec = max(
+            TYPING_CHARS_PER_SEC_MIN,
+            min(TYPING_CHARS_PER_SEC_MAX, int(data.get("typing_chars_per_sec", base.typing_chars_per_sec))),
+        )
+    except (TypeError, ValueError, OverflowError):
+        pass
     return base
 
 

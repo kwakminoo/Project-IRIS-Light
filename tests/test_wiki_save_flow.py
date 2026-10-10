@@ -59,9 +59,15 @@ def check_pdf_attachment_import(tmp_path):
     assert request and request.from_attachment
     wiki = IrisWiki(docs_root=tmp_path / "docs", user_root=tmp_path / "wiki")
     result = import_to_wiki(wiki, source=request.source)
-    saved = Path(result["path"]).read_text(encoding="utf-8")
+    saved_path = Path(result["path"])
+    saved = saved_path.read_text(encoding="utf-8")
     assert "Research evidence" in saved
     assert "research.pdf" in saved
+    assert "## 전체 요약" in saved and "## 핵심 개념" in saved and "## 원본" in saved
+    assert "truncated at" not in saved
+    original = saved_path.with_name(saved_path.stem + ".assets") / "original.pdf"
+    assert original.is_file() and original.stat().st_size > 0
+    assert f"- iris-original: {original.parent.name}/original.pdf" in saved
     assert any(note.rel_path == result["rel_path"] for note in wiki.list_notes())
 
 
@@ -88,6 +94,44 @@ class WikiSaveFlowTests(unittest.TestCase):
     def test_pdf(self):
         with tempfile.TemporaryDirectory() as tmp:
             check_pdf_attachment_import(Path(tmp))
+
+    def test_save_keeps_full_text(self):
+        from iris.knowledge.content_extract import extract_from_source
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "long.txt"
+            path.write_text("가\n" * 90_000, encoding="utf-8")
+            data = extract_from_source(str(path), char_limit=None)
+            assert data["truncated"] is False
+            assert len(str(data["text"])) > 80_000
+
+    def test_vision_reads_each_image_page(self):
+        import pymupdf
+
+        import iris.knowledge.content_extract as content_extract
+        from iris.knowledge.content_extract import read_pdf_pages
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "scan.pdf"
+            doc = pymupdf.open()
+            doc.new_page()
+            doc.new_page()
+            doc.save(path)
+            doc.close()
+            calls: list[int] = []
+            original = content_extract._ocr_png_bytes
+            content_extract._ocr_png_bytes = lambda png: ("", "")
+
+            def _vision(pngs: list[bytes]) -> str:
+                calls.append(len(pngs))
+                return f"쪽{len(calls)}"
+
+            try:
+                data = read_pdf_pages(path, vision_all=True, vision_reader=_vision)
+            finally:
+                content_extract._ocr_png_bytes = original
+            assert calls == [1, 1], calls
+            assert "쪽1" in str(data["text"]) and "쪽2" in str(data["text"])
 
 
 if __name__ == "__main__":

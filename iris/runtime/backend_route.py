@@ -89,6 +89,71 @@ def route_for_routine(settings: Any, db: Any, routine: Any, fallback_model: str 
     return None, "쓸 모델을 정하지 못했습니다."
 
 
+def settings_for_model(settings: Any, ollama_base_url: str) -> Any:
+    """설정 객체가 없으면 Ollama 주소만 있는 최소 설정을 만든다."""
+    if settings is not None:
+        return settings
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        hermes_enabled=False,
+        ollama_base_url=ollama_base_url or "http://127.0.0.1:11434/v1",
+    )
+
+
+def ask_selected_model(
+    settings: Any,
+    db: Any,
+    model: str,
+    prompt: str,
+    *,
+    system: str = "",
+    timeout_sec: float = 120.0,
+) -> str:
+    """채팅에서 고른 모델로 한 번 묻고 본문만 받는다.
+
+    Ollama 이름, `api:{제공자}:{모델}`, Hermes 경유를 채팅과 같은 규칙으로 보낸다.
+    """
+    name = str(model or "").strip()
+    if not name:
+        raise RuntimeError("모델 선택이 필요합니다.")
+    route = resolve_backend_route(settings, db, name)
+    if route is None:
+        raise RuntimeError(
+            "선택한 모델로 요청을 보내지 못했습니다. 설정에서 해당 제공자를 확인해 주세요."
+        )
+    messages: list[dict[str, str]] = []
+    if (system or "").strip():
+        messages.append({"role": "system", "content": system.strip()})
+    messages.append({"role": "user", "content": prompt})
+    from iris.ui.workers.backend_call import collect_reply
+
+    return collect_reply(route, messages, timeout_sec=timeout_sec)
+
+
+def vision_endpoint(db: Any, model: str, *, ollama_base_url: str) -> dict[str, str]:
+    """위키 이미지 읽기. `api:` id 는 그 제공자로, 그 외는 Ollama로."""
+    spec = {
+        "model": (model or "").strip(),
+        "ollama_base_url": (ollama_base_url or "").strip(),
+        "api_base_url": "",
+        "api_key": "",
+        "auth_style": "bearer",
+    }
+    from iris.storage.api_providers import get_api_provider, parse_runtime_model_id
+
+    parsed = parse_runtime_model_id(spec["model"])
+    if parsed is None:
+        return spec
+    provider = get_api_provider(db, parsed[0]) if db is not None else None
+    spec["model"] = parsed[1]
+    if provider is not None and (provider.base_url or "").strip():
+        spec["api_base_url"] = provider.base_url.strip()
+        spec["api_key"] = provider.api_key
+        spec["auth_style"] = provider.auth_style or "bearer"
+    return spec
+
+
 if __name__ == "__main__":
     from types import SimpleNamespace
 
@@ -98,6 +163,39 @@ if __name__ == "__main__":
     route = resolve_backend_route(ollama_only, None, "qwen3:8b")
     assert route.backend == "ollama" and route.model == "qwen3:8b"
     assert resolve_backend_route(ollama_only, None, "  ") is None
+
+    class _MemDb:
+        def __init__(self) -> None:
+            self.prefs: dict[str, str] = {}
+
+        def get_preference(self, key: str, default: str = "") -> str:
+            return self.prefs.get(key, default)
+
+        def set_preference(self, key: str, value: str) -> None:
+            self.prefs[key] = value
+
+    from iris.storage.api_providers import ApiProvider, upsert_api_provider
+
+    mem = _MemDb()
+    upsert_api_provider(
+        mem,
+        ApiProvider(
+            id="nid",
+            name="NVIDIA NIM",
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key="secret",
+            models=["nvidia/nemotron-3-nano"],
+        ),
+    )
+    route = resolve_backend_route(ollama_only, mem, "api:nid:nvidia/nemotron-3-nano")
+    assert route is not None and route.backend == "api"
+    assert route.model == "nvidia/nemotron-3-nano"
+    assert route.base_url == "https://integrate.api.nvidia.com/v1"
+    assert resolve_backend_route(ollama_only, mem, "api:missing:foo") is None
+    seen = vision_endpoint(mem, "api:nid:nvidia/nemotron-3-nano", ollama_base_url="http://127.0.0.1:11434/v1")
+    assert seen["model"] == "nvidia/nemotron-3-nano"
+    assert seen["api_base_url"] == "https://integrate.api.nvidia.com/v1"
+    assert vision_endpoint(None, "qwen3:8b", ollama_base_url="http://127.0.0.1:11434/v1")["api_base_url"] == ""
 
     # Hermes 가 켜져 있으면 전부 게이트웨이로
     hermes_on = SimpleNamespace(

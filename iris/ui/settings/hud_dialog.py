@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, QObject, Qt
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -260,6 +261,7 @@ def configure_hud_dialog(
     dialog.resize(default_w, default_h)
     dialog.setSizeGripEnabled(True)
     dialog.setStyleSheet(hud_dialog_qss())
+    dialog.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     _seal_dialog_background(dialog)
     # ponytail: winId()를 여기서 부르면 HWND가 위젯 트리보다 먼저 생겨 흰 화면이 한 박자 뜬다.
     filt = _DeferDarkTitlebar(dialog)
@@ -372,15 +374,27 @@ def configure_form(form: QFormLayout) -> None:
     form.setContentsMargins(0, 0, 0, 0)
 
 
+class _WindowFitScroll(QScrollArea):
+    """내용이 길어도 창 최소 높이를 키우지 않는다. 남는 높이는 스크롤이다."""
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, 0)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(480, 320)
+
+
 def make_scroll_body() -> tuple[QScrollArea, QVBoxLayout]:
-    scroll = QScrollArea()
+    scroll = _WindowFitScroll()
     scroll.setObjectName("HudDialogScroll")
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+    scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     inner = QWidget()
     inner.setObjectName("HudDialogScrollInner")
+    inner.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     lay = QVBoxLayout(inner)
     lay.setContentsMargins(4, 4, 12, 8)
     lay.setSpacing(TOKENS.spacing_lg)
@@ -549,6 +563,84 @@ def run_hud_confirm(
     lay.addLayout(btns)
 
     return dlg.exec() == QDialog.DialogCode.Accepted
+
+
+def run_hud_prompt(
+    parent: QWidget | None,
+    *,
+    title: str,
+    body: str,
+    hint: str = "",
+    placeholder: str = "",
+    ok_text: str = "생성",
+    cancel_text: str = "취소",
+) -> str:
+    """이름 입력. 취소를 누르면 빈 문자열."""
+    dlg = QDialog(parent)
+    dlg.setObjectName("IrisHudConfirm")
+    dlg.setWindowTitle(title)
+    dlg.setModal(True)
+    dlg.setWindowFlags(
+        (dlg.windowFlags() | Qt.WindowType.FramelessWindowHint)
+        & ~Qt.WindowType.WindowContextHelpButtonHint
+    )
+    dlg.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    dlg.setFixedWidth(420)
+    dlg.setStyleSheet(_confirm_qss(accent=TOKENS.neon_cyan))
+
+    root = QVBoxLayout(dlg)
+    root.setContentsMargins(0, 0, 0, 0)
+    shell = QFrame(dlg)
+    shell.setObjectName("HudConfirmShell")
+    root.addWidget(shell)
+    lay = QVBoxLayout(shell)
+    lay.setContentsMargins(20, 18, 20, 16)
+    lay.setSpacing(TOKENS.spacing_sm)
+
+    eye = QLabel("PROJECT")
+    eye.setObjectName("HudConfirmEyebrow")
+    lay.addWidget(eye)
+    body_lab = QLabel(body)
+    body_lab.setObjectName("HudConfirmBody")
+    body_lab.setWordWrap(True)
+    lay.addWidget(body_lab)
+    if hint:
+        hint_lab = QLabel(hint)
+        hint_lab.setObjectName("HudConfirmHint")
+        hint_lab.setWordWrap(True)
+        lay.addWidget(hint_lab)
+    edit = QLineEdit()
+    edit.setPlaceholderText(placeholder)
+    edit.setMaxLength(48)
+    edit.setStyleSheet(
+        f"""
+        QLineEdit {{
+            background: {TOKENS.panel_background};
+            color: {TOKENS.text_primary};
+            border: 1px solid {TOKENS.border_color};
+            border-radius: {TOKENS.radius_sm}px;
+            padding: 6px 8px;
+        }}
+        """
+    )
+    lay.addWidget(edit)
+    btns = QHBoxLayout()
+    btns.addStretch(1)
+    cancel = QPushButton(cancel_text)
+    cancel.setObjectName("HudConfirmCancel")
+    cancel.clicked.connect(dlg.reject)
+    ok = QPushButton(ok_text)
+    ok.setObjectName("HudConfirmOk")
+    ok.setDefault(True)
+    edit.returnPressed.connect(dlg.accept)
+    ok.clicked.connect(dlg.accept)
+    btns.addWidget(cancel)
+    btns.addWidget(ok)
+    lay.addLayout(btns)
+    edit.setFocus(Qt.FocusReason.OtherFocusReason)
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return ""
+    return " ".join(edit.text().split())
 
 
 if __name__ == "__main__":

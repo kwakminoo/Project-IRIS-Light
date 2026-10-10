@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PyQt6.QtCore import QPoint, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import (
     QFrame,
@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 from iris.ui.shared.theme_tokens import TOKENS
 
 from iris.knowledge.iris_wiki import IrisWiki, markdown_heading, match_wiki_notes
+from iris.knowledge.wiki_original import split_note_view
 from iris.ui.chat.chat_image_view import (
     attach_image_loader,
     handle_chat_anchor_click,
@@ -234,7 +235,21 @@ class ObsidianWorkspacePage(QWidget):
         self._body.setReadOnly(True)
         attach_image_loader(self._body)
         self._body.anchorClicked.connect(self._on_preview_anchor)
-        info_lay.addWidget(self._body, 1)
+        self._original = None
+        self._pending_original = ""
+        self._original_slot = QWidget(info_wrap)
+        self._original_slot.hide()
+        self._original_lay = QVBoxLayout(self._original_slot)
+        self._original_lay.setContentsMargins(0, 0, 0, 0)
+        note_split = QSplitter(Qt.Orientation.Vertical, info_wrap)
+        note_split.setChildrenCollapsible(False)
+        note_split.setHandleWidth(6)
+        note_split.addWidget(self._body)
+        note_split.addWidget(self._original_slot)
+        note_split.setStretchFactor(0, 1)
+        note_split.setStretchFactor(1, 2)
+        self._note_split = note_split
+        info_lay.addWidget(note_split, 1)
         splitter.addWidget(info_wrap)
 
         splitter.setStretchFactor(0, 1)
@@ -288,13 +303,72 @@ class ObsidianWorkspacePage(QWidget):
         self._current_rel = rel_path
         title = markdown_heading(text) or rel_path.rsplit("/", 1)[-1].removesuffix(".md")
         self._title.setText(title)
-        html = render_wiki_document(text)
+        top, asset = split_note_view(text)
+        html = render_wiki_document(top or text)
         if not html:
             self._body.setHtml('<p style="color:#94a3b8;">(빈 노트)</p>')
         else:
             self._body.setHtml(html)
             prefetch_chat_html_images(self._body, html)
+        self._pending_original = self._original_file(rel_path, asset)
+        if self._pending_original:
+            self._original_slot.show()
+            QTimer.singleShot(0, self._load_original)
+        else:
+            self._original_slot.hide()
         self._graph.select(rel_path)
+
+    def _original_file(self, rel_path: str, asset: str) -> str:
+        if not asset or self._wiki is None:
+            return ""
+        rel = (rel_path or "").replace("\\", "/").strip()
+        if rel.startswith("user/"):
+            rel = rel[len("user/") :]
+        note = (self._wiki.user_root / rel).resolve()
+        path = (note.parent / asset).resolve()
+        root = self._wiki.user_root.resolve()
+        if root not in path.parents or not path.is_file():
+            return ""
+        return str(path)
+
+    def _ensure_original_view(self):
+        if self._original is not None:
+            return self._original
+        from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+        view = QWebEngineView(self._original_slot)
+        view.setObjectName("WikiOriginalView")
+        self._original_lay.addWidget(view)
+        self._original = view
+        return view
+
+    def _load_original(self) -> None:
+        path_text = self._pending_original
+        if not path_text:
+            self._original_slot.hide()
+            return
+        path = Path(path_text)
+        if not path.is_file():
+            self._original_slot.hide()
+            return
+        from PyQt6.QtWebEngineCore import QWebEngineSettings
+
+        view = self._ensure_original_view()
+        is_pdf = path.suffix.lower() == ".pdf"
+        settings = view.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, is_pdf)
+        settings.setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, is_pdf
+        )
+        settings.setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, False
+        )
+        settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
+        url = QUrl.fromLocalFile(str(path))
+        if is_pdf:
+            url.setFragment("view=FitH")
+        self._original_slot.show()
+        view.load(url)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)

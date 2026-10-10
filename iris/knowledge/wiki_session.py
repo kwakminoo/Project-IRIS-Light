@@ -106,6 +106,7 @@ def close_session(
     messages: list[dict],
     summarize: Summarizer,
     model: str = "",
+    episode_dir: str = "",
 ) -> bool:
     """요약이 비거나 말이 모자라면 파일을 만들지 않는다."""
     if usable_turns(messages) < 2 or not transcript_of(messages):
@@ -123,6 +124,7 @@ def close_session(
         db, wiki, title=title, summary=summary,
         conversation_id=int(conversation_id or 0), model=model,
         covers=_covers(db, conversation_id),
+        folder=episode_dir,
     )
     if entry is None:
         return False

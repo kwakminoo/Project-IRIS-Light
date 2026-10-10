@@ -46,6 +46,10 @@ _OFF_UI_ACTIONS = frozenset(
         "project.write_image_code",
         # 요약·문단 번역 모델 호출. Qt 메인에서 돌리면 창이 멈춘다.
         "wiki.reprocess_note",
+        # 전체 요약·쪽 이미지 순차 읽기. Qt 메인에서 돌리면 창이 멈춘다.
+        "wiki.import_content",
+        "wiki.import_pages",
+        "wiki.write_user_note",
     }
 )
 
@@ -174,7 +178,21 @@ def call_registered(surface: ControlSurface, action: str, args: dict[str, Any], 
     MCP _http만 HTTP 400을 재시도하지 않는 것이 확인됐다.
     UiThreadTimeout만 status=timeout이다. 그 외 TimeoutError와 핸들러 예외는 status=failed다.
     브리지 대기 초과(BridgeCallTimeout)는 TimeoutError가 아니므로 이 분기에 들어가지 않는다.
+
+    쓰기 잠금은 HTTP 스레드에서 잡고, UI로 넘긴 뒤에 푼다. UI 스레드가 같은 잠금을
+    기다리면, 잠금을 쥔 요청이 UI를 기다리는 동안 교착한다.
     """
+    from iris.runtime.session_write_lock import shared_write_lock, write_holder, write_lock_target
+
+    target = write_lock_target(action, args)
+    holder = write_holder(args)
+    lock = shared_write_lock()
+    if target is not None:
+        kind, key = target
+        if kind == "project":
+            lock.acquire_project(holder)
+        else:
+            lock.acquire_wiki(holder, key)
 
     def _run() -> dict[str, Any]:
         if surface.booting and action not in ("ping", "get_state", "get_catalog"):
@@ -182,13 +200,21 @@ def call_registered(surface: ControlSurface, action: str, args: dict[str, Any], 
         return surface.registry.invoke(action, args)
 
     try:
-        if runs_off_ui_thread(action):
-            return _run()
-        return surface.invoker.run(_run, timeout=timeout)
-    except UiThreadTimeout as exc:
-        return err_result(action or "invoke", str(exc), status="timeout")
-    except TimeoutError as exc:
-        return err_result(action or "invoke", str(exc) or "timeout")
+        try:
+            if runs_off_ui_thread(action):
+                return _run()
+            return surface.invoker.run(_run, timeout=timeout)
+        except UiThreadTimeout as exc:
+            return err_result(action or "invoke", str(exc), status="timeout")
+        except TimeoutError as exc:
+            return err_result(action or "invoke", str(exc) or "timeout")
+    finally:
+        if target is not None:
+            kind, key = target
+            if kind == "project":
+                lock.release_project(holder)
+            else:
+                lock.release_wiki(holder, key)
 
 
 class UiThreadTimeout(TimeoutError):

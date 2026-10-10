@@ -58,7 +58,7 @@ from iris.storage.api_providers import (
     usable_models,
 )
 from iris.runtime.chat_session import ChatSession, should_open_fresh_work_chat
-from iris.runtime.chat_turn_gate import ChatTurnGate
+from iris.runtime.chat_run_slot import ChatRunMap, ChatRunSlot, SlotAttr
 from iris.storage.email_accounts import EmailAccount, find_account, load_email_accounts
 from iris.monitoring.notification_policy import NotificationPolicy
 from iris.audio.alert_speech import (
@@ -259,6 +259,19 @@ def _pinned_status_block(window: object) -> str:
 class MainWindow(QMainWindow):
     """IRIS — Hermes API 또는 Ollama 채팅 HUD."""
 
+    _turn_gate = SlotAttr("gate")
+    _chat_worker = SlotAttr("worker")
+    _followthrough_count = SlotAttr("followthrough_count")
+    _followthrough_goal = SlotAttr("followthrough_goal")
+    _followthrough_gen = SlotAttr("followthrough_gen")
+    _followthrough_token = SlotAttr("followthrough_token")
+    _tool_ok_count = SlotAttr("tool_ok_count")
+    _sending_followthrough = SlotAttr("sending_followthrough")
+    _turn_is_followthrough = SlotAttr("turn_is_followthrough")
+    _wiki_turn_moved = SlotAttr("wiki_turn_moved")
+    _wiki_turn_moved_folder = SlotAttr("wiki_turn_moved_folder")
+    _wiki_list_truncated = SlotAttr("wiki_list_truncated")
+
     def __init__(self, *, test_mode: bool = False) -> None:
         super().__init__()
         self._arm_lifecycle_trace()
@@ -292,8 +305,10 @@ class MainWindow(QMainWindow):
         self._voice_prefs: VoicePreferences = load_voice_preferences(self._db)
         self._chat_session = ChatSession(self._db)
         self._chat_session.open_launch_chat()
-        self._turn_gate = ChatTurnGate()
-        # 첫 채팅 전송이 이 속성을 읽는다. 없으면 슬롯 AttributeError → Qt qFatal(0xC0000409).
+        # 대화 id → 실행 슬롯. 첫 전송에서 속성을 만들면 슬롯 예외로 창이 죽는다.
+        self._runs = ChatRunMap()
+        self._bound_slot: ChatRunSlot | None = None
+        self._runs.slot(self._conversation_id)
         self._sending_followthrough = False
         self._turn_is_followthrough = False
         self._followthrough_goal = ""
@@ -333,11 +348,15 @@ class MainWindow(QMainWindow):
         self._hermes_model_worker: HermesModelSyncWorker | None = None
         self._app_update_check_worker: QThread | None = None
         self._app_update_apply_worker: QThread | None = None
-        self._update_prompt_deferred = False
         self._pending_update_remote_sha = ""
+        self._iris_update_checked_cids: set[int] = set()
+        self._iris_update_recheck = False
+        self._iris_update_check_cid = 0
         self._hermes_update_check_worker: QThread | None = None
         self._hermes_update_apply_worker: QThread | None = None
-        self._hermes_update_prompt_deferred = False
+        self._hermes_update_checked_cids: set[int] = set()
+        self._hermes_update_recheck = False
+        self._hermes_update_check_cid = 0
         self._email_inbox_worker: EmailInboxWorker | None = None
         self._email_message_worker: EmailMessageWorker | None = None
         self._email_send_worker: EmailSendWorker | None = None
@@ -562,6 +581,7 @@ class MainWindow(QMainWindow):
             self._settings.model_name or self._settings.ollama_model or "(unset)"
         )
         status_header.set_tts_status(self._tts_idle_status())
+        status_header.set_stt_status(self._stt_idle_status())
         status_header.set_app_state(AppState.IDLE)
         self._drag.place_status_rows(
             status_header.status_widget(),
@@ -730,9 +750,13 @@ class MainWindow(QMainWindow):
             self._workspace_chat.chat_history,
         ):
             history_panel.new_chat_requested.connect(self._on_new_chat_requested)
+            history_panel.new_project_requested.connect(self._on_new_project_requested)
+            history_panel.project_chat_requested.connect(self._on_project_chat_requested)
             history_panel.conversation_selected.connect(self._on_conversation_selected)
             history_panel.conversation_delete_requested.connect(self._on_conversation_deleted)
             history_panel.conversation_rename_requested.connect(self._on_conversation_renamed)
+            history_panel.items_delete_requested.connect(self._on_items_deleted)
+            history_panel.items_rename_requested.connect(self._on_items_renamed)
         self._chat.restore_messages(self._history)
         self._refresh_chat_history_panel()
 
@@ -1141,11 +1165,38 @@ class MainWindow(QMainWindow):
             event_id=0,
         )
 
+    def _update_alerts_allowed(self, which: str) -> bool:
+        from iris.storage.update_notify_prefs import load_update_notify
+
+        prefs = load_update_notify(self._db)
+        return prefs.iris if which == "iris" else prefs.hermes
+
+    def _finish_update_recheck(self, which: str, started_cid: int) -> None:
+        current = int(self._conversation_id or 0)
+        if which == "iris":
+            recheck = self._iris_update_recheck
+            self._iris_update_recheck = False
+            checked = self._iris_update_checked_cids
+            begin = self._begin_app_update_check
+        else:
+            recheck = self._hermes_update_recheck
+            self._hermes_update_recheck = False
+            checked = self._hermes_update_checked_cids
+            begin = self._begin_hermes_update_check
+        if (recheck or current != started_cid) and current not in checked:
+            begin()
+
     def _begin_app_update_check(self) -> None:
-        if self._update_prompt_deferred:
+        if not self._update_alerts_allowed("iris"):
+            return
+        cid = int(self._conversation_id or 0)
+        if cid in self._iris_update_checked_cids:
             return
         if self._app_update_check_worker is not None and self._app_update_check_worker.isRunning():
+            self._iris_update_recheck = True
             return
+        self._iris_update_checked_cids.add(cid)
+        self._iris_update_check_cid = cid
         from iris.ui.workers.app_update_worker import AppUpdateCheckWorker
 
         worker = AppUpdateCheckWorker(parent=self)
@@ -1155,24 +1206,33 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _on_app_update_check_failed(self, _message: str) -> None:
+        started = self._iris_update_check_cid
         self._app_update_check_worker = None
+        self._finish_update_recheck("iris", started)
 
     def _on_app_update_status(self, status: object) -> None:
+        from iris.storage.update_notify_prefs import should_show_update_prompt
+
+        started = self._iris_update_check_cid
         self._app_update_check_worker = None
         available = bool(getattr(status, "available", False))
-        if not available or self._update_prompt_deferred:
-            return
-        remote = str(getattr(status, "remote_sha", "") or "").strip()
-        detail = str(getattr(status, "detail", "") or "").strip()
-        self._pending_update_remote_sha = remote
-        self._chat.append_update_prompt(detail=detail)
+        current = int(self._conversation_id or 0)
+        if should_show_update_prompt(
+            allowed=self._update_alerts_allowed("iris"),
+            same_chat=current == started,
+            available=available,
+        ):
+            remote = str(getattr(status, "remote_sha", "") or "").strip()
+            detail = str(getattr(status, "detail", "") or "").strip()
+            self._pending_update_remote_sha = remote
+            self._chat.append_update_prompt(detail=detail)
+        self._finish_update_recheck("iris", started)
 
     def _on_chat_update_action(self, action: str) -> None:
         kind = (action or "").strip().lower()
         if kind == "later":
-            self._update_prompt_deferred = True
             self._chat.dismiss_update_prompt(
-                "업데이트를 미뤘습니다. Iris를 다시 시작하면 안내합니다."
+                "이 채팅에서는 안내를 닫았습니다. 새 채팅을 열거나 Iris를 다시 시작하면 다시 안내합니다."
             )
             return
         if kind != "apply":
@@ -1271,13 +1331,19 @@ class MainWindow(QMainWindow):
         )
 
     def _begin_hermes_update_check(self) -> None:
-        if self._hermes_update_prompt_deferred or not self._settings.hermes_enabled:
+        if not self._settings.hermes_enabled or not self._update_alerts_allowed("hermes"):
+            return
+        cid = int(self._conversation_id or 0)
+        if cid in self._hermes_update_checked_cids:
             return
         if (
             self._hermes_update_check_worker is not None
             and self._hermes_update_check_worker.isRunning()
         ):
+            self._hermes_update_recheck = True
             return
+        self._hermes_update_checked_cids.add(cid)
+        self._hermes_update_check_cid = cid
         from iris.ui.workers.hermes_update_worker import HermesUpdateCheckWorker
 
         worker = HermesUpdateCheckWorker(
@@ -1290,21 +1356,30 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _on_hermes_update_check_failed(self, _message: str) -> None:
+        started = self._hermes_update_check_cid
         self._hermes_update_check_worker = None
+        self._finish_update_recheck("hermes", started)
 
     def _on_hermes_update_status(self, status: object) -> None:
+        from iris.storage.update_notify_prefs import should_show_update_prompt
+
+        started = self._hermes_update_check_cid
         self._hermes_update_check_worker = None
-        if not bool(getattr(status, "available", False)) or self._hermes_update_prompt_deferred:
-            return
-        detail = str(getattr(status, "detail", "") or "").strip()
-        self._chat.append_hermes_update_prompt(detail=detail)
+        current = int(self._conversation_id or 0)
+        if should_show_update_prompt(
+            allowed=self._update_alerts_allowed("hermes"),
+            same_chat=current == started,
+            available=bool(getattr(status, "available", False)),
+        ):
+            detail = str(getattr(status, "detail", "") or "").strip()
+            self._chat.append_hermes_update_prompt(detail=detail)
+        self._finish_update_recheck("hermes", started)
 
     def _on_hermes_update_action(self, action: str) -> None:
         kind = (action or "").strip().lower()
         if kind == "later":
-            self._hermes_update_prompt_deferred = True
             self._chat.dismiss_hermes_update_prompt(
-                "Hermes 업데이트를 미뤘습니다. Iris를 다시 시작하면 안내합니다."
+                "이 채팅에서는 Hermes 안내를 닫았습니다. 새 채팅을 열거나 Iris를 다시 시작하면 다시 안내합니다."
             )
             return
         if kind != "apply":
@@ -1940,6 +2015,18 @@ class MainWindow(QMainWindow):
     # 대화 세션·턴 점유 — 저장/식별은 세션·게이트, 화면은 여기
     # ------------------------------------------------------------------
 
+    def _slot_now(self) -> ChatRunSlot:
+        bound = self._bound_slot
+        if bound is not None:
+            return bound
+        return self._runs.slot(int(self._conversation_id))
+
+    def _showing_bound(self) -> bool:
+        slot = self._bound_slot
+        if slot is None:
+            return True
+        return slot.conversation_id == int(self._conversation_id)
+
     @property
     def _conversation_id(self) -> int:
         return self._chat_session.conversation_id
@@ -1982,6 +2069,21 @@ class MainWindow(QMainWindow):
 
     def _record_history(self, role: str, content: str, *, model_content: str = "") -> None:
         """메인 채팅 턴을 세션에 기록하고, 사용자 메시지면 목록을 다시 그린다."""
+        slot = self._bound_slot
+        if slot is not None and slot.conversation_id != self._chat_session.conversation_id:
+            from iris.storage.conversations import append_message
+
+            try:
+                append_message(
+                    self._db,
+                    slot.conversation_id,
+                    role,
+                    content,
+                    model_content=model_content,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._live_activity.append_instant_line(f"chat 저장 실패: {exc}")
+            return
         err = self._chat_session.record(role, content, model_content=model_content)
         if err:
             self._live_activity.append_instant_line(f"chat 저장 실패: {err}")
@@ -2006,15 +2108,27 @@ class MainWindow(QMainWindow):
         HistoryEmbedWorker 가 나중에 채운다.
         """
         try:
+            rel_path = ""
+            note_title = title
+            if kind == "chat" and int(self._conversation_id or 0):
+                from iris.knowledge.project_wiki import project_chat_rel
+                from iris.storage.chat_projects import project_for_conversation
+
+                project = project_for_conversation(self._db, int(self._conversation_id))
+                if project is not None:
+                    rel_path = project_chat_rel(project.wiki_slug, int(self._conversation_id))
+                    if not note_title:
+                        note_title = self._chat_session.title_of(self._conversation_id)
             self._model_switch.record(
                 kind,
                 body,
-                title=title,
+                title=note_title,
                 conversation_id=self._conversation_id,
                 role=role,
                 source=source,
                 model=self._settings.ollama_model,
                 tags=tags,
+                rel_path=rel_path,
             )
         except Exception as exc:  # noqa: BLE001
             self._live_activity.append_instant_line(f"History 기록 스킵: {str(exc)[:80]}")
@@ -2526,16 +2640,35 @@ class MainWindow(QMainWindow):
                 f"채팅 제목을 요청하지 못했습니다: {str(exc)[:60]}"
             )
 
+    def _retitle_project_chat_note(self, conversation_id: int, title: str) -> None:
+        shown = " ".join((title or "").split())
+        if not shown:
+            return
+        try:
+            from iris.knowledge.history_store import retitle_project_chat
+            from iris.knowledge.project_wiki import project_chat_rel
+            from iris.storage.chat_projects import project_for_conversation
+
+            project = project_for_conversation(self._db, int(conversation_id))
+            if project is None:
+                return
+            path = self._iris_wiki.user_root / project_chat_rel(project.wiki_slug, int(conversation_id))
+            if path.is_file():
+                retitle_project_chat(path, shown)
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(f"채팅 위키 제목 실패: {str(exc)[:80]}")
+
     def _on_chat_title_ready(self, raw: str, conversation_id: int, generation: int) -> None:
         if int(generation) != int(self._chat_title_gen):
             return
         from iris.storage.chat_title import apply_generated_title
 
         try:
-            apply_generated_title(self._db, int(conversation_id), raw)
+            title = apply_generated_title(self._db, int(conversation_id), raw)
         except Exception as exc:  # noqa: BLE001
             self._live_activity.append_instant_line(f"채팅 제목 저장 실패: {str(exc)[:60]}")
             return
+        self._retitle_project_chat_note(int(conversation_id), title)
         self._refresh_chat_history_panel()
 
     def _start_handoff_summary(self, from_model: str, context: object) -> None:
@@ -2858,6 +2991,15 @@ class MainWindow(QMainWindow):
 
     def _drop_last_user_history(self) -> None:
         """실패한 턴 되돌리기 — 세션이 메모리·DB를 같이 뺀다."""
+        slot = self._bound_slot
+        if slot is not None and slot.conversation_id != self._chat_session.conversation_id:
+            from iris.storage.conversations import pop_last_user_message
+
+            try:
+                pop_last_user_message(self._db, slot.conversation_id)
+            except Exception:
+                pass
+            return
         self._chat_session.drop_last_user()
 
     def _refresh_chat_history_panel(self) -> None:
@@ -2869,11 +3011,14 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             self._live_activity.append_instant_line(f"chat 목록 실패: {exc}")
             return
-        panel.set_conversations(items, active_id=self._conversation_id)
+        projects = self._chat_session.list_projects()
+        panel.set_conversations(items, active_id=self._conversation_id, projects=projects)
         for host_name in ("_companion_page", "_workspace_chat"):
             host = getattr(self, host_name, None)
             if host is not None:
-                host.chat_history.set_conversations(items, active_id=self._conversation_id)
+                host.chat_history.set_conversations(
+                    items, active_id=self._conversation_id, projects=projects,
+                )
 
     def _schedule_wiki_session_close(self, next_id: int | None = None, *, force: bool = False) -> None:
         """떠나기 전에 대화 묶음을 에피소드와 특성 노트로 남긴다. 창은 기다리지 않는다."""
@@ -2902,6 +3047,7 @@ class MainWindow(QMainWindow):
                 history,
                 model,
                 self._settings.ollama_base_url,
+                settings=self._settings,
                 parent=self,
             )
         except Exception:
@@ -2910,22 +3056,58 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _load_conversation(self, conversation_id: int) -> None:
-        """세션 전환 — 진행 중 턴은 끊고 트랜스크립트를 다시 그린다."""
+        """세션 전환 — 화면과 구체만 바꾼다. 진행 중 워커는 취소하지 않는다."""
         self._schedule_wiki_session_close(int(conversation_id))
-        self._drop_followthrough()
-        if self._busy:
-            self._cancel_current_turn(
-                reason="conversation_switch",
-                preserve_partial_response=True,
-            )
+        leaving = int(self._conversation_id)
+        if leaving != int(conversation_id):
+            slot = self._runs.slot(leaving)
+            if slot.gate.busy:
+                partial = (getattr(self._chat, "typing_buffer_text", "") or "").strip()
+                if partial:
+                    slot.pending_partial = partial
+            self._stop_tts_playback()
+            self._tts_pump = None
         self._chat_session.activate(conversation_id)
+        self._runs.slot(int(conversation_id))
         self._wiki_last_rel = ""
         self._last_assistant_text = ""
         self._pending_local_vibe_prompt = ""
         self._live_vibe = None
         self._chat.restore_messages(self._history)
+        self._apply_foreground_run()
         self._refresh_context_gauge()
         self._refresh_chat_history_panel()
+
+    def _apply_foreground_run(self) -> None:
+        """포그라운드 슬롯이 생성이면 구체를 돌리고, 떠나 있는 동안 끝난 답은 한 번 읽는다."""
+        slot = self._runs.slot(int(self._conversation_id))
+        if slot.gate.busy:
+            self._chat.set_generating(True)
+            if slot.pending_partial:
+                self._state.set_state(AppState.RESPONDING)
+                self._chat.begin_stream_message(
+                    "Iris",
+                    speech_sync=False,
+                    wait_for_tts_completion=False,
+                )
+                self._chat.append_stream_chunk(slot.pending_partial)
+            else:
+                self._state.set_state(AppState.PROCESSING)
+            return
+        self._chat.set_generating(False)
+        reply = slot.away_reply
+        slot.away_reply = ""
+        if not (self._tts_active_play or self._tts_busy() or self._tts_queue):
+            self._state.set_state(AppState.IDLE)
+        self._speak_returned_reply(reply)
+
+    def _speak_returned_reply(self, text: str) -> None:
+        body = (text or "").strip()
+        if not body:
+            return
+        if not self._voice_prefs.tts_enabled or self._voice_prefs.tts_mode != "auto":
+            return
+        self._enqueue_tts(body)
 
     def reset_current_conversation(self) -> None:
         """현재 세션의 대화 내용만 비운다 (세션 자체는 유지)."""
@@ -2943,17 +3125,39 @@ class MainWindow(QMainWindow):
         self._refresh_context_gauge()
         self._refresh_chat_history_panel()
 
-    def _open_fresh_work_chat(self) -> None:
+    def _open_fresh_work_chat(self, project_id: int = 0) -> None:
         """기록은 남기고 빈 채팅만 연다. 이미 빈 채팅이면 그대로 둔다."""
-        cid = self._chat_session.start_new()
+        cid = self._chat_session.start_new(project_id)
         if cid == self._conversation_id and not self._history:
             self._refresh_chat_history_panel()
             return
         self._load_conversation(cid)
         self._live_activity.append_instant_line("새 채팅 시작")
+        if not self._test_mode:
+            self._begin_app_update_check()
+            self._begin_hermes_update_check()
 
     def _on_new_chat_requested(self) -> None:
         self._open_fresh_work_chat()
+
+    def _on_project_chat_requested(self, project_id: int) -> None:
+        self._open_fresh_work_chat(int(project_id))
+
+    def _on_new_project_requested(self, name: str) -> None:
+        from iris.knowledge.project_wiki import create_project_wiki
+        from iris.storage.chat_projects import create_project
+
+        try:
+            project = create_project(self._db, name)
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(f"프로젝트 폴더 실패: {str(exc)[:80]}")
+            return
+        try:
+            create_project_wiki(self._iris_wiki, project.name, project.wiki_slug)
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(f"프로젝트 위키 실패: {str(exc)[:80]}")
+        self._live_activity.append_instant_line(f"프로젝트 폴더: {project.name}")
+        self._refresh_chat_history_panel()
 
     def _on_conversation_selected(self, conversation_id: int) -> None:
         cid = int(conversation_id)
@@ -3000,6 +3204,114 @@ class MainWindow(QMainWindow):
             self._refresh_chat_history_panel()
             return
         self._load_conversation(self._chat_session.ensure_active())
+
+    def _on_items_deleted(self, keys: object) -> None:
+        from iris.knowledge.history_index import forget_conversation
+        from iris.knowledge.project_wiki import remove_project_wiki
+        from iris.storage.chat_projects import (
+            conversation_ids_in_project,
+            delete_project,
+            get_project,
+        )
+        from iris.ui.settings.hud_dialog import run_hud_confirm
+        from iris.ui.shared.theme_tokens import TOKENS
+
+        chosen = [(str(kind), int(item_id)) for kind, item_id in list(keys or [])]
+        if not chosen:
+            return
+        project_ids = [item_id for kind, item_id in chosen if kind == "p"]
+        chat_ids = {item_id for kind, item_id in chosen if kind == "c"}
+        nested: set[int] = set()
+        for project_id in project_ids:
+            nested.update(conversation_ids_in_project(self._db, project_id))
+        chat_ids -= nested
+        count = len(project_ids) + len(chat_ids)
+        if count > 1:
+            body = f"선택한 {count}개 항목을 삭제하시겠습니까?"
+            hint = "프로젝트 폴더를 지우면 그 안의 채팅도 함께 삭제됩니다." if project_ids else ""
+        elif project_ids:
+            project = get_project(self._db, project_ids[0])
+            body = "이 프로젝트 폴더를 삭제하시겠습니까?"
+            hint = (project.name if project else "") + " 안의 채팅도 함께 삭제됩니다."
+        else:
+            only = next(iter(chat_ids))
+            body = "이 채팅을 삭제하시겠습니까?"
+            hint = self._chat_session.title_of(only) or "이 채팅"
+        if not run_hud_confirm(
+            self,
+            title="채팅 삭제",
+            eyebrow="CHATS",
+            badge="DELETE",
+            accent=TOKENS.error,
+            body=body,
+            hint=hint.strip(),
+            ok_text="삭제",
+            cancel_text="취소",
+            default_ok=False,
+            destructive=True,
+        ):
+            return
+        removed_chats: list[int] = []
+        for cid in chat_ids:
+            self._chat_session.delete(cid)
+            removed_chats.append(cid)
+        for project_id in project_ids:
+            project = get_project(self._db, project_id)
+            removed_chats.extend(delete_project(self._db, project_id))
+            if project is not None:
+                try:
+                    remove_project_wiki(self._iris_wiki, project.wiki_slug)
+                except Exception as exc:  # noqa: BLE001
+                    self._live_activity.append_instant_line(f"프로젝트 위키 삭제 실패: {str(exc)[:80]}")
+        for cid in removed_chats:
+            try:
+                forget_conversation(self._db, cid, wiki=self._iris_wiki)
+            except Exception as exc:  # noqa: BLE001
+                self._live_activity.append_instant_line(f"History 정리 실패: {str(exc)[:80]}")
+        if self._conversation_id in removed_chats:
+            self._load_conversation(self._chat_session.ensure_active())
+            return
+        self._refresh_chat_history_panel()
+
+    def _on_items_renamed(self, keys: object, title: str) -> None:
+        from iris.knowledge.project_wiki import apply_project_rename
+
+        shown = " ".join((title or "").split())
+        if not shown:
+            return
+        chosen = [(str(kind), int(item_id)) for kind, item_id in list(keys or [])]
+        if len(chosen) == 1:
+            kind, item_id = chosen[0]
+            if kind == "c" and self._chat_session.title_of(item_id) == shown:
+                return
+            if kind == "p":
+                from iris.storage.chat_projects import get_project
+
+                project = get_project(self._db, item_id)
+                if project is not None and project.name == shown:
+                    return
+        reserved: set[str] = set()
+        for kind, item_id in chosen:
+            if kind == "c":
+                err = self._chat_session.rename(item_id, shown)
+                if err:
+                    self._live_activity.append_instant_line(f"채팅 제목 저장 실패: {err}")
+                    continue
+                self._retitle_project_chat_note(item_id, shown)
+                continue
+            try:
+                updated = apply_project_rename(
+                    self._db,
+                    self._iris_wiki,
+                    item_id,
+                    shown,
+                    reserved_slugs=reserved,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._live_activity.append_instant_line(f"프로젝트 이름 변경 실패: {str(exc)[:80]}")
+                continue
+            reserved.add(updated.wiki_slug)
+        self._refresh_chat_history_panel()
 
     # ------------------------------------------------------------------
     # 고정 창 AI 감시
@@ -3438,6 +3750,7 @@ class MainWindow(QMainWindow):
         self._turn_dispatcher.submit(
             text=text,
             source=UserTurnSource.KEYBOARD,
+            session_id=int(self._conversation_id),
             attachments=att,
         )
 
@@ -3472,13 +3785,9 @@ class MainWindow(QMainWindow):
             self._live_activity.append_instant_line(f"IDE: @경로 {opened}개 열기")
 
     def _format_user_turn_content(self, turn: UserTurn) -> str:
-        text = (turn.text or "").strip()
-        if not turn.attachments:
-            return text
-        from iris.ui.chat.composer_attachments import attachment_filename
-        lines = "\n".join('@"' + attachment_filename(p).replace('"', '') + '"' for p in turn.attachments)
-        block = f"[첨부 파일]\n{lines}"
-        return f"{text}\n\n{block}" if text else block
+        from iris.ui.chat.composer_attachments import format_user_attachment_block
+
+        return format_user_attachment_block(turn.text or "", list(turn.attachments or []))
 
     def _wiki_project_label(self) -> str:
         root = ""
@@ -3610,8 +3919,10 @@ class MainWindow(QMainWindow):
             rel_path=req.rel_path,
             model=model,
             ollama_base_url=self._settings.ollama_base_url,
+            content=req.content,
             db=self._db,
             project_root=self._current_project_root(),
+            settings=self._settings,
             parent=self,
         )
         worker.finished_ok.connect(
@@ -3893,7 +4204,12 @@ class MainWindow(QMainWindow):
         else:
             self._chat.append_message_instant("You", display)
         self._record_history("user", display)
-        if req.mode == "summarize":
+        model = (
+            self._chat.current_model()
+            or (getattr(self, "_saved_model", None) or "").strip()
+            or (self._settings.ollama_model or "").strip()
+        )
+        if model:
             self._start_wiki_import_async(turn, req)
             return True
         try:
@@ -3909,6 +4225,7 @@ class MainWindow(QMainWindow):
                     or (self._settings.ollama_model or "").strip()
                 ),
                 project_root=self._current_project_root(),
+                settings=self._settings,
             )
             result = save_answer_to_wiki(
                 self._iris_wiki, title=req.title or "검색 결과", content=req.content, **filing,
@@ -4030,6 +4347,14 @@ class MainWindow(QMainWindow):
         self._execute_user_turn(turn)
 
     def _execute_user_turn(self, turn: UserTurn) -> None:
+        cid = int(turn.session_id) if turn.session_id is not None else int(self._conversation_id)
+        self._bound_slot = self._runs.slot(cid)
+        try:
+            self._execute_user_turn_body(turn)
+        finally:
+            self._bound_slot = None
+
+    def _execute_user_turn_body(self, turn: UserTurn) -> None:
         text = (turn.text or "").strip()
         if not text and not turn.attachments:
             self._turn_dispatcher.finish_active_turn(turn.id)
@@ -4129,6 +4454,7 @@ class MainWindow(QMainWindow):
             )
             self._refresh_hermes_health()
 
+        attached_store = self._chat_session.attachments
         if turn.attachments or attached_store.roots:
             from iris.knowledge.page_vision import transcribe_images
             from iris.ui.workers.attachment_worker import AttachmentWorker
@@ -4258,23 +4584,13 @@ class MainWindow(QMainWindow):
         return out
 
     def _material_vision_spec(self, model: str) -> dict[str, str]:
-        spec = {
-            'model': model,
-            'ollama_base_url': self._settings.ollama_base_url,
-            'api_base_url': '',
-            'api_key': '',
-            'auth_style': 'bearer',
-        }
-        parsed = parse_runtime_model_id(model)
-        if parsed is None:
-            return spec
-        provider = get_api_provider(self._db, parsed[0])
-        spec['model'] = parsed[1]
-        if provider is not None and provider.base_url:
-            spec['api_base_url'] = provider.base_url
-            spec['api_key'] = provider.api_key
-            spec['auth_style'] = provider.auth_style or 'bearer'
-        return spec
+        from iris.runtime.backend_route import vision_endpoint
+
+        return vision_endpoint(
+            self._db,
+            model,
+            ollama_base_url=self._settings.ollama_base_url,
+        )
 
     def _start_material_read(
         self,
@@ -4314,8 +4630,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         if not self._is_current_turn(turn_id):
             return
-        turn = self._turn_dispatcher.active_turn
-        if turn is None or turn.id != turn_id:
+        turn = self._turn_dispatcher.turn_by_id(turn_id)
+        if turn is None:
             return
         from iris.knowledge.material_excerpt import compose_model_user_text
 
@@ -4335,13 +4651,16 @@ class MainWindow(QMainWindow):
     ) -> None:
         text = (turn.text or '').strip()
         self._record_history('user', content, model_content=model_content)
-        self._refresh_context_gauge()
+        showing = self._showing_bound()
+        if showing:
+            self._refresh_context_gauge()
         self._turn_gate.arm()
-        self._stop_tts_playback()
-        if not self._turn_is_followthrough:
-            self._begin_auto_tts_response()
-        self._chat.set_generating(True)
-        self._sync_voice_conversation_state()
+        if showing:
+            self._stop_tts_playback()
+            if not self._turn_is_followthrough:
+                self._begin_auto_tts_response()
+            self._chat.set_generating(True)
+            self._sync_voice_conversation_state()
         self._turn_write_path = ''
         self._suppress_reveal_write = False
         if allow_image_pipe and not owns and self._handle_image_code_pipe(turn, model):
@@ -4639,29 +4958,33 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _is_current_turn(self, turn_id: str) -> bool:
-        return self._turn_gate.is_current(turn_id)
+        return self._runs.owning(turn_id) is not None
 
     def _finish_current_turn(self, turn_id: str | None = None, *, open_followup: bool = False) -> None:
         # 기본 False. 슬롯에서 키워드 누락 → TypeError → PyQt 6 qFatal(0xC0000409)로 IRIS가 죽는다.
         current_id = self._turn_gate.finish(turn_id)
+        showing = self._showing_bound()
         # 인수인계문은 전환 직후 한 턴만 얹는다. 그 뒤로는 새 모델이 스스로 쌓은
         # 대화가 맥락이 되므로, 계속 붙여두면 토큰만 먹는다.
-        self._pending_handoff = ""
-        self._pending_handoff_ctx = None
-        self._pending_past_chats = ""
-        self._pending_wiki_notes = ""
-        self._pending_code_notes = ""
-        self._pending_web_evidence = ""
-        self._turn_web_error = False
-        self._turn_search_failure_reply = ""
-        self._chat.set_generating(False)
-        if open_followup:
-            self._open_voice_followup_window()
-        active = self._turn_dispatcher.active_turn
-        if active is not None:
-            finish_id = current_id or active.id
+        if showing:
+            self._pending_handoff = ""
+            self._pending_handoff_ctx = None
+            self._pending_past_chats = ""
+            self._pending_wiki_notes = ""
+            self._pending_code_notes = ""
+            self._pending_web_evidence = ""
+            self._turn_web_error = False
+            self._turn_search_failure_reply = ""
+            self._chat.set_generating(False)
+            if open_followup:
+                self._open_voice_followup_window()
+        finish_id = current_id or ""
+        if finish_id:
             self._turn_dispatcher.finish_active_turn(finish_id)
-        self._sync_voice_conversation_state()
+        elif showing and self._turn_dispatcher.active_turn is not None:
+            self._turn_dispatcher.finish_active_turn(self._turn_dispatcher.active_turn.id)
+        if showing:
+            self._sync_voice_conversation_state()
 
     @staticmethod
     def _cancelled_assistant_text(partial: str, *, reason: str) -> str:
@@ -4720,22 +5043,29 @@ class MainWindow(QMainWindow):
         self._sending_followthrough = False
         self._followthrough_wiki_rerun = False
 
-    def _fire_followthrough(self) -> None:
-        if self._followthrough_token != self._followthrough_gen:
+    def _fire_followthrough(self, conversation_id: int | None = None, token: int | None = None) -> None:
+        cid = int(self._conversation_id) if conversation_id is None else int(conversation_id)
+        slot = self._runs.slot(cid)
+        expected = slot.followthrough_token if token is None else int(token)
+        if expected != slot.followthrough_gen:
             return
-        if self._turn_dispatcher.is_busy() or self._turn_dispatcher.pending_count():
+        if self._turn_dispatcher.is_session_busy(cid) or self._turn_dispatcher.pending_count_for(cid):
             return
         from iris.runtime.turn_followthrough import FOLLOWTHROUGH_UTTERANCE
 
         utterance = FOLLOWTHROUGH_UTTERANCE
-        if getattr(self, "_followthrough_wiki_rerun", False) and self._followthrough_goal:
-            utterance = self._followthrough_goal
+        if getattr(self, "_followthrough_wiki_rerun", False) and slot.followthrough_goal:
+            utterance = slot.followthrough_goal
         self._followthrough_wiki_rerun = False
-        self._sending_followthrough = True
+        slot.sending_followthrough = True
         try:
-            self._on_user_text(utterance)
+            self._turn_dispatcher.submit(
+                text=utterance,
+                source=UserTurnSource.KEYBOARD,
+                session_id=cid,
+            )
         finally:
-            self._sending_followthrough = False
+            slot.sending_followthrough = False
 
     def _maybe_followthrough(self, assistant: str) -> bool:
         """continue 면 다음 턴을 예약한다. 반환이 True 면 음성 따라하기를 열지 않는다."""
@@ -4759,16 +5089,29 @@ class MainWindow(QMainWindow):
             moved_folder=bool(getattr(self, "_wiki_turn_moved_folder", False)),
             list_truncated=bool(getattr(self, "_wiki_list_truncated", False)),
         )
+        showing = self._showing_bound()
+        slot = self._slot_now()
         if decision == "continue":
             self._followthrough_wiki_rerun = False
-            self._chat.append_note(NOTE_CONTINUE)
+            if showing:
+                self._chat.append_note(NOTE_CONTINUE)
             self._followthrough_count += 1
             self._followthrough_gen += 1
             self._followthrough_token = self._followthrough_gen
-            QTimer.singleShot(0, self._fire_followthrough)
+            cid = int(slot.conversation_id)
+            tok = int(slot.followthrough_token)
+            QTimer.singleShot(0, lambda c=cid, t=tok: self._fire_followthrough(c, t))
             return True
         if decision == "stop" and self._followthrough_count >= CAP:
-            self._chat.append_note(NOTE_CAP)
+            if showing:
+                self._chat.append_note(NOTE_CAP)
+            else:
+                from iris.storage.conversations import append_message
+
+                try:
+                    append_message(self._db, slot.conversation_id, "assistant", NOTE_CAP)
+                except Exception:
+                    pass
         self._followthrough_count = 0
         self._followthrough_goal = ""
         self._turn_is_followthrough = False
@@ -4779,37 +5122,114 @@ class MainWindow(QMainWindow):
         self._cancel_current_turn(reason="user_stop", preserve_partial_response=True)
         self._live_activity.append_instant_line("Stopped.")
 
+    def _relay_foreground_turn(self, turn_id: str, fn) -> None:
+        slot = self._runs.owning(turn_id)
+        if slot is None or slot.conversation_id != int(self._conversation_id):
+            return
+        self._bound_slot = slot
+        try:
+            fn()
+        finally:
+            self._bound_slot = None
+
     def _on_chat_connecting_for_turn(self, model: str, host: str, turn_id: str) -> None:
-        if self._is_current_turn(turn_id):
-            self._on_chat_connecting(model, host)
+        self._relay_foreground_turn(turn_id, lambda: self._on_chat_connecting(model, host))
 
     def _on_hermes_tool_progress_for_turn(self, message: str, turn_id: str) -> None:
-        if self._is_current_turn(turn_id):
-            self._on_hermes_tool_progress(message)
+        slot = self._runs.owning(turn_id)
+        if slot is None:
+            return
+        self._bound_slot = slot
+        try:
+            if slot.conversation_id == int(self._conversation_id):
+                self._on_hermes_tool_progress(message)
+            else:
+                text = (message or "").strip()
+                if text:
+                    from iris.runtime.turn_followthrough import counts_as_tool_ok
+                    from iris.ui.wiki_turn import note_wiki_tool
+
+                    if counts_as_tool_ok(text):
+                        slot.tool_ok_count += 1
+                    note_wiki_tool(self, text)
+        finally:
+            self._bound_slot = None
 
     def _on_thinking_started_for_turn(self, turn_id: str) -> None:
-        if self._is_current_turn(turn_id):
-            self._on_thinking_started()
+        self._relay_foreground_turn(turn_id, self._on_thinking_started)
 
     def _on_thinking_chunk_for_turn(self, chunk: str, turn_id: str) -> None:
-        if self._is_current_turn(turn_id):
-            self._on_thinking_chunk(chunk)
+        self._relay_foreground_turn(turn_id, lambda: self._on_thinking_chunk(chunk))
 
     def _on_thinking_done_for_turn(self, turn_id: str) -> None:
-        if self._is_current_turn(turn_id):
-            self._on_thinking_done()
+        self._relay_foreground_turn(turn_id, self._on_thinking_done)
 
     def _on_content_chunk_for_turn(self, chunk: str, turn_id: str) -> None:
-        if self._is_current_turn(turn_id):
-            self._on_content_chunk(chunk)
+        slot = self._runs.owning(turn_id)
+        if slot is None:
+            return
+        if slot.conversation_id != int(self._conversation_id):
+            slot.pending_partial += chunk or ""
+            return
+        self._relay_foreground_turn(turn_id, lambda: self._on_content_chunk(chunk))
 
     def _on_chat_finished_for_turn(self, content: str, turn_id: str) -> None:
-        if self._is_current_turn(turn_id):
-            self._on_chat_finished(content)
+        slot = self._runs.owning(turn_id)
+        if slot is None:
+            return
+        if slot.conversation_id != int(self._conversation_id):
+            self._finish_slot_away(slot, content)
+            return
+        self._relay_foreground_turn(turn_id, lambda: self._on_chat_finished(content))
 
     def _on_chat_failed_for_turn(self, err: str, turn_id: str) -> None:
-        if self._is_current_turn(turn_id):
-            self._on_chat_failed(err)
+        slot = self._runs.owning(turn_id)
+        if slot is None:
+            return
+        if slot.conversation_id != int(self._conversation_id):
+            self._fail_slot_away(slot)
+            return
+        self._relay_foreground_turn(turn_id, lambda: self._on_chat_failed(err))
+
+    def _finish_slot_away(self, slot: ChatRunSlot, content: str) -> None:
+        from iris.storage.conversations import append_message
+
+        text = (content or slot.pending_partial or "").strip()
+        slot.pending_partial = ""
+        if text:
+            try:
+                append_message(self._db, slot.conversation_id, "assistant", text)
+            except Exception:
+                pass
+            slot.away_reply = text
+        self._bound_slot = slot
+        try:
+            self._maybe_followthrough(text)
+            current = slot.gate.finish(slot.gate.active_id)
+            slot.worker = None
+            if current:
+                self._turn_dispatcher.finish_active_turn(current)
+        finally:
+            self._bound_slot = None
+
+    def _fail_slot_away(self, slot: ChatRunSlot) -> None:
+        from iris.storage.conversations import pop_last_user_message
+
+        self._bound_slot = slot
+        try:
+            self._drop_followthrough()
+            slot.gate.consume_ignored()
+            try:
+                pop_last_user_message(self._db, slot.conversation_id)
+            except Exception:
+                pass
+            slot.pending_partial = ""
+            slot.worker = None
+            current = slot.gate.finish(slot.gate.active_id)
+            if current:
+                self._turn_dispatcher.finish_active_turn(current)
+        finally:
+            self._bound_slot = None
 
     def _on_turn_queued(self, turn: object, reason: str) -> None:
         if not isinstance(turn, UserTurn):
@@ -5263,6 +5683,10 @@ class MainWindow(QMainWindow):
         """설정창 'TTS 사용' 체크 여부를 상단 칩에 ON/OFF로 반영."""
         return "ON" if self._voice_prefs.tts_enabled else "OFF"
 
+    def _stt_idle_status(self) -> str:
+        """설정창 'STT 사용' 체크 여부를 상단 칩에 ON/OFF로 반영."""
+        return "ON" if self._voice_prefs.stt_enabled else "OFF"
+
     def _ensure_voice_runtime(self) -> bool:
         try:
             self._voice_runtime.set_base_url(self._voice_prefs.voice_runtime_url)
@@ -5465,7 +5889,11 @@ class MainWindow(QMainWindow):
             if self._mic_listen_active:
                 self._mirror_voice_listening_status("IRIS가 말하고 있습니다")
             return
-        if self._busy or self._turn_dispatcher.is_busy() or self._workspace_chat_busy():
+        if (
+            self._busy
+            or self._turn_dispatcher.is_session_busy(int(self._conversation_id))
+            or self._workspace_chat_busy()
+        ):
             self._state.set_state(AppState.PROCESSING)
             self._status_header.set_app_state(AppState.PROCESSING, label="LLM")
             if self._mic_listen_active:
@@ -5655,7 +6083,7 @@ class MainWindow(QMainWindow):
             self._live_activity.append_instant_line("VOICE barge_in")
             if getattr(self._voice_prefs, "voice_barge_in_enabled", True):
                 self._cancel_current_turn(reason="voice_barge_in", preserve_partial_response=True)
-            elif self._turn_dispatcher.is_busy():
+            elif self._turn_dispatcher.is_session_busy(int(self._conversation_id)):
                 self._live_activity.append_instant_line(
                     "VOICE turn_queued pending="
                     f"{self._turn_dispatcher.pending_count() + 1}"
@@ -5670,7 +6098,7 @@ class MainWindow(QMainWindow):
         turn = self._turn_dispatcher.submit(
             text=body,
             source=UserTurnSource.VOICE,
-            session_id=session_id,
+            session_id=int(self._conversation_id),
         )
         if turn is None:
             self._live_activity.append_instant_line("VOICE turn_submit_rejected")
@@ -6520,10 +6948,33 @@ class MainWindow(QMainWindow):
                 self._refresh_email_inbox()
         else:
             self._email_page.set_mails([])
-            self._left_sidebar.email_folder.set_status("설정에서 이메일 계정을 추가하세요.")
-            from iris.ui.settings.email_connect_guide import run_email_connect_guide
+            self._left_sidebar.email_folder.set_status("이메일 계정을 추가하세요.")
+            QTimer.singleShot(0, self._open_email_connect_guide)
 
-            QTimer.singleShot(0, lambda: run_email_connect_guide(self))
+    def _open_email_connect_guide(self) -> None:
+        from iris.ui.settings.email_connect_guide import run_email_connect_guide
+
+        run_email_connect_guide(self, self._db, on_changed=self._sync_email_accounts_ui)
+
+    def _sync_email_accounts_ui(self) -> None:
+        """안내 창에서 계정을 넣거나 지운 뒤 메일 화면을 맞춘다."""
+        accounts = load_email_accounts(self._db)
+        selected = self._selected_email_account_id
+        if selected and not any(acc.id == selected for acc in accounts):
+            selected = ""
+        self._left_sidebar.email_folder.set_accounts(accounts, selected_id=selected)
+        if accounts and not selected:
+            self._selected_email_account_id = self._left_sidebar.email_folder.current_account_id()
+        else:
+            self._selected_email_account_id = selected
+        self._email_page.set_current_account(self._current_email_account())
+        if self._workspace_mode != "email":
+            return
+        if accounts:
+            self._refresh_email_inbox()
+        else:
+            self._email_page.set_mails([])
+            self._left_sidebar.email_folder.set_status("이메일 계정을 추가하세요.")
 
     def _on_calendar_icon(self) -> None:
         self._workspace_mode = "calendar"
@@ -7174,7 +7625,14 @@ class MainWindow(QMainWindow):
         여기 넣지 않는다(중복·토큰 낭비). Ollama 직행만 SOUL 원본을 주입한다.
         """
         from iris.runtime.attachment_context import inference_messages
-        messages = inference_messages(self._history)
+        from iris.storage.conversations import history_dicts
+
+        slot = self._bound_slot
+        if slot is not None and slot.conversation_id != self._chat_session.conversation_id:
+            history = history_dicts(self._db, slot.conversation_id)
+        else:
+            history = self._history
+        messages = inference_messages(history)
         try:
             profile = load_user_profile(self._db)
             root = (profile.project_root or "").strip()
@@ -7227,7 +7685,8 @@ class MainWindow(QMainWindow):
             "녹화 때 값(example)으로 실행하지 말고 무엇을 넣을지 먼저 물어라. "
             "learning.run 은 마우스·키보드를 실제로 움직이니 실행 전에 무엇을 할지 한 줄로 알려라. "
             "위키에 저장: Hermes가 켜져 있으면 문장 키워드로 가로채지 않는다. "
-            "PDF·URL·파일은 wiki.import_content (source, mode=raw|summarize). "
+            "PDF·URL·파일은 wiki.import_content (source). "
+            "저장은 항상 위에 전체 요약·핵심 개념, 아래에 원본이다. mode 로 요약을 끄지 않는다. "
             "직전 답변은 wiki.write_user_note (title + content, optional source_url). "
             "rel_path 를 비우면 임베딩 유사도와 모델 분류로 "
             "사용자·학습자료·인사이트·projects·research 중 한 곳에 넣는다. "
@@ -9269,6 +9728,7 @@ class MainWindow(QMainWindow):
                 if not self._test_mode:
                     self._learning.set_learner(self._build_learner())
             self._status_header.set_tts_status(self._tts_idle_status())
+            self._status_header.set_stt_status(self._stt_idle_status())
             self._saved_model = sel.ollama_model.strip()
             if self._saved_model:
                 save_selected_model(self._db, self._saved_model)
@@ -9287,7 +9747,7 @@ class MainWindow(QMainWindow):
                     self._refresh_email_inbox()
                 else:
                     self._left_sidebar.email_folder.set_status(
-                        "설정에서 이메일 계정을 추가하세요."
+                        "이메일 계정을 추가하세요."
                     )
 
     def _toggle_maximize(self) -> None:
@@ -9446,11 +9906,16 @@ class MainWindow(QMainWindow):
             if self._tts_bootstrap_worker is not None and self._tts_bootstrap_worker.isRunning():
                 self._tts_bootstrap_worker.request_cancel()
                 self._tts_bootstrap_worker.wait(2000)
-            if self._chat_worker is not None and self._chat_worker.isRunning():
-                cancel = getattr(self._chat_worker, "request_cancel", None)
+            for slot in self._runs.all_slots():
+                worker = slot.worker
+                if worker is None or not getattr(worker, "isRunning", lambda: False)():
+                    continue
+                cancel = getattr(worker, "request_cancel", None)
                 if callable(cancel):
                     cancel()
-                self._chat_worker.wait(1500)
+                wait = getattr(worker, "wait", None)
+                if callable(wait):
+                    wait(1500)
             if self._stt_queue.is_busy():
                 self._stt_queue.clear_pending()
             if self._tts_worker is not None and self._tts_worker.isRunning():

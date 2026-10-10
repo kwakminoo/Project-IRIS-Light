@@ -318,6 +318,13 @@ def handle_chat_anchor_click(parent: QWidget, anchor: str) -> bool:
     if img_src:
         show_image_lightbox(parent, img_src)
         return True
+    if anchor.startswith("iris-video:"):
+        from urllib.parse import unquote
+
+        video = unquote(anchor.removeprefix("iris-video:"))
+        if video:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(video))
+        return True
     if anchor.startswith("http://") or anchor.startswith("https://"):
         # 직접 이미지 URL이면 라이트박스, 아니면 브라우저
         path = urlparse(anchor).path.lower()

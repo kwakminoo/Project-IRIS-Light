@@ -58,6 +58,8 @@ def main() -> None:
                 assert workspace._log.document().rootFrame().frameFormat().leftMargin() >= 12
             panel.end_stream_message(response)
             workspace.end_iris(response)
+            panel.finish_typing()
+            workspace.chat.finish_typing()
             app.processEvents()
             for label, widget in (("main", panel._log), ("workspace", workspace._log)):
                 text = widget.toPlainText()

@@ -1,4 +1,4 @@
-"""생성 중 대화 전환 — A는 중단 표시, 늦은 신호는 B와 새 턴을 바꾸지 않는다."""
+"""생성 중 대화 전환 — 워커는 계속되고, 토큰은 그 대화에만 붙는다."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication
 
+from iris.runtime.chat_run_slot import ChatRunMap
+from iris.runtime.turn_followthrough import CAP
 from iris.storage.conversations import history_dicts
 
 
@@ -18,6 +20,12 @@ class _Worker:
 
     def request_cancel(self) -> None:
         self.cancelled = True
+
+    def isRunning(self) -> bool:  # noqa: N802
+        return True
+
+    def wait(self, _ms: int = 0) -> bool:
+        return True
 
 
 def _assistant(db, cid: int) -> str:
@@ -34,17 +42,20 @@ def main() -> None:
 
     app = QApplication.instance() or QApplication(sys.argv)
     win = MainWindow(test_mode=True)
+    assert isinstance(win._runs, ChatRunMap)
+    assert win._runs.slot(win._conversation_id).conversation_id == win._conversation_id
+    assert CAP == 8
     win.show()
     app.processEvents()
 
     session = win._chat_session
-    gate = win._turn_gate
     a = win._conversation_id
-    win._record_history("user", "과일을 주제로 짧은 설명 50개")
+    win._record_history("user", "과일을 주제로 짧은 설명")
     win._chat.begin_stream_message("Iris", speech_sync=False)
-    win._chat.append_stream_chunk("".join(f"{i}. 과일 설명\n" for i in range(1, 10)))
+    win._chat.append_stream_chunk("1. 과일 설명\n")
     worker = _Worker()
     win._chat_worker = worker
+    gate = win._turn_gate
     gate.begin("turn-a")
     gate.arm()
 
@@ -53,52 +64,51 @@ def main() -> None:
     win._on_conversation_selected(b)
     app.processEvents()
 
-    assert worker.cancelled, "전환 시 A 워커 취소를 호출하지 않았다"
-    assert win._chat_session is session
-    assert win._turn_gate is gate
+    assert not worker.cancelled
     assert win._conversation_id == b
-    assert gate.active_id == ""
-    assert not gate.busy
-    assert "과일" not in _assistant(win._db, b)
-    saved_a = _assistant(win._db, a)
-    assert "9. 과일 설명" in saved_a
-    assert "대화 전환으로 응답을 중단했습니다." in saved_a
-    assert "10." not in saved_a
+    assert win._runs.slot(a).gate.is_current("turn-a")
+    assert win._runs.slot(a).gate.busy
+    assert not win._busy
+    assert "과일" not in win._chat._log.toPlainText()
 
     before_b = history_dicts(win._db, b)
-    before_a = history_dicts(win._db, a)
-    win._on_chat_finished_for_turn("10. 늦게 온 완료\n50. 끝", "turn-a")
-    win._on_chat_failed_for_turn("늦은 오류", "turn-a")
+    win._on_content_chunk_for_turn("HIDDEN-TOKEN", "turn-a")
     app.processEvents()
+    assert "HIDDEN-TOKEN" not in win._chat._log.toPlainText()
+    assert "HIDDEN-TOKEN" in win._runs.slot(a).pending_partial
     assert history_dicts(win._db, b) == before_b
-    assert history_dicts(win._db, a) == before_a
+
+    win._on_chat_finished_for_turn("A의 끝난 답", "turn-a")
+    app.processEvents()
+    assert not worker.cancelled
+    assert history_dicts(win._db, b) == before_b
+    assert "A의 끝난 답" in _assistant(win._db, a)
+    assert "A의 끝난 답" not in win._chat._log.toPlainText()
+    assert not win._runs.slot(a).gate.busy
     assert win._conversation_id == b
-    assert not gate.busy
-    assert gate.active_id == ""
 
-    gate.begin("turn-b")
-    gate.arm()
-    win._on_chat_finished_for_turn("A의 나머지", "turn-a")
-    win._on_chat_failed_for_turn("A 오류", "turn-a")
-    app.processEvents()
-    assert gate.is_current("turn-b")
-    assert gate.busy
-    assert history_dicts(win._db, b) == before_b
-
-    gate.finish("turn-b")
+    win._runs.slot(a).followthrough_count = 4
+    win._runs.slot(b).followthrough_count = 1
     win._on_conversation_selected(a)
     app.processEvents()
+    assert win._followthrough_count == 4
+    assert win._runs.slot(b).followthrough_count == 1
     shown = win._chat._log.toPlainText()
-    assert "과일 설명" in shown
-    assert "대화 전환으로 응답을 중단했습니다." in shown
-    assert "늦게" not in shown
-    assert "10." not in _assistant(win._db, a)
-    assert not gate.busy
-    assert win._conversation_id == a
+    assert "A의 끝난 답" in shown
+    assert "HIDDEN-TOKEN" not in shown
+
+    other = _Worker()
+    win._runs.slot(b).worker = other
+    win._runs.slot(b).gate.begin("turn-b")
+    win._runs.slot(b).gate.arm()
+    win._on_chat_stop()
+    app.processEvents()
+    assert not other.cancelled
+    assert win._runs.slot(b).gate.busy
 
     win.close()
     app.processEvents()
-    print("conversation switch cancel ok")
+    print("conversation switch keeps background run ok")
 
 
 if __name__ == "__main__":

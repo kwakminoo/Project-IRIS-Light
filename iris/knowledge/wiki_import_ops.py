@@ -10,6 +10,7 @@ from urllib.parse import urldefrag, urljoin, urlparse
 from iris.knowledge.content_extract import extract_from_source
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.knowledge.wiki_filing import file_user_note
+from iris.knowledge.wiki_original import compose_wiki_body, insert_original_marker, store_original
 
 _DOC_EXT = {"html", "htm"}
 _SKIP_EXT = {
@@ -57,17 +58,32 @@ def wiki_save_notice(result: dict[str, Any], *, project: str = "", href: str = "
     return text
 
 
-def save_answer_to_wiki(wiki: IrisWiki, *, title: str, content: str, **filing: Any) -> dict[str, Any]:
-    """Preserve an existing answer, including its Markdown source citations."""
+def save_answer_to_wiki(
+    wiki: IrisWiki,
+    *,
+    title: str,
+    content: str,
+    summarize_fn: Callable[[str], str] | None = None,
+    **filing: Any,
+) -> dict[str, Any]:
+    """답변을 저장한다. 위에는 전체 요약·핵심 개념, 아래에는 받은 글."""
     if not content.strip():
         raise ValueError("content required")
-    filed = file_user_note(wiki, title, content, **filing)
+    original = content.strip()
+    if original.startswith("## 전체 요약"):
+        body = original
+    else:
+        summary = ""
+        if summarize_fn is not None:
+            summary = summarize_fn(original).strip()
+        body = compose_wiki_body(summary=summary, original=original)
+    filed = file_user_note(wiki, title, body, **filing)
     return {
         **filed,
         "kind": "answer",
-        "mode": "raw",
+        "mode": "summary" if summarize_fn else "raw",
         "truncated": False,
-        "chars": len(content),
+        "chars": len(body),
     }
 
 
@@ -76,15 +92,18 @@ def prepare_wiki_body(
     *,
     mode: str = "raw",
     summarize_fn: Callable[[str], str] | None = None,
+    vision_reader=None,
 ) -> dict[str, Any]:
-    data = extract_from_source(source)
+    del mode, summarize_fn
+    data = extract_from_source(
+        source,
+        char_limit=None,
+        vision_reader=vision_reader,
+        vision_all=True,
+    )
     body = str(data["text"]).strip()
     if not body:
         raise ValueError("no content extracted")
-    if mode == "summarize":
-        if summarize_fn is None:
-            raise ValueError("summarize_fn required for summarize mode")
-        body = summarize_fn(body).strip() or body
     title = str(data["title"])
     source_url = source if str(data["kind"]) == "url" else str(data["source"])
     return {
@@ -106,18 +125,23 @@ def import_to_wiki(
     rel_path: str | None = None,
     open_note: bool = True,
     summarize_fn: Callable[[str], str] | None = None,
+    vision_reader=None,
     db: Any = None,
     embedder: Any = None,
     namer: Any = None,
     opened_slug: str = "",
     classify: bool = False,
 ) -> dict[str, Any]:
-    prepared = prepare_wiki_body(source, mode=mode, summarize_fn=summarize_fn)
+    prepared = prepare_wiki_body(source, vision_reader=vision_reader)
     note_title = (title or prepared["title"] or "untitled").strip()
+    summary = ""
+    if summarize_fn is not None:
+        summary = summarize_fn(str(prepared["body"])).strip()
+    body = compose_wiki_body(summary=summary, original=str(prepared["body"]))
     filed = file_user_note(
         wiki,
         note_title,
-        prepared["body"],
+        body,
         source_url=prepared["source_url"],
         rel_path=rel_path,
         db=db,
@@ -126,14 +150,22 @@ def import_to_wiki(
         opened_slug=opened_slug,
         classify=classify,
     )
+    asset = store_original(
+        Path(str(filed["path"])),
+        kind=str(prepared["kind"]),
+        source=str(prepared["source"]),
+    )
+    if asset:
+        insert_original_marker(Path(str(filed["path"])), asset)
     return {
         **filed,
         "kind": prepared["kind"],
         "source": prepared["source"],
-        "truncated": prepared["truncated"],
-        "chars": len(prepared["body"]),
-        "mode": mode,
+        "truncated": False,
+        "chars": len(body),
+        "mode": "summarize" if summarize_fn else mode,
         "opened": open_note,
+        "original": asset,
     }
 
 
@@ -200,6 +232,7 @@ def import_pages(
     *,
     mode: str = "raw",
     summarize_fn: Callable[[str], str] | None = None,
+    vision_reader=None,
     db: Any = None,
     embedder: Any = None,
     namer: Any = None,
@@ -218,6 +251,7 @@ def import_pages(
                 mode=mode,
                 open_note=False,
                 summarize_fn=summarize_fn,
+                vision_reader=vision_reader,
                 db=db,
                 embedder=embedder,
                 namer=namer,

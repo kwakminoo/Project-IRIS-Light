@@ -212,13 +212,31 @@ def typing_body_to_html(text: str) -> str:
     )
 
 
-# 타이핑 속도 기본값 (speech_sync 없을 때)
+# 타이핑 속도 기본값 (speech_sync 없을 때): 초당 20글자 = 50ms에 1글자
 TYPING_INTERVAL_MS = 50
 TYPING_CHARS_PER_TICK = 1
 # TTS 동기화 시 한 틱에 따라잡을 최대 글자 수 (급격한 점프 방지)
 TYPING_SPEECH_MAX_CHARS_PER_TICK = 4
 # TTS보다 짧게 끝나지 않도록 최소 글자/초 (느릴수록 값을 낮춤)
 TYPING_SPEECH_MIN_CHARS_PER_SEC = 12.0
+
+
+def plain_typing_step(chars_per_sec: int | None = None) -> tuple[int, int]:
+    """일반 타이핑 (interval_ms, 틱당 글자 수). 설정이 없으면 저장된 속도를 쓴다."""
+    from iris.ui.chat.typography import (
+        TYPING_CHARS_PER_SEC_MAX,
+        TYPING_CHARS_PER_SEC_MIN,
+        manager,
+    )
+
+    if chars_per_sec is None:
+        chars_per_sec = manager.get().typing_chars_per_sec
+    cps = max(TYPING_CHARS_PER_SEC_MIN, min(TYPING_CHARS_PER_SEC_MAX, int(chars_per_sec)))
+    interval = round(1000 / cps)
+    if interval >= 16:
+        return interval, 1
+    chars = max(1, (cps * 16 + 999) // 1000)
+    return max(16, round(1000 * chars / cps)), chars
 
 
 def effective_typing_duration_ms(

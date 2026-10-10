@@ -1,4 +1,4 @@
-"""채팅 턴에 붙이는 자료 발췌. 위키 8만 자보다 짧다."""
+"""채팅 턴에 붙이는 자료 본문. 글자 수로 자르지 않는다."""
 
 from __future__ import annotations
 
@@ -14,8 +14,6 @@ from iris.knowledge.content_extract import (
 from iris.knowledge.pdf_export import is_pdf_save_intent
 from iris.ui.chat.at_path_refs import extract_at_path_refs, normalize_at_path
 
-CHAT_EXCERPT_CHARS = 12_000
-CHAT_PDF_PAGES = 8
 MAX_SOURCES = 6
 MAX_URLS = 3
 FOLDER_LIST_CAP = 40
@@ -34,14 +32,6 @@ def extract_http_urls(text: str) -> list[str]:
         seen.add(url)
         out.append(url)
     return out
-
-
-def _truncate_chat(text: str, limit: int) -> tuple[str, bool]:
-    body = (text or "").strip()
-    if len(body) <= limit:
-        return body, False
-    cut = body[:limit].rsplit("\n", 1)[0].strip() or body[:limit]
-    return cut, True
 
 
 def _classify(path: Path) -> dict:
@@ -166,11 +156,10 @@ def turn_should_read_materials(
     )
 
 
-def _section_file(path: str, *, budget: int, vision_reader) -> tuple[str, int]:
+def _section_file(path: str, *, vision_reader) -> str:
     data = extract_from_source(
         path,
-        char_limit=max(budget, 1),
-        page_limit=CHAT_PDF_PAGES,
+        char_limit=None,
         vision_reader=vision_reader,
     )
     lines = [f"### {data.get('title') or Path(path).name}", str(data.get("source") or path)]
@@ -181,20 +170,16 @@ def _section_file(path: str, *, budget: int, vision_reader) -> tuple[str, int]:
     note = str(data.get("note") or "").strip()
     if note:
         lines.append(note)
-    body = str(data.get("text") or "").strip()
-    lines.append(body)
-    if data.get("truncated"):
-        lines.append("잘림: 채팅 발췌 상한에서 끊었습니다.")
-    block = "\n".join(lines)
-    return block, max(0, budget - len(body))
+    lines.append(str(data.get("text") or "").strip())
+    return "\n".join(lines)
 
 
-def _section_folder(path: str, *, budget: int, vision_reader) -> tuple[str, int]:
+def _section_folder(path: str, *, vision_reader) -> str:
     folder = Path(path)
     try:
         children = sorted(folder.iterdir(), key=lambda p: p.name.casefold())
     except OSError as exc:
-        return f"### {folder.name}\n{path}\n(읽지 못함) {exc}", budget
+        return f"### {folder.name}\n{path}\n(읽지 못함) {exc}"
     listed = []
     for child in children[:FOLDER_LIST_CAP]:
         name = child.name + ("/" if child.is_dir() else "")
@@ -209,41 +194,37 @@ def _section_folder(path: str, *, budget: int, vision_reader) -> tuple[str, int]
         if child.is_file() and readable_suffix(child.suffix.lower())
     ][:FOLDER_READ_CAP]
     for child in readable:
-        if budget < 200:
-            lines.append(f"#### {child.name}\n상한이라 본문을 넣지 않았습니다.")
-            continue
         try:
-            block, budget = _section_file(str(child), budget=budget, vision_reader=vision_reader)
+            block = _section_file(str(child), vision_reader=vision_reader)
         except (OSError, ValueError, RuntimeError) as exc:
             block = f"### {child.name}\n(읽지 못함) {exc}"
         lines.append(block)
-    return "\n".join(lines), budget
+    return "\n".join(lines)
 
 
-def _one_section(hit: dict, *, budget: int, vision_reader) -> tuple[str, int]:
+def _one_section(hit: dict, *, vision_reader) -> str:
     kind = hit.get("kind")
     if kind == "many":
         names = "\n".join(f"- {name}" for name in hit.get("names") or [])
         return (
-            "### 같은 이름으로 시작하는 파일이 여러 개라 본문은 넣지 않았습니다.\n" + names,
-            budget,
+            "### 같은 이름으로 시작하는 파일이 여러 개라 본문은 넣지 않았습니다.\n" + names
         )
     if kind == "missing":
         label = hit.get("label") or hit.get("path") or ""
-        return f"### {label}\n(읽지 못함) 파일을 찾지 못했습니다.", budget
+        return f"### {label}\n(읽지 못함) 파일을 찾지 못했습니다."
     if kind == "url":
         try:
-            return _section_file(str(hit.get("source") or ""), budget=budget, vision_reader=None)
+            return _section_file(str(hit.get("source") or ""), vision_reader=None)
         except (OSError, ValueError, RuntimeError) as exc:
-            return f"### {hit.get('source')}\n(읽지 못함) {exc}", budget
+            return f"### {hit.get('source')}\n(읽지 못함) {exc}"
     if kind == "folder":
-        return _section_folder(str(hit.get("path") or ""), budget=budget, vision_reader=vision_reader)
+        return _section_folder(str(hit.get("path") or ""), vision_reader=vision_reader)
     if kind == "file":
         try:
-            return _section_file(str(hit.get("path") or ""), budget=budget, vision_reader=vision_reader)
+            return _section_file(str(hit.get("path") or ""), vision_reader=vision_reader)
         except (OSError, ValueError, RuntimeError) as exc:
-            return f"### {hit.get('path')}\n(읽지 못함) {exc}", budget
-    return "(읽지 못함) 자료를 해석하지 못했습니다.", budget
+            return f"### {hit.get('path')}\n(읽지 못함) {exc}"
+    return "(읽지 못함) 자료를 해석하지 못했습니다."
 
 
 def build_material_block(
@@ -265,18 +246,9 @@ def build_material_block(
     )
     if not hits:
         return ""
-    budget = CHAT_EXCERPT_CHARS
-    parts: list[str] = []
-    for hit in hits:
-        section, budget = _one_section(hit, budget=budget, vision_reader=vision_reader)
-        parts.append(section)
-        if budget <= 0:
-            break
+    parts = [_one_section(hit, vision_reader=vision_reader) for hit in hits]
     body = "\n\n".join(part for part in parts if part.strip())
-    shown, truncated = _truncate_chat(body, CHAT_EXCERPT_CHARS)
-    if truncated and "잘림: 채팅 발췌 상한에서 끊었습니다." not in shown:
-        shown += "\n잘림: 채팅 발췌 상한에서 끊었습니다."
-    return "[자료 본문]\n" + shown
+    return "[자료 본문]\n" + body
 
 
 def compose_model_user_text(display: str, block: str) -> str:

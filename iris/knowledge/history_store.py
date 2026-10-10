@@ -126,6 +126,7 @@ def record_entry(
     model: str = "",
     tags: str = "",
     wiki: IrisWiki | None = None,
+    rel_path: str = "",
 ) -> HistoryEntry | None:
     """History 한 건 기록. 본문이 비면 아무것도 남기지 않고 None."""
     text = (body or "").strip()
@@ -134,7 +135,7 @@ def record_entry(
     ensure_history_schema(db)
     kind_value = normalize_kind(kind)
     stamp = _now()
-    rel_path = _daily_rel_path(stamp)
+    rel_path = (rel_path or "").strip().lstrip("/") or _daily_rel_path(stamp)
     cur = db._execute(
         """
         INSERT INTO wiki_history(
@@ -208,13 +209,36 @@ def append_to_wiki(wiki: IrisWiki, entry: HistoryEntry) -> Path:
     """일별 History 노트에 한 항목을 덧붙인다."""
     path = (wiki.user_root / entry.rel_path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if entry.rel_path.startswith("projects/") and path.is_file() and entry.title:
+        retitle_project_chat(path, entry.title)
     if not path.exists():
-        day = entry.created_at[:10]
-        header = f"# History {day}\n\n> 아이리스가 자동으로 남기는 기록의 보기용 사본입니다. 이 파일을 고치거나 지워도 검색에는 반영되지 않습니다 — 채팅을 지우면 그 대화의 기록이 여기서도 함께 지워집니다.\n"
+        if entry.rel_path.startswith("projects/"):
+            title = entry.title or "채팅"
+            header = f"# {title}\n\n"
+        else:
+            day = entry.created_at[:10]
+            header = f"# History {day}\n\n> 아이리스가 자동으로 남기는 기록의 보기용 사본입니다. 이 파일을 고치거나 지워도 검색에는 반영되지 않습니다 — 채팅을 지우면 그 대화의 기록이 여기서도 함께 지워집니다.\n"
         path.write_text(header, encoding="utf-8")
     with path.open("a", encoding="utf-8") as fp:
         fp.write("\n" + render_entry_markdown(entry))
     return path
+
+
+def retitle_project_chat(path: Path, title: str) -> None:
+    """프로젝트 채팅 노트의 첫 제목을 지금 채팅 제목으로 맞춘다."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    lines = text.splitlines()
+    heading = f"# {title}"
+    if lines and lines[0].startswith("# "):
+        if lines[0] == heading:
+            return
+        lines[0] = heading
+    else:
+        lines.insert(0, heading)
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def render_entry_markdown(entry: HistoryEntry) -> str:
@@ -253,15 +277,20 @@ def write_episode(
     conversation_id: int = 0,
     model: str = "",
     covers: tuple[int, int] | None = None,
+    folder: str = "",
 ) -> HistoryEntry | None:
-    """대화 묶음 요약을 `history/episodes/<slug>.md` 로 남기고 색인 대상에 넣는다."""
+    """대화 묶음 요약을 `history/episodes/<slug>.md` 로 남기고 색인 대상에 넣는다.
+
+    프로젝트 채팅이면 folder 가 `projects/<slug>/episodes` 다.
+    """
     text = (summary or "").strip()
     if not text:
         return None
     ensure_history_schema(db)
     stamp = _now()
     slug = slugify_note_name(title or f"episode-{stamp[:10]}")
-    rel = f"{EPISODE_DIR}/{slug}.md"
+    place = (folder or EPISODE_DIR).strip("/")
+    rel = f"{place}/{slug}.md"
     cur = db._execute(
         """
         INSERT INTO wiki_history(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QThread
 
-from iris.infrastructure.ollama_client import OllamaClient
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.knowledge.wiki_session import SESSION_SYSTEM, close_session
 from iris.storage.database import Database
@@ -20,6 +19,7 @@ class WikiSessionWorker(QThread):
         model: str,
         base_url: str,
         *,
+        settings=None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -29,16 +29,34 @@ class WikiSessionWorker(QThread):
         self._messages = list(messages or [])
         self._model = model
         self._base_url = base_url
+        self._settings = settings
 
     def run(self) -> None:
         try:
-            client = OllamaClient(self._base_url, timeout_sec=90.0)
+            from iris.runtime.backend_route import ask_selected_model, settings_for_model
+
+            bound = settings_for_model(self._settings, self._base_url)
 
             def summarize(prompt: str) -> str:
-                return client.chat_once_with_images(
-                    self._model, prompt, [], system=SESSION_SYSTEM, timeout_sec=90.0,
+                return ask_selected_model(
+                    bound,
+                    self._db,
+                    self._model,
+                    prompt,
+                    system=SESSION_SYSTEM,
+                    timeout_sec=90.0,
                 )
 
+            episode_dir = ""
+            try:
+                from iris.knowledge.project_wiki import project_episode_dir
+                from iris.storage.chat_projects import project_for_conversation
+
+                project = project_for_conversation(self._db, self._conversation_id)
+                if project is not None:
+                    episode_dir = project_episode_dir(project.wiki_slug)
+            except Exception:
+                episode_dir = ""
             close_session(
                 self._db,
                 self._wiki,
@@ -46,6 +64,7 @@ class WikiSessionWorker(QThread):
                 messages=self._messages,
                 summarize=summarize,
                 model=self._model,
+                episode_dir=episode_dir,
             )
         except Exception:
             return

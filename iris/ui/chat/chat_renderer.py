@@ -137,7 +137,7 @@ def _swap_local_attachments(text: str) -> tuple[str, list[str]]:
 
 
 def render_user_message(text: str) -> str:
-    """사용자 메시지 — markdown. 로컬 첨부는 파일명 칩."""
+    """사용자 메시지 — markdown. 이미지·영상은 미리보기, 그 외 첨부는 파일명 칩."""
     source, chips = _swap_local_attachments(text or "")
     rendered = render_markdown_document(source, citations=False)
     for index, chip in enumerate(chips):
@@ -289,8 +289,11 @@ def _upgrade_inline_code_file_chips(html_body: str) -> str:
 
 def _markdown_body_to_html(text: str) -> str:
     from iris.ui.chat.markdown_normalization import normalize_markdown_source
+    from iris.ui.chat.math_latex import restore_chat_math, stash_chat_math
 
-    source = _inject_file_chips_in_source(_normalize_prose_symbols(normalize_markdown_source(text)))
+    # 수식은 기호 치환보다 먼저 걷어 낸다. 안 그러면 $\frac$가 평문으로 사라진다.
+    source, formulas = stash_chat_math(normalize_markdown_source(text))
+    source = _inject_file_chips_in_source(_normalize_prose_symbols(source))
     try:
         import markdown as md
 
@@ -302,12 +305,13 @@ def _markdown_body_to_html(text: str) -> str:
 
         document = QTextDocument()
         document.setMarkdown(source, QTextDocument.MarkdownFeature.MarkdownDialectGitHub)
-        return document.toHtml()
+        return restore_chat_math(document.toHtml(), formulas)
 
     rendered = _sanitize_chat_html(rendered)
     rendered = _upgrade_fenced_pre_to_cards(rendered)
     rendered = _upgrade_inline_code_file_chips(rendered)
-    return wrap_document_html(_style_chat_html(rendered))
+    # 스타일 뒤에 넣어야 수식 이미지가 사진용 img 스타일로 바뀌지 않는다.
+    return restore_chat_math(wrap_document_html(_style_chat_html(rendered)), formulas)
 
 
 def _normalize_prose_symbols(text: str) -> str:

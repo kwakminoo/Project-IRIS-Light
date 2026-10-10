@@ -59,6 +59,7 @@ class RenderingPipelineTests(unittest.TestCase):
             panel.append_stream_chunk(char)
         self.assertEqual(panel._typing_text, source)
         panel.end_stream_message(source)
+        panel.finish_typing()
         self.assertIn("이전 사용자 메시지", panel._log.toPlainText())
         self.assertNotIn("&#xC640;", panel._log.toPlainText())
         self.assertNotIn("###", panel._log.toPlainText())
@@ -111,6 +112,21 @@ class RenderingPipelineTests(unittest.TestCase):
         self.assertNotIn(r"\frac", rendered)
         self.assertNotIn(r"\text", rendered)
         self.assertIn("cost $10 and $20", rendered)
+        self.assertIn("math-cache", rendered)
+
+    def test_display_math_matrix_is_an_image_and_code_keeps_source(self):
+        sample = (
+            "회전.\n\n$$\n"
+            r"R(30^{\circ})=\begin{bmatrix}0.866&0.5&0\\-0.5&0.866&0\\0&0&1\end{bmatrix}"
+            "\n$$\n"
+        )
+        rendered = render_iris_message(sample)
+        self.assertIn("<img", rendered)
+        self.assertNotIn("bmatrix", rendered)
+        self.assertNotIn(r"\begin", rendered)
+        fenced = render_iris_message("```text\n\\begin{bmatrix}1\\end{bmatrix}\n```")
+        self.assertIn("bmatrix", fenced)
+        self.assertNotIn("math-cache", fenced)
 
 if __name__ == "__main__":
     unittest.main()

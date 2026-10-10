@@ -44,6 +44,7 @@ class ResponseEndTests(unittest.TestCase):
                             panel.end_stream_message(final)
                             panel.finish_typing()
                             workspace.end_iris(final)
+                            workspace.chat.finish_typing()
                             main = panel._log.toPlainText()
                             other = workspace._log.toPlainText()
                             self.assertIn("이전 메시지", main)
@@ -73,8 +74,31 @@ class ResponseEndTests(unittest.TestCase):
         panel.begin_stream_message("Iris", speech_sync=False)
         panel.append_stream_chunk(source)
         panel.end_stream_message(source)
+        panel.finish_typing()
         href = re.search(r'href="(iris-copy://[^"]+)"', panel._log.toHtml())[1]
         self.assertEqual(parse_copy_anchor(href), 'literal `\n')
+        panel.close()
+
+    def test_stream_types_one_character_at_a_time(self):
+        panel = ChatPanel()
+        source = "가나다라마바사"
+        panel.begin_stream_message("Iris", speech_sync=False)
+        panel.append_stream_chunk(source)
+        self.assertEqual(panel._typing_text, source)
+        self.assertEqual(panel._typing_index, 0)
+        self.assertNotIn(source, panel._log.toPlainText())
+        self.assertTrue(panel._typing_timer.isActive())
+        panel._typing_timer.stop()
+        panel._type_next_chunk()
+        self.assertIn("가", panel._log.toPlainText())
+        self.assertNotIn(source, panel._log.toPlainText())
+        panel.end_stream_message(source)
+        self.assertTrue(panel._typing_timer.isActive())
+        self.assertNotIn(source, panel._log.toPlainText())
+        while panel._typing_text:
+            panel._typing_timer.stop()
+            panel._type_next_chunk()
+        self.assertIn(source, panel._log.toPlainText())
         panel.close()
 
 
