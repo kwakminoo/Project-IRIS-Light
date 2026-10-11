@@ -113,6 +113,16 @@ class UserTurnDispatcher(QObject):
         self._wait_order.clear()
         return dropped
 
+    def clear_pending_for(self, session_id: int | None) -> list[UserTurn]:
+        """그 대화의 대기만 뺀다. 진행 중 턴과 다른 대화 대기는 둔다."""
+        dropped: list[UserTurn] = []
+        queue = self._pending.pop(session_id, None)
+        if queue:
+            dropped.extend(queue)
+            queue.clear()
+        self._wait_order = deque(sid for sid in self._wait_order if sid != session_id)
+        return dropped
+
     def _running(self) -> int:
         return len(self._active)
 

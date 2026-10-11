@@ -110,6 +110,26 @@ def normalize_model_title(raw: str) -> str:
     return line
 
 
+class TitleRequests:
+    """대화 id마다 제목 요청 세대.
+
+    다른 대화의 요청은 이 세대 번호를 올리지 않는다.
+    창에 워커를 하나만 두면 옆 채팅이 끝난 결과를 버린다.
+    """
+
+    def __init__(self) -> None:
+        self._gen: dict[int, int] = {}
+
+    def begin(self, conversation_id: int) -> int:
+        cid = int(conversation_id)
+        gen = self._gen.get(cid, 0) + 1
+        self._gen[cid] = gen
+        return gen
+
+    def current(self, conversation_id: int) -> int:
+        return self._gen.get(int(conversation_id), 0)
+
+
 def apply_generated_title(db: Database, conversation_id: int, raw: str) -> str:
     """잠기지 않은 목록 제목에만 쓴다. 메시지 본문은 건드리지 않는다."""
     conv = get_conversation(db, conversation_id)
@@ -138,4 +158,9 @@ if __name__ == "__main__":
     assert "이미 끝난 대화 기록" in msgs[1]["content"]
     assert "프랜스포머는 뭔지" in msgs[1]["content"]
     assert "[[title" not in msgs[1]["content"]
+    jobs = TitleRequests()
+    assert jobs.begin(1) == 1
+    assert jobs.begin(2) == 1
+    assert jobs.begin(1) == 2
+    assert jobs.current(2) == 1
     print("chat_title self-check ok")

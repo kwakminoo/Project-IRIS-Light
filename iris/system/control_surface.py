@@ -187,12 +187,15 @@ def call_registered(surface: ControlSurface, action: str, args: dict[str, Any], 
     target = write_lock_target(action, args)
     holder = write_holder(args)
     lock = shared_write_lock()
+    wiki_held: list[str] = []
     if target is not None:
-        kind, key = target
+        kind, keys = target
         if kind == "project":
             lock.acquire_project(holder)
         else:
-            lock.acquire_wiki(holder, key)
+            for key in sorted(set(keys)):
+                lock.acquire_wiki(holder, key)
+                wiki_held.append(key)
 
     def _run() -> dict[str, Any]:
         if surface.booting and action not in ("ping", "get_state", "get_catalog"):
@@ -210,11 +213,12 @@ def call_registered(surface: ControlSurface, action: str, args: dict[str, Any], 
             return err_result(action or "invoke", str(exc) or "timeout")
     finally:
         if target is not None:
-            kind, key = target
+            kind, _keys = target
             if kind == "project":
                 lock.release_project(holder)
             else:
-                lock.release_wiki(holder, key)
+                for key in reversed(wiki_held):
+                    lock.release_wiki(holder, key)
 
 
 class UiThreadTimeout(TimeoutError):

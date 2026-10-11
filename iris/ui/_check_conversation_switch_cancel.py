@@ -78,6 +78,34 @@ def main() -> None:
     assert "HIDDEN-TOKEN" in win._runs.slot(a).pending_partial
     assert history_dicts(win._db, b) == before_b
 
+    from iris.runtime.user_turn import UserTurn, UserTurnSource
+
+    win._runs.slot(b).pending_past_chats = "B-PAST-EVIDENCE"
+    real_launch = win._launch_chat_turn
+    win._launch_chat_turn = lambda *_args, **_kwargs: None
+    try:
+        recorded = UserTurn(
+            text="A1x",
+            source=UserTurnSource.KEYBOARD,
+            session_id=a,
+            id="turn-a",
+        )
+        win._commit_recorded_user_turn(recorded, "test-model", "A1x", True)
+    finally:
+        win._launch_chat_turn = real_launch
+    app.processEvents()
+    assert "A1x" not in win._chat._log.toPlainText()
+    users_a = [
+        item["content"] for item in history_dicts(win._db, a) if item["role"] == "user"
+    ]
+    users_b = [
+        item["content"] for item in history_dicts(win._db, b) if item["role"] == "user"
+    ]
+    assert "A1x" in users_a
+    assert "A1x" not in users_b
+    assert win._runs.slot(a).pending_past_chats != win._runs.slot(b).pending_past_chats
+    assert win._runs.slot(b).pending_past_chats == "B-PAST-EVIDENCE"
+
     win._on_chat_finished_for_turn("A의 끝난 답", "turn-a")
     app.processEvents()
     assert not worker.cancelled
@@ -105,6 +133,30 @@ def main() -> None:
     app.processEvents()
     assert not other.cancelled
     assert win._runs.slot(b).gate.busy
+
+    import iris.ui.settings.hud_dialog as hud_dialog
+    from iris.storage.conversations import create_conversation
+
+    hud_dialog.run_hud_confirm = lambda *_args, **_kwargs: True
+    keeper_id = int(create_conversation(win._db).id)
+    keeper = _Worker()
+    alive = _Worker()
+    gone = _Worker()
+    win._runs.slot(keeper_id).worker = keeper
+    win._runs.slot(a).worker = alive
+    win._runs.slot(b).worker = gone
+    viewing = win._conversation_id
+    win._on_conversation_deleted(b)
+    app.processEvents()
+    assert not alive.cancelled
+    assert gone.cancelled
+    assert not keeper.cancelled
+    assert win._conversation_id == viewing
+    win._on_conversation_deleted(a)
+    app.processEvents()
+    assert alive.cancelled
+    assert not keeper.cancelled
+    assert win._conversation_id != a
 
     win.close()
     app.processEvents()

@@ -699,17 +699,27 @@ class HermesClient:
         self,
         model: str,
         messages: list[dict[str, str]],
+        *,
+        provider: str = "",
     ) -> Iterator[dict[str, Any]]:
         """
         /v1/chat/completions SSE.
         yield: {"content": str|None, "tool_progress": str|None, "done": bool}
+
+        provider가 있으면 그 요청의 model을 유지한다. 광고 이름 하나로 바꾸지 않는다.
         """
-        request_model = self.resolve_request_model(model)
-        payload = {
+        provider_name = (provider or "").strip()
+        if provider_name:
+            request_model = (model or "").strip()
+        else:
+            request_model = self.resolve_request_model(model)
+        payload: dict[str, Any] = {
             "model": request_model,
             "messages": messages,
             "stream": True,
         }
+        if provider_name:
+            payload["provider"] = provider_name
         from iris.runtime.attachment_context import trace_payload
         trace_payload("hermes", payload)
         headers = {**self._headers(json_body=True)}

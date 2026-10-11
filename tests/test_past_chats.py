@@ -29,6 +29,7 @@ from iris.knowledge.history_store import (  # noqa: E402
     write_episode,
 )
 from iris.knowledge.iris_wiki import IrisWiki  # noqa: E402
+from iris.runtime.chat_run_slot import ChatRunMap  # noqa: E402
 from iris.runtime.model_switch import ModelSwitchService  # noqa: E402
 from iris.runtime.past_chats import (  # noqa: E402
     MAX_PAST_HITS,
@@ -190,7 +191,7 @@ class _SyncWorker:
 
     emit_hits = None  # None 이면 끝내 응답하지 않는다(느린 임베딩 흉내)
 
-    def __init__(self, service, base_url, query, conversation_id, *, parent=None) -> None:
+    def __init__(self, service, base_url, query, conversation_id, *, parent=None, **_kwargs) -> None:
         self._ready = []
         self._failed = []
         self.ready = SimpleNamespace(connect=self._ready.append)
@@ -237,19 +238,26 @@ class MainWindowPastChatsTests(_Base):
         super().setUp()
         self.chat = _Chat()
         self.current = {"turn": "t1"}
+        runs = ChatRunMap()
+        slot = runs.slot(2)
+        slot.gate.begin("t1")
         self.win = SimpleNamespace(
             _db=self.db,
             _iris_wiki=self.wiki,
             _model_switch=self.svc,
             _chat=self.chat,
             _conversation_id=2,
+            _runs=runs,
+            _bound_slot=slot,
             _settings=SimpleNamespace(ollama_base_url="http://127.0.0.1:11434"),
             _pending_past_chats="",
             _past_chats_worker=None,
             _is_current_turn=lambda tid: tid == self.current["turn"],
+            _showing_bound=lambda: True,
         )
+        self.win._slot_now = lambda: self.win._bound_slot or self.win._runs.slot(2)
         self.win._apply_past_chats = types.MethodType(MainWindow._apply_past_chats, self.win)
-        self.turn = SimpleNamespace(id="t1")
+        self.turn = SimpleNamespace(id="t1", attachments=())
         self.launched: list[str] = []
         self._patches = [
             patch.object(mw_module, "PastChatsWorker", _SyncWorker),
@@ -290,7 +298,7 @@ class MainWindowPastChatsTests(_Base):
 
     def test_stopped_turn_is_not_sent(self) -> None:
         self._go()
-        self.current["turn"] = ""  # 사용자가 멈췄다
+        self.win._runs.slot(2).gate.finish("t1")
         _FakeTimer.last.fire()
         self.assertEqual(self.launched, [])
 

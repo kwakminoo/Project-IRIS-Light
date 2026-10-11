@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from iris.runtime.chat_turn_gate import ChatTurnGate
 
-MAX_CONCURRENT = 2
+MAX_CONCURRENT = 10
 
 
 @dataclass
@@ -29,6 +29,29 @@ class ChatRunSlot:
     wiki_turn_moved: bool = False
     wiki_turn_moved_folder: bool = False
     wiki_list_truncated: bool = False
+    pending_past_chats: str = ""
+    pending_wiki_notes: str = ""
+    pending_code_notes: str = ""
+    pending_web_evidence: str = ""
+    inference_model: str = ""
+    inference_provider: str = ""
+    turn_ask_kind: str = ""
+    turn_wiki_lookup: bool = False
+    turn_iris_lookup: bool = False
+    turn_web_error: bool = False
+    turn_search_failure_reply: str = ""
+
+
+def choose_turn_model(slot: ChatRunSlot, picker, *, followthrough: bool) -> str:
+    """이어하기는 슬롯에 저장된 런타임 id. 그때는 picker를 부르지 않는다."""
+    stored = (slot.inference_model or "").strip()
+    if followthrough and stored:
+        return stored
+    chosen = picker() if callable(picker) else str(picker or "")
+    chosen = chosen.strip()
+    if chosen:
+        slot.inference_model = chosen
+    return chosen
 
 
 class ChatRunMap:

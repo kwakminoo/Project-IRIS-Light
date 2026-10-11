@@ -190,6 +190,50 @@ def _check_transcript_restore(app: QApplication) -> None:
     assert "무시되어야 함" not in body, "system 메시지가 화면에 새어 나왔다"
 
 
+def _check_list_scroll_stays(app: QApplication) -> None:
+    """다른 채팅을 눌러도, 제목이 바뀌어 목록을 다시 그려도 스크롤은 그 자리에 남는다."""
+    convs = [ChatConversation(i, f"채팅 {i:02d}", "", "", 1) for i in range(1, 31)]
+    panel = ChatHistoryPanel()
+    panel.set_conversations(convs, active_id=1)
+    panel.resize(220, 140)
+    panel.show()
+    for _ in range(4):
+        app.processEvents()
+    bar = panel._scroll.verticalScrollBar()
+    assert bar.maximum() > 80, bar.maximum()
+    assert not panel._scroll_guard
+    bar.setValue(40)
+    app.processEvents()
+    held = bar.value()
+    assert held == 40, held
+
+    rows = [
+        f for f in panel._inner.findChildren(QFrame) if f.objectName() == "HudChatRow"
+    ]
+    target = next(row for row in rows if row._conv_id == 12)
+    target._btn.click()
+    app.processEvents()
+    assert bar.value() == held, (bar.value(), held)
+
+    panel.set_conversations(convs, active_id=12)
+    app.processEvents()
+    assert bar.value() == held, (bar.value(), held)
+
+    renamed = [
+        ChatConversation(item.id, f"{item.title} 끝", "", "", 1) for item in convs
+    ]
+    panel.set_conversations(renamed, active_id=12)
+    app.processEvents()
+    app.processEvents()
+    assert bar.value() == held, (bar.value(), held)
+
+    added = [ChatConversation(99, "맨 위 채팅", "", "", 1), *renamed]
+    panel.set_conversations(added, active_id=12)
+    app.processEvents()
+    app.processEvents()
+    assert bar.value() == held, (bar.value(), held)
+
+
 def _check_sidebar_modes(app: QApplication) -> None:
     sidebar = LeftSidebarPanel()
     app.processEvents()
@@ -213,6 +257,7 @@ def main() -> int:
         try:
             _check_history_panel(app, db)
             _check_row_actions_visible(app)
+            _check_list_scroll_stays(app)
         finally:
             db._conn.close()
     _check_transcript_restore(app)

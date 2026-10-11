@@ -132,7 +132,8 @@ class HermesFailoverTests(TestCase):
             ],
             client,
         )
-        self.assertEqual(client.inference_models, ["upstream-big", "upstream-free"])
+        self.assertEqual(client.inference_models, [])
+        self.assertEqual([item[0] for item in client.seen], ["upstream-big", "upstream-free"])
         self.assertEqual(client.seen[0][1], self.msgs)
         self.assertEqual(client.seen[1][1], self.handoff)
         self.assertIn("인수인계문", client.seen[1][1][0]["content"])
@@ -268,4 +269,5 @@ class HermesFailoverTests(TestCase):
         ):
             worker.run()
         self.assertEqual(out.ok, ["예전 방식"])
-        self.assertEqual(client.inference_models, ["upstream-solo"])
+        self.assertEqual(client.inference_models, [])
+        self.assertEqual(client.seen[0][0], "upstream-solo")

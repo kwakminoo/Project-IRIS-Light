@@ -127,16 +127,25 @@ class SttUxTests(TestCase):
 
     def test_voice_mark_follows_mic(self) -> None:
         from iris.ui.widgets.drag_tab import DragTab
+        from iris.ui.window.main_window import MainWindow
 
         drag = DragTab(QWidget())
-        mark = drag.findChild(QLabel, "VoiceListenMark")
-        self.assertIsNotNone(mark)
-        assert mark is not None
-        self.assertEqual(mark.text(), "OFF")
+        self.assertIsNone(drag.findChild(QLabel, "VoiceListenMark"))
         drag.set_mic_state(MicState.LISTENING)
-        self.assertEqual(mark.text(), "ON")
+        self.assertTrue(drag._btn_mic.isChecked())
         drag.set_mic_state(MicState.OFF)
-        self.assertEqual(mark.text(), "OFF")
+        self.assertFalse(drag._btn_mic.isChecked())
+
+        class _Mic:
+            state = MicState.OFF
+
+        win = type("Host", (), {})()
+        win._mic = _Mic()
+        self.assertEqual(MainWindow._stt_idle_status(win), "OFF")
+        win._mic.state = MicState.LISTENING
+        self.assertEqual(MainWindow._stt_idle_status(win), "ON")
+        win._mic.state = MicState.STARTING
+        self.assertEqual(MainWindow._stt_idle_status(win), "OFF")
 
     def test_settings_shell_before_sections(self) -> None:
         from iris.config.settings import Settings

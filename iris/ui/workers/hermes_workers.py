@@ -383,12 +383,13 @@ class HermesChatWorker(QThread):
                     self._base_url, api_key=self._api_key, command=self._command
                 )
                 if target is not None:
-                    client.set_inference_model(target.model, target=target)
                     stream_model = target.model
+                    provider = str(getattr(target, "provider", "") or "").strip()
                 else:
-                    client.set_inference_model(attempt.model)
                     stream_model = attempt.model
-                for ev in client.stream_chat(stream_model, attempt.messages):
+                    provider = ""
+                stream_kwargs = {"provider": provider} if provider else {}
+                for ev in client.stream_chat(stream_model, attempt.messages, **stream_kwargs):
                     if self._cancel:
                         break
                     tool = ev.get("tool_progress")

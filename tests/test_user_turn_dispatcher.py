@@ -40,6 +40,11 @@ class UserTurnDispatcherTests(TestCase):
         self.assertEqual(self.ready[1].source, UserTurnSource.VOICE)
 
     def test_two_sessions_run_and_third_waits(self) -> None:
+        self.dispatcher = UserTurnDispatcher(max_pending=3, max_concurrent=2)
+        self.ready.clear()
+        self.queued.clear()
+        self.dispatcher.turn_ready.connect(self.ready.append)
+        self.dispatcher.turn_queued.connect(lambda turn, reason: self.queued.append((turn, reason)))
         first = self.dispatcher.submit(text="A", source=UserTurnSource.KEYBOARD, session_id=1)
         self.dispatcher.submit(text="B", source=UserTurnSource.KEYBOARD, session_id=2)
         third = self.dispatcher.submit(text="C", source=UserTurnSource.KEYBOARD, session_id=3)
@@ -71,6 +76,35 @@ class UserTurnDispatcherTests(TestCase):
         self.assertEqual(len(self.dropped), 1)
         self.assertEqual(self.dropped[0][0].text, "B")
         self.assertEqual(self.dropped[0][1], "queue_overflow")
+
+    def test_default_ten_sessions_run_and_eleventh_waits(self) -> None:
+        dispatcher = UserTurnDispatcher()
+        ready: list[object] = []
+        queued: list[tuple[object, str]] = []
+        dispatcher.turn_ready.connect(ready.append)
+        dispatcher.turn_queued.connect(lambda turn, reason: queued.append((turn, reason)))
+        turns = [
+            dispatcher.submit(text=str(i), source=UserTurnSource.KEYBOARD, session_id=i)
+            for i in range(1, 12)
+        ]
+        self.assertEqual([turn.text for turn in ready], [str(i) for i in range(1, 11)])
+        self.assertEqual(queued[-1][1], "concurrent_cap")
+        self.assertEqual(turns[10].text, "11")
+        dispatcher.finish_active_turn(turns[0].id)
+        self.assertEqual(ready[-1].text, "11")
+        self.assertEqual(len(ready), 11)
+
+    def test_clear_pending_for_leaves_other_sessions(self) -> None:
+        dispatcher = UserTurnDispatcher(max_pending=3, max_concurrent=1)
+        dispatcher.turn_ready.connect(lambda _turn: None)
+        dispatcher.submit(text="A1", source=UserTurnSource.KEYBOARD, session_id=1)
+        dispatcher.submit(text="A2", source=UserTurnSource.KEYBOARD, session_id=1)
+        dispatcher.submit(text="B1", source=UserTurnSource.KEYBOARD, session_id=2)
+        dropped = dispatcher.clear_pending_for(2)
+        self.assertEqual([turn.text for turn in dropped], ["B1"])
+        self.assertEqual(dispatcher.pending_count_for(1), 1)
+        self.assertEqual(dispatcher.pending_count_for(2), 0)
+        self.assertTrue(dispatcher.is_session_busy(1))
 
     def test_clear_pending_returns_items(self) -> None:
         self.dispatcher.submit(text="A", source=UserTurnSource.KEYBOARD)

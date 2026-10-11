@@ -101,8 +101,11 @@ class ChatHistoryPanel(QWidget):
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self._scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._scroll.viewport().setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._inner = QWidget()
         self._inner.setObjectName("SidebarInner")
+        self._inner.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._inner.setMinimumWidth(0)
         self._inner_lay = QVBoxLayout(self._inner)
         self._inner_lay.setContentsMargins(0, 0, 0, 0)
@@ -119,6 +122,11 @@ class ChatHistoryPanel(QWidget):
         self._selected: list[tuple[str, int]] = []
         self._anchor: tuple[str, int] | None = None
         self._pending: tuple[list[ChatConversation], int, list[ChatProject]] | None = None
+        self._scroll_keep: int | None = None
+        self._scroll_guard = False
+        self._scroll_guard_busy = False
+        self._scroll_guard_waits = 0
+        self._scroll.verticalScrollBar().rangeChanged.connect(self._guard_scroll)
 
     def set_conversations(
         self,
@@ -137,11 +145,90 @@ class ChatHistoryPanel(QWidget):
             self._projects,
         ):
             return
+        # 같은 행이면 다시 만들지 않는다. 다시 만들면 스크롤이 맨 아래나 맨 위로 붙는다.
+        if getattr(self, "_painted", False) and self._same_rows(packed[0], packed[2]):
+            self._items, self._active_id, self._projects = packed
+            self._sync_titles()
+            self._paint_rows()
+            return
         self._items, self._active_id, self._projects = packed
         self._painted = True
         self._rebuild()
 
+    def _guard_scroll(self, _minimum: int, maximum: int) -> None:
+        if self._scroll_guard_busy or not self._scroll_guard or self._scroll_keep is None:
+            return
+        bar = self._scroll.verticalScrollBar()
+        target = min(int(self._scroll_keep), maximum)
+        if bar.value() == target:
+            return
+        self._scroll_guard_busy = True
+        try:
+            bar.setValue(target)
+        finally:
+            self._scroll_guard_busy = False
+
+    def _same_rows(self, items: list[ChatConversation], projects: list[ChatProject]) -> bool:
+        return (
+            tuple((int(project.id), project.name) for project in projects),
+            tuple((int(conv.id), int(conv.project_id or 0)) for conv in items),
+        ) == (
+            tuple((int(project.id), project.name) for project in self._projects),
+            tuple((int(conv.id), int(conv.project_id or 0)) for conv in self._items),
+        )
+
+    def _sync_titles(self) -> None:
+        titles = {
+            int(conv.id): (conv.title or DEFAULT_TITLE).strip() or DEFAULT_TITLE
+            for conv in self._items
+        }
+        for index in range(self._inner_lay.count()):
+            widget = self._inner_lay.itemAt(index).widget()
+            if isinstance(widget, _ChatRow):
+                widget.set_title(titles.get(int(widget._conv_id), widget._title))
+
+    def _release_scroll_guard(self) -> None:
+        self._restore_scroll()
+        bar = self._scroll.verticalScrollBar()
+        keep = int(self._scroll_keep or 0)
+        self._scroll_guard_waits += 1
+        settled = bar.maximum() >= keep and self._scroll_guard_waits >= 1
+        if not settled and self._scroll_guard_waits < 4:
+            QTimer.singleShot(0, self._release_scroll_guard)
+            return
+        self._scroll_guard = False
+        self._scroll_guard_waits = 0
+
+    def _restore_scroll(self) -> None:
+        keep = self._scroll_keep
+        if keep is None:
+            return
+        try:
+            bar = self._scroll.verticalScrollBar()
+            bar.setValue(min(int(keep), bar.maximum()))
+        except RuntimeError:
+            return
+
+    def _paint_rows(self) -> None:
+        for index in range(self._inner_lay.count()):
+            widget = self._inner_lay.itemAt(index).widget()
+            if isinstance(widget, _ChatRow):
+                key = ("c", int(widget._conv_id))
+                active = int(widget._conv_id) == int(self._active_id)
+                selected = key in self._selected
+                widget.set_row_state(
+                    active=active,
+                    selected=selected,
+                    edit_on_plain_click=active and self._selected == [key],
+                )
+            elif isinstance(widget, _ProjectRow):
+                widget.set_selected(("p", int(widget._project_id)) in self._selected)
+
     def _rebuild(self) -> None:
+        bar = self._scroll.verticalScrollBar()
+        self._scroll_keep = bar.value()
+        self._scroll_guard = True
+        self._scroll_guard_waits = 0
         while self._inner_lay.count():
             item = self._inner_lay.takeAt(0)
             w = item.widget()
@@ -195,6 +282,8 @@ class ChatHistoryPanel(QWidget):
         if self._anchor not in alive:
             self._anchor = self._selected[-1] if self._selected else None
         self._inner_lay.addStretch(1)
+        self._restore_scroll()
+        QTimer.singleShot(0, self._release_scroll_guard)
 
     def _chat_row(self, conv: ChatConversation, *, nested: bool) -> _ChatRow:
         key = ("c", int(conv.id))
@@ -234,7 +323,7 @@ class ChatHistoryPanel(QWidget):
         self._selected, self._anchor = apply_list_click(
             self._order, self._selected, self._anchor, key, ctrl=ctrl, shift=shift,
         )
-        self._rebuild()
+        self._paint_rows()
         if kind == "c" and not ctrl and not shift:
             self.conversation_selected.emit(int(item_id))
 
@@ -311,6 +400,7 @@ class _ChatRow(QFrame):
         )
         self._btn = _ShrinkingTitleButton(self._title)
         self._btn.setToolTip(self._title)
+        self._btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._btn.setMinimumWidth(0)
@@ -333,6 +423,7 @@ class _ChatRow(QFrame):
         )
         self._btn.clicked.connect(self._on_title_clicked)
         h.addWidget(self._btn, 1)
+        self._row_state = (active, selected, edit_on_plain_click)
 
         self._edit = QLineEdit(self._title)
         self._edit.setObjectName("ChatTitleEdit")
@@ -363,6 +454,45 @@ class _ChatRow(QFrame):
         x.clicked.connect(lambda _=False, i=conv.id: on_delete("c", i))
         h.addWidget(x, 0, Qt.AlignmentFlag.AlignVCenter)
         self._schedule_fit_title()
+
+    def set_title(self, title: str) -> None:
+        shown = (title or DEFAULT_TITLE).strip() or DEFAULT_TITLE
+        if shown == self._title:
+            return
+        self._title = shown
+        self._btn.setToolTip(shown)
+        if not self._editing:
+            self._edit.setText(shown)
+        self._schedule_fit_title()
+
+    def set_row_state(self, *, active: bool, selected: bool, edit_on_plain_click: bool) -> None:
+        state = (active, selected, edit_on_plain_click)
+        if state == self._row_state:
+            return
+        self._row_state = state
+        self._active = active
+        self._selected = selected
+        self._edit_on_plain_click = edit_on_plain_click
+        color = TOKENS.neon_cyan if active else (TOKENS.text_primary if selected else TOKENS.text_secondary)
+        bg = TOKENS.panel_hover if (active or selected) else "transparent"
+        border = f"1px solid {TOKENS.neon_cyan}" if selected and not active else "none"
+        self._btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                text-align: left;
+                padding: 4px 6px;
+                background: {bg};
+                border: {border};
+                border-radius: {TOKENS.radius_sm}px;
+                color: {color};
+                font-size: {TOKENS.font_size_micro};
+            }}
+            QPushButton:hover {{
+                color: {TOKENS.neon_cyan};
+                background: {TOKENS.panel_hover};
+            }}
+            """
+        )
 
     def _on_title_clicked(self) -> None:
         mods = QApplication.keyboardModifiers()
@@ -560,6 +690,7 @@ class _ProjectRow(QFrame):
         border = f"1px solid {TOKENS.neon_cyan}" if selected else "none"
         self._btn = QPushButton(self._title)
         self._btn.setToolTip(self._title)
+        self._btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._btn.setStyleSheet(
@@ -582,6 +713,7 @@ class _ProjectRow(QFrame):
         )
         self._btn.clicked.connect(self._on_title_clicked)
         h.addWidget(self._btn, 1)
+        self._selected_painted = selected
 
         self._edit = QLineEdit(self._title)
         self._edit.setMaxLength(48)
@@ -611,6 +743,31 @@ class _ProjectRow(QFrame):
         remove = _icon_button("×", f"폴더 삭제: {self._title}", TOKENS.error, font_size=14)
         remove.clicked.connect(lambda _=False, i=project.id: on_delete("p", i))
         h.addWidget(remove, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def set_selected(self, selected: bool) -> None:
+        if selected == self._selected_painted:
+            return
+        self._selected_painted = selected
+        bg = TOKENS.panel_hover if selected else "transparent"
+        border = f"1px solid {TOKENS.neon_cyan}" if selected else "none"
+        self._btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                text-align: left;
+                padding: 4px 6px;
+                background: {bg};
+                border: {border};
+                border-radius: {TOKENS.radius_sm}px;
+                color: {TOKENS.text_primary};
+                font-size: {TOKENS.font_size_micro};
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                color: {TOKENS.neon_cyan};
+                background: {TOKENS.panel_hover};
+            }}
+            """
+        )
 
     def _on_title_clicked(self) -> None:
         mods = QApplication.keyboardModifiers()
@@ -730,6 +887,7 @@ class _NewProjectButton(QPushButton):
 def _icon_button(text: str, tooltip: str, hover: str, *, font_size: int = 12) -> QPushButton:
     btn = QPushButton(text)
     btn.setFixedSize(20, 20)
+    btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.setToolTip(tooltip)
     btn.setStyleSheet(
