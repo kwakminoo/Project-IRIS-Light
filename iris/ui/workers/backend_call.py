@@ -80,14 +80,17 @@ def _hermes(route, messages, stop) -> str:
         api_key=route.api_key,
         command=route.command,
     )
-    if route.target is not None:
-        client.set_inference_model(route.target.model, target=route.target)
-        model = route.target.model
+    # 채팅 워커와 같다. 설정 칸을 덮지 않고, provider가 있을 때만 넘긴다.
+    target = route.target
+    if target is not None:
+        model = target.model
+        provider = str(getattr(target, "provider", "") or "").strip()
     else:
-        client.set_inference_model(route.model)
         model = route.model
+        provider = ""
+    stream_kwargs = {"provider": provider} if provider else {}
     parts: list[str] = []
-    for ev in client.stream_chat(model, messages):
+    for ev in client.stream_chat(model, messages, **stream_kwargs):
         if stop():
             break
         chunk = ev.get("content")

@@ -7779,8 +7779,7 @@ class MainWindow(QMainWindow):
             history = self._history
         messages = inference_messages(history)
         try:
-            profile = load_user_profile(self._db)
-            root = (profile.project_root or "").strip()
+            root = self._current_project_root()
         except Exception:
             root = ""
         bits: list[str] = []
@@ -7959,7 +7958,10 @@ class MainWindow(QMainWindow):
             profile = load_user_profile(self._db)
             root = (profile.project_root or "").strip()
             if root and Path(root).expanduser().is_dir():
-                return str(Path(root).expanduser().resolve())
+                resolved = str(Path(root).expanduser().resolve())
+                from iris.runtime.chat_worktree import conversation_id_of, work_root_for
+
+                return work_root_for(conversation_id_of(self), resolved)
         except Exception:
             pass
         return ""
@@ -8918,8 +8920,11 @@ class MainWindow(QMainWindow):
             return f"not a directory: {folder}"
         root_s = str(root.resolve())
         profile = load_user_profile(self._db)
-        profile.project_root = root_s
-        save_user_profile(self._db, profile)
+        from iris.runtime.chat_worktree import is_chat_worktree
+
+        if not is_chat_worktree(root_s):
+            profile.project_root = root_s
+            save_user_profile(self._db, profile)
         record_opened_folder(root)
         mgr = shared_iris_ide_runtime()
         if not mgr.is_installed():
@@ -9168,8 +9173,11 @@ class MainWindow(QMainWindow):
                 show_ide_not_installed_dialog(self, ide_id)
             return err or "IDE not found"
 
-        profile.project_root = root_s
-        save_user_profile(self._db, profile)
+        from iris.runtime.chat_worktree import is_chat_worktree
+
+        if not is_chat_worktree(root_s):
+            profile.project_root = root_s
+            save_user_profile(self._db, profile)
 
         session = self._get_bound_ide_session(refresh=True)
         # 같은 workspace bound면 즉시 타일

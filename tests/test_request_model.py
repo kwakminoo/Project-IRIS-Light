@@ -97,12 +97,14 @@ class _FakeClient:
     def __init__(self, *_args, **_kwargs) -> None:
         self.set_calls = 0
         self.seen: list[tuple[str, str]] = []
+        self.kwargs: list[dict] = []
 
     def set_inference_model(self, *_args, **_kwargs) -> None:
         self.set_calls += 1
 
     def stream_chat(self, model, messages, **kwargs):
         self.seen.append((model, str(kwargs.get("provider") or "")))
+        self.kwargs.append(dict(kwargs))
         yield {"content": "ok", "tool_progress": None, "done": True}
 
 
@@ -127,3 +129,25 @@ class ChatWorkerModelTests(TestCase):
                 worker.run()
         self.assertEqual(client.set_calls, 0)
         self.assertEqual(client.seen, [("gemma-a", "custom"), ("gemma-b", "openrouter")])
+
+
+class SideCallHermesTests(TestCase):
+    def test_title_path_does_not_write_gateway_config(self) -> None:
+        from iris.ui.workers.backend_call import BackendRoute, _hermes
+
+        client = _FakeClient()
+        target = HermesInferenceTarget(
+            model="vendor/internal-v3", provider="custom", display="friendly"
+        )
+        route = BackendRoute(
+            backend="hermes",
+            model="api:ab12:friendly",
+            api_key="gateway-auth",
+            target=target,
+        )
+        with patch("iris.infrastructure.hermes_client.HermesClient", return_value=client):
+            text = _hermes(route, [{"role": "user", "content": "제목"}], lambda: False)
+        self.assertEqual(text, "ok")
+        self.assertEqual(client.set_calls, 0)
+        self.assertEqual(client.seen, [("vendor/internal-v3", "custom")])
+        self.assertFalse(any("api_key" in item for item in client.kwargs))

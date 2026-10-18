@@ -74,9 +74,13 @@ def register_ide_actions(window: IdeHost, reg: ActionRegistry) -> None:
             root = Path(path).expanduser()
             if not root.is_dir():
                 return err_result("ide.enter_companion", f"project_root not a directory: {path}")
-            profile = load_user_profile(window._db)
-            profile.project_root = str(root.resolve())
-            save_user_profile(window._db, profile)
+            from iris.runtime.chat_worktree import conversation_id_of, is_chat_worktree, work_root_for
+
+            chosen = work_root_for(conversation_id_of(window, _a), str(root))
+            if not is_chat_worktree(chosen):
+                profile = load_user_profile(window._db)
+                profile.project_root = str(Path(chosen).resolve())
+                save_user_profile(window._db, profile)
         before = window._ui_mode
         window._enter_ide_companion(source="chat")
         ok = window._ui_mode == "ide_companion"
@@ -189,6 +193,9 @@ def register_ide_actions(window: IdeHost, reg: ActionRegistry) -> None:
         path = str(args.get("path") or args.get("folder") or args.get("project_root") or "").strip()
         if not path:
             return err_result("ide.open_folder", "path required")
+        from iris.runtime.chat_worktree import conversation_id_of, work_root_for
+
+        path = work_root_for(conversation_id_of(window, args), path)
         root = Path(path).expanduser()
         if not root.is_dir():
             return err_result("ide.open_folder", f"not a directory: {path}")

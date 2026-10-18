@@ -135,8 +135,10 @@ class HermesSummaryTests(TestCase):
             def set_inference_model(self, model, *, target=None):
                 seen["inference"] = model
 
-            def stream_chat(self, model, messages):
+            def stream_chat(self, model, messages, **kwargs):
                 seen["model"] = model
+                seen["provider"] = kwargs.get("provider", "")
+                seen["stream_keys"] = set(kwargs)
                 yield from _chunks("허메스 요약")
 
         route = SummaryRoute(
@@ -144,7 +146,9 @@ class HermesSummaryTests(TestCase):
             model="api:ab12:friendly",
             base_url="http://127.0.0.1:8642/v1",
             api_key="key",
-            target=SimpleNamespace(model="vendor/internal-v3", label="friendly"),
+            target=SimpleNamespace(
+                model="vendor/internal-v3", provider="custom", label="friendly"
+            ),
         )
         worker = HandoffSummaryWorker(route, MESSAGES, archive_id="a2")
         out = _Collector(worker)
@@ -152,8 +156,10 @@ class HermesSummaryTests(TestCase):
             worker.run()
 
         self.assertEqual(out.ok, [("허메스 요약", "a2")])
-        self.assertEqual(seen["inference"], "vendor/internal-v3")
+        self.assertNotIn("inference", seen)
         self.assertEqual(seen["model"], "vendor/internal-v3")
+        self.assertEqual(seen["provider"], "custom")
+        self.assertNotIn("api_key", seen["stream_keys"])
         self.assertEqual(seen["api_key"], "key")
 
     def test_without_a_target_it_uses_the_plain_model_name(self) -> None:
@@ -166,7 +172,9 @@ class HermesSummaryTests(TestCase):
             def set_inference_model(self, model, *, target=None):
                 seen["inference"] = model
 
-            def stream_chat(self, model, messages):
+            def stream_chat(self, model, messages, **kwargs):
+                seen["model"] = model
+                seen["provider"] = kwargs.get("provider", "")
                 yield from _chunks("답")
 
         worker = HandoffSummaryWorker(
@@ -174,7 +182,9 @@ class HermesSummaryTests(TestCase):
         )
         with patch("iris.infrastructure.hermes_client.HermesClient", _Client):
             worker.run()
-        self.assertEqual(seen["inference"], "gemma4:cloud")
+        self.assertNotIn("inference", seen)
+        self.assertEqual(seen["model"], "gemma4:cloud")
+        self.assertEqual(seen["provider"], "")
 
 
 class ApiSummaryTests(TestCase):

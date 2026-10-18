@@ -25,6 +25,9 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
     if not root:
         profile = load_user_profile(window._db)
         root = (profile.project_root or "").strip()
+    from iris.runtime.chat_worktree import conversation_id_of, work_root_for
+
+    root = work_root_for(conversation_id_of(window, args), root)
     rel = str(args.get("rel_path") or args.get("path") or "").strip()
     if Path(rel).suffix.lower() == ".pdf":
         return err_result(
@@ -245,6 +248,9 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
     if not root:
         profile = load_user_profile(window._db)
         root = (profile.project_root or "").strip()
+    from iris.runtime.chat_worktree import conversation_id_of, work_root_for
+
+    root = work_root_for(conversation_id_of(window, args), root)
     if not root:
         return err_result("project.run", "project_root required")
     root_p = Path(root).expanduser()
@@ -524,6 +530,9 @@ def project_rename_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, 
     if not root:
         profile = load_user_profile(window._db)
         root = (profile.project_root or "").strip()
+    from iris.runtime.chat_worktree import conversation_id_of, work_root_for
+
+    root = work_root_for(conversation_id_of(window, args), root)
     src = str(args.get("path") or args.get("from") or args.get("src") or "").strip()
     dest = str(args.get("new_path") or args.get("to") or args.get("dest") or "").strip()
     if not root or not src or not dest:
@@ -724,6 +733,9 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
             root = (session.workspace_root if session is not None else "") or (
                 load_user_profile(window._db).project_root or ""
             )
+        from iris.runtime.chat_worktree import conversation_id_of, work_root_for
+
+        root = work_root_for(conversation_id_of(window, args), root)
         if not root:
             return err_result("project.list_files", "project_root required (no bound IDE workspace)")
         try:
@@ -849,3 +861,6 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
         summary="Run only in the bound IDE integrated terminal via Iris: Run task",
         risk="medium",
     )
+    from iris.runtime.chat_worktree import register_worktree_status
+
+    register_worktree_status(reg, window)

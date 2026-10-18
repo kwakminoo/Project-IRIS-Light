@@ -13,6 +13,11 @@ FOLDER = "아이리스 IDE"
 _SECTIONS = ("기획", "진행", "예정", "문제")
 
 
+def _is_worktree_copy(root: str) -> bool:
+    """작업 폴더 사본은 위키 노트로 만들지 않는다."""
+    return any(part.endswith(".iris-worktrees") for part in Path(root).parts)
+
+
 def note_rel(root: str) -> str:
     slug = project_slug(root) or "project"
     return f"{FOLDER}/{slug}.md"
@@ -20,12 +25,16 @@ def note_rel(root: str) -> str:
 
 def note_opened(wiki: IrisWiki, root: str) -> str:
     """노트가 없으면 만들고, 진행에 연 사실을 한 줄 남긴다."""
+    if _is_worktree_copy(root):
+        return ""
     path = _ensure(wiki, root)
     _append_section(path, "진행", f"{date.today().isoformat()} 프로젝트를 열었습니다.")
     return note_rel(root)
 
 
 def note_file_written(window: Any, root: str, rel: str) -> None:
+    if _is_worktree_copy(root):
+        return
     if getattr(window, "_ui_mode", "") != "ide_companion":
         return
     wiki = getattr(window, "_iris_wiki", None)
