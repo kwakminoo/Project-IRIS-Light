@@ -373,6 +373,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     from iris.ui.control_actions.agent_turn import register_agent_turn_actions
     from iris.ui.control_actions.chat import register_chat_actions
     from iris.ui.control_actions.email import register_email_actions
+    from iris.ui.control_actions.browser import register_browser_actions
     from iris.ui.control_actions.emulator import register_emulator_actions
     from iris.ui.control_actions.ide import register_ide_actions
     from iris.ui.control_actions.learning import register_learning_actions
@@ -391,6 +392,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     register_profile_actions(window, reg)
     register_workspace_actions(window, reg)
     register_emulator_actions(window, reg)
+    register_browser_actions(window, reg)
     register_learning_actions(window, reg)
     register_routine_actions(window, reg)
     register_settings_actions(window, reg)
@@ -462,6 +464,29 @@ def _emulator_state_fields() -> dict[str, Any]:
             "emulator_adb_ready": False,
             "emulator_boot_completed": False,
             "emulator_keyboard_hint": None,
+        }
+
+
+def _browser_state_fields() -> dict[str, Any]:
+    try:
+        from iris.browser.session import get_browser_session
+        from iris.browser.types import BrowserPhase
+
+        snap = get_browser_session().snapshot()
+        return {
+            "browser_open": snap.phase != BrowserPhase.CLOSED,
+            "browser_url": snap.url,
+            "browser_title": snap.title,
+            "browser_phase": snap.phase.value,
+            "mini_player": bool(snap.mini_player),
+        }
+    except Exception:
+        return {
+            "browser_open": False,
+            "browser_url": "",
+            "browser_title": "",
+            "browser_phase": "closed",
+            "mini_player": False,
         }
 
 

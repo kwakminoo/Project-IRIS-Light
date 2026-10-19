@@ -23,7 +23,7 @@ _CLIENT_GONE = (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, T
 
 # ponytail: adb/kill sleep·IMAP을 Qt 메인에 올리면 Windows "응답 없음". HTTP 워커에서 실행.
 # 천장: 핸들러가 UI 위젯을 직접 건드리면 안 됨 — control_bindings._call_on_ui 가 마샬함.
-_OFF_UI_PREFIXES = ("emulator.",)
+_OFF_UI_PREFIXES = ("emulator.", "browser.")
 _OFF_UI_ACTIONS = frozenset(
     {
         "email.list_messages",

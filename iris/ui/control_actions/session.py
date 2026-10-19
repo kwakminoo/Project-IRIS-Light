@@ -10,6 +10,7 @@ from iris.ui.control_actions.hosts import SessionHost
 
 def register_session_actions(window: SessionHost, reg: ActionRegistry, surface: ControlSurface) -> None:
     from iris.ui.control_bindings import (
+        _browser_state_fields,
         _emulator_running,
         _emulator_state_fields,
         _iris_ide_context,
@@ -87,6 +88,7 @@ def register_session_actions(window: SessionHost, reg: ActionRegistry, surface: 
                 "mic": _mic_state_fields(window),
                 "emulator_running": _emulator_running(),
                 **_emulator_state_fields(),
+                **_browser_state_fields(),
                 **_iris_ide_context(window),
             },
         )

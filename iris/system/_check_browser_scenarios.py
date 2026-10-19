@@ -1,0 +1,155 @@
+"""Browser automation scenarios — fixture mode (default) or IRIS_BROWSER_LIVE=1.
+
+Fixture mode uses FakePageDriver (no network). Live mode is optional.
+"""
+
+from __future__ import annotations
+
+import ast
+import os
+import sys
+from pathlib import Path
+
+from iris.browser._driver import youtube_like_fixture_driver
+from iris.browser.registry import control_action_names
+from iris.browser.session import BrowserSession
+from iris.browser.types import ByText, Click, Navigate, Scroll, Search
+from iris.system.control_surface import runs_off_ui_thread
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _check_no_playwright_in_control_actions() -> None:
+    path = ROOT / "iris" / "ui" / "control_actions" / "browser.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert "playwright" not in alias.name.lower(), alias.name
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert "playwright" not in node.module.lower(), node.module
+
+
+def _check_off_ui_and_catalog() -> None:
+    names = control_action_names()
+    assert "browser.search" in names
+    assert "browser.open" in names
+    assert "browser.mini_player" in names
+    for name in names:
+        assert runs_off_ui_thread(name), name
+    assert runs_off_ui_thread("browser.click")
+    assert runs_off_ui_thread("browser.mini_player")
+
+
+def _run_fixture_scenarios() -> None:
+    driver = youtube_like_fixture_driver()
+    session = BrowserSession(driver=driver)
+
+    r = session.execute(Search(query="IU night letter"))
+    assert r.ok, r.detail
+    r = session.execute(Click(target=ByText(text="IU")))
+    assert r.ok, r.detail
+    assert "fixture-iu" in r.snapshot.url
+    assert "IU" in r.snapshot.title or any("IU" in lm.name for lm in r.snapshot.landmarks)
+    print("scenario A search→click ok")
+
+    r = session.execute(Navigate(url="https://react.dev"))
+    assert r.ok, r.detail
+    assert "react" in r.snapshot.url.lower()
+    assert r.snapshot.title == "React"
+    print("scenario B navigate react.dev fixture ok")
+
+    session.execute(Navigate(url="https://react.dev/learn"))
+    before = session.snapshot().scroll_y
+    r = session.execute(Scroll(delta_y=800))
+    assert r.ok, r.detail
+    assert r.snapshot.scroll_y > before, (before, r.snapshot.scroll_y)
+    print("scenario C scroll increases scroll_y ok")
+
+
+def _run_webengine_smoke() -> None:
+    """Real QWebEngine: local HTML navigate + scroll (no third-party net)."""
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    from PyQt6.QtWidgets import QApplication
+
+    from iris.browser.session import BrowserSession
+    from iris.browser.types import Navigate, Scroll
+    from iris.ui.browser.panel import BrowserPanel
+    from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
+
+    ensure_qt_webengine_ready()
+    app = QApplication.instance() or QApplication(sys.argv)
+    html = (
+        "<!doctype html><html><head><title>IRIS Browser Smoke</title></head>"
+        "<body style='height:4000px'><h1>smoke</h1></body></html>"
+    )
+    path = Path(tempfile.gettempdir()) / "iris_browser_smoke.html"
+    path.write_text(html, encoding="utf-8")
+    url = path.resolve().as_uri()
+
+    session = BrowserSession()
+    panel = BrowserPanel(session)
+    panel.show()
+    view = panel.ensure_view()
+    from iris.browser._driver import WebEnginePageDriver
+
+    session.set_driver(WebEnginePageDriver(view))
+    r = session.execute(Navigate(url=url))
+    assert r.ok, r.detail
+    assert "iris_browser_smoke" in r.snapshot.url or r.snapshot.title == "IRIS Browser Smoke"
+    before = r.snapshot.scroll_y
+    r = session.execute(Scroll(delta_y=600))
+    assert r.ok, r.detail
+    assert r.snapshot.scroll_y > before, (before, r.snapshot.scroll_y)
+    panel.close()
+    print("webengine smoke navigate+scroll ok")
+
+
+def _run_live_optional() -> None:
+    if os.environ.get("IRIS_BROWSER_LIVE", "").strip() not in ("1", "true", "yes"):
+        print("live net skipped (set IRIS_BROWSER_LIVE=1 for react.dev)")
+        return
+    import sys
+
+    from PyQt6.QtWidgets import QApplication
+
+    from iris.browser.session import BrowserSession
+    from iris.browser.types import Navigate, Scroll
+    from iris.ui.browser.panel import BrowserPanel
+    from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
+
+    ensure_qt_webengine_ready()
+    app = QApplication.instance() or QApplication(sys.argv)
+    session = BrowserSession()
+    panel = BrowserPanel(session)
+    panel.show()
+    view = panel.ensure_view()
+    from iris.browser._driver import WebEnginePageDriver
+
+    session.set_driver(WebEnginePageDriver(view))
+    r = session.execute(Navigate(url="https://react.dev"))
+    assert r.ok, r.detail
+    assert "react.dev" in r.snapshot.url.lower(), r.snapshot.url
+    before = r.snapshot.scroll_y
+    r = session.execute(Scroll(delta_y=800))
+    assert r.ok and r.snapshot.scroll_y >= before
+    panel.close()
+    print("live react.dev navigate+scroll ok")
+
+
+def main() -> int:
+    _check_no_playwright_in_control_actions()
+    _check_off_ui_and_catalog()
+    _run_fixture_scenarios()
+    _run_webengine_smoke()
+    _run_live_optional()
+    print("browser scenarios ok")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
