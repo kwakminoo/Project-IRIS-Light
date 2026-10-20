@@ -7,10 +7,14 @@ import email
 import imaplib
 import re
 import smtplib
+import socket
+import threading
+import time
 from dataclasses import dataclass
 from email.header import decode_header
 from email.mime.text import MIMEText
 from email.utils import parsedate_to_datetime
+from typing import Callable
 
 
 @dataclass(frozen=True)
@@ -227,19 +231,37 @@ def _select(mail: imaplib.IMAP4_SSL, mailbox: str) -> None:
         raise ValueError(f"메일함을 열 수 없습니다: {mailbox}")
 
 
-def _fetch_summaries(
+# 메일 목록 한 페이지 크기 (UI 무한 스크롤과 동일).
+MAIL_PAGE_SIZE = 50
+# RFC상 IDLE은 29분 전에 갱신. Gmail도 ~30분에서 끊김.
+IDLE_REFRESH_SEC = 25 * 60
+# IDLE 중 readline 타임아웃 — stop_event를 자주 확인.
+IDLE_POLL_SEC = 30.0
+
+_EXISTS_RE = re.compile(rb"^\* (\d+) EXISTS\s*$", re.IGNORECASE)
+
+
+def _page_seqs(seqs: list[bytes], *, limit: int, offset: int) -> list[bytes]:
+    """최신순으로 정렬한 뒤 offset부터 limit개만 반환."""
+    if limit <= 0:
+        return []
+    start = max(0, offset)
+    newest_first = list(reversed(seqs))
+    return newest_first[start : start + limit]
+
+
+def parse_exists_line(line: bytes) -> int | None:
+    """`* N EXISTS` 언태그 응답에서 개수 추출."""
+    m = _EXISTS_RE.match(line.strip())
+    return int(m.group(1)) if m else None
+
+
+def _summaries_from_seqs(
     mail: imaplib.IMAP4_SSL,
-    limit: int,
-    criteria: tuple[str, ...],
+    seqs: list[bytes],
     *,
     use_recipient: bool = False,
 ) -> list[MailSummary]:
-    _status, data = mail.search(None, *criteria)
-    if not data or not data[0]:
-        return []
-    seqs = data[0].split()
-    seqs = seqs[-limit:]
-    seqs.reverse()
     out: list[MailSummary] = []
     for seq in seqs:
         _status, msg_data = mail.fetch(seq, "(RFC822)")
@@ -271,12 +293,196 @@ def _fetch_summaries(
     return out
 
 
+def _fetch_summaries(
+    mail: imaplib.IMAP4_SSL,
+    limit: int,
+    criteria: tuple[str, ...],
+    *,
+    offset: int = 0,
+    use_recipient: bool = False,
+) -> list[MailSummary]:
+    _status, data = mail.search(None, *criteria)
+    if not data or not data[0]:
+        return []
+    seqs = _page_seqs(data[0].split(), limit=limit, offset=offset)
+    return _summaries_from_seqs(mail, seqs, use_recipient=use_recipient)
+
+
+def select_inbox_exists(mail: imaplib.IMAP4_SSL) -> int:
+    typ, data = mail.select("INBOX")
+    if typ != "OK" or not data or data[0] is None:
+        raise ValueError("INBOX를 열 수 없습니다.")
+    return int(data[0])
+
+
+def fetch_summaries_seq_range(
+    mail: imaplib.IMAP4_SSL,
+    after_seq: int,
+    new_exists: int,
+    *,
+    use_recipient: bool = False,
+) -> list[MailSummary]:
+    """after_seq 다음부터 new_exists까지 fetch. 반환은 최신순(prepend용)."""
+    if new_exists <= after_seq:
+        return []
+    seqs = [str(i).encode("ascii") for i in range(after_seq + 1, new_exists + 1)]
+    items = _summaries_from_seqs(mail, seqs, use_recipient=use_recipient)
+    items.reverse()
+    return items
+
+
+def idle_wait_for_exists(
+    mail: imaplib.IMAP4_SSL,
+    known_exists: int,
+    stop_event: threading.Event,
+    *,
+    refresh_sec: float = IDLE_REFRESH_SEC,
+    poll_sec: float = IDLE_POLL_SEC,
+    on_sock: Callable[[socket.socket | None], None] | None = None,
+) -> tuple[str, int]:
+    """
+    IMAP IDLE로 EXISTS 증가·갱신·중단을 기다린다.
+
+    Returns:
+        ("exists", new_count) — 새 메일
+        ("refresh", known) — 장시간 IDLE 갱신
+        ("stop", known) — stop_event 또는 연결 종료
+    """
+    tag = mail._new_tag()
+    mail.send(tag + b" IDLE\r\n")
+    exists_now = known_exists
+    # continuation (+)
+    while True:
+        if stop_event.is_set():
+            _idle_done(mail, tag)
+            return "stop", exists_now
+        line = mail.readline()
+        if not line:
+            return "stop", exists_now
+        n = parse_exists_line(line)
+        if n is not None and n > exists_now:
+            exists_now = n
+        if line.startswith(b"+"):
+            break
+
+    sock = getattr(mail, "sock", None)
+    if on_sock is not None:
+        on_sock(sock if isinstance(sock, socket.socket) else None)
+
+    started = time.monotonic()
+    prev_timeout = None
+    try:
+        if isinstance(sock, socket.socket):
+            prev_timeout = sock.gettimeout()
+            sock.settimeout(poll_sec)
+    except OSError:
+        pass
+
+    reason = "refresh"
+    try:
+        if exists_now > known_exists:
+            reason = "exists"
+        else:
+            while True:
+                if stop_event.is_set():
+                    reason = "stop"
+                    break
+                if time.monotonic() - started >= refresh_sec:
+                    reason = "refresh"
+                    break
+                try:
+                    line = mail.readline()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return "stop", exists_now
+                if not line:
+                    return "stop", exists_now
+                n = parse_exists_line(line)
+                if n is not None and n > exists_now:
+                    exists_now = n
+                    reason = "exists"
+                    break
+        exists_now = _idle_done(mail, tag, exists_now)
+        return reason, exists_now
+    finally:
+        try:
+            if isinstance(sock, socket.socket) and prev_timeout is not None:
+                sock.settimeout(prev_timeout)
+        except OSError:
+            pass
+        if on_sock is not None:
+            on_sock(None)
+
+
+def _idle_done(
+    mail: imaplib.IMAP4_SSL,
+    tag: bytes,
+    exists_now: int = 0,
+) -> int:
+    """DONE 전송 후 IDLE 태그 완료까지 읽고, 나온 EXISTS를 반영한다."""
+    try:
+        mail.send(b"DONE\r\n")
+    except OSError:
+        return exists_now
+    while True:
+        try:
+            line = mail.readline()
+        except (OSError, socket.timeout):
+            return exists_now
+        if not line:
+            return exists_now
+        n = parse_exists_line(line)
+        if n is not None and n > exists_now:
+            exists_now = n
+        if line.startswith(tag + b" ") or line.startswith(tag + b"\r"):
+            return exists_now
+
+
+def run_inbox_idle_session(
+    address: str,
+    password: str,
+    stop_event: threading.Event,
+    *,
+    on_new_mails: Callable[[list[MailSummary]], None],
+    on_sock: Callable[[socket.socket | None], None] | None = None,
+    config: MailServerConfig | None = None,
+) -> None:
+    """INBOX에 IDLE로 붙어 새 메일이 오면 on_new_mails(최신순) 호출. stop까지 유지."""
+    cfg = config or detect_mail_server(address)
+    mail = _connect_imap(cfg, address, password)
+    try:
+        known = select_inbox_exists(mail)
+        while not stop_event.is_set():
+            reason, exists = idle_wait_for_exists(
+                mail, known, stop_event, on_sock=on_sock
+            )
+            if reason == "stop":
+                return
+            if reason == "exists" and exists > known:
+                items = fetch_summaries_seq_range(mail, known, exists)
+                known = exists
+                if items:
+                    on_new_mails(items)
+                continue
+            # refresh: 재 SELECT 후 IDLE 재진입
+            known = select_inbox_exists(mail)
+    finally:
+        if on_sock is not None:
+            on_sock(None)
+        try:
+            mail.logout()
+        except Exception:
+            pass
+
+
 def fetch_folder(
     address: str,
     password: str,
     folder_key: str = "inbox",
     *,
-    limit: int = 40,
+    limit: int = MAIL_PAGE_SIZE,
+    offset: int = 0,
     config: MailServerConfig | None = None,
 ) -> list[MailSummary]:
     cfg = config or detect_mail_server(address)
@@ -288,6 +494,7 @@ def fetch_folder(
             mail,
             limit,
             ("ALL",),
+            offset=offset,
             use_recipient=folder_key in ("sent", "drafts"),
         )
     finally:
@@ -301,10 +508,13 @@ def fetch_inbox(
     address: str,
     password: str,
     *,
-    limit: int = 40,
+    limit: int = MAIL_PAGE_SIZE,
+    offset: int = 0,
     config: MailServerConfig | None = None,
 ) -> list[MailSummary]:
-    return fetch_folder(address, password, "inbox", limit=limit, config=config)
+    return fetch_folder(
+        address, password, "inbox", limit=limit, offset=offset, config=config
+    )
 
 
 def fetch_gmail_category(
@@ -312,7 +522,8 @@ def fetch_gmail_category(
     password: str,
     category: str,
     *,
-    limit: int = 40,
+    limit: int = MAIL_PAGE_SIZE,
+    offset: int = 0,
     config: MailServerConfig | None = None,
 ) -> list[MailSummary]:
     """Gmail 전용 — 받은편지함 내 카테고리(기본/프로모션/소셜/업데이트) 조회."""
@@ -321,7 +532,10 @@ def fetch_gmail_category(
     try:
         _select(mail, "INBOX")
         return _fetch_summaries(
-            mail, limit, ("X-GM-RAW", f'"category:{category}"')
+            mail,
+            limit,
+            ("X-GM-RAW", f'"category:{category}"'),
+            offset=offset,
         )
     finally:
         try:
@@ -561,4 +775,6 @@ if __name__ == "__main__":
     assert _find_special_mailbox(fake, "\\Trash") == "[Gmail]/Trash"
     assert _find_special_mailbox(fake, "\\Junk") is None
     assert is_gmail("a@gmail.com") and not is_gmail("b@naver.com")
+    assert parse_exists_line(b"* 42 EXISTS") == 42
+    assert parse_exists_line(b"* OK Still here") is None
     print("email_client ok")

@@ -101,7 +101,7 @@ def register_email_actions(window: EmailHost, reg: ActionRegistry) -> None:
 
         folder = str(args.get("folder") or folder_default or "inbox").strip() or "inbox"
         category = str(args.get("category") or "").strip()
-        limit = max(1, min(int(args.get("limit") or 40), 80))
+        limit = max(1, min(int(args.get("limit") or 50), 100))
         since = str(args.get("since") or "").strip()
         if str(args.get("today") or "").strip().lower() in {"1", "true", "yes"}:
             since = date.today().isoformat()

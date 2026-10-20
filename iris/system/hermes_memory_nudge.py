@@ -1,23 +1,14 @@
 """Ensure Hermes MEMORY mentions Iris Control tools (optional nudge)."""
 
-
-
 from __future__ import annotations
-
-
 
 import re
 
-
-
 from iris.system.hermes_iris_control_sync import hermes_home
 
+_MARKER = "<!-- iris-control-nudge-v24 -->"
 
-
-_MARKER = "<!-- iris-control-nudge-v21 -->"
-
-_BLOCK = """<!-- iris-control-nudge-v21 -->
-
+_BLOCK = """<!-- iris-control-nudge-v24 -->
 ## Iris Light UI control
 
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
@@ -69,108 +60,86 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 20. Open a file only with `ide.open_file` after `iris_get_state` and `project.list_files`. Relative `path` is the bound workspace, not the shell cwd. The folder action is `ide.open_folder` (there is no project.open_folder). If the file is missing, say so. Do not create another file or say it opened.
 
+21. Educational / visual grid answers (morphology, convolution, binary image): use step headers (`1단계. …`), `---` separators, `$...$` latex for formulas, and fenced ```matrix for every 0/1 grid (optional first line `# caption`). Never leave 0/1 grids in a plain ``` fence or only as a Markdown table without ```matrix.
+22. Heatmap / sliding-window / analysis plots in chat: `mcp__iris_control__iris_invoke` → action=`chat.exec_python` args=`{code}` (numpy/matplotlib only). Paste returned `chat_markdown` image links into the final Iris reply. Do not use project.run or DALL-E for 0/1 grids. If the tool fails, answer in text only — do not falsely claim a figure was drawn.
+
+### Grid / plot output contract (WRONG vs CORRECT)
+
+WRONG (plain fence — Iris cannot color cells):
+```
+0 0 1
+0 1 0
+1 0 0
+```
+
+CORRECT (fenced matrix language):
+```matrix
+# 결과
+0 0 1
+0 1 0
+1 0 0
+```
+
+WRONG: describe a heatmap or convolution window in words only when a plot would help, without calling chat.exec_python.
+
+CORRECT: call chat.exec_python, then include the returned `chat_markdown` (`![plot](...png)`) in the assistant message.
+
+WRONG: invent pooling / wrong layers from noisy OCR `grid2`…`grid7` lists.
+
+CORRECT: trust STRUCTURED BINARY GRID only for `image` / `kernel` (or say the attachment is unclear) and show steps with ```matrix.
 """
 
 
-
-
-
 def _strip_old_nudge(text: str) -> str:
-
     # ponytail: HTML 주석 마커부터 다음 다른 HTML 주석 또는 EOF까지 제거
-
     return re.sub(
-
         r"<!--\s*iris-control-nudge(?:-v\d+)?\s*-->[\s\S]*?(?=\n<!--|\Z)",
-
         "",
-
         text,
-
     ).rstrip() + ("\n" if text.strip() else "")
 
 
-
-
-
 def ensure_memory_nudge() -> str:
-
     mem_dir = hermes_home() / "memories"
-
     mem_dir.mkdir(parents=True, exist_ok=True)
-
     path = mem_dir / "MEMORY.md"
-
     existing = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
-
     if (
-
         _MARKER in existing
-
         and "mcp__iris_control__iris_invoke" in existing
-
         and "voice.mic_off" in existing
-
         and "workspace.open_assistant" in existing
-
         and "stream chunks" in existing
-
         and "integrated terminal" in existing
-
         and "Hermes built-in" in existing
-
         and "iris-vibe-code" in existing
-
         and "iris-calendar" in existing
-
         and "wiki.write_user_note" in existing
-
         and "wiki.import_content" in existing
-
         and "wiki.search" in existing
-
         and "wiki.move_notes" in existing
-
         and "note.export_pdf" in existing
-
         and "extension.install_github" in existing
-
         and "project.write_image_code" in existing
-
         and "[자료 본문]" in existing
-
         and "no keyword shortcut" in existing
-
         and "email.list_messages" in existing
-
         and "iris-email" in existing
-
         and "tools are missing" in existing
-
         and "there is no project.open_folder" in existing
-
         and "ide.diagnostics" in existing
-
         and "project.rename_file" in existing
-
+        and "```matrix" in existing
+        and "chat.exec_python" in existing
+        and "WRONG" in existing
+        and "CORRECT" in existing
     ):
-
         return "memory nudge already present"
-
     cleaned = _strip_old_nudge(existing) if "iris-control-nudge" in existing else existing
-
     text = cleaned.rstrip() + ("\n\n" if cleaned.strip() else "") + _BLOCK.strip() + "\n"
-
     path.write_text(text, encoding="utf-8")
-
-    return "memory nudge updated (v21)"
-
-
-
+    return "memory nudge updated (v24)"
 
 
 if __name__ == "__main__":
-
     print(ensure_memory_nudge())
-
-

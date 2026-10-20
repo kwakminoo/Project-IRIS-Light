@@ -133,7 +133,12 @@ from iris.ui.control_bindings import (
     start_control_surface,
     stop_control_surface,
 )
-from iris.ui.workers.email_workers import EmailInboxWorker, EmailMessageWorker, EmailSendWorker
+from iris.ui.workers.email_workers import (
+    EmailIdleWorker,
+    EmailInboxWorker,
+    EmailMessageWorker,
+    EmailSendWorker,
+)
 from iris.ui.workers.extension_install_worker import ExtensionInstallWorker
 from iris.ui.workers.wiki_import_worker import WikiImportWorker
 from iris.ui.workers.hermes_workers import (
@@ -367,6 +372,7 @@ class MainWindow(QMainWindow):
         self._hermes_update_recheck = False
         self._hermes_update_check_cid = 0
         self._email_inbox_worker: EmailInboxWorker | None = None
+        self._email_idle_worker: EmailIdleWorker | None = None
         self._email_message_worker: EmailMessageWorker | None = None
         self._email_send_worker: EmailSendWorker | None = None
         self._email_chat_worker: HermesChatWorker | None = None
@@ -670,6 +676,7 @@ class MainWindow(QMainWindow):
         self._email_page.compose_requested.connect(self._send_email)
         self._email_page.mail_selected.connect(self._load_email_message)
         self._email_page.category_selected.connect(self._on_email_category)
+        self._email_page.load_more_requested.connect(self._load_more_email_inbox)
         self._left_sidebar.email_folder.account_changed.connect(self._on_email_account_changed)
         self._left_sidebar.email_folder.compose_requested.connect(self._open_email_compose)
         self._left_sidebar.email_folder.folder_selected.connect(self._on_email_folder_selected)
@@ -739,6 +746,7 @@ class MainWindow(QMainWindow):
         self._chat.set_speech_threshold_rms(self._voice_prefs.stt_speech_rms)
         self._chat.send_clicked.connect(self._on_user_text)
         self._chat.stop_clicked.connect(self._on_chat_stop)
+        self._chat.typing_finished.connect(self._sync_chat_stop_for_presentation)
         self._chat.model_changed.connect(self._on_model_changed)
         self._chat.files_attached.connect(self._on_composer_files)
         self._chat.skill_inserted.connect(self._on_composer_skill)
@@ -1822,6 +1830,7 @@ class MainWindow(QMainWindow):
         self._email_page.set_current_account(self._current_email_account())
         self._email_page.set_mails(mails)
         self._email_preloaded = True
+        self._ensure_email_idle_worker()
 
     def _on_boot_checks_done(self) -> None:
         self._boot_checks_worker = None
@@ -3127,11 +3136,13 @@ class MainWindow(QMainWindow):
                 self._state.set_state(AppState.PROCESSING)
             return
         self._chat.set_generating(False)
+        self._sync_chat_stop_for_presentation()
         reply = slot.away_reply
         slot.away_reply = ""
         if not (self._tts_active_play or self._tts_busy() or self._tts_queue):
             self._state.set_state(AppState.IDLE)
         self._speak_returned_reply(reply)
+        self._sync_chat_stop_for_presentation()
 
     def _speak_returned_reply(self, text: str) -> None:
         body = (text or "").strip()
@@ -4243,12 +4254,14 @@ class MainWindow(QMainWindow):
         timer.timeout.connect(poll)
         timer.start()
 
-    def _try_local_wiki_save(self, turn: UserTurn) -> bool:
+    def _try_local_wiki_save(self, turn: UserTurn, *, documents_only: bool = False) -> bool:
         from iris.knowledge.wiki_import_ops import import_to_wiki, save_answer_to_wiki
         from iris.knowledge.wiki_save_intent import parse_wiki_save_request
 
         req = parse_wiki_save_request(turn.text, turn.attachments, self._history)
         if req is None:
+            return False
+        if documents_only and not (req.source or "").strip():
             return False
         display = self._format_user_turn_content(turn)
         panel = self._active_workspace_iris_panel()
@@ -4444,9 +4457,18 @@ class MainWindow(QMainWindow):
         text = (text or "").strip()
         from iris.runtime.agent_local_gate import hermes_owns_local_intents
 
-        from iris.ui.wiki_turn import try_wiki_command, wiki_requests_go_to_hermes
+        from iris.ui.wiki_turn import (
+            local_document_wiki_save_enabled,
+            try_wiki_command,
+            wiki_requests_go_to_hermes,
+        )
 
         if not wiki_requests_go_to_hermes() and try_wiki_command(self, turn):
+            return
+        # PDF·URL·파일 위키 저장은 Hermes가 요약만 쓰지 못하게 Iris가 원본까지 import 한다.
+        if local_document_wiki_save_enabled() and self._try_local_wiki_save(
+            turn, documents_only=True
+        ):
             return
         # 배운 업무(스킬) — Hermes 가 연결돼 있으면 모델이 learning.run 을 부르고,
         # 꺼져 있거나 죽어 있으면 여기서 이름으로 바로 고른다 (실제로 Hermes 가 죽어 실행 못 함)
@@ -5110,6 +5132,7 @@ class MainWindow(QMainWindow):
             self._turn_web_error = False
             self._turn_search_failure_reply = ""
             self._chat.set_generating(False)
+            self._sync_chat_stop_for_presentation()
             if open_followup:
                 self._open_voice_followup_window()
         finish_id = current_id or ""
@@ -5129,14 +5152,29 @@ class MainWindow(QMainWindow):
 
         return f"{text}\n\n{note}" if text else note
 
+    def _tts_output_busy(self) -> bool:
+        """자동/수동 TTS가 아직 나오거나 재생 중이면 True."""
+        return bool(
+            self._tts_active_play
+            or self._tts_busy()
+            or self._tts_queue
+            or (self._tts_pump is not None and not self._tts_input_finished)
+        )
+
+    def _sync_chat_stop_for_presentation(self) -> None:
+        """생성 종료 후에도 타이핑 중이면 정지 버튼을 유지한다 (TTS만으로는 유지하지 않음)."""
+        self._chat.set_presenting(self._chat.is_typing_active())
+
     def _cancel_current_turn(self, *, reason: str, preserve_partial_response: bool) -> None:
         """생성 중 turn을 안전하게 끊고 다음 turn이 진행되게 한다."""
         self._drop_followthrough()
         if not self._busy:
-            if self._tts_active_play or self._tts_busy() or self._tts_queue:
+            # 생성은 끝났지만 타이핑/TTS 제시 중 — 전체 답변 즉시 표시 + TTS 중단
+            if self._chat.is_typing_active() or self._tts_output_busy():
                 # setHtml(speaker) 전에 타이핑 확정 — 커서 무효화로 로그가 날아가는 것 방지
                 self._chat.finish_typing()
                 self._stop_tts_playback()
+                self._chat.set_presenting(False)
                 self._sync_voice_conversation_state()
             return
         self._turn_gate.suppress_result()
@@ -5528,6 +5566,7 @@ class MainWindow(QMainWindow):
             )
         self._busy = False
         self._chat.set_generating(False)
+        self._sync_chat_stop_for_presentation()
         self._chat_worker = None
         self._mark_tts_perf("llm_finished")
         self._set_tts_orb_warmup(False)
@@ -5536,6 +5575,7 @@ class MainWindow(QMainWindow):
         if self._tts_pump is not None and text and not self._tts_stream_had_content:
             self._feed_tts_stream(text)
         self._feed_tts_stream("", flush=True)
+        self._sync_chat_stop_for_presentation()
         if (
             not self._tts_active_msg_id
             and (
@@ -6021,6 +6061,7 @@ class MainWindow(QMainWindow):
         self._chat.set_mic_recording(recording)
 
     def _sync_voice_conversation_state(self) -> None:
+        self._sync_chat_stop_for_presentation()
         if self._tts_active_play or self._tts_busy() or self._tts_queue:
             self._state.set_state(AppState.RESPONDING)
             self._status_header.set_app_state(AppState.RESPONDING, label="TTS")
@@ -7056,12 +7097,10 @@ class MainWindow(QMainWindow):
 
     def _on_obsidian_icon(self) -> None:
         self._workspace_mode = "obsidian"
-        self._restore_live_activity_to_assistant()
         self._workspace_stack.setCurrentWidget(self._obsidian_page)
         self._left_sidebar.set_workspace_mode("obsidian")
         self._set_workspace_icon_active("obsidian")
-        self._viz.hide()
-        self._orb_spacer.hide()
+        self._mount_workspace_chat()
         self._left_sidebar.obsidian_detail.reload()
         self._obsidian_page.reload_graph()
         if self._obsidian_page.current_note:
@@ -7113,6 +7152,7 @@ class MainWindow(QMainWindow):
         if accounts:
             self._refresh_email_inbox()
         else:
+            self._stop_email_idle_worker()
             self._email_page.set_mails([])
             self._left_sidebar.email_folder.set_status("이메일 계정을 추가하세요.")
 
@@ -7319,6 +7359,8 @@ class MainWindow(QMainWindow):
             return self._email_page
         if mode == "calendar":
             return self._calendar_page
+        if mode == "obsidian":
+            return self._obsidian_page
         return None
 
     def _workspace_screen_context(self) -> str:
@@ -7349,6 +7391,16 @@ class MainWindow(QMainWindow):
                 f"The user is on the email screen. Account: {address}.{open_bit} "
                 "Use email.list_messages, email.read_message, email.open_compose, email.send. "
                 "Do not invent inbox contents."
+            )
+        if mode == "obsidian":
+            page = getattr(self, "_obsidian_page", None)
+            if page is None:
+                return ""
+            note = (page.current_note or "").strip() or "(none)"
+            return (
+                f"The user is on the wiki screen. Open note: {note}. "
+                "Help with studying and questions about the open wiki note. "
+                "Use wiki tools when saving or searching notes; do not invent wiki contents."
             )
         return ""
 
@@ -7418,7 +7470,7 @@ class MainWindow(QMainWindow):
         page._chat_list_extra = host.chat_list_width() if host.chat_list_open else 0
 
     def _mount_workspace_chat(self) -> None:
-        """메일/캘린더 오른쪽에 IDE Companion과 같은 채팅·목록을 붙인다."""
+        """메일/캘린더/위키 오른쪽에 IDE Companion과 같은 채팅·목록을 붙인다."""
         if self._companion_page.is_mounted():
             return
         page = self._workspace_chat_page()
@@ -7462,6 +7514,7 @@ class MainWindow(QMainWindow):
     def _on_email_account_changed(self, account_id: str) -> None:
         self._selected_email_account_id = account_id
         self._email_page.set_current_account(self._current_email_account())
+        self._stop_email_idle_worker()
         self._refresh_email_inbox()
 
     def _on_email_folder_selected(self, name: str) -> None:
@@ -7487,7 +7540,16 @@ class MainWindow(QMainWindow):
             return
         self._load_email_view(category=GMAIL_CATEGORIES[index])
 
-    def _load_email_view(self, *, folder: str = "inbox", category: str = "") -> None:
+    def _load_email_view(
+        self,
+        *,
+        folder: str = "inbox",
+        category: str = "",
+        offset: int = 0,
+        append: bool = False,
+    ) -> None:
+        from iris.infrastructure.email_client import MAIL_PAGE_SIZE
+
         account = self._current_email_account()
         if not account:
             return
@@ -7495,10 +7557,19 @@ class MainWindow(QMainWindow):
         # 카테고리는 받은편지함 내부이므로 메시지 조회는 inbox 기준.
         self._email_folder = "inbox" if category else folder
         self._email_page.set_current_account(account)
-        if self._email_inbox_worker is not None and self._email_inbox_worker.isRunning():
-            return
-        self._email_page.set_loading(True)
-        worker = EmailInboxWorker(account, folder=folder, category=category, parent=self)
+        if append:
+            self._email_page.set_loading_more(True)
+        else:
+            self._email_page.set_loading(True)
+        worker = EmailInboxWorker(
+            account,
+            folder=folder,
+            category=category,
+            limit=MAIL_PAGE_SIZE,
+            offset=offset,
+            append=append,
+            parent=self,
+        )
         self._email_inbox_worker = worker
         worker.finished_ok.connect(self._on_email_inbox_loaded)
         worker.failed.connect(self._on_email_inbox_failed)
@@ -7506,21 +7577,54 @@ class MainWindow(QMainWindow):
 
     def _refresh_email_inbox(self) -> None:
         folder, category = self._email_view
-        self._load_email_view(folder=folder, category=category)
+        self._load_email_view(folder=folder, category=category, offset=0, append=False)
+
+    def _load_more_email_inbox(self) -> None:
+        if not self._email_page.has_more():
+            return
+        if self._email_page.is_loading_more():
+            return
+        if self._email_inbox_worker is not None and self._email_inbox_worker.isRunning():
+            return
+        folder, category = self._email_view
+        self._load_email_view(
+            folder=folder,
+            category=category,
+            offset=len(self._email_page.current_mails()),
+            append=True,
+        )
 
     def _on_email_inbox_loaded(self, items: object) -> None:
-        from iris.infrastructure.email_client import MailSummary
+        from iris.infrastructure.email_client import MAIL_PAGE_SIZE, MailSummary
 
+        worker = self.sender()
+        if worker is not None and worker is not self._email_inbox_worker:
+            return  # 폴더 전환으로 대체된 이전 요청
+        append = bool(getattr(worker, "append", False)) if worker is not None else False
         mails: list[MailSummary] = list(items) if isinstance(items, list) else []
-        self._email_inbox_worker = None
-        self._email_page.set_loading(False)
-        self._email_page.set_mails(mails)
+        if worker is self._email_inbox_worker:
+            self._email_inbox_worker = None
+        has_more = len(mails) >= MAIL_PAGE_SIZE
+        if append:
+            self._email_page.append_mails(mails, has_more=has_more)
+        else:
+            self._email_page.set_loading(False)
+            self._email_page.set_mails(mails, has_more=has_more)
+            self._ensure_email_idle_worker()
 
     def _on_email_inbox_failed(self, err: str) -> None:
-        self._email_inbox_worker = None
-        self._email_page.set_loading(False)
-        self._left_sidebar.email_folder.set_status("불러오기 실패")
-        self._email_page.show_error(f"받은편함 오류: {err[:200]}")
+        worker = self.sender()
+        if worker is not None and worker is not self._email_inbox_worker:
+            return
+        append = bool(getattr(worker, "append", False)) if worker is not None else False
+        if worker is self._email_inbox_worker:
+            self._email_inbox_worker = None
+        if append:
+            self._email_page.set_loading_more(False)
+        else:
+            self._email_page.set_loading(False)
+            self._left_sidebar.email_folder.set_status("불러오기 실패")
+            self._email_page.show_error(f"받은편함 오류: {err[:200]}")
 
     def _load_email_message(self, uid: str) -> None:
         account = self._current_email_account()
@@ -7575,6 +7679,54 @@ class MainWindow(QMainWindow):
         self._email_send_worker = None
         self._email_page.set_loading(False)
         self._email_page.show_error(f"발송 실패: {err[:200]}")
+
+    def _stop_email_idle_worker(self) -> None:
+        worker = self._email_idle_worker
+        self._email_idle_worker = None
+        if worker is None:
+            return
+        worker.request_stop()
+        worker.wait(3_000)
+
+    def _ensure_email_idle_worker(self) -> None:
+        """선택된 계정의 INBOX에 IDLE 워커를 유지한다."""
+        account = self._current_email_account()
+        if account is None:
+            self._stop_email_idle_worker()
+            return
+        current = self._email_idle_worker
+        if (
+            current is not None
+            and current.isRunning()
+            and current.account_id == account.id
+        ):
+            return
+        self._stop_email_idle_worker()
+        worker = EmailIdleWorker(account, parent=self)
+        self._email_idle_worker = worker
+        worker.new_mails.connect(self._on_email_idle_new_mails)
+        worker.failed.connect(self._on_email_idle_failed)
+        worker.start()
+
+    def _on_email_idle_new_mails(self, items: object) -> None:
+        from iris.infrastructure.email_client import MailSummary
+
+        worker = self.sender()
+        if worker is not None and worker is not self._email_idle_worker:
+            return
+        mails: list[MailSummary] = list(items) if isinstance(items, list) else []
+        if not mails:
+            return
+        folder, category = self._email_view
+        # 받은편지함(기본/primary)을 보고 있을 때만 prepend — 전체 리로드 금지
+        if folder != "inbox" or category not in ("", "primary"):
+            return
+        self._email_page.prepend_mails(mails)
+
+    def _on_email_idle_failed(self, err: str) -> None:
+        # IDLE 재연결은 워커가 담당. 상태만 짧게 남긴다.
+        if self._workspace_mode == "email":
+            self._left_sidebar.email_folder.set_status(f"메일 실시간: 재연결 중… ({err[:80]})")
 
     def _try_local_ide_control(self, text: str) -> bool:
         """짧은 IDE 켜기/끄기 요청은 아이콘과 같은 로컬 핸들러로 처리."""
@@ -10005,6 +10157,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         from iris.ui.workers.ollama_workers import stop_ollama_login_watch
 
+        self._stop_email_idle_worker()
         stop_ollama_login_watch(self)
         try:
             from iris.knowledge.pdf_export import trace

@@ -162,23 +162,37 @@ def _is_gui_frozen_exe(path: str | Path) -> bool:
 
 
 def _python_cmd(repo: Path) -> str:
-    """Hermes MCP용 인터프리터 — IRIS.exe(frozen)는 절대 쓰지 않는다."""
+    """Hermes MCP용 인터프리터 — IRIS.exe(frozen)는 절대 쓰지 않는다.
+
+    Windows는 pythonw.exe 우선 — Hermes가 stdio MCP를 띄울 때 콘솔 서브시스템
+    python.exe 창이 깜빡이지 않게 한다(파이프 stdio는 pythonw에서도 동작).
+    """
     # Prefer Iris project venv so Hermes always spawns the same interpreter.
+    win_w = repo / ".venv" / "Scripts" / "pythonw.exe"
     win = repo / ".venv" / "Scripts" / "python.exe"
     unix = repo / ".venv" / "bin" / "python"
+    if sys.platform == "win32" and win_w.is_file():
+        return str(win_w.resolve())
     if win.is_file():
         return str(win.resolve())
     if unix.is_file():
         return str(unix.resolve())
     if getattr(sys, "frozen", False) or _is_gui_frozen_exe(sys.executable or ""):
-        for name in ("python.exe", "python", "py"):
+        for name in ("pythonw.exe", "python.exe", "python", "py"):
             found = shutil.which(name)
             if found and not _is_gui_frozen_exe(found):
                 return found
         return "python"
     exe = sys.executable or "py"
     if _is_gui_frozen_exe(exe):
+        if sys.platform == "win32":
+            return shutil.which("pythonw") or shutil.which("python") or "python"
         return shutil.which("python") or "python"
+    # 실행 중 인터프리터가 python.exe면 같은 폴더의 pythonw를 선호
+    if sys.platform == "win32":
+        sibling = Path(exe).with_name("pythonw.exe")
+        if sibling.is_file():
+            return str(sibling.resolve())
     return exe
 
 
@@ -903,6 +917,8 @@ def _self_check() -> None:
     assert "-u" in block["args"]
     assert block["env"].get("PYTHONUTF8") == "1"
     assert block["env"].get("PYTHONIOENCODING") == "utf-8"
+    if sys.platform == "win32" and (root / ".venv" / "Scripts" / "pythonw.exe").is_file():
+        assert str(block["command"]).lower().endswith("pythonw.exe"), block["command"]
     assert _mcp_equivalent(block, block)
     # ponytail: Hermes dead-check 패치는 idempotent (이미 고쳤으면 already/unknown)
     patch_msg = ensure_hermes_stdio_dead_check_patch()

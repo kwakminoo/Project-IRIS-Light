@@ -115,14 +115,20 @@ def build_cyberspace_qss() -> str:
         QTextBrowser#EmailPreviewBody,
         QComboBox#EmailAccountCombo,
         QListWidget#ObsidianNoteList,
-        QPlainTextEdit#ObsidianPreviewBody,
-        QTextBrowser#ObsidianPreviewBody {{
+        QPlainTextEdit#ObsidianPreviewBody {{
             background: transparent;
             border: none;
         }}
+        /* 원본 패널과 겹쳐 보일 때 글이 비치지 않게 불투명 패널 배경 */
         QTextBrowser#ObsidianPreviewBody {{
+            background-color: rgba(6, 14, 28, 0.94);
+            border: none;
             color: {t.text_primary};
             selection-background-color: {t.neon_purple};
+        }}
+        QLabel#WikiOriginalPreview {{
+            background-color: rgba(6, 14, 28, 0.94);
+            border: none;
         }}
         QTextBrowser#EmailPreviewBody {{
             color: {t.text_primary};

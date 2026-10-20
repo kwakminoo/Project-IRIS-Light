@@ -1,6 +1,7 @@
 ﻿"""Regression: Windows subprocess must hide console windows.
 
 CallMonitor/adb/taskkill이 콘솔을 깜빡이면 안 된다.
+채팅 전송(텍스트·이미지)도 Cascadia/콘솔 플래시 금지.
 에뮬 GUI 기동은 DETACHED(+NEW_GROUP)만 — CREATE_NO_WINDOW는
 UpdateLayeredWindowIndirect 실패(검은 화면).
 Win11 netsimd/qemu 터미널은 Cascadia/PseudoConsole 표면 숨김.
@@ -16,8 +17,14 @@ from pathlib import Path
 from unittest import TestCase, mock
 
 from iris.system import android_emulator as ae
+from iris.system.hermes_iris_control_sync import _python_cmd, project_root
 from iris.system.phone_control import read_call_state
-from iris.system.win_subprocess import no_window_kwargs
+from iris.system.win_subprocess import (
+    harden_subprocess_kwargs,
+    install_no_console_subprocess_patch,
+    no_window_kwargs,
+    suppress_platform_ver_console,
+)
 
 
 class NoWindowKwargsContractTests(TestCase):
@@ -36,6 +43,57 @@ class NoWindowKwargsContractTests(TestCase):
         else:
             self.assertEqual(kw, {})
 
+    def test_harden_injects_create_no_window(self) -> None:
+        if sys.platform != "win32":
+            self.skipTest("Windows only")
+        kw = harden_subprocess_kwargs({})
+        self.assertTrue(
+            kw["creationflags"] & int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        )
+        self.assertIn("startupinfo", kw)
+
+    def test_harden_skips_detached_gui_launch(self) -> None:
+        if sys.platform != "win32":
+            self.skipTest("Windows only")
+        detached = int(getattr(subprocess, "DETACHED_PROCESS", 0))
+        kw = harden_subprocess_kwargs({"creationflags": detached})
+        self.assertEqual(kw["creationflags"], detached)
+        self.assertNotIn("startupinfo", kw)
+
+    def test_iris_main_installs_no_console_guards(self) -> None:
+        body = Path(__file__).resolve().parents[1] / "iris" / "__main__.py"
+        text = body.read_text(encoding="utf-8")
+        self.assertIn("suppress_platform_ver_console", text)
+        self.assertIn("install_no_console_subprocess_patch", text)
+
+    def test_mcp_python_prefers_pythonw_on_windows(self) -> None:
+        if sys.platform != "win32":
+            self.skipTest("Windows only")
+        root = project_root()
+        win_w = root / ".venv" / "Scripts" / "pythonw.exe"
+        if not win_w.is_file():
+            self.skipTest("project .venv pythonw missing")
+        cmd = _python_cmd(root)
+        self.assertTrue(cmd.lower().endswith("pythonw.exe"), cmd)
+
+    def test_suppress_platform_ver_is_idempotent(self) -> None:
+        suppress_platform_ver_console()
+        suppress_platform_ver_console()
+        if sys.platform == "win32":
+            import platform
+
+            self.assertTrue(getattr(platform, "_iris_syscmd_ver_suppressed", False))
+
+    def test_install_patch_is_idempotent(self) -> None:
+        first = install_no_console_subprocess_patch()
+        second = install_no_console_subprocess_patch()
+        if sys.platform == "win32":
+            self.assertTrue(first)
+            self.assertTrue(second)
+            self.assertTrue(getattr(subprocess, "_iris_no_console_patched", False))
+        else:
+            self.assertFalse(first)
+            self.assertFalse(second)
 
 class SourceGuardTests(TestCase):
     def test_android_emulator_hides_console_helpers(self) -> None:

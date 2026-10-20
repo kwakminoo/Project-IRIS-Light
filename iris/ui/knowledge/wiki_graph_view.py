@@ -72,7 +72,8 @@ class WikiGraphView(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("WikiGraphView")
-        self.setMinimumSize(280, 240)
+        # 위키 정보 패널을 좌측까지 당길 때 구체 칸이 0까지 접혀야 한다.
+        self.setMinimumSize(0, 0)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._nodes: list[_Node] = []

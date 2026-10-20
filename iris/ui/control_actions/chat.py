@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from iris.system.control_surface import (
     ActionRegistry,
 )
@@ -213,6 +215,43 @@ def register_chat_actions(window: ChatHost, reg: ActionRegistry) -> None:
         risk="low",
     )
 
+    def chat_exec_python(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.runtime.chat_code_exec import run_chat_python
+
+        code = str(args.get("code") or args.get("source") or "")
+        try:
+            timeout_s = float(args.get("timeout_s") or args.get("timeout") or 20)
+        except (TypeError, ValueError):
+            timeout_s = 20.0
+        result = run_chat_python(code, timeout_s=timeout_s)
+        ok = bool(result.get("ok"))
+        _log(window, "chat.exec_python", ok)
+        if not ok:
+            return err_result(
+                "chat.exec_python",
+                str(result.get("error") or "exec failed"),
+                {
+                    "stdout": result.get("stdout") or "",
+                    "stderr": result.get("stderr") or "",
+                },
+            )
+        return ok_result(
+            "chat.exec_python",
+            {
+                "stdout": result.get("stdout") or "",
+                "stderr": result.get("stderr") or "",
+                "png_paths": result.get("png_paths") or [],
+                "chat_markdown": result.get("chat_markdown") or "",
+            },
+        )
+
     reg.register("activity.log", activity_log, summary="Append Live Activity line")
 
     reg.register("notify.add_alert", notify_add, summary="Add notification alert row")
+
+    reg.register(
+        "chat.exec_python",
+        chat_exec_python,
+        summary="Run whitelisted Python (numpy/matplotlib) and return plot PNGs for chat",
+        risk="medium",
+    )

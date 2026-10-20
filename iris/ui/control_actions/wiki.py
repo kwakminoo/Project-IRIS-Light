@@ -262,7 +262,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         if not content:
             return err_result("wiki.write_user_note", "content required")
         from iris.knowledge.wiki_filing import file_user_note
-        from iris.knowledge.wiki_original import compose_wiki_body, insert_original_marker, store_original
+        from iris.knowledge.wiki_original import compose_wiki_body, require_original
 
         summarize_fn, _vision = _summary_and_vision(args)
         if not content.lstrip().startswith("## 전체 요약"):
@@ -287,10 +287,25 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             kind = "url"
         elif low.endswith(".pdf"):
             kind = "pdf"
+        elif Path(source_url).suffix.lower() in {".html", ".htm"}:
+            kind = "text"
+        elif Path(source_url).suffix.lower() in {
+            ".doc",
+            ".docx",
+            ".ppt",
+            ".pptx",
+            ".xls",
+            ".xlsx",
+        }:
+            kind = "office"
+        original = ""
         if kind:
-            asset = store_original(Path(str(filed["path"])), kind=kind, source=source_url)
-            if asset:
-                insert_original_marker(Path(str(filed["path"])), asset)
+            try:
+                original = require_original(
+                    Path(str(filed["path"])), kind=kind, source=source_url
+                )
+            except ValueError as exc:
+                return err_result("wiki.write_user_note", str(exc))
         wiki_rel = str(filed["rel_path"])
         _show_saved(wiki_rel, open_note=open_note)
         _log(window, "wiki.write_user_note", True)
@@ -303,6 +318,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
                 "opened": open_note,
                 "place": filed.get("place") or "",
                 "ask_folder": bool(filed.get("ask_folder")),
+                "original": original,
             },
         )
 

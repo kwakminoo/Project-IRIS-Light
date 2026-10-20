@@ -1357,6 +1357,8 @@ class _ChatInputArea(QWidget):
 class ChatPanel(QWidget):
     send_clicked = pyqtSignal(str, list)
     stop_clicked = pyqtSignal()
+    # 타이핑 효과가 끝났을 때 — 정지 버튼(presenting) 해제용
+    typing_finished = pyqtSignal()
     model_changed = pyqtSignal(str)
     files_attached = pyqtSignal(list)
     skill_inserted = pyqtSignal(str)
@@ -1375,6 +1377,8 @@ class ChatPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAcceptDrops(True)
         self._generating = False
+        # LLM 생성 종료 후에도 타이핑 중이면 정지 버튼 유지 (TTS만으로는 유지하지 않음)
+        self._presenting = False
         self._orb_visualizer = None
         self._workspace_root = ""
         self._log = ChatLogTextEdit()
@@ -2914,6 +2918,17 @@ class ChatPanel(QWidget):
         if flush and self._typing_speech_sync:
             self.finish_typing()
 
+    def is_typing_active(self) -> bool:
+        """타이핑 효과가 아직 끝나지 않았으면 True (TTS 대기 포함)."""
+        if self._typing_wait_for_tts_completion and bool(self._typing_text):
+            return True
+        if self._typing_timer.isActive():
+            return True
+        prose = prose_char_count(self._typing_text)
+        if prose > 0 and self._typing_index < prose:
+            return True
+        return bool(self._typing_text) and self._typing_body_start is not None
+
     def finish_typing(self) -> None:
         """진행 중인 타이핑 효과를 즉시 완료한다."""
         if not self._typing_timer.isActive() and not self._typing_text:
@@ -2938,6 +2953,8 @@ class ChatPanel(QWidget):
         if had_body:
             self._append_trailing_blank_line()
         self._scroll_log_to_bottom()
+        if had_body:
+            self.typing_finished.emit()
 
     def _append_typing_buffer(self, chunk: str) -> None:
         """타이핑 버퍼만 확장 — 스트리밍 중 화면에는 아직 표시하지 않음."""
@@ -3057,6 +3074,7 @@ class ChatPanel(QWidget):
                 return
             if self._typing_render_markdown and self._typing_body_start is not None:
                 self._render_markdown_body()
+            had_body = bool(self._typing_text) or self._typing_body_start is not None
             self._typing_text = ""
             self._typing_index = 0
             self._typing_speech_sync = False
@@ -3066,6 +3084,8 @@ class ChatPanel(QWidget):
             self._typing_render_markdown = False
             self._append_trailing_blank_line()
             self._scroll_log_to_bottom()
+            if had_body:
+                self.typing_finished.emit()
             return
 
         if self._typing_speech_sync and self._typing_speech_duration_ms:
@@ -3097,7 +3117,7 @@ class ChatPanel(QWidget):
         self._scroll_log_to_bottom()
 
     def _composer_can_send(self) -> bool:
-        if self._generating:
+        if self._generating or self._presenting:
             return True
         has_text = bool(self._input.text().strip())
         has_files = bool(self._input_area.attachment_strip.paths())
@@ -3109,19 +3129,31 @@ class ChatPanel(QWidget):
         if self._input.toPlainText().strip():
             self.composing.emit()
 
-    def set_generating(self, active: bool) -> None:
-        """생성 중이면 전송 화살표 → 정지 네모. 클릭 시 stop_clicked."""
-        on = bool(active)
-        self._generating = on
+    def _refresh_stop_mode(self) -> None:
+        """생성 중 또는 타이핑 제시 중이면 정지 버튼."""
+        on = self._generating or self._presenting
         btn = self._input_area.input_bar.send_button
         btn.set_stop_mode(on)
         btn.setEnabled(self._composer_can_send())
 
+    def set_generating(self, active: bool) -> None:
+        """생성 중이면 전송 화살표 → 정지 네모. 클릭 시 stop_clicked."""
+        self._generating = bool(active)
+        self._refresh_stop_mode()
+
+    def set_presenting(self, active: bool) -> None:
+        """답변 타이핑 중에도 정지 버튼을 유지한다."""
+        self._presenting = bool(active)
+        self._refresh_stop_mode()
+
     def is_generating(self) -> bool:
         return self._generating
 
+    def is_presenting(self) -> bool:
+        return self._presenting
+
     def _on_submit_or_stop(self) -> None:
-        if self._generating:
+        if self._generating or self._presenting:
             self.stop_clicked.emit()
             return
         self._emit_send()

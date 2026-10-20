@@ -78,6 +78,19 @@ def main() -> None:
                 app.exit(1)
 
     sys.excepthook = report_exception
+
+    # pythonw 부모 + 콘솔 자식 = Cascadia/터미널 깜빡임. 무거운 import 전에 막는다.
+    try:
+        from iris.system.win_subprocess import (
+            install_no_console_subprocess_patch,
+            suppress_platform_ver_console,
+        )
+
+        suppress_platform_ver_console()
+        install_no_console_subprocess_patch()
+    except Exception:
+        pass
+
     if _maybe_elevate_on_startup():
         sys.exit(0)
 

@@ -123,6 +123,9 @@ class ThemeTokens:
     # 채팅 표(table) — border-bottom은 위와 같은 이유로 불투명 hex를 사용한다.
     chat_table_header_bg: str = "#1b2535"
     chat_table_row_border: str = "#26314a"
+    # ```matrix 격자 — GPT식 연파란(1) / 대비 패널(0), 다크 채팅용 불투명 hex.
+    chat_matrix_one_bg: str = "#4a90d9"
+    chat_matrix_zero_bg: str = "#1a2336"
 
     # 채팅 로그 텍스트 선택(드래그 선택) 색상 — 시스템 강조색 대신 테마에 맞는 은은한 톤
     chat_selection_bg: str = "#2c5a8c"

@@ -12,14 +12,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtCore import QEvent, QPoint, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
+    QGraphicsOpacityEffect,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QSplitterHandle,
@@ -31,7 +35,7 @@ from PyQt6.QtWidgets import (
 from iris.ui.shared.theme_tokens import TOKENS
 
 from iris.knowledge.iris_wiki import IrisWiki, markdown_heading, match_wiki_notes
-from iris.knowledge.wiki_original import split_note_view
+from iris.knowledge.wiki_original import first_page_png, split_note_view, viewer_local_path
 from iris.ui.chat.chat_image_view import (
     attach_image_loader,
     handle_chat_anchor_click,
@@ -39,17 +43,41 @@ from iris.ui.chat.chat_image_view import (
 )
 from iris.ui.chat.chat_renderer import render_wiki_document
 from iris.ui.knowledge.wiki_graph_view import WikiGraphView
+from iris.ui.workspaces.workspace_iris_chat import (
+    install_companion_shell,
+    mount_chat_host,
+    shift_chat_column,
+)
 
 _CONTENT_MIN = 240
-_GRAPH_MIN = 280
-
-
-def _content_cap(total: int) -> int:
-    room = max(_CONTENT_MIN, total - _GRAPH_MIN)
-    return min(500, room)
+_GRAPH_COLLAPSE = 0
+_GRAPH_FADE_START = 200
+_GRAPH_FADE_END = 28
 _SEARCH_W = 280
+# 스크롤 시퀀스: 요약 아래 원본 위젯들. PDF 뷰 높이는 뷰포트에 맞춰 내부 휠 스크롤.
+_ORIGINAL_PREVIEW_MIN = 280
+_PDF_VIEW_MIN = 420
 _SPLIT_PATH = Path.home() / ".iris-light" / "wiki-split.json"
 _RESULT_LIMIT = 8
+
+
+class _WikiPdfEngine:
+    """QWebEngineView 지연 생성용. 휠이 QScrollArea로 새지 않게 감싼다."""
+
+    @staticmethod
+    def create(parent: QWidget):
+        from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+        class _View(QWebEngineView):
+            def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+                # 부모 WikiNoteScroll이 휠을 가로채 PDF 내부 스크롤이 죽지 않게 한다.
+                super().wheelEvent(event)
+                event.accept()
+
+        view = _View(parent)
+        view.setObjectName("WikiOriginalView")
+        view.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        return view
 
 
 def _load_split_ratio() -> float | None:
@@ -58,7 +86,8 @@ def _load_split_ratio() -> float | None:
         ratio = float(data.get("content_ratio", 0))
     except (OSError, ValueError, TypeError):
         return None
-    if 0.12 <= ratio <= 0.88:
+    # 정보 패널을 좌측까지 당기면 비율이 높아진다 (구체 접힘).
+    if 0.12 <= ratio <= 0.98:
         return ratio
     return None
 
@@ -132,7 +161,7 @@ class _SearchEdit(QLineEdit):
 
 
 class ObsidianWorkspacePage(QWidget):
-    """왼쪽 Iris Wiki 그래프 + 오른쪽 노트. 그래프 위 검색은 짧게."""
+    """위키 구체·노트(좌) + 아이리스 채팅(우). 메일/캘린더와 같은 채팅 호스트."""
 
     note_focused = pyqtSignal(str)
 
@@ -142,16 +171,26 @@ class ObsidianWorkspacePage(QWidget):
         self._wiki: IrisWiki | None = None
         self._current_rel = ""
         self._split_ready = False
+        self._chat_list_extra = 0
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 8, 12, 8)
-        outer.setSpacing(8)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        center = QWidget()
+        center.setObjectName("WikiCenterPanel")
+        center_lay = QVBoxLayout(center)
+        center_lay.setContentsMargins(12, 8, 8, 8)
+        center_lay.setSpacing(8)
 
         self._search = _SearchEdit(self)
         self._search.setObjectName("WikiSearchEdit")
         self._search.setPlaceholderText("Wiki 검색...")
         self._search.setClearButtonEnabled(True)
-        self._search.setFixedWidth(_SEARCH_W)
+        # FixedWidth면 구체 칸이 280 아래로 안 접힌다 — max만 두고 접을 때 숨긴다.
+        self._search.setMinimumWidth(0)
+        self._search.setMaximumWidth(_SEARCH_W)
+        self._search.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._search.textChanged.connect(self._on_query)
         self._search.setStyleSheet(
             """
@@ -188,7 +227,7 @@ class ObsidianWorkspacePage(QWidget):
 
         splitter = _WikiSplit(Qt.Orientation.Horizontal)
         splitter.setObjectName("WikiHSplit")
-        splitter.setChildrenCollapsible(False)
+        splitter.setChildrenCollapsible(True)
         splitter.setHandleWidth(10)
         # 앱 전역 핸들은 폭 0·투명. 잡은 영역만 열고, 표시는 핸들이 가운데 막대로 그린다.
         splitter.setStyleSheet(
@@ -208,7 +247,11 @@ class ObsidianWorkspacePage(QWidget):
 
         graph_wrap = QWidget()
         graph_wrap.setObjectName("WorkspacePanel")
-        graph_wrap.setMinimumWidth(_GRAPH_MIN)
+        graph_wrap.setMinimumWidth(_GRAPH_COLLAPSE)
+        self._graph_wrap = graph_wrap
+        self._graph_opacity = QGraphicsOpacityEffect(graph_wrap)
+        self._graph_opacity.setOpacity(1.0)
+        graph_wrap.setGraphicsEffect(self._graph_opacity)
         graph_lay = QVBoxLayout(graph_wrap)
         graph_lay.setContentsMargins(0, 0, 4, 0)
         graph_lay.setSpacing(8)
@@ -221,7 +264,8 @@ class ObsidianWorkspacePage(QWidget):
         info_wrap = QWidget()
         info_wrap.setObjectName("ObsidianPreviewPanel")
         info_wrap.setMinimumWidth(_CONTENT_MIN)
-        info_wrap.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        info_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._info_wrap = info_wrap
         info_lay = QVBoxLayout(info_wrap)
         info_lay.setContentsMargins(8, 0, 0, 0)
         info_lay.setSpacing(8)
@@ -233,28 +277,77 @@ class ObsidianWorkspacePage(QWidget):
         self._body.setObjectName("ObsidianPreviewBody")
         self._body.setOpenExternalLinks(False)
         self._body.setReadOnly(True)
+        # 내부 스크롤 끔 — 바깥 WikiNoteScroll이 요약→원본 시퀀스를 담당.
+        self._body.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._body.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self._body.setMinimumHeight(0)
         attach_image_loader(self._body)
         self._body.anchorClicked.connect(self._on_preview_anchor)
+        self._body.document().contentsChanged.connect(self._fit_body_height)
         self._original = None
         self._pending_original = ""
-        self._original_slot = QWidget(info_wrap)
-        self._original_slot.hide()
-        self._original_lay = QVBoxLayout(self._original_slot)
-        self._original_lay.setContentsMargins(0, 0, 0, 0)
-        note_split = QSplitter(Qt.Orientation.Vertical, info_wrap)
-        note_split.setChildrenCollapsible(False)
-        note_split.setHandleWidth(6)
-        note_split.addWidget(self._body)
-        note_split.addWidget(self._original_slot)
-        note_split.setStretchFactor(0, 1)
-        note_split.setStretchFactor(1, 2)
-        self._note_split = note_split
-        info_lay.addWidget(note_split, 1)
+        self._loaded_original = ""
+        self._previewed_original = ""
+        self._original_full_mode = False
+        self._fitting_body = False
+        # 한 스크롤: 요약 → 캡션·상태·미리보기·버튼·PDF (WikiOriginalPane 래퍼 없음).
+        self._note_scroll = QScrollArea(info_wrap)
+        self._note_scroll.setObjectName("WikiNoteScroll")
+        self._note_scroll.setWidgetResizable(True)
+        self._note_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._note_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._note_scroll.viewport().installEventFilter(self)
+        note_col = QWidget()
+        note_col.setObjectName("WikiNoteColumn")
+        note_lay = QVBoxLayout(note_col)
+        note_lay.setContentsMargins(0, 0, 0, 0)
+        note_lay.setSpacing(12)
+        note_lay.addWidget(self._body, 0)
+        self._original_cap = QLabel("원본 문서")
+        self._original_cap.setObjectName("WikiOriginalCaption")
+        self._original_cap.hide()
+        note_lay.addWidget(self._original_cap, 0)
+        self._original_status = QLabel("불러오는 중…")
+        self._original_status.setObjectName("WikiOriginalStatus")
+        self._original_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._original_status.hide()
+        note_lay.addWidget(self._original_status, 0)
+        self._original_preview = QLabel()
+        self._original_preview.setObjectName("WikiOriginalPreview")
+        self._original_preview.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self._original_preview.setScaledContents(False)
+        self._original_preview.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
+        self._original_preview.hide()
+        note_lay.addWidget(self._original_preview, 0)
+        self._original_full_btn = QPushButton("전체 보기")
+        self._original_full_btn.setObjectName("WikiOriginalFullBtn")
+        self._original_full_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._original_full_btn.hide()
+        self._original_full_btn.clicked.connect(self._open_original_full)
+        note_lay.addWidget(self._original_full_btn, 0)
+        # WebEngine은 늦게 붙는다 (_ensure_original_view).
+        note_lay.addStretch(1)
+        self._note_col = note_col
+        self._note_lay = note_lay
+        self._note_scroll.setWidget(note_col)
+        info_lay.addWidget(self._note_scroll, 1)
         splitter.addWidget(info_wrap)
-
+        splitter.setCollapsible(0, True)
+        splitter.setCollapsible(1, False)
         splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        outer.addWidget(splitter, 1)
+        splitter.setStretchFactor(1, 1)
+        center_lay.addWidget(splitter, 1)
+        # IDE와 동일: IdeUnifiedShell 8:2 (좌 위키 · 우 Companion)
+        install_companion_shell(self, center, root=root)
+
+    def place_chat_host(self, host: QWidget) -> None:
+        mount_chat_host(self, host)
+
+    def shift_chat_column(self, delta: int) -> None:
+        shift_chat_column(self, delta)
 
     def results_open(self) -> bool:
         return self._results.isVisible()
@@ -310,13 +403,84 @@ class ObsidianWorkspacePage(QWidget):
         else:
             self._body.setHtml(html)
             prefetch_chat_html_images(self._body, html)
+        self._fit_body_height()
+        self._note_scroll.verticalScrollBar().setValue(0)
         self._pending_original = self._original_file(rel_path, asset)
         if self._pending_original:
-            self._original_slot.show()
+            self._reveal_original_pane()
+            self._show_original_loading()
             QTimer.singleShot(0, self._load_original)
         else:
-            self._original_slot.hide()
+            self._hide_original_pane()
         self._graph.select(rel_path)
+
+    def _fit_body_height(self) -> None:
+        """요약이 문서 전체 높이를 쓰게 해서, 스크롤 시 원본이 그 아래에 오게 한다."""
+        if self._fitting_body or self._body.isHidden():
+            return
+        self._fitting_body = True
+        try:
+            width = max(120, int(self._note_scroll.viewport().width()) - 8)
+            doc = self._body.document()
+            doc.setTextWidth(float(width))
+            height = int(doc.size().height()) + int(self._body.frameWidth() * 2) + 12
+            height = max(48, height)
+            if abs(self._body.height() - height) < 2:
+                return
+            self._body.setFixedHeight(height)
+            self._body.updateGeometry()
+            lay = self._note_col.layout()
+            if lay is not None:
+                lay.invalidate()
+                lay.activate()
+            self._note_col.adjustSize()
+        finally:
+            self._fitting_body = False
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        # PDF 위 휠은 바깥 WikiNoteScroll이 먹지 않는다 (내부 페이지 스크롤용).
+        if (
+            event.type() == QEvent.Type.Wheel
+            and watched is self._note_scroll.viewport()
+            and self._original is not None
+            and self._original.isVisible()
+        ):
+            pos = event.globalPosition().toPoint()
+            local = self._original.mapFromGlobal(pos)
+            if self._original.rect().contains(local):
+                target = self._original.focusProxy() or self._original
+                QApplication.sendEvent(target, event)
+                return True
+        return super().eventFilter(watched, event)
+
+    def _hide_original_pane(self) -> None:
+        self._pending_original = ""
+        self._loaded_original = ""
+        self._previewed_original = ""
+        self._original_full_mode = False
+        self._original_cap.hide()
+        self._original_status.hide()
+        self._original_preview.hide()
+        self._original_full_btn.hide()
+        self._original_full_btn.setText("전체 보기")
+        self._original_preview.clear()
+        self._original_preview.setMinimumHeight(0)
+        self._body.show()
+        self._fit_body_height()
+        if self._original is not None:
+            self._original.hide()
+            self._original.setMinimumHeight(0)
+            self._original.setUrl(QUrl("about:blank"))
+
+    def _reveal_original_pane(self) -> None:
+        """요약 아래 원본 위젯들(캡션·미리보기·버튼)을 연다."""
+        self._original_cap.show()
+        self._original_full_btn.show()
+        self._fit_body_height()
+
+    def _show_original_loading(self, text: str = "불러오는 중…") -> None:
+        self._original_status.setText(text)
+        self._original_status.show()
 
     def _original_file(self, rel_path: str, asset: str) -> str:
         if not asset or self._wiki is None:
@@ -334,27 +498,119 @@ class ObsidianWorkspacePage(QWidget):
     def _ensure_original_view(self):
         if self._original is not None:
             return self._original
-        from PyQt6.QtWebEngineWidgets import QWebEngineView
-
-        view = QWebEngineView(self._original_slot)
-        view.setObjectName("WikiOriginalView")
-        self._original_lay.addWidget(view)
+        view = _WikiPdfEngine.create(self._note_col)
+        view.loadFinished.connect(self._on_original_load_finished)
+        view.hide()
+        # stretch 앞에 삽입 (마지막 stretch = count-1)
+        idx = max(0, self._note_lay.count() - 1)
+        self._note_lay.insertWidget(idx, view, 0)
         self._original = view
         return view
 
-    def _load_original(self) -> None:
+    def _on_original_load_finished(self, _ok: bool) -> None:
+        if self._original is not None and self._original.isVisible():
+            self._original_status.hide()
+
+    def _pdf_view_height(self) -> int:
+        return max(_PDF_VIEW_MIN, int(self._note_scroll.viewport().height()) - 24)
+
+    def _set_preview_pixmap(self, image: QImage) -> None:
+        if image.isNull():
+            self._original_preview.clear()
+            return
+        width = max(200, int(self._note_scroll.viewport().width()) - 24)
+        if width <= 0:
+            width = 400
+        scaled = image
+        if image.width() > width:
+            scaled = image.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+        self._original_preview.setPixmap(QPixmap.fromImage(scaled))
+        self._original_preview.setMinimumHeight(max(_ORIGINAL_PREVIEW_MIN, scaled.height()))
+
+    def _show_pdf_preview(self, path: Path) -> None:
+        """pymupdf 1페이지를 요약 아래에 그린다. Chromium은 「전체 보기」."""
+        self._exit_original_full(restore_preview=False)
+        key = str(path.resolve())
+        pending = self._pending_original
+        if (
+            key == self._previewed_original
+            and self._original_preview.pixmap() is not None
+            and not self._original_preview.pixmap().isNull()
+        ):
+            self._original_status.hide()
+            if self._original is not None:
+                self._original.hide()
+            self._body.show()
+            self._fit_body_height()
+            self._original_preview.show()
+            self._original_full_btn.setText("전체 보기")
+            self._original_full_btn.show()
+            return
+        self._show_original_loading()
+        self._original_full_btn.hide()
+        if self._original is not None:
+            self._original.hide()
+        png = first_page_png(path)
+        if self._pending_original != pending:
+            return
+        if png:
+            image = QImage.fromData(png)
+            self._set_preview_pixmap(image)
+            self._previewed_original = key
+            self._original_status.hide()
+            self._body.show()
+            self._fit_body_height()
+            self._original_preview.show()
+            self._original_full_btn.setText("전체 보기")
+            self._original_full_btn.show()
+            return
+        self._original_preview.clear()
+        self._previewed_original = ""
+        self._show_original_loading("미리보기를 만들 수 없습니다.")
+        self._original_preview.hide()
+        self._body.show()
+        self._fit_body_height()
+        self._original_full_btn.setText("전체 보기")
+        self._original_full_btn.show()
+
+    def _exit_original_full(self, *, restore_preview: bool = True) -> None:
+        """WebEngine을 끄고 1페이지 미리보기로 돌린다. 요약은 항상 유지."""
+        was_full = self._original_full_mode
+        self._original_full_mode = False
+        if self._original is not None:
+            self._original.hide()
+            self._original.setMinimumHeight(0)
+            if was_full:
+                self._original.setUrl(QUrl("about:blank"))
+                self._loaded_original = ""
+        self._body.show()
+        self._fit_body_height()
+        self._original_full_btn.setText("전체 보기")
+        if not restore_preview or not self._pending_original:
+            return
+        path = Path(self._pending_original)
+        if path.is_file() and path.suffix.lower() == ".pdf":
+            self._show_pdf_preview(path)
+
+    def _open_original_full(self) -> None:
+        """「전체 보기」↔「미리보기로」. 요약은 숨기지 않고 같은 스크롤에 둔다."""
+        if self._original_full_mode:
+            self._exit_original_full(restore_preview=True)
+            return
         path_text = self._pending_original
         if not path_text:
-            self._original_slot.hide()
             return
         path = Path(path_text)
         if not path.is_file():
-            self._original_slot.hide()
             return
+        self._load_original_webengine(path, show_loading=True)
+
+    def _load_original_webengine(self, path: Path, *, show_loading: bool) -> None:
         from PyQt6.QtWebEngineCore import QWebEngineSettings
 
-        view = self._ensure_original_view()
+        path_text = str(path)
         is_pdf = path.suffix.lower() == ".pdf"
+        view = self._ensure_original_view()
         settings = view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, is_pdf)
         settings.setAttribute(
@@ -364,11 +620,52 @@ class ObsidianWorkspacePage(QWidget):
             QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, False
         )
         settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
-        url = QUrl.fromLocalFile(str(path))
+        # Windows Chromium은 한글 경로 PDF를 빈 화면으로 여는 경우가 있다.
+        view_path = viewer_local_path(path)
+        url = QUrl.fromLocalFile(str(view_path))
         if is_pdf:
             url.setFragment("view=FitH")
-        self._original_slot.show()
+        self._reveal_original_pane()
+        if path_text != self._pending_original:
+            return
+        # 요약은 그대로 두고, PDF는 뷰포트 높이로 고정해 내부 휠 스크롤이 되게 한다.
+        self._original_full_mode = True
+        self._body.show()
+        self._fit_body_height()
+        self._original_preview.hide()
+        view_h = self._pdf_view_height()
+        view.setFixedHeight(view_h)
+        view.setMinimumHeight(view_h)
+        self._original_full_btn.setText("미리보기로")
+        self._original_full_btn.show()
+        view.show()
+        view.setFocus(Qt.FocusReason.OtherFocusReason)
+        # 원본 PDF가 보이도록 캡션 근처로 스크롤
+        QTimer.singleShot(0, lambda: self._note_scroll.ensureWidgetVisible(self._original_cap))
+        key = url.toString()
+        if key == self._loaded_original and view.url().toString() == key:
+            self._original_status.hide()
+            return
+        if show_loading:
+            self._show_original_loading()
+        self._loaded_original = key
         view.load(url)
+
+    def _load_original(self) -> None:
+        path_text = self._pending_original
+        if not path_text:
+            self._hide_original_pane()
+            return
+        path = Path(path_text)
+        if not path.is_file():
+            self._hide_original_pane()
+            return
+        self._reveal_original_pane()
+        if path.suffix.lower() == ".pdf":
+            self._show_pdf_preview(path)
+            return
+        # HTML·이미지 등은 여전히 WebEngine (플레이스홀더 → loadFinished).
+        self._load_original_webengine(path, show_loading=True)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -379,47 +676,80 @@ class ObsidianWorkspacePage(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         if self._split_ready:
-            self._limit_content_panel()
+            self._clamp_note_split()
+            self._apply_graph_fade()
+            self._fit_body_height()
+            if (
+                self._original_full_mode
+                and self._original is not None
+                and self._original.isVisible()
+            ):
+                h = self._pdf_view_height()
+                self._original.setFixedHeight(h)
+                self._original.setMinimumHeight(h)
         if self._results.isVisible():
             self._place_results()
 
-    def _limit_content_panel(self) -> None:
-        total = max(self._split.width(), _CONTENT_MIN + _GRAPH_MIN)
-        cap = _content_cap(total)
-        info = self._split.widget(1)
-        info.setMaximumWidth(cap)
+    def _clamp_note_split(self) -> None:
+        """정보 패널 최소폭만 보장. 구체는 0까지 접을 수 있다."""
         sizes = self._split.sizes()
-        if len(sizes) < 2 or sum(sizes) <= 0:
+        total = sum(sizes)
+        if total <= 0 or len(sizes) < 2:
             return
-        content = min(sizes[1], cap)
-        if content != sizes[1]:
+        content = max(_CONTENT_MIN, min(sizes[1], total))
+        graph = total - content
+        if graph != sizes[0] or content != sizes[1]:
             self._split.blockSignals(True)
-            self._split.setSizes([sum(sizes) - content, content])
+            self._split.setSizes([graph, content])
             self._split.blockSignals(False)
 
+    def _apply_graph_fade(self) -> None:
+        """정보 패널을 좌측으로 당길수록 위키 구체를 페이드아웃."""
+        sizes = self._split.sizes()
+        graph_w = sizes[0] if sizes else 0
+        if graph_w >= _GRAPH_FADE_START:
+            opacity = 1.0
+        elif graph_w <= _GRAPH_FADE_END:
+            opacity = 0.0
+        else:
+            opacity = (graph_w - _GRAPH_FADE_END) / (_GRAPH_FADE_START - _GRAPH_FADE_END)
+        self._graph_opacity.setOpacity(opacity)
+        # 거의 안 보이면 클릭을 가로채지 않는다.
+        transparent = opacity < 0.08
+        self._graph_wrap.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, transparent
+        )
+        # 검색창이 구체 칸 최소폭을 다시 키우지 않게, 좁아지면 먼저 숨긴다.
+        if graph_w < _SEARCH_W or transparent:
+            self._search.hide()
+            self._results.hide()
+        else:
+            self._search.show()
+
     def _apply_saved_split(self) -> None:
-        total = max(self._split.width(), _CONTENT_MIN + _GRAPH_MIN)
-        cap = _content_cap(total)
-        self._split.widget(1).setMaximumWidth(cap)
+        total = max(self._split.width(), _CONTENT_MIN + 1)
+        self._info_wrap.setMaximumWidth(16777215)
         ratio = _load_split_ratio()
-        content = int(total * ratio) if ratio is not None else min(360, total - _GRAPH_MIN)
-        content = max(_CONTENT_MIN, min(content, cap))
+        # 기본: 구체가 넓고 정보는 읽기 폭. 저장된 비율이 있으면 따른다.
+        content = int(total * ratio) if ratio is not None else min(360, max(_CONTENT_MIN, total // 3))
+        content = max(_CONTENT_MIN, min(content, total))
         self._split.blockSignals(True)
         self._split.setSizes([total - content, content])
         self._split.blockSignals(False)
+        self._apply_graph_fade()
 
     def _on_split_moved(self, _pos: int, _index: int) -> None:
         sizes = self._split.sizes()
         total = sum(sizes)
         if total <= 0 or len(sizes) < 2:
             return
-        cap = _content_cap(total)
-        content = min(sizes[1], cap)
+        content = max(_CONTENT_MIN, min(sizes[1], total))
         if content != sizes[1]:
             self._split.blockSignals(True)
             self._split.setSizes([total - content, content])
             self._split.blockSignals(False)
         _save_split_ratio(content / total)
+        self._apply_graph_fade()
 
     def _on_query(self, text: str) -> None:
         query = (text or "").strip()

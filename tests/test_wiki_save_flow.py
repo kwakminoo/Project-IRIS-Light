@@ -65,9 +65,13 @@ def check_pdf_attachment_import(tmp_path):
     assert "research.pdf" in saved
     assert "## 전체 요약" in saved and "## 핵심 개념" in saved and "## 원본" in saved
     assert "truncated at" not in saved
-    original = saved_path.with_name(saved_path.stem + ".assets") / "original.pdf"
+    from iris.knowledge.wiki_original import assets_dir_for
+
+    original = assets_dir_for(saved_path) / "original.pdf"
     assert original.is_file() and original.stat().st_size > 0
     assert f"- iris-original: {original.parent.name}/original.pdf" in saved
+    assert original.parent.name.startswith("worig-")
+    assert original.parent.name.isascii()
     assert any(note.rel_path == result["rel_path"] for note in wiki.list_notes())
 
 

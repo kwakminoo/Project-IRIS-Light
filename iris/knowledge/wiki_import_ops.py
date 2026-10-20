@@ -10,7 +10,7 @@ from urllib.parse import urldefrag, urljoin, urlparse
 from iris.knowledge.content_extract import extract_from_source
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.knowledge.wiki_filing import file_user_note
-from iris.knowledge.wiki_original import compose_wiki_body, insert_original_marker, store_original
+from iris.knowledge.wiki_original import compose_wiki_body, require_original
 
 _DOC_EXT = {"html", "htm"}
 _SKIP_EXT = {
@@ -150,13 +150,11 @@ def import_to_wiki(
         opened_slug=opened_slug,
         classify=classify,
     )
-    asset = store_original(
+    asset = require_original(
         Path(str(filed["path"])),
         kind=str(prepared["kind"]),
         source=str(prepared["source"]),
     )
-    if asset:
-        insert_original_marker(Path(str(filed["path"])), asset)
     return {
         **filed,
         "kind": prepared["kind"],

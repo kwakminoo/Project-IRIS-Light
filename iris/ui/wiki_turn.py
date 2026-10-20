@@ -14,6 +14,11 @@ def wiki_requests_go_to_hermes() -> bool:
     return True
 
 
+def local_document_wiki_save_enabled() -> bool:
+    """PDF·URL·파일 위키 저장은 Hermes를 건너뛰고 Iris가 import_to_wiki 한다."""
+    return True
+
+
 def try_wiki_command(window: object, turn: UserTurn) -> bool:
     command = parse_wiki_command(
         turn.text,
@@ -234,6 +239,7 @@ def _check() -> None:
     from iris.knowledge.wiki_command import parse_wiki_command
 
     assert wiki_requests_go_to_hermes() is True
+    assert local_document_wiki_save_enabled() is True
     caught = parse_wiki_command("위키에서 내용들을 삭제해주고 영어 제목 폴더를 만들어 챕터폴더들을 통째로 옮겨줘")
     assert caught is not None and caught.op == "delete"
     main = Path(__file__).resolve().parents[2] / "iris" / "ui" / "window" / "main_window.py"
@@ -241,6 +247,7 @@ def _check() -> None:
     assert "wiki_requests_go_to_hermes()" in src
     assert "if try_wiki_command" not in src
     assert "if self._try_local_wiki_save" not in src
+    assert "documents_only=True" in src
     from iris.ui.control_actions.wiki import page_note_rows
 
     page = page_note_rows(list(range(120)))
