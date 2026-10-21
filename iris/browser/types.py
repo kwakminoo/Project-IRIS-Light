@@ -1,5 +1,3 @@
-"""Browser domain types — closed command union + snapshot."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

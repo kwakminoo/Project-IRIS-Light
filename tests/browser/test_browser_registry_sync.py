@@ -1,5 +1,3 @@
-"""ActionSpec names must stay derived from command_specs()."""
-
 from __future__ import annotations
 
 import ast

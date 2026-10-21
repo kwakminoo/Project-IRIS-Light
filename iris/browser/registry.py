@@ -1,5 +1,3 @@
-"""Single command table — Control Surface ActionSpecs derive from this."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -193,22 +191,6 @@ def command_specs() -> tuple[CommandSpec, ...]:
 _SPECS_BY_KIND = {s.kind: s for s in command_specs()}
 _SPECS_BY_CONTROL = {s.control_name: s for s in command_specs()}
 
-# Wire aliases: browser.invoke {command: kind} and history kind for HistoryStep
-_KIND_ALIASES = {
-    "history": None,  # only via back/forward
-    "open": "open",
-    "navigate": "navigate",
-    "reload": "reload",
-    "back": "back",
-    "forward": "forward",
-    "search": "search",
-    "click": "click",
-    "type": "type",
-    "scroll": "scroll",
-    "snapshot": "snapshot",
-    "mini_player": "mini_player",
-}
-
 
 def parse_command(args: dict[str, Any]) -> BrowserCommand:
     """Parse wire dict → BrowserCommand. Validation only at this boundary."""
@@ -225,13 +207,15 @@ def parse_command(args: dict[str, Any]) -> BrowserCommand:
         raise ValueError("command required")
     if kind == "history":
         delta = int(args.get("delta") or 0)
-        if delta not in (-1, 1):
-            raise ValueError("history delta must be -1 or 1")
-        return HistoryStep(delta=delta, source=_actor(args))  # type: ignore[arg-type]
-    mapped = _KIND_ALIASES.get(kind)
-    if mapped is None or mapped not in _SPECS_BY_KIND:
+        if delta == -1:
+            return HistoryStep(delta=-1, source=_actor(args))
+        if delta == 1:
+            return HistoryStep(delta=1, source=_actor(args))
+        raise ValueError("history delta must be -1 or 1")
+    spec = _SPECS_BY_KIND.get(kind)
+    if spec is None:
         raise ValueError(f"unknown browser command: {kind}")
-    return _SPECS_BY_KIND[mapped].parse(args)
+    return spec.parse(args)
 
 
 def control_action_names() -> tuple[str, ...]:

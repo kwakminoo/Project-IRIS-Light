@@ -1,5 +1,3 @@
-"""Floating mini-player chrome — holds the same QWebEngineView via reparent."""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -43,8 +41,6 @@ def _mini_stylesheet() -> str:
 
 
 class BrowserMiniPlayer(QWidget):
-    """Frameless Tool window; view slot may hold the panel's QWebEngineView."""
-
     expand_requested = pyqtSignal()
     close_requested = pyqtSignal()
 

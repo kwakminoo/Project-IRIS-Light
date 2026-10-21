@@ -1,5 +1,3 @@
-"""Browser chrome panel — URL bar + back/forward/reload over BrowserSession."""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -128,7 +126,6 @@ class BrowserPanel(QWidget):
         return self._view
 
     def release_view(self):
-        """Remove view from slot for reparent; keep the same view instance."""
         view = self._view
         if view is None:
             return None
@@ -136,7 +133,6 @@ class BrowserPanel(QWidget):
         return view
 
     def place_view(self, view) -> None:
-        """Re-add a previously released view into the panel slot."""
         if view is None:
             return
         self._view = view

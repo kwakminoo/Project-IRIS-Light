@@ -1,5 +1,3 @@
-"""BrowserSession — sole mutator for the Iris IDE browser surface."""
-
 from __future__ import annotations
 
 import threading
@@ -32,8 +30,6 @@ SnapshotListener = Callable[[BrowserSnapshot], None]
 
 
 class BrowserSession:
-    """Deep module: execute + snapshot + ensure_visible."""
-
     def __init__(
         self,
         *,
@@ -66,7 +62,6 @@ class BrowserSession:
             return self._view_host
 
     def note_view_host(self, host: ViewHost) -> None:
-        """UI reports host after reparent (auto-mini / chrome)."""
         with self._lock:
             self._view_host = host
             self._snap = self._overlay_host(self._snap)
@@ -102,7 +97,7 @@ class BrowserSession:
             if self._driver is not None:
                 try:
                     self._snap = self._overlay_host(self._driver.read_snapshot())
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     self._snap = BrowserSnapshot(
                         url=self._snap.url,
                         title=self._snap.title,
@@ -277,7 +272,7 @@ class BrowserSession:
 
                 snap = driver.read_snapshot()
                 return BrowserResult(False, str(kind), snap, detail="unknown command")
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 snap = empty_snapshot(phase=BrowserPhase.FAULTED)
                 if self._driver is not None:
                     try:

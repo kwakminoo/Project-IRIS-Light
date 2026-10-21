@@ -1,5 +1,3 @@
-"""BrowserSession unit tests — fake driver, no network."""
-
 from __future__ import annotations
 
 import unittest

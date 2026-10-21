@@ -1,5 +1,3 @@
-"""Pure YouTube watch URL detection — no Qt."""
-
 from __future__ import annotations
 
 from urllib.parse import urlparse

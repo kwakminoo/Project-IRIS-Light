@@ -1,5 +1,3 @@
-"""Mini-player self-check — ViewHost reparent, stack stays off browser."""
-
 from __future__ import annotations
 
 import sys

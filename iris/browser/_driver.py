@@ -23,6 +23,15 @@ from iris.browser.types import (
 _BRIDGE_JS = (Path(__file__).resolve().parent / "_bridge.js").read_text(encoding="utf-8")
 
 
+def _bbox4(raw: object) -> tuple[int, int, int, int] | None:
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        return None
+    try:
+        return (int(raw[0]), int(raw[1]), int(raw[2]), int(raw[3]))
+    except (TypeError, ValueError):
+        return None
+
+
 class PageDriver(Protocol):
     def read_snapshot(self) -> BrowserSnapshot: ...
     def navigate(self, url: str) -> None: ...
@@ -311,7 +320,7 @@ class WebEnginePageDriver:
         try:
             self._ensure_bridge()
             raw = self._eval_js("window.__irisBrowser.snapshot()")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return BrowserSnapshot(
                 url="",
                 title="",
@@ -340,7 +349,7 @@ class WebEnginePageDriver:
             Landmark(
                 role=str(item.get("role") or ""),
                 name=str(item.get("name") or ""),
-                bbox=tuple(item["bbox"]) if isinstance(item.get("bbox"), list) and len(item["bbox"]) == 4 else None,  # type: ignore[misc]
+                bbox=_bbox4(item.get("bbox")),
             )
             for item in (data.get("landmarks") or [])
             if isinstance(item, dict)

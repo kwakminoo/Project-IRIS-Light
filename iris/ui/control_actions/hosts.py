@@ -63,6 +63,7 @@ class ProfileHost(Protocol):
 class WorkspaceHost(Protocol):
     _calendar_page: Any
     _db: Any
+    _on_browser_workspace_icon: Any
     _on_calendar_icon: Any
     _on_email_icon: Any
     _on_mobile_icon: Any

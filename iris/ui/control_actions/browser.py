@@ -1,10 +1,8 @@
-"""Browser control actions — all paths parse → BrowserSession.execute."""
-
 from __future__ import annotations
 
 from typing import Any
 
-from iris.browser.registry import command_specs, parse_command, spec_for_control
+from iris.browser.registry import command_specs, parse_command
 from iris.browser.session import get_browser_session
 from iris.system.control_surface import ActionRegistry
 from iris.ui.control_actions.hosts import BrowserHost
@@ -69,19 +67,3 @@ def register_browser_actions(window: BrowserHost, reg: ActionRegistry) -> None:
             summary=spec.summary,
             risk=spec.risk,
         )
-
-    # Fail closed if registry drift
-    for name in (
-        "browser.open",
-        "browser.navigate",
-        "browser.reload",
-        "browser.back",
-        "browser.forward",
-        "browser.search",
-        "browser.click",
-        "browser.type",
-        "browser.scroll",
-        "browser.snapshot",
-        "browser.mini_player",
-    ):
-        assert spec_for_control(name) is not None, name

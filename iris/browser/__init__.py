@@ -1,5 +1,3 @@
-"""Iris IDE browser automation — BrowserSession command bus."""
-
 from __future__ import annotations
 
 from iris.browser.registry import control_action_names, parse_command

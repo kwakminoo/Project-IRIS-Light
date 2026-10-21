@@ -367,14 +367,13 @@ class IrisIdeWindow(QMainWindow):
         return bool(self._loaded_url) and self._view is not None and self._stack.currentWidget() is self._view
 
     def ensure_browser_panel(self):
-        """Lazy Browser stack page (URL chrome + QWebEngineView)."""
         if self._browser_panel is not None:
             return self._browser_panel
         from iris.browser.session import get_browser_session
         from iris.ui.browser.panel import BrowserPanel
 
         panel = BrowserPanel(get_browser_session())
-        panel.ide_requested.connect(self.return_from_browser)
+        panel.ide_requested.connect(self.leave_browser_stack)
         self._browser_panel = panel
         self._stack.addWidget(panel)
         return panel
@@ -391,7 +390,6 @@ class IrisIdeWindow(QMainWindow):
         return mini
 
     def show_browser(self, *, show_window: bool = True):
-        """Switch stack to Browser page; same view the agent drives."""
         panel = self.ensure_browser_panel()
         panel.ensure_view()
         self.apply_browser_view_host("panel")
@@ -408,7 +406,6 @@ class IrisIdeWindow(QMainWindow):
         return mini is not None and mini.isVisible() and mini.has_view()
 
     def apply_browser_view_host(self, host: str) -> None:
-        """Reparent the single QWebEngineView between panel and mini."""
         from iris.browser.session import get_browser_session
         from iris.browser.types import ViewHost
 
@@ -437,8 +434,7 @@ class IrisIdeWindow(QMainWindow):
         self._stack.setCurrentWidget(panel)
         session.note_view_host("panel")
 
-    def return_from_browser(self) -> None:
-        """Leave browser stack for Theia/welcome; YouTube watch auto-minis."""
+    def leave_browser_stack(self) -> None:
         self._detach_youtube_to_mini_if_needed()
         if self.is_browser_visible():
             self._show_ide_stack_page()
@@ -475,7 +471,6 @@ class IrisIdeWindow(QMainWindow):
             self.apply_browser_view_host("mini")
 
     def _on_mini_close(self) -> None:
-        """Dismiss mini; reparent view into hidden panel slot (session kept)."""
         panel = self.ensure_browser_panel()
         mini = self._browser_mini
         if mini is not None and mini.has_view():

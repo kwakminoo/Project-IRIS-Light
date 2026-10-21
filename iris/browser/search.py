@@ -1,5 +1,3 @@
-"""Pure search URL builders — no network I/O."""
-
 from __future__ import annotations
 
 from urllib.parse import quote_plus
