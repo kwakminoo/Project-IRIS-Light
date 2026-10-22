@@ -4,6 +4,7 @@ import unittest
 
 from iris.browser._driver import youtube_like_fixture_driver
 from iris.browser.registry import parse_command
+from iris.browser.search import search_url
 from iris.browser.session import BrowserSession
 from iris.browser.types import (
     BrowserPhase,
@@ -35,6 +36,22 @@ class ParseBoundaryTests(unittest.TestCase):
         assert isinstance(click, Click)
         self.assertIsInstance(click.target, ByText)
 
+    def test_parse_google_and_youtube_play(self) -> None:
+        g = parse_command({"command": "search", "query": "React 공식 문서", "engine": "google"})
+        self.assertIsInstance(g, Search)
+        assert isinstance(g, Search)
+        self.assertEqual(g.engine, "google")
+        self.assertFalse(g.play)
+        y = parse_command(
+            {"command": "search", "query": "음악", "engine": "youtube", "play": True}
+        )
+        self.assertIsInstance(y, Search)
+        assert isinstance(y, Search)
+        self.assertEqual(y.engine, "youtube")
+        self.assertTrue(y.play)
+        self.assertIn("google.com/search", search_url("React", engine="google"))
+        self.assertIn("youtube.com/results", search_url("음악", engine="youtube"))
+
 
 class SessionFakeDriverTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -45,6 +62,7 @@ class SessionFakeDriverTests(unittest.TestCase):
         r = self.session.execute(Open())
         self.assertTrue(r.ok)
         self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
+        self.assertIn("google.com", r.snapshot.url)
 
     def test_search_then_click(self) -> None:
         r = self.session.execute(Search(query="IU night letter"))
@@ -54,6 +72,38 @@ class SessionFakeDriverTests(unittest.TestCase):
         self.assertTrue(r.ok)
         self.assertIn("watch?v=fixture-iu", r.snapshot.url)
         self.assertIn("IU", r.snapshot.title)
+
+    def test_youtube_play_clicks_first_result(self) -> None:
+        r = self.session.execute(Search(query="IU night letter", engine="youtube", play=True))
+        self.assertTrue(r.ok, r.detail)
+        self.assertIn("watch?v=fixture-iu", r.snapshot.url)
+        self.assertTrue(r.snapshot.media and r.snapshot.media.playing)
+
+    def test_youtube_play_fails_without_watch(self) -> None:
+        from iris.browser._driver import FakePageDriver, _FakePage
+
+        driver = FakePageDriver({"https://fixture.local/empty": _FakePage(url="https://fixture.local/empty", title="none")})
+        driver._pages["__search__"] = driver._pages["https://fixture.local/empty"]
+        session = BrowserSession(driver=driver)
+        r = session.execute(Search(query="nothing", engine="youtube", play=True))
+        self.assertFalse(r.ok)
+        self.assertFalse(bool(r.snapshot.media and r.snapshot.media.playing))
+
+    def test_media_pause_resume(self) -> None:
+        from iris.browser.types import Media
+
+        self.session.execute(Search(query="IU night letter", engine="youtube", play=True))
+        paused = self.session.execute(Media(action="pause"))
+        self.assertTrue(paused.ok, paused.detail)
+        self.assertFalse(paused.snapshot.media.playing)
+        resumed = self.session.execute(Media(action="resume"))
+        self.assertTrue(resumed.ok, resumed.detail)
+        self.assertTrue(resumed.snapshot.media.playing)
+
+    def test_google_search_hits_fixture(self) -> None:
+        r = self.session.execute(Search(query="React docs", engine="google"))
+        self.assertTrue(r.ok)
+        self.assertIn("search", r.snapshot.url)
 
     def test_navigate_react_fixture(self) -> None:
         r = self.session.execute(Navigate(url="https://react.dev"))
@@ -92,6 +142,7 @@ class SessionFakeDriverTests(unittest.TestCase):
             "browser.reload",
             "browser.snapshot",
             "browser.mini_player",
+            "browser.media",
         ):
             self.assertTrue(runs_off_ui_thread(name), name)
 
@@ -115,6 +166,7 @@ class RegistrySyncTests(unittest.TestCase):
                 "browser.scroll",
                 "browser.snapshot",
                 "browser.mini_player",
+                "browser.media",
             ),
         )
         self.assertEqual(len(command_specs()), len(names))

@@ -87,6 +87,7 @@ class TopStatusHeader:
         self._state_chip = _StatusChip("STATE")
         self._model_chip = _StatusChip("MODEL", mono_value=True)
         self._tts_chip = _StatusChip("TTS")
+        self._browser_chip = _StatusChip("BROWSER")
         self._local_chip = _StatusChip("IRIS LOCAL")
         self._agent_chip = _StatusChip("AGENT")
         self._stt_chip = _StatusChip("STT")
@@ -95,9 +96,12 @@ class TopStatusHeader:
         grid.addWidget(self._state_chip, 0, 0, alignment=cell_align)
         grid.addWidget(self._model_chip, 0, 1, alignment=cell_align)
         grid.addWidget(self._tts_chip, 0, 2, alignment=cell_align)
+        grid.addWidget(self._browser_chip, 0, 3, alignment=cell_align)
         grid.addWidget(self._local_chip, 1, 0, alignment=cell_align)
         grid.addWidget(self._agent_chip, 1, 1, alignment=cell_align)
         grid.addWidget(self._stt_chip, 1, 2, alignment=cell_align)
+        self._browser_chip.setToolTip("Iris 내장 브라우저 제어 상태 (Hermes AGENT와 별개)")
+        self._agent_chip.setToolTip("Hermes gateway 연결. 브라우저 제어 가능 여부가 아닙니다.")
 
         self._state_chip.set_value("IDLE", dot_kind="idle")
         self._model_chip.set_value("-", dot_kind="idle")
@@ -110,6 +114,7 @@ class TopStatusHeader:
         self._local_chip.set_value("CONNECTED", dot_kind="connected")
         self._agent_chip.set_value("UNAVAILABLE", dot_kind="unavailable")
         self._stt_chip.set_value("OFF", dot_kind="unavailable")
+        self._browser_chip.set_value("CLOSED", dot_kind="unavailable")
 
         # place_status_rows 레거시 — 그리드에 backend가 포함되어 빈 슬롯만 제공
         # ponytail: 반드시 status_block 자식으로 둠. parent=None + show() → 흰 top-level 창
@@ -199,3 +204,22 @@ class TopStatusHeader:
             hm,
             dot_kind="connected" if hm == "CONNECTED" else "unavailable",
         )
+        self._agent_chip.setToolTip(
+            "Hermes gateway 연결. 브라우저 제어 가능 여부가 아닙니다."
+        )
+
+    def set_browser_status(self, text: str, *, dot_kind: str = "idle") -> None:
+        label = (text or "CLOSED").strip().upper() or "CLOSED"
+        self._browser_chip.set_value(label, dot_kind=dot_kind)
+
+    def set_browser_from_snapshot(self, snap: object) -> None:
+        phase = str(getattr(getattr(snap, "phase", None), "value", "") or "closed")
+        playing = bool(getattr(getattr(snap, "media", None), "playing", False))
+        if phase == "faulted":
+            self.set_browser_status("FAULTED", dot_kind="error")
+        elif playing:
+            self.set_browser_status("PLAYING", dot_kind="ready")
+        elif phase in ("ready", "busy", "opening"):
+            self.set_browser_status(phase.upper(), dot_kind="connected" if phase == "ready" else "processing")
+        else:
+            self.set_browser_status("CLOSED", dot_kind="unavailable")

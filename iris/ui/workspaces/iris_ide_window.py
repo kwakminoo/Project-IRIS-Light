@@ -370,12 +370,19 @@ class IrisIdeWindow(QMainWindow):
         if self._browser_panel is not None:
             return self._browser_panel
         from iris.browser.session import get_browser_session
-        from iris.ui.browser.panel import BrowserPanel
+        from iris.ui.browser.panel import get_shared_browser_panel
 
-        panel = BrowserPanel(get_browser_session())
-        panel.ide_requested.connect(self.leave_browser_stack)
+        panel = get_shared_browser_panel(get_browser_session())
         self._browser_panel = panel
-        self._stack.addWidget(panel)
+        if self._stack.indexOf(panel) < 0:
+            self._stack.addWidget(panel)
+        return panel
+
+    def reclaim_browser_panel(self):
+        """Workspace가 패널을 가져갔으면 IDE 스택으로 되돌린다."""
+        panel = self.ensure_browser_panel()
+        if self._stack.indexOf(panel) < 0:
+            self._stack.addWidget(panel)
         return panel
 
     def ensure_browser_mini(self):
@@ -431,13 +438,18 @@ class IrisIdeWindow(QMainWindow):
                 panel.place_view(detached)
         elif not panel.view_in_slot():
             panel.place_view(view)
-        self._stack.setCurrentWidget(panel)
+        # Panel may live on BrowserWorkspacePage — do not steal it back here.
+        if self._stack.indexOf(panel) >= 0:
+            self._stack.setCurrentWidget(panel)
         session.note_view_host("panel")
 
     def leave_browser_stack(self) -> None:
         self._detach_youtube_to_mini_if_needed()
         if self.is_browser_visible():
             self._show_ide_stack_page()
+
+    def return_from_browser(self) -> None:
+        self.leave_browser_stack()
 
     def _show_ide_stack_page(self) -> None:
         if self._view is not None and self._loaded_url:

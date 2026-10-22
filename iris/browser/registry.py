@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from iris.browser.search import normalize_search_engine
 from iris.browser.types import (
     Actor,
     BrowserCommand,
@@ -12,6 +13,7 @@ from iris.browser.types import (
     Click,
     HistoryStep,
     Locator,
+    Media,
     MiniPlayer,
     Navigate,
     Open,
@@ -110,10 +112,9 @@ def _parse_search(args: dict[str, Any]) -> BrowserCommand:
     query = str(args.get("query") or args.get("q") or "").strip()
     if not query:
         raise ValueError("query required")
-    engine = str(args.get("engine") or "web").strip().lower() or "web"
-    if engine != "web":
-        raise ValueError(f"unsupported search engine: {engine}")
-    return Search(query=query, engine="web", source=_actor(args))
+    engine = normalize_search_engine(str(args.get("engine") or "web"))
+    play = bool(args.get("play") or args.get("autoplay"))
+    return Search(query=query, engine=engine, play=play, source=_actor(args))
 
 
 def _parse_click(args: dict[str, Any]) -> BrowserCommand:
@@ -166,6 +167,20 @@ def _parse_mini_player(args: dict[str, Any]) -> BrowserCommand:
     return MiniPlayer(on=_parse_bool_on(args), source=_actor(args))
 
 
+def _parse_media(args: dict[str, Any]) -> BrowserCommand:
+    action = str(args.get("media") or args.get("op") or "").strip().lower()
+    if not action:
+        raw = str(args.get("action") or "").strip().lower()
+        if raw.startswith("browser."):
+            raw = raw.split(".", 1)[-1]
+        action = "" if raw == "media" else raw
+    if action in ("play", "resume"):
+        return Media(action="resume" if action == "resume" else "play", source=_actor(args))
+    if action == "pause":
+        return Media(action="pause", source=_actor(args))
+    raise ValueError("media action must be play|pause|resume")
+
+
 def command_specs() -> tuple[CommandSpec, ...]:
     return (
         CommandSpec("open", "Show Iris IDE browser stack page", "low", _parse_open, control_name="browser.open"),
@@ -173,7 +188,13 @@ def command_specs() -> tuple[CommandSpec, ...]:
         CommandSpec("reload", "Reload current browser page", "low", _parse_reload, control_name="browser.reload"),
         CommandSpec("back", "Browser history back", "low", _parse_back, control_name="browser.back"),
         CommandSpec("forward", "Browser history forward", "low", _parse_forward, control_name="browser.forward"),
-        CommandSpec("search", "Web search then open results", "medium", _parse_search, control_name="browser.search"),
+        CommandSpec(
+            "search",
+            "Web search then open results (engine=web|google|youtube, play?)",
+            "medium",
+            _parse_search,
+            control_name="browser.search",
+        ),
         CommandSpec("click", "Click locator on current page", "medium", _parse_click, control_name="browser.click"),
         CommandSpec("type", "Type into locator on current page", "medium", _parse_type, control_name="browser.type"),
         CommandSpec("scroll", "Scroll current page", "low", _parse_scroll, control_name="browser.scroll"),
@@ -184,6 +205,13 @@ def command_specs() -> tuple[CommandSpec, ...]:
             "low",
             _parse_mini_player,
             control_name="browser.mini_player",
+        ),
+        CommandSpec(
+            "media",
+            "Play, pause, or resume the current page media element",
+            "medium",
+            _parse_media,
+            control_name="browser.media",
         ),
     )
 

@@ -30,6 +30,12 @@
     "confirm_required": false
   },
   {
+    "name": "browser.media",
+    "summary": "Play, pause, or resume the current page media element",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
     "name": "browser.mini_player",
     "summary": "Detach or restore browser view as mini player",
     "risk": "low",
@@ -61,7 +67,7 @@
   },
   {
     "name": "browser.search",
-    "summary": "Web search then open results",
+    "summary": "Web search then open results (engine=web|google|youtube, play?)",
     "risk": "medium",
     "confirm_required": false
   },
@@ -822,6 +828,12 @@
     "confirm_required": false
   },
   {
+    "name": "workspace.open_browser",
+    "summary": "Open built-in internet browser workspace",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
     "name": "workspace.open_calendar",
     "summary": "Open calendar workspace (KR holidays + schedule)",
     "risk": "low",
@@ -865,7 +877,7 @@
   },
   {
     "name": "workspace.open_telegram",
-    "summary": "Telegram workspace (준비 중)",
+    "summary": "Alias for workspace.open_browser (telegram HUD retired)",
     "risk": "low",
     "confirm_required": false
   }

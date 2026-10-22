@@ -94,18 +94,16 @@ def _paint_kakao(p: QPainter, active: bool) -> None:
     p.drawEllipse(12, 9, 2, 2)
 
 
-def _paint_telegram(p: QPainter, active: bool) -> None:
+def _paint_browser(p: QPainter, active: bool) -> None:
+    """지구본 — 내장 브라우저."""
     pen = _stroke(active)
     p.setPen(pen)
-    p.setBrush(_fill(active))
-    path = QPainterPath()
-    path.moveTo(5, 11)
-    path.lineTo(17, 6)
-    path.lineTo(13, 17)
-    path.lineTo(10, 13)
-    path.lineTo(6, 14)
-    path.closeSubpath()
-    p.drawPath(path)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(4, 4, 14, 14)
+    p.drawEllipse(8, 4, 6, 14)
+    p.drawLine(4, 11, 18, 11)
+    p.drawLine(4, 8, 18, 8)
+    p.drawLine(4, 14, 18, 14)
 
 
 def _paint_mobile(p: QPainter, active: bool) -> None:
@@ -157,7 +155,8 @@ _PAINTERS = {
     "instagram": _paint_instagram,
     "discord": _paint_discord,
     "kakao": _paint_kakao,
-    "telegram": _paint_telegram,
+    "browser": _paint_browser,
+    "telegram": _paint_browser,  # legacy alias
     "mobile": _paint_mobile,
     "obsidian": _paint_obsidian,
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -18,7 +19,11 @@ from iris.browser.types import (
     ByText,
     Landmark,
     Locator,
+    MediaState,
+    media_from_dict,
 )
+
+log = logging.getLogger("iris.browser")
 
 _BRIDGE_JS = (Path(__file__).resolve().parent / "_bridge.js").read_text(encoding="utf-8")
 
@@ -83,6 +88,7 @@ class FakePageDriver:
         self._scroll_y = 0
         self._phase = BrowserPhase.READY
         self._last_error: str | None = None
+        self._playing = False
         self._ensure_blank()
 
     def _ensure_blank(self) -> None:
@@ -112,6 +118,17 @@ class FakePageDriver:
             scroll_y=self._scroll_y,
             last_error=self._last_error,
             landmarks=tuple(page.landmarks),
+            media=self.read_media(),
+        )
+
+    def read_media(self) -> MediaState:
+        watch = "/watch" in self._history[self._index]
+        return MediaState(
+            playing=bool(self._playing and watch),
+            paused=not (self._playing and watch),
+            current_time=1.0 if self._playing and watch else 0.0,
+            ready_state=4 if watch else 0,
+            kind="video" if watch else "",
         )
 
     def navigate(self, url: str) -> None:
@@ -124,18 +141,51 @@ class FakePageDriver:
             self._index = len(self._history) - 1
         self._scroll_x = 0
         self._scroll_y = 0
+        if "/watch" not in url:
+            self._playing = False
         page = self._current()
         page.scroll_y = 0
         self._phase = BrowserPhase.READY
 
+    def first_watch_url(self) -> str:
+        page = self._current()
+        for dest in page.links.values():
+            if "/watch" in dest:
+                return dest
+        return ""
+
+    def try_play(self) -> str:
+        url = self._history[self._index]
+        if "/watch" in url:
+            self._playing = True
+            return ""
+        return "not a watch page"
+
+    def try_pause(self) -> str:
+        if "/watch" not in self._history[self._index]:
+            return "not a watch page"
+        self._playing = False
+        return ""
+
     def _resolve_search(self, url: str) -> str:
         parsed = urlparse(url)
-        if "duckduckgo.com" in (parsed.netloc or "") or parsed.path.endswith("/search"):
+        host = (parsed.netloc or "").lower()
+        path = parsed.path or ""
+        q = ""
+        if "youtube.com" in host and path.startswith("/results"):
+            q = (parse_qs(parsed.query).get("search_query") or [""])[0]
+        elif (
+            "duckduckgo.com" in host
+            or ("google." in host and "/search" in path)
+            or path.endswith("/search")
+        ):
             q = (parse_qs(parsed.query).get("q") or [""])[0]
-            results = self._pages.get("__search__")
-            if results is not None:
-                results.title = f"Search: {q}"
-                return results.url
+        else:
+            return url
+        results = self._pages.get("__search__")
+        if results is not None:
+            results.title = f"Search: {q}"
+            return results.url
         return url
 
     def reload(self) -> None:
@@ -224,6 +274,9 @@ def youtube_like_fixture_driver() -> FakePageDriver:
             "text:IU": "https://fixture.local/watch?v=fixture-iu",
             "text:IU - 밤편지 (Night Letter)": "https://fixture.local/watch?v=fixture-iu",
             "role:link:IU - 밤편지 (Night Letter)": "https://fixture.local/watch?v=fixture-iu",
+            "css:a#video-title": "https://fixture.local/watch?v=fixture-iu",
+            "css:a.yt-simple-endpoint[href*='/watch']": "https://fixture.local/watch?v=fixture-iu",
+            "css:a[href*='/watch?v=']": "https://fixture.local/watch?v=fixture-iu",
         },
     )
     watch = _FakePage(
@@ -371,6 +424,7 @@ class WebEnginePageDriver:
             scroll_y=int(data.get("scrollY") or 0),
             last_error=self._last_error,
             landmarks=landmarks,
+            media=media_from_dict(data.get("media")),
         )
 
     def navigate(self, url: str) -> None:
@@ -398,14 +452,110 @@ class WebEnginePageDriver:
         if not self._wait_event(done, 45.0):
             self._last_error = "navigate timeout"
             self._phase = BrowserPhase.FAULTED
+            log.error("navigate timeout url=%s", url)
             raise TimeoutError("navigate timeout")
         if not ok_box.get("ok", True):
-            self._last_error = "navigate failed"
-            self._phase = BrowserPhase.FAULTED
-            raise RuntimeError("navigate failed")
+            # Redirects / aborted intermediates often fire loadFinished(False)
+            # while the final document is fine — accept if we left about:blank.
+            def current_url() -> str:
+                try:
+                    return str(self._view.url().toString() or "")
+                except Exception:
+                    return ""
+
+            landed = self._run_ui(current_url)
+            if not landed or landed in ("about:blank", "about:blank#blocked"):
+                self._last_error = "navigate failed"
+                self._phase = BrowserPhase.FAULTED
+                log.error("navigate failed url=%s", url)
+                raise RuntimeError("navigate failed")
+            log.warning("loadFinished(False) but landed url=%s", landed)
         self._phase = BrowserPhase.READY
-        time.sleep(0.05)
+        time.sleep(0.15)
         self._ensure_bridge()
+        log.info("navigated url=%s", url)
+
+    def first_watch_url(self) -> str:
+        self._ensure_bridge()
+        try:
+            raw = self._eval_js("window.__irisBrowser.firstWatchUrl()")
+        except Exception as exc:
+            log.warning("firstWatchUrl js failed: %s", exc)
+            return ""
+        href = str(raw or "").strip()
+        if href.startswith("https://") and "/watch" in href:
+            return href
+        return ""
+
+    def try_play(self) -> str:
+        """Ask the page video to play. Does not bypass site/autoplay policy."""
+        self._ensure_bridge()
+        try:
+            raw = self._eval_js("window.__irisBrowser.tryPlay()", timeout=16.0)
+        except Exception as exc:
+            log.warning("tryPlay js failed: %s", exc)
+            return f"play script failed: {exc}"
+        if not isinstance(raw, dict):
+            return "play script returned nothing"
+        if raw.get("ok") and raw.get("playing"):
+            return ""
+        if self._click_player():
+            time.sleep(0.7)
+            try:
+                again = self._eval_js("window.__irisBrowser.mediaState()", timeout=4.0)
+            except Exception:
+                again = None
+            st = media_from_dict(again)
+            if st is not None and st.playing:
+                return ""
+        err = str(raw.get("error") or raw.get("block") or "autoplay")
+        log.warning("tryPlay blocked: %s", err)
+        return err
+
+    def _click_player(self) -> bool:
+        """Qt mouse click — YouTube treats JS play() as non-gesture."""
+        try:
+            box = self._eval_js("window.__irisBrowser.playerBox()")
+        except Exception:
+            box = None
+        x, y = 0, 0
+        if isinstance(box, (list, tuple)) and len(box) >= 4:
+            x = int(box[0] + max(8, int(box[2]) / 2))
+            y = int(box[1] + max(8, int(box[3]) / 2))
+
+        def go() -> bool:
+            from PyQt6.QtCore import QPoint, Qt
+            from PyQt6.QtTest import QTest
+
+            view = self._view
+            if view is None:
+                return False
+            view.setFocus()
+            w = max(1, int(view.width()))
+            h = max(1, int(view.height()))
+            px = x if x > 0 else w // 2
+            py = y if y > 0 else h // 3
+            QTest.mouseClick(view, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(px, py))
+            return True
+
+        try:
+            return bool(self._run_ui(go))
+        except Exception as exc:
+            log.warning("player click failed: %s", exc)
+            return False
+
+    def try_pause(self) -> str:
+        self._ensure_bridge()
+        try:
+            raw = self._eval_js("window.__irisBrowser.tryPause()")
+        except Exception as exc:
+            log.warning("tryPause js failed: %s", exc)
+            return f"pause script failed: {exc}"
+        if not isinstance(raw, dict):
+            return "pause script returned nothing"
+        if raw.get("ok"):
+            return ""
+        return str(raw.get("error") or raw.get("block") or "pause failed")
 
     def reload(self) -> None:
         self._phase = BrowserPhase.BUSY

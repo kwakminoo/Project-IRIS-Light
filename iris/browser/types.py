@@ -27,6 +27,46 @@ class Landmark:
 
 
 ViewHost = Literal["panel", "mini"]
+MediaAction = Literal["play", "pause", "resume"]
+
+
+@dataclass(frozen=True)
+class MediaState:
+    playing: bool = False
+    paused: bool = True
+    current_time: float = 0.0
+    ready_state: int = 0
+    block: str = ""
+    ad: bool = False
+    kind: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "playing": self.playing,
+            "paused": self.paused,
+            "current_time": self.current_time,
+            "ready_state": self.ready_state,
+            "block": self.block,
+            "ad": self.ad,
+            "kind": self.kind,
+        }
+
+
+def media_from_dict(raw: object) -> MediaState | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return MediaState(
+            playing=bool(raw.get("playing")),
+            paused=bool(raw.get("paused", not raw.get("playing"))),
+            current_time=float(raw.get("currentTime") or raw.get("current_time") or 0),
+            ready_state=int(raw.get("readyState") or raw.get("ready_state") or 0),
+            block=str(raw.get("block") or ""),
+            ad=bool(raw.get("ad")),
+            kind=str(raw.get("kind") or ""),
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -41,8 +81,13 @@ class BrowserSnapshot:
     last_error: str | None = None
     landmarks: tuple[Landmark, ...] = ()
     mini_player: bool = False
+    media: MediaState | None = None
+    tab_index: int = 0
+    tab_count: int = 1
+    target_id: str = ""
 
     def to_control_dict(self) -> dict[str, Any]:
+        media = self.media.to_dict() if self.media is not None else None
         return {
             "url": self.url,
             "title": self.title,
@@ -65,7 +110,33 @@ class BrowserSnapshot:
             "browser_url": self.url,
             "browser_title": self.title,
             "mini_player": self.mini_player,
+            "media": media,
+            "browser_playing": bool(self.media and self.media.playing),
+            "browser_media_block": (self.media.block if self.media else "") or "",
+            "tab_index": self.tab_index,
+            "tab_count": self.tab_count,
+            "target_id": self.target_id or f"tab:{self.tab_index}",
         }
+
+    def evolve(self, **kwargs: Any) -> "BrowserSnapshot":
+        data = {
+            "url": self.url,
+            "title": self.title,
+            "phase": self.phase,
+            "can_go_back": self.can_go_back,
+            "can_go_forward": self.can_go_forward,
+            "scroll_x": self.scroll_x,
+            "scroll_y": self.scroll_y,
+            "last_error": self.last_error,
+            "landmarks": self.landmarks,
+            "mini_player": self.mini_player,
+            "media": self.media,
+            "tab_index": self.tab_index,
+            "tab_count": self.tab_count,
+            "target_id": self.target_id,
+        }
+        data.update(kwargs)
+        return BrowserSnapshot(**data)
 
 
 @dataclass(frozen=True)
@@ -120,7 +191,8 @@ class HistoryStep:
 @dataclass(frozen=True)
 class Search:
     query: str
-    engine: Literal["web"] = "web"
+    engine: Literal["web", "google", "youtube"] = "web"
+    play: bool = False
     source: Actor = Actor.AGENT
     kind: Literal["search"] = "search"
 
@@ -162,6 +234,13 @@ class MiniPlayer:
     kind: Literal["mini_player"] = "mini_player"
 
 
+@dataclass(frozen=True)
+class Media:
+    action: MediaAction
+    source: Actor = Actor.AGENT
+    kind: Literal["media"] = "media"
+
+
 BrowserCommand = Union[
     Open,
     Navigate,
@@ -173,6 +252,7 @@ BrowserCommand = Union[
     Scroll,
     Snapshot,
     MiniPlayer,
+    Media,
 ]
 
 

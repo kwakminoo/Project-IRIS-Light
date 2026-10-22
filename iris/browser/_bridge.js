@@ -1,5 +1,5 @@
 (() => {
-  if (window.__irisBrowser) return;
+  if (window.__irisBrowser && window.__irisBrowser.mediaState) return;
 
   function textOf(el) {
     return (el.innerText || el.textContent || el.getAttribute("aria-label") || "").trim();
@@ -68,6 +68,95 @@
     return out;
   }
 
+  function pageBlock() {
+    const href = String(location.href || "").toLowerCase();
+    const title = String(document.title || "").toLowerCase();
+    if (href.includes("/sorry/")) return "captcha";
+    if (href.includes("consent.youtube.") || href.includes("consent.google.")) return "consent";
+    if (title.includes("before you continue")) return "consent";
+    if (href.includes("accounts.google.") || href.includes("signin/identifier")) return "signin";
+    if (title.includes("sign in to confirm") || title.includes("연령 제한")) return "signin";
+    if (href.includes("age-restricted") || title.includes("age-restricted")) return "age";
+    return "";
+  }
+
+  function adShowing() {
+    const player = document.querySelector(".html5-video-player");
+    if (player && player.classList.contains("ad-showing")) return true;
+    return !!document.querySelector(".ytp-ad-player-overlay, .ytp-ad-module .ytp-ad-player-overlay");
+  }
+
+  function firstVideoIdFromData() {
+    const data = window.ytInitialData;
+    if (!data) return "";
+    try {
+      const text = JSON.stringify(data);
+      const m = text.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+      return m ? m[1] : "";
+    } catch (err) {
+      return "";
+    }
+  }
+
+  function firstWatchUrl() {
+    const anchors = Array.from(document.querySelectorAll("a[href]"));
+    for (const a of anchors) {
+      const href = a.href || a.getAttribute("href") || "";
+      if (/[?&]v=[\w-]{11}/.test(href) && href.indexOf("/shorts/") < 0) {
+        try {
+          return new URL(href, location.origin).href;
+        } catch (err) {
+          /* keep looking */
+        }
+      }
+    }
+    const id = firstVideoIdFromData();
+    if (id) return "https://www.youtube.com/watch?v=" + id;
+    return "";
+  }
+
+  function mediaState() {
+    const v = document.querySelector("video");
+    if (!v) {
+      return {
+        playing: false,
+        paused: true,
+        currentTime: 0,
+        readyState: 0,
+        block: pageBlock() || "no_video",
+        ad: false,
+        kind: "",
+      };
+    }
+    const playing = !v.paused && !v.ended && v.readyState > 0;
+    return {
+      playing,
+      paused: !!v.paused,
+      currentTime: Number(v.currentTime) || 0,
+      readyState: Number(v.readyState) || 0,
+      block: pageBlock(),
+      ad: adShowing(),
+      kind: "video",
+    };
+  }
+
+  function clickPlayButton() {
+    const btn = document.querySelector(
+      "button.ytp-large-play-button, button.ytp-play-button, .ytp-large-play-button"
+    );
+    if (btn) btn.click();
+  }
+
+  function playerBox() {
+    const el =
+      document.querySelector("button.ytp-large-play-button") ||
+      document.querySelector("video") ||
+      document.querySelector(".html5-video-player");
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
+  }
+
   window.__irisBrowser = {
     resolve,
     click(target) {
@@ -102,6 +191,7 @@
       };
     },
     snapshot() {
+      const media = mediaState();
       return {
         url: String(location.href || ""),
         title: String(document.title || ""),
@@ -109,7 +199,73 @@
         scrollY: Math.round(window.scrollY || 0),
         readyState: String(document.readyState || ""),
         landmarks: landmarks(),
+        media,
       };
+    },
+    mediaState,
+    firstWatchUrl,
+    playerBox,
+    tryPlay() {
+      const blocked = pageBlock();
+      if (blocked) return Promise.resolve({ ok: false, error: blocked, block: blocked });
+      const deadline = Date.now() + 8000;
+      const attempt = (video) => {
+        const already = !video.paused && !video.ended && video.readyState > 0;
+        if (already) return Promise.resolve({ ok: true, playing: true, ...mediaState() });
+        const playOnce = () => {
+          const p = video.play();
+          if (p && typeof p.then === "function") return p;
+          return Promise.resolve();
+        };
+        return playOnce()
+          .catch(() => {
+            clickPlayButton();
+            const muted = video.muted;
+            video.muted = true;
+            return playOnce()
+              .then(() => {
+                video.muted = muted;
+                return playOnce();
+              })
+              .catch((err) => {
+                video.muted = muted;
+                throw err;
+              });
+          })
+          .then(() => {
+            const st = mediaState();
+            if (st.playing) return { ok: true, ...st };
+            if (Date.now() >= deadline) return { ok: false, error: "autoplay", block: "autoplay", ...st };
+            return new Promise((resolve) => setTimeout(() => resolve(attempt(video)), 300));
+          })
+          .catch((err) => ({
+            ok: false,
+            error: String(err && err.message ? err.message : err),
+            block: "autoplay",
+            ...mediaState(),
+          }));
+      };
+      const waitVideo = () => {
+        const v = document.querySelector("video");
+        if (v) return attempt(v);
+        clickPlayButton();
+        if (Date.now() >= deadline) {
+          return Promise.resolve({ ok: false, error: "no video element", block: "no_video", ...mediaState() });
+        }
+        return new Promise((resolve) => setTimeout(() => resolve(waitVideo()), 300));
+      };
+      return waitVideo();
+    },
+    tryPause() {
+      const v = document.querySelector("video");
+      if (!v) return { ok: false, error: "no video element", block: "no_video" };
+      try {
+        v.pause();
+      } catch (err) {
+        return { ok: false, error: String(err && err.message ? err.message : err) };
+      }
+      const st = mediaState();
+      return { ok: !!st.paused, ...st };
     },
   };
 })();

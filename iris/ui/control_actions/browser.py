@@ -15,12 +15,10 @@ def register_browser_actions(window: BrowserHost, reg: ActionRegistry) -> None:
     session.set_ui_call(lambda fn: _call_on_ui(window, fn))
 
     def _surface():
-        ide = window._ensure_iris_ide_window()
-        return ide.show_browser()
+        return window.show_browser_workspace()
 
     def _apply_host(host: str) -> None:
-        ide = window._ensure_iris_ide_window()
-        ide.apply_browser_view_host(host)
+        window.apply_browser_view_host(host)
 
     session.set_surface_provider(_surface)
     session.set_host_applier(_apply_host)

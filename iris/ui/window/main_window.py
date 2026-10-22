@@ -75,6 +75,7 @@ from iris.storage.model_prefs import (
     load_ollama_model_probes,
     load_selected_model,
     ollama_cleanup_has_verdict,
+    pick_reload_model,
     save_ollama_model_probe,
     save_selected_model,
 )
@@ -182,6 +183,7 @@ from iris.ui.settings.user_profile_dialog import UserProfileDialog
 from iris.ui.widgets.ide_icons import show_ide_not_installed_dialog
 from iris.ui.widgets.visualizer import Visualizer
 from iris.ui.workspaces.assistant_workspace_page import AssistantWorkspacePage
+from iris.ui.workspaces.browser_workspace_page import BrowserWorkspacePage
 from iris.ui.workspaces.calendar_workspace_page import CalendarWorkspacePage
 from iris.ui.workspaces.email_workspace_page import EmailWorkspacePage
 from iris.ui.workspaces.ide_companion_page import (
@@ -447,6 +449,7 @@ class MainWindow(QMainWindow):
         self._runtime_boot_started = False
         self._control_surface = None
         self._saved_model = load_selected_model(self._db) or self._settings.ollama_model.strip()
+        self._models_list_ready = False
         self._ollama_login_watch = None
         self._cloud_model_pending_login = ""
         # 미로그인 클라우드를 초기 선택으로 두지 않음 — 목록 로드 후 로컬로 확정.
@@ -596,6 +599,9 @@ class MainWindow(QMainWindow):
             status_header.status_widget(),
             status_header.backend_row(),
         )
+        from iris.browser.session import get_browser_session
+
+        get_browser_session().add_listener(self._on_browser_snapshot_status)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -610,10 +616,12 @@ class MainWindow(QMainWindow):
         self._obsidian_page = ObsidianWorkspacePage()
         self._email_page = EmailWorkspacePage()
         self._calendar_page = CalendarWorkspacePage()
+        self._browser_page = BrowserWorkspacePage()
         self._workspace_stack.addWidget(self._assistant_page)
         self._workspace_stack.addWidget(self._obsidian_page)
         self._workspace_stack.addWidget(self._email_page)
         self._workspace_stack.addWidget(self._calendar_page)
+        self._workspace_stack.addWidget(self._browser_page)
         splitter.addWidget(self._workspace_stack)
 
         self._companion_page = IdeCompanionPage()
@@ -839,7 +847,7 @@ class MainWindow(QMainWindow):
             ("discord", "discord", "Discord (준비 중)"),
             ("kakao", "kakao", "카카오톡 (준비 중)"),
             ("obsidian", "obsidian", "Iris Wiki"),
-            ("telegram", "telegram", "텔레그램 (준비 중)"),
+            ("browser", "browser", "인터넷 브라우저"),
         ):
             callback = None
             if action_id == "mobile":
@@ -852,6 +860,8 @@ class MainWindow(QMainWindow):
                 callback = self._on_obsidian_icon
             elif action_id == "ide":
                 callback = self._on_ide_icon
+            elif action_id == "browser":
+                callback = self._on_browser_workspace_icon
             actions.add_icon_action(
                 action_id=action_id,
                 icon_kind=icon_kind,
@@ -1652,11 +1662,11 @@ class MainWindow(QMainWindow):
         forced = (getattr(self, "_login_model_restore", "") or "").strip()
         if forced:
             self._login_model_restore = ""
-        preferred = forced or (
-            self._chat.current_model()
-            or self._saved_model
-            or self._settings.ollama_model
-            or self._settings.model_name
+        # Saved user pick wins over whatever the combo shows after Ollama bounce.
+        preferred = forced or pick_reload_model(
+            self._saved_model,
+            self._chat.current_model(),
+            self._settings.ollama_model or self._settings.model_name,
         )
         if preferred in ("(unset)",):
             preferred = ""
@@ -1671,7 +1681,7 @@ class MainWindow(QMainWindow):
         self._chat.set_models(visible, selected=resolved or preferred)
         if visible:
             chosen = self._chat.current_model()
-            persist = bool(resolved and resolved != preferred)
+            persist = bool(boot and resolved and resolved != preferred)
             self._apply_selected_model(chosen, persist=persist)
             if boot:
                 n_api = sum(1 for m in visible if is_api_runtime_model(m.name))
@@ -1697,7 +1707,9 @@ class MainWindow(QMainWindow):
         items: list[OllamaModelInfo] = list(models) if isinstance(models, list) else []
         items = self._append_ok_api_models(items)
         self._listed_models = items
-        self._publish_model_list(items, boot=True)
+        first = not getattr(self, "_models_list_ready", False)
+        self._models_list_ready = True
+        self._publish_model_list(items, boot=first)
         self._maybe_start_ollama_cleanup()
 
     def _maybe_start_ollama_cleanup(self) -> None:
@@ -4141,6 +4153,51 @@ class MainWindow(QMainWindow):
         self._ext_context = None
         self._reply_extension(turn_id, f"MCP/Skill 설치 실패: {err}")
 
+    def _on_browser_snapshot_status(self, snap: object) -> None:
+        def apply() -> None:
+            header = getattr(self, "_status_header", None)
+            if header is None:
+                return
+            try:
+                header.set_browser_from_snapshot(snap)
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, apply)
+
+    def _try_local_browser_control(self, turn: UserTurn) -> bool:
+        """YouTube play/pause and explicit browser commands — even when Hermes is on.
+
+        gemma-class models often skip tool calls. Same browser.* actions as Hermes.
+        """
+        from iris.browser.intent import format_browser_reply, match_browser_intent
+
+        intent = match_browser_intent(turn.text or "")
+        if intent is None:
+            return False
+        display = self._format_user_turn_content(turn)
+        self._chat.append_message_instant("You", display)
+        self._record_history("user", display)
+        surface = getattr(self, "_control_surface", None)
+        if surface is None:
+            reply = "브라우저 제어면이 없습니다."
+        else:
+            try:
+                out = surface.registry.invoke(intent.control, dict(intent.args))
+            except Exception as exc:  # noqa: BLE001
+                out = {"ok": False, "error": str(exc), "result": {}}
+            if not isinstance(out, dict):
+                out = {"ok": False, "error": "browser invoke failed", "result": {}}
+            reply = format_browser_reply(intent, out)
+            self._live_activity.append_instant_line(
+                f"browser:{intent.kind} ok={bool(out.get('ok'))}"
+            )
+        self._chat.append_message_instant("Iris", reply)
+        self._record_history("assistant", reply)
+        self._refresh_context_gauge()
+        self._finish_current_turn(turn.id, open_followup=False)
+        return True
+
     def _try_local_pinned_status(self, turn: UserTurn) -> bool:
         """'고정한 창 지금 어때?' — 감시 결과를 모델 없이 그대로 답한다 (지어낼 일이 없게)."""
         if not is_pinned_status_question(turn.text or ""):
@@ -4451,6 +4508,8 @@ class MainWindow(QMainWindow):
         # 배운 업무(스킬) — Hermes 가 연결돼 있으면 모델이 learning.run 을 부르고,
         # 꺼져 있거나 죽어 있으면 여기서 이름으로 바로 고른다 (실제로 Hermes 가 죽어 실행 못 함)
         if self._try_local_pinned_status(turn):
+            return
+        if self._try_local_browser_control(turn):
             return
         if not (self._use_hermes_backend() and self._hermes_online):
             if self._try_local_skill_run(turn):
@@ -7046,6 +7105,7 @@ class MainWindow(QMainWindow):
             actions.set_action_active(aid, aid == action_id)
 
     def _show_assistant_workspace(self) -> None:
+        self._maybe_detach_browser_to_mini()
         self._workspace_mode = "assistant"
         self._restore_live_activity_to_assistant()
         self._workspace_stack.setCurrentWidget(self._assistant_page)
@@ -7055,6 +7115,7 @@ class MainWindow(QMainWindow):
         self._orb_spacer.show()
 
     def _on_obsidian_icon(self) -> None:
+        self._maybe_detach_browser_to_mini()
         self._workspace_mode = "obsidian"
         self._restore_live_activity_to_assistant()
         self._workspace_stack.setCurrentWidget(self._obsidian_page)
@@ -7068,6 +7129,7 @@ class MainWindow(QMainWindow):
             self._obsidian_page.show_note(self._obsidian_page.current_note)
 
     def _on_email_icon(self) -> None:
+        self._maybe_detach_browser_to_mini()
         self._workspace_mode = "email"
         self._workspace_stack.setCurrentWidget(self._email_page)
         self._left_sidebar.set_workspace_mode("email")
@@ -7117,6 +7179,7 @@ class MainWindow(QMainWindow):
             self._left_sidebar.email_folder.set_status("이메일 계정을 추가하세요.")
 
     def _on_calendar_icon(self) -> None:
+        self._maybe_detach_browser_to_mini()
         self._workspace_mode = "calendar"
         self._workspace_stack.setCurrentWidget(self._calendar_page)
         self._left_sidebar.set_workspace_mode("assistant")
@@ -7125,6 +7188,100 @@ class MainWindow(QMainWindow):
         self._reload_calendar_month()
         self._refresh_calendar_holidays()
         self._check_calendar_reminders()
+
+    def show_browser_workspace(self):
+        """채팅·browser.* → 캘린더와 같은 좌 브라우저 / 우 채팅 분할.
+
+        Companion 중이면 IDE를 닫지 않고 왼쪽 IrisIdeWindow 스택에 브라우저를 둔다.
+        """
+        if self._ui_mode == "ide_companion":
+            return self._show_browser_in_ide()
+        if self._ui_mode == "ide_hero" or getattr(self, "_hero_enter_pending", False):
+            self._exit_iris_ide_hero()
+
+        self._body_stack.setCurrentIndex(0)
+        from iris.browser.session import get_browser_session
+        from iris.ui.browser.panel import get_shared_browser_panel
+        from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
+
+        ensure_qt_webengine_ready()
+        panel = get_shared_browser_panel(get_browser_session())
+        self._browser_page.place_browser_panel(panel)
+        panel.ensure_view()
+        get_browser_session().note_surface_ready(panel.view())
+
+        self._workspace_mode = "browser"
+        self._workspace_stack.setCurrentWidget(self._browser_page)
+        self._left_sidebar.set_workspace_mode("assistant")
+        self._set_workspace_icon_active("browser")
+        self._mount_workspace_chat()
+        return panel
+
+    def _show_browser_in_ide(self):
+        """Companion 80:20 — 왼쪽 IDE 작업 영역에 브라우저, 오른쪽 채팅 유지."""
+        ide = self._ensure_iris_ide_window()
+        panel = ide.reclaim_browser_panel()
+        panel.ensure_view()
+        try:
+            panel.ide_requested.disconnect()
+        except TypeError:
+            pass
+        panel.ide_requested.connect(self._on_browser_ide_requested)
+        ide.show_browser(show_window=True)
+        self._workspace_mode = "browser"
+        self._set_workspace_icon_active("browser")
+        return panel
+
+    def apply_browser_view_host(self, host: str) -> None:
+        if host == "panel":
+            if self._ui_mode == "ide_companion":
+                self._show_browser_in_ide()
+                return
+            if (
+                self._workspace_mode != "browser"
+                or self._workspace_stack.currentWidget() is not self._browser_page
+            ):
+                self.show_browser_workspace()
+                return
+            from iris.browser.session import get_browser_session
+            from iris.ui.browser.panel import get_shared_browser_panel
+
+            panel = get_shared_browser_panel(get_browser_session())
+            self._browser_page.place_browser_panel(panel)
+            return
+        ide = self._ensure_iris_ide_window()
+        ide.apply_browser_view_host("mini")
+        # IrisIdeWindow may be hidden while browser lives in workspace.
+        if not ide.isVisible():
+            ide.ensure_browser_mini().show_anchored(self)
+
+    def _on_browser_ide_requested(self) -> None:
+        if self._ui_mode == "ide_companion":
+            ide = self._iris_ide_window
+            if ide is not None:
+                ide.return_from_browser()
+            self._workspace_mode = "assistant"
+            self._set_workspace_icon_active("ide")
+            return
+        self._maybe_detach_browser_to_mini()
+        self._enter_ide_companion(source="browser")
+
+    def _maybe_detach_browser_to_mini(self) -> None:
+        if getattr(self, "_workspace_mode", "") != "browser":
+            return
+        ide = self._iris_ide_window
+        if ide is None:
+            return
+        ide._detach_youtube_to_mini_if_needed()
+
+    def _on_browser_workspace_icon(self) -> None:
+        try:
+            self.show_browser_workspace()
+        except Exception as exc:
+            try:
+                self._live_activity.append_instant_line(f"브라우저를 열지 못했습니다: {exc}")
+            except Exception:
+                pass
 
     def _clear_workspace_live_slots(self) -> None:
         for page in (self._email_page, self._calendar_page):
@@ -7319,6 +7476,8 @@ class MainWindow(QMainWindow):
             return self._email_page
         if mode == "calendar":
             return self._calendar_page
+        if mode == "browser":
+            return self._browser_page
         return None
 
     def _workspace_screen_context(self) -> str:
@@ -7349,6 +7508,17 @@ class MainWindow(QMainWindow):
                 f"The user is on the email screen. Account: {address}.{open_bit} "
                 "Use email.list_messages, email.read_message, email.open_compose, email.send. "
                 "Do not invent inbox contents."
+            )
+        if mode == "browser":
+            from iris.browser.session import get_browser_session
+
+            snap = get_browser_session().snapshot()
+            return (
+                f"The user is on the built-in browser screen. "
+                f"URL: {snap.url or '(blank)'}. Title: {snap.title or '(none)'}. "
+                "Drive the page with browser.navigate, browser.search, browser.click, "
+                "browser.type, browser.scroll, browser.snapshot. "
+                "Do not invent page contents — call browser.snapshot first."
             )
         return ""
 

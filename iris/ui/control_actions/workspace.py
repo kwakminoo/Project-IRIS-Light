@@ -44,6 +44,11 @@ def register_workspace_actions(window: WorkspaceHost, reg: ActionRegistry) -> No
             {"emulator_running": _emulator_running()},
         )
 
+    def ws_browser(_a: dict[str, Any]) -> dict[str, Any]:
+        window._on_browser_workspace_icon()
+        _log(window, "workspace.open_browser", True)
+        return ok_result("workspace.open_browser", {"workspace_mode": window._workspace_mode})
+
     def ws_stub(name: str) -> HandlerFn:
         def _h(_a: dict[str, Any]) -> dict[str, Any]:
             return err_result(name, "not implemented in Iris UI yet (준비 중)")
@@ -196,6 +201,12 @@ def register_workspace_actions(window: WorkspaceHost, reg: ActionRegistry) -> No
         summary="Launch Android emulator (mobile icon)",
     )
 
+    reg.register(
+        "workspace.open_browser",
+        ws_browser,
+        summary="Open built-in internet browser workspace",
+    )
+
     reg.register("calendar.list_events", cal_list, summary="List calendar events")
 
     reg.register(
@@ -240,6 +251,12 @@ def register_workspace_actions(window: WorkspaceHost, reg: ActionRegistry) -> No
         ("workspace.open_instagram", "Instagram"),
         ("workspace.open_discord", "Discord"),
         ("workspace.open_kakao", "KakaoTalk"),
-        ("workspace.open_telegram", "Telegram"),
     ):
         reg.register(stub_id, ws_stub(stub_id), summary=f"{label} workspace (준비 중)", risk="low")
+    # legacy alias — HUD telegram slot is now browser
+    reg.register(
+        "workspace.open_telegram",
+        ws_browser,
+        summary="Alias for workspace.open_browser (telegram HUD retired)",
+        risk="low",
+    )

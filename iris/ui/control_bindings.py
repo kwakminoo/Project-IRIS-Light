@@ -479,6 +479,11 @@ def _browser_state_fields() -> dict[str, Any]:
             "browser_title": snap.title,
             "browser_phase": snap.phase.value,
             "mini_player": bool(snap.mini_player),
+            "browser_playing": bool(snap.media and snap.media.playing),
+            "browser_media_block": (snap.media.block if snap.media else "") or "",
+            "browser_target": snap.target_id or f"tab:{snap.tab_index}",
+            "browser_tab_index": snap.tab_index,
+            "browser_tab_count": snap.tab_count,
         }
     except Exception:
         return {
@@ -487,6 +492,11 @@ def _browser_state_fields() -> dict[str, Any]:
             "browser_title": "",
             "browser_phase": "closed",
             "mini_player": False,
+            "browser_playing": False,
+            "browser_media_block": "",
+            "browser_target": "tab:0",
+            "browser_tab_index": 0,
+            "browser_tab_count": 1,
         }
 
 
