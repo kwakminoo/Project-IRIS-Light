@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from iris.knowledge.wiki_import_ops import import_to_wiki
+from iris.knowledge.wiki_import_ops import import_pages, import_progress_label, import_to_wiki
 from iris.knowledge.wiki_summarize import summarize_for_wiki
 from iris.knowledge.iris_wiki import IrisWiki
 
@@ -12,6 +12,7 @@ from iris.knowledge.iris_wiki import IrisWiki
 class WikiImportWorker(QThread):
     finished_ok = pyqtSignal(dict)
     finished_err = pyqtSignal(str)
+    progress = pyqtSignal(int, int, str)
 
     def __init__(
         self,
@@ -24,6 +25,7 @@ class WikiImportWorker(QThread):
         model: str = "",
         ollama_base_url: str = "",
         content: str = "",
+        sources: tuple[str, ...] = (),
         db=None,
         project_root: str = "",
         settings=None,
@@ -38,6 +40,7 @@ class WikiImportWorker(QThread):
         self._model = model
         self._ollama_base_url = ollama_base_url
         self._content = content
+        self._sources = tuple(sources)
         self._db = db
         self._project_root = project_root
         self._settings = settings
@@ -82,6 +85,7 @@ class WikiImportWorker(QThread):
                     project_root=self._project_root,
                     settings=self._settings,
                 )
+            sources = self._sources or ((self._source,) if self._source else ())
             if (self._content or "").strip():
                 result = save_answer_to_wiki(
                     self._wiki,
@@ -90,10 +94,23 @@ class WikiImportWorker(QThread):
                     summarize_fn=summarize_fn,
                     **filing,
                 )
+            elif len(sources) > 1:
+                def _on_item(index: int, total: int, item: dict) -> None:
+                    self.progress.emit(index, total, import_progress_label(index, total, item))
+
+                result = import_pages(
+                    self._wiki,
+                    list(sources),
+                    mode=self._mode,
+                    summarize_fn=summarize_fn,
+                    vision_reader=vision,
+                    on_item=_on_item,
+                    **filing,
+                )
             else:
                 result = import_to_wiki(
                     self._wiki,
-                    source=self._source,
+                    source=sources[0] if sources else self._source,
                     title=self._title,
                     mode=self._mode,
                     rel_path=self._rel_path,

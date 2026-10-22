@@ -350,6 +350,11 @@ class MainWindow(QMainWindow):
         self._stt_warmup_model = ""
         self._tts_worker: TTSStreamWorker | None = None
         self._tts_cancelled_workers: list[TTSStreamWorker] = []
+        self._tts_replay_pending = False
+        self._tts_replay_depth = 0
+        self._tts_replay_again = False
+        self._tts_replay_token = ""
+        self._tts_replay_chat = None
         self._tts_warmup_worker: TTSWarmupWorker | None = None
         self._tts_warmup_model = ""
         self._tts_runtime_ready = False
@@ -476,6 +481,9 @@ class MainWindow(QMainWindow):
         self._turn_dispatcher.turn_dropped.connect(self._on_turn_dropped)
         self._active_turn_source = UserTurnSource.KEYBOARD
         self._wiki_import_worker: WikiImportWorker | None = None
+        self._wiki_batch_follow = False
+        self._wiki_batch_mode = "raw"
+        self._turn_attachment_paths: tuple[str, ...] = ()
         self._wiki_session_worker = None
         self._pdf_export_worker = None
         self._ext_install_worker: ExtensionInstallWorker | None = None
@@ -551,6 +559,8 @@ class MainWindow(QMainWindow):
         self._drag.maximize_clicked.connect(self._toggle_maximize)
         self._drag.learning_clicked.connect(self._on_learning_toggle)
         self._drag.mic_clicked.connect(self._on_chat_mic_clicked)
+        self._drag.tts_clicked.connect(self._on_tts_header_clicked)
+        self._drag.set_tts_enabled(bool(self._voice_prefs.tts_enabled))
         root.addWidget(self._drag)
 
         # 업무 학습 — test_mode에서는 mock learner/executor
@@ -3966,13 +3976,21 @@ class MainWindow(QMainWindow):
             self._finish_current_turn(turn.id)
             return
         self._chat.append_message_instant("Iris", "자료를 추출·요약해 위키에 저장하는 중…")
+        sources = tuple(req.sources) if req.sources else ((req.source,) if req.source else ())
+        names = " | ".join(path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] for path in sources)
         self._chat.insert_tool_block(
             title="Wiki Import",
-            command=(req.source or "")[:240],
+            command=(names or req.source or "")[:240],
             output="추출·요약 진행 중…",
             status="ok",
         )
-        self._live_activity.append_instant_line(f"wiki.import start {req.source[:120]}")
+        self._live_activity.append_instant_line(f"wiki.import start {(names or req.source)[:120]}")
+        if not (req.content or "").strip() and sources:
+            if req.followup:
+                self._wiki_batch_follow = False
+            else:
+                self._wiki_batch_follow = True
+                self._wiki_batch_mode = req.mode or "raw"
         self._busy = True
         self._chat.set_generating(True)
         worker = WikiImportWorker(
@@ -3984,6 +4002,7 @@ class MainWindow(QMainWindow):
             model=model,
             ollama_base_url=self._settings.ollama_base_url,
             content=req.content,
+            sources=sources,
             db=self._db,
             project_root=self._current_project_root(),
             settings=self._settings,
@@ -3995,12 +4014,38 @@ class MainWindow(QMainWindow):
         worker.finished_err.connect(
             lambda err, tid=turn.id: self._on_wiki_import_worker_err(tid, err)
         )
+        worker.progress.connect(self._on_wiki_import_progress)
         self._wiki_import_worker = worker
         worker.start()
+
+    def _on_wiki_import_progress(self, index: int, total: int, label: str) -> None:
+        del index, total
+        try:
+            self._live_activity.append_instant_line(f"wiki.import {label}")
+            chat = self._chat
+            panel = self._active_workspace_iris_panel()
+            if panel is not None and getattr(panel, "chat", None) is not None:
+                chat = panel.chat
+            chat.append_note(label)
+        except Exception:
+            return
 
     def _on_wiki_import_worker_ok(self, turn_id: str, result: dict) -> None:
         self._busy = False
         self._chat.set_generating(False)
+        if "items" in result:
+            from iris.knowledge.wiki_import_ops import wiki_batch_notice
+
+            msg = wiki_batch_notice(result)
+            panel = self._active_workspace_iris_panel()
+            if panel is not None:
+                panel.end_iris(msg)
+            else:
+                self._chat.append_message_instant("Iris", msg)
+            self._record_history("assistant", msg)
+            self._refresh_context_gauge()
+            self._finish_current_turn(turn_id)
+            return
         self._present_wiki_import_success(
             UserTurn(text="", source=UserTurnSource.KEYBOARD),
             result,
@@ -4259,6 +4304,15 @@ class MainWindow(QMainWindow):
         from iris.knowledge.wiki_save_intent import parse_wiki_save_request
 
         req = parse_wiki_save_request(turn.text, turn.attachments, self._history)
+        if req is None and documents_only and self._wiki_batch_follow:
+            from iris.knowledge.wiki_save_intent import followup_wiki_save
+
+            req = followup_wiki_save(
+                turn.text,
+                turn.attachments,
+                pending=True,
+                mode=self._wiki_batch_mode,
+            )
         if req is None:
             return False
         if documents_only and not (req.source or "").strip():
@@ -4293,16 +4347,41 @@ class MainWindow(QMainWindow):
                 project_root=self._current_project_root(),
                 settings=self._settings,
             )
-            result = save_answer_to_wiki(
-                self._iris_wiki, title=req.title or "검색 결과", content=req.content, **filing,
-            ) if req.content else import_to_wiki(
-                self._iris_wiki,
-                source=req.source,
-                title=req.title,
-                mode="raw",
-                rel_path=req.rel_path,
-                **filing,
-            )
+            sources = tuple(req.sources) if req.sources else ((req.source,) if req.source else ())
+            if not (req.content or "").strip() and sources:
+                if req.followup:
+                    self._wiki_batch_follow = False
+                else:
+                    self._wiki_batch_follow = True
+                    self._wiki_batch_mode = req.mode or "raw"
+            if req.content:
+                result = save_answer_to_wiki(
+                    self._iris_wiki, title=req.title or "검색 결과", content=req.content, **filing,
+                )
+            elif len(sources) > 1:
+                from iris.knowledge.wiki_import_ops import import_pages, import_progress_label
+
+                def _on_item(index: int, total: int, item: dict) -> None:
+                    self._on_wiki_import_progress(
+                        index, total, import_progress_label(index, total, item)
+                    )
+
+                result = import_pages(
+                    self._iris_wiki,
+                    list(sources),
+                    mode="raw",
+                    on_item=_on_item,
+                    **filing,
+                )
+            else:
+                result = import_to_wiki(
+                    self._iris_wiki,
+                    source=req.source,
+                    title=req.title,
+                    mode="raw",
+                    rel_path=req.rel_path,
+                    **filing,
+                )
         except Exception as exc:  # noqa: BLE001
             msg = f"위키 저장 실패: {exc}"
             if panel is not None:
@@ -4312,7 +4391,18 @@ class MainWindow(QMainWindow):
             self._record_history("assistant", msg)
             self._finish_current_turn(turn.id)
             return True
-        self._present_wiki_import_success(turn, result)
+        if "items" in result:
+            from iris.knowledge.wiki_import_ops import wiki_batch_notice
+
+            msg = wiki_batch_notice(result)
+            if panel is not None:
+                panel.end_iris(msg)
+            else:
+                self._chat.append_message_instant("Iris", msg)
+            self._record_history("assistant", msg)
+            self._refresh_context_gauge()
+        else:
+            self._present_wiki_import_success(turn, result)
         self._finish_current_turn(turn.id)
         return True
 
@@ -4455,6 +4545,11 @@ class MainWindow(QMainWindow):
                 f"VOICE turn_dispatched source={turn.source.value} queued={self._turn_dispatcher.pending_count()}"
             )
         text = (text or "").strip()
+        self._turn_attachment_paths = tuple(turn.attachments)
+        from iris.knowledge.wiki_save_intent import keep_wiki_batch
+
+        if not keep_wiki_batch(text):
+            self._wiki_batch_follow = False
         from iris.runtime.agent_local_gate import hermes_owns_local_intents
 
         from iris.ui.wiki_turn import (
@@ -6505,6 +6600,27 @@ class MainWindow(QMainWindow):
                 f"마이크 상태 저장 실패: {str(exc)[:80]}"
             )
 
+    def _on_tts_header_clicked(self) -> None:
+        enabled = not bool(self._voice_prefs.tts_enabled)
+        self._voice_prefs.tts_enabled = enabled
+        self._drag.set_tts_enabled(enabled)
+        self._status_header.set_tts_status(self._tts_idle_status())
+        try:
+            save_voice_preferences(self._db, self._voice_prefs)
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(
+                f"TTS 상태 저장 실패: {str(exc)[:80]}"
+            )
+        if enabled:
+            self._live_activity.append_instant_line("TTS를 켰습니다.")
+            QTimer.singleShot(0, self._schedule_tts_runtime_bootstrap)
+            return
+        self._live_activity.append_instant_line("TTS를 껐습니다.")
+        self._stop_tts_playback()
+        # stop 안의 마이크 복귀가 워커를 비우기 전에 상태를 TTS로 다시 올린다.
+        self._set_tts_orb_warmup(False)
+        self._sync_voice_conversation_state()
+
     def _start_mic_listen(self) -> None:
         self._request_stt_warmup()
         self._stt_queue.runtime_url = self._voice_prefs.voice_runtime_url
@@ -6683,7 +6799,37 @@ class MainWindow(QMainWindow):
             pass
 
     def _on_chat_speaker_clicked(self, token: str, chat=None) -> None:
-        chat = chat if chat is not None else self._chat
+        """[재생]은 겹쳐 받지 않는다. 이미 읽는 중이면 끊고 그 답변을 처음부터 다시."""
+        self._tts_replay_token = token
+        self._tts_replay_chat = chat if chat is not None else self._chat
+        if self._tts_output_busy():
+            self._stop_tts_playback()
+            self._set_tts_orb_warmup(False)
+            self._sync_voice_conversation_state()
+        if self._tts_replay_depth:
+            self._tts_replay_again = True
+            return
+        if self._tts_replay_pending:
+            return
+        self._tts_replay_pending = True
+        QTimer.singleShot(0, self._fire_tts_replay)
+
+    def _fire_tts_replay(self) -> None:
+        if not self._tts_replay_pending:
+            return
+        self._tts_replay_pending = False
+        token = self._tts_replay_token
+        chat = self._tts_replay_chat if self._tts_replay_chat is not None else self._chat
+        self._tts_replay_depth += 1
+        try:
+            self._start_tts_replay(token, chat)
+        finally:
+            self._tts_replay_depth -= 1
+        if self._tts_replay_again:
+            self._tts_replay_again = False
+            self._on_chat_speaker_clicked(token, chat)
+
+    def _start_tts_replay(self, token: str, chat) -> None:
         text = chat.get_tts_text(token)
         if not text and self._last_assistant_text:
             text = self._last_assistant_text
@@ -7981,7 +8127,10 @@ class MainWindow(QMainWindow):
             "녹화 때 값(example)으로 실행하지 말고 무엇을 넣을지 먼저 물어라. "
             "learning.run 은 마우스·키보드를 실제로 움직이니 실행 전에 무엇을 할지 한 줄로 알려라. "
             "위키에 저장: Hermes가 켜져 있으면 문장 키워드로 가로채지 않는다. "
-            "PDF·URL·파일은 wiki.import_content (source). "
+            "PDF·URL·파일 한 건은 wiki.import_content (source). "
+            "여러 PDF·파일은 wiki.import_pages (sources 에 실제 경로) 한 번. "
+            "첨부가 있으면 wiki.write_user_note 로 그 본문을 쓰지 말 것. "
+            "저장됐는지만 물으면 wiki.search. "
             "저장은 항상 위에 전체 요약·핵심 개념, 아래에 원본이다. mode 로 요약을 끄지 않는다. "
             "직전 답변은 wiki.write_user_note (title + content, optional source_url). "
             "rel_path 를 비우면 임베딩 유사도와 모델 분류로 "
@@ -10033,6 +10182,7 @@ class MainWindow(QMainWindow):
                 self._learning.set_learning_prefs(self._learning_prefs)
                 if not self._test_mode:
                     self._learning.set_learner(self._build_learner())
+            self._drag.set_tts_enabled(bool(self._voice_prefs.tts_enabled))
             self._status_header.set_tts_status(self._tts_idle_status())
             self._status_header.set_stt_status(self._stt_idle_status())
             self._saved_model = sel.ollama_model.strip()

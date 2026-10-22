@@ -202,7 +202,7 @@ class PcmBufferTests(TestCase):
 
 
 class TtsStreamWorkerTests(TestCase):
-    def test_cancel_closes_active_http_stream(self) -> None:
+    def test_cancel_shuts_socket_without_closing_on_caller_thread(self) -> None:
         from unittest.mock import Mock
 
         from iris.audio.workers import TTSStreamWorker
@@ -213,11 +213,13 @@ class TtsStreamWorkerTests(TestCase):
             payload={"engine": "qwen"},
         )
         response = Mock()
+        response.fp.raw._sock = Mock()
         worker._set_stream_response(response)
         worker.request_cancel()
 
         self.assertTrue(worker._is_cancelled())
-        response.close.assert_called_once_with()
+        response.fp.raw._sock.shutdown.assert_called_once()
+        response.close.assert_not_called()
 
     def test_response_opened_after_cancel_is_closed_too(self) -> None:
         from unittest.mock import Mock
@@ -463,3 +465,53 @@ class SettingsPreviewCancellationTests(TestCase):
         self.assertEqual(fake._settings_tts_job_id, 5)
         self.assertEqual(calls, ["cancel", "stop"])
         self.assertEqual(len(fake._settings_tts_cancelled_workers), 1)
+
+
+class TtsReplayClickTests(TestCase):
+    def test_second_click_while_playing_restarts_once(self) -> None:
+        import sys
+
+        from PyQt6.QtCore import QCoreApplication, Qt
+        from PyQt6.QtWidgets import QApplication
+
+        from iris.ui.window.main_window import MainWindow
+
+        QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+        app = QApplication.instance() or QApplication(sys.argv)
+        stops: list[int] = []
+        starts: list[str] = []
+        host = type("Host", (), {})()
+        host._chat = object()
+        host.busy = True
+        host._tts_output_busy = lambda: host.busy
+        host._tts_replay_pending = False
+        host._tts_replay_depth = 0
+        host._tts_replay_again = False
+        host._tts_replay_token = ""
+        host._tts_replay_chat = None
+
+        def stop() -> None:
+            stops.append(1)
+            host.busy = False
+
+        host._stop_tts_playback = stop
+        host._set_tts_orb_warmup = lambda _active: None
+        host._sync_voice_conversation_state = lambda: None
+        host._start_tts_replay = lambda token, _chat: starts.append(token)
+        host._fire_tts_replay = lambda: MainWindow._fire_tts_replay(host)
+        host._on_chat_speaker_clicked = lambda token, chat=None: MainWindow._on_chat_speaker_clicked(
+            host, token, chat
+        )
+
+        MainWindow._on_chat_speaker_clicked(host, "m1")
+        MainWindow._on_chat_speaker_clicked(host, "m1")
+        self.assertEqual(stops, [1])
+        self.assertEqual(starts, [])
+        app.processEvents()
+        self.assertEqual(starts, ["m1"])
+
+        host.busy = True
+        MainWindow._on_chat_speaker_clicked(host, "m1")
+        self.assertEqual(stops, [1, 1])
+        app.processEvents()
+        self.assertEqual(starts, ["m1", "m1"])

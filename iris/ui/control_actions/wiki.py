@@ -249,6 +249,13 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         return ok_result("wiki.reload", {})
 
     def wiki_write(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.knowledge.wiki_save_intent import reject_attachment_rewrite
+
+        blocked = reject_attachment_rewrite(
+            tuple(getattr(window, "_turn_attachment_paths", ()) or ())
+        )
+        if blocked:
+            return err_result("wiki.write_user_note", blocked)
         title = str(args.get("title") or "").strip()
         content = str(args.get("content") or args.get("body") or "").strip()
         source_url = str(args.get("source_url") or args.get("url") or "").strip()

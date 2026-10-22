@@ -171,7 +171,6 @@ def main() -> None:
         page._apply_saved_split()
         # 정보 패널은 폭 상한 없이 좌측까지 당길 수 있다.
         assert info.maximumWidth() >= 16777215 or info.maximumWidth() > 1000
-        assert page._search.maximumWidth() == 280
         from iris.ui.workspaces.obsidian_workspace_page import _WikiSplitHandle
 
         assert page._split.handleWidth() == 10
@@ -183,6 +182,13 @@ def main() -> None:
         page._split.setSizes([400, 800])
         page._apply_graph_fade()
         assert page._graph_opacity.opacity() > 0.95
+        QApplication.processEvents()
+        # 검색창은 구체 칸 가로를 채운다 (오른쪽 margin 4px).
+        assert page._search.isVisible()
+        assert page._search.width() >= page._graph_wrap.width() - 8, (
+            page._search.width(),
+            page._graph_wrap.width(),
+        )
         page._search.setText("security")
         assert page._list.count() == 1
         page.activate_result()

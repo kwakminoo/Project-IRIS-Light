@@ -1,11 +1,39 @@
 from __future__ import annotations
 
+import socket
 from threading import Event, Lock
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from iris.audio.voice_runtime_client import VoiceRuntimeClient
 from iris.audio.voice_runtime_manager import VoiceRuntimeProcessManager
+
+
+def abort_http_response(response: object | None) -> None:
+    """읽기 중인 HTTP 응답의 소켓만 끊는다.
+
+    UI 스레드에서 response.close()를 호출하면 워커의 readline과 버퍼 락이
+    맞물려 창이 응답없음으로 멈춘다. 소켓 shutdown은 그 읽기를 풀어 주고,
+    close는 워커 스레드가 한다.
+    """
+    if response is None:
+        return
+    fp = getattr(response, "fp", None)
+    raw = getattr(fp, "raw", None) if fp is not None else None
+    sock = getattr(raw, "_sock", None) if raw is not None else None
+    if sock is None and raw is not None:
+        inner = getattr(raw, "_fp", None)
+        inner_raw = getattr(inner, "raw", None) if inner is not None else None
+        sock = getattr(inner_raw, "_sock", None) if inner_raw is not None else None
+    if sock is None:
+        sock = getattr(response, "_sock", None)
+    shutdown = getattr(sock, "shutdown", None)
+    if not callable(shutdown):
+        return
+    try:
+        shutdown(socket.SHUT_RDWR)
+    except Exception:
+        pass
 
 
 class STTTranscriptionWorker(QThread):
@@ -127,11 +155,8 @@ class TTSStreamWorker(QThread):
         self.requestInterruption()
         with self._response_lock:
             response = self._stream_response
-        if response is not None:
-            try:
-                response.close()
-            except Exception:
-                pass
+        # close()는 워커가 readline 중일 때 UI를 멈춘다. 소켓만 끊는다.
+        abort_http_response(response)
 
     def _is_cancelled(self) -> bool:
         return self._cancel.is_set() or self.isInterruptionRequested()

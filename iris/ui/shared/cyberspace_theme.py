@@ -210,7 +210,8 @@ def build_cyberspace_qss() -> str:
         QPushButton#WinCtrl:pressed {{
             background-color: rgba(30, 58, 138, 0.5);
         }}
-        QPushButton#WinCtrlMic {{
+        QPushButton#WinCtrlMic,
+        QPushButton#WinCtrlTts {{
             background-color: transparent;
             border: 1px solid {t.border_subtle};
             padding: 0;
@@ -220,11 +221,13 @@ def build_cyberspace_qss() -> str:
             max-height: 26px;
             border-radius: 3px;
         }}
-        QPushButton#WinCtrlMic:hover {{
+        QPushButton#WinCtrlMic:hover,
+        QPushButton#WinCtrlTts:hover {{
             background-color: {t.accent_primary};
             border-color: {t.accent_border};
         }}
-        QPushButton#WinCtrlMic:checked {{
+        QPushButton#WinCtrlMic:checked,
+        QPushButton#WinCtrlTts:checked {{
             background-color: rgba(8, 51, 68, 0.92);
             border-color: rgba(34, 211, 238, 0.55);
         }}

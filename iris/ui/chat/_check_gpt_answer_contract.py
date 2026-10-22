@@ -111,7 +111,7 @@ def _assert_extract_confidence() -> None:
 def _assert_nudge_v24_examples() -> None:
     from iris.system import hermes_memory_nudge as nudge
 
-    assert "iris-control-nudge-v24" in nudge._MARKER
+    assert "iris-control-nudge-v25" in nudge._MARKER
     block = nudge._BLOCK
     assert "chat.exec_python" in block
     assert "```matrix" in block

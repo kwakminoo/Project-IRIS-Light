@@ -224,6 +224,26 @@ def _is_document_path(path: str) -> bool:
     return ext in _DOC_EXT
 
 
+def import_progress_label(index: int, total: int, item: dict[str, Any]) -> str:
+    name = Path(str(item.get("source") or "")).name or "문서"
+    verb = "저장" if item.get("ok") else "실패"
+    return f"{index}/{total} {verb}, {name}"
+
+
+def wiki_batch_notice(result: dict[str, Any]) -> str:
+    saved = int(result.get("saved") or 0)
+    failed = int(result.get("failed") or 0)
+    lines = [f"저장 {saved}건, 실패 {failed}건."]
+    for item in result.get("items") or []:
+        name = Path(str(item.get("source") or item.get("rel_path") or "")).name
+        if item.get("ok"):
+            rel = str(item.get("rel_path") or "")
+            lines.append(f"{name} → {rel}" if rel else name)
+        else:
+            lines.append(f"실패 {name}: {item.get('error') or ''}")
+    return "\n".join(lines)
+
+
 def import_pages(
     wiki: IrisWiki,
     sources: list[str],
@@ -236,11 +256,19 @@ def import_pages(
     namer: Any = None,
     opened_slug: str = "",
     classify: bool = False,
+    on_item: Callable[[int, int, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """소스마다 import_to_wiki 한 번. 한 건 실패가 다음 건을 막지 않는다."""
     items: list[dict[str, Any]] = []
     saved = 0
     failed = 0
+    total = len(sources)
+
+    def _note(item: dict[str, Any]) -> None:
+        items.append(item)
+        if on_item is not None:
+            on_item(len(items), total, item)
+
     for source in sources:
         try:
             result = import_to_wiki(
@@ -258,10 +286,10 @@ def import_pages(
             )
         except Exception as exc:  # noqa: BLE001 — 한 건 실패 후 계속
             failed += 1
-            items.append({"source": source, "ok": False, "error": str(exc)[:200]})
+            _note({"source": source, "ok": False, "error": str(exc)[:200]})
             continue
         saved += 1
-        items.append({"source": source, "ok": True, "rel_path": result["rel_path"]})
+        _note({"source": source, "ok": True, "rel_path": result["rel_path"]})
     return {"saved": saved, "failed": failed, "items": items}
 
 

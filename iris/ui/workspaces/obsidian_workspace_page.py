@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
     QGraphicsOpacityEffect,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -27,7 +28,6 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QSplitterHandle,
-    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -36,6 +36,8 @@ from iris.ui.shared.theme_tokens import TOKENS
 
 from iris.knowledge.iris_wiki import IrisWiki, markdown_heading, match_wiki_notes
 from iris.knowledge.wiki_original import first_page_png, split_note_view, viewer_local_path
+from iris.knowledge.wiki_term_explain import explain_term
+from iris.storage.wiki_page_memos import PageMemoStore
 from iris.ui.chat.chat_image_view import (
     attach_image_loader,
     handle_chat_anchor_click,
@@ -43,6 +45,14 @@ from iris.ui.chat.chat_image_view import (
 )
 from iris.ui.chat.chat_renderer import render_wiki_document
 from iris.ui.knowledge.wiki_graph_view import WikiGraphView
+from iris.ui.knowledge.wiki_study_widgets import (
+    WikiPageMemoButton,
+    WikiPageMemoPanel,
+    WikiPreviewBody,
+    WikiSelectionBookFab,
+    WikiTermExplainPopover,
+    surrounding_for_cursor,
+)
 from iris.ui.workspaces.workspace_iris_chat import (
     install_companion_shell,
     mount_chat_host,
@@ -53,7 +63,8 @@ _CONTENT_MIN = 240
 _GRAPH_COLLAPSE = 0
 _GRAPH_FADE_START = 200
 _GRAPH_FADE_END = 28
-_SEARCH_W = 280
+# 구체 칸이 이보다 좁으면 검색창을 숨긴다 (접을 때 sizeHint로 폭이 다시 안 커지게).
+_SEARCH_HIDE_W = 280
 # 스크롤 시퀀스: 요약 아래 원본 위젯들. PDF 뷰 높이는 뷰포트에 맞춰 내부 휠 스크롤.
 _ORIGINAL_PREVIEW_MIN = 280
 _PDF_VIEW_MIN = 420
@@ -187,9 +198,10 @@ class ObsidianWorkspacePage(QWidget):
         self._search.setObjectName("WikiSearchEdit")
         self._search.setPlaceholderText("Wiki 검색...")
         self._search.setClearButtonEnabled(True)
-        # FixedWidth면 구체 칸이 280 아래로 안 접힌다 — max만 두고 접을 때 숨긴다.
+        # 구체 칸 가로를 채운다. AlignLeft면 280에 고정되고, Expanding이면
+        # sizeHint가 접힘을 막는다 — Ignored + 정렬 없음으로 칸 폭에 맞춘다.
+        # 좁아지면 _apply_graph_fade 에서 숨긴다.
         self._search.setMinimumWidth(0)
-        self._search.setMaximumWidth(_SEARCH_W)
         self._search.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._search.textChanged.connect(self._on_query)
         self._search.setStyleSheet(
@@ -255,7 +267,7 @@ class ObsidianWorkspacePage(QWidget):
         graph_lay = QVBoxLayout(graph_wrap)
         graph_lay.setContentsMargins(0, 0, 4, 0)
         graph_lay.setSpacing(8)
-        graph_lay.addWidget(self._search, 0, Qt.AlignmentFlag.AlignLeft)
+        graph_lay.addWidget(self._search)
         self._graph = WikiGraphView()
         self._graph.node_selected.connect(self.show_note)
         graph_lay.addWidget(self._graph, 1)
@@ -269,11 +281,20 @@ class ObsidianWorkspacePage(QWidget):
         info_lay = QVBoxLayout(info_wrap)
         info_lay.setContentsMargins(8, 0, 0, 0)
         info_lay.setSpacing(8)
+        title_row = QWidget(info_wrap)
+        title_row.setObjectName("WikiNoteTitleRow")
+        title_lay = QHBoxLayout(title_row)
+        title_lay.setContentsMargins(0, 0, 0, 0)
+        title_lay.setSpacing(8)
         self._title = QLabel("노트를 선택하세요")
         self._title.setObjectName("SectionTitle")
         self._title.setWordWrap(True)
-        info_lay.addWidget(self._title)
-        self._body = QTextBrowser()
+        title_lay.addWidget(self._title, 1)
+        self._memo_btn = WikiPageMemoButton(title_row)
+        self._memo_btn.clicked.connect(self._toggle_page_memo)
+        title_lay.addWidget(self._memo_btn, 0, Qt.AlignmentFlag.AlignTop)
+        info_lay.addWidget(title_row)
+        self._body = WikiPreviewBody()
         self._body.setObjectName("ObsidianPreviewBody")
         self._body.setOpenExternalLinks(False)
         self._body.setReadOnly(True)
@@ -285,6 +306,16 @@ class ObsidianWorkspacePage(QWidget):
         attach_image_loader(self._body)
         self._body.anchorClicked.connect(self._on_preview_anchor)
         self._body.document().contentsChanged.connect(self._fit_body_height)
+        self._body.selectionChanged.connect(self._on_body_selection)
+        self._memo_store = PageMemoStore()
+        self._memo_panel = WikiPageMemoPanel(self._memo_store, info_wrap)
+        self._memo_panel.changed.connect(
+            lambda: self._memo_btn.set_count(self._memo_panel.count())
+        )
+        self._book_fab = WikiSelectionBookFab(self._body)
+        self._book_fab.explain_requested.connect(self._on_term_explain)
+        self._term_pop = WikiTermExplainPopover(info_wrap)
+        self._term_explainer = None
         self._original = None
         self._pending_original = ""
         self._loaded_original = ""
@@ -396,6 +427,12 @@ class ObsidianWorkspacePage(QWidget):
         self._current_rel = rel_path
         title = markdown_heading(text) or rel_path.rsplit("/", 1)[-1].removesuffix(".md")
         self._title.setText(title)
+        self._body.set_note_meta(rel_path, title)
+        self._book_fab.hide()
+        self._term_pop.hide()
+        self._memo_panel.set_note(rel_path)
+        self._memo_panel.hide()
+        self._memo_btn.set_count(self._memo_store.count(rel_path))
         top, asset = split_note_view(text)
         html = render_wiki_document(top or text)
         if not html:
@@ -720,7 +757,7 @@ class ObsidianWorkspacePage(QWidget):
             Qt.WidgetAttribute.WA_TransparentForMouseEvents, transparent
         )
         # 검색창이 구체 칸 최소폭을 다시 키우지 않게, 좁아지면 먼저 숨긴다.
-        if graph_w < _SEARCH_W or transparent:
+        if graph_w < _SEARCH_HIDE_W or transparent:
             self._search.hide()
             self._results.hide()
         else:
@@ -798,3 +835,31 @@ class ObsidianWorkspacePage(QWidget):
     @property
     def current_note(self) -> str:
         return self._current_rel
+
+    def set_term_explainer(self, explainer) -> None:
+        """용어설명 생성기 주입. None이면 기본(오프라인) 설명."""
+        self._term_explainer = explainer
+
+    def _on_body_selection(self) -> None:
+        self._book_fab.sync_to_body(self._body)
+        if not self._body.textCursor().hasSelection():
+            self._term_pop.hide()
+
+    def _on_term_explain(self, selection: str) -> None:
+        text = explain_term(
+            selection,
+            self._current_rel,
+            surrounding_for_cursor(self._body),
+            explainer=self._term_explainer,
+        )
+        # FAB 근처 — 채팅 히스토리에 남기지 않음
+        anchor = self._book_fab.mapTo(self._info_wrap, self._book_fab.rect().bottomLeft())
+        self._term_pop.show_explanation(selection.strip(), text, anchor)
+
+    def _toggle_page_memo(self) -> None:
+        if not self._current_rel:
+            return
+        self._memo_panel.set_note(self._current_rel)
+        pos = self._memo_btn.mapTo(self._info_wrap, self._memo_btn.rect().bottomRight())
+        self._memo_panel.toggle_at(QPoint(max(8, pos.x() - self._memo_panel.width()), pos.y() + 6))
+        self._memo_btn.set_count(self._memo_panel.count())
