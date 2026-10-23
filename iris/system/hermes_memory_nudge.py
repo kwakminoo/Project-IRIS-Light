@@ -10,13 +10,14 @@ import re
 
 
 
+from iris.browser.observation import browser_teaching_block
 from iris.system.hermes_iris_control_sync import hermes_home
 
 
 
-_MARKER = "<!-- iris-control-nudge-v21 -->"
+_MARKER = "<!-- iris-control-nudge-v22 -->"
 
-_BLOCK = """<!-- iris-control-nudge-v21 -->
+_BLOCK = """<!-- iris-control-nudge-v22 -->
 
 ## Iris Light UI control
 
@@ -69,7 +70,13 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 20. Open a file only with `ide.open_file` after `iris_get_state` and `project.list_files`. Relative `path` is the bound workspace, not the shell cwd. The folder action is `ide.open_folder` (there is no project.open_folder). If the file is missing, say so. Do not create another file or say it opened.
 
+21. Browser page driving uses the same iris_invoke path.
+
 """
+
+
+def _nudge_block() -> str:
+    return _BLOCK.strip() + "\n" + browser_teaching_block() + "\n"
 
 
 
@@ -153,17 +160,21 @@ def ensure_memory_nudge() -> str:
 
         and "project.rename_file" in existing
 
+        and "browser.search" in existing
+
+        and "not a browser action" in existing
+
     ):
 
         return "memory nudge already present"
 
     cleaned = _strip_old_nudge(existing) if "iris-control-nudge" in existing else existing
 
-    text = cleaned.rstrip() + ("\n\n" if cleaned.strip() else "") + _BLOCK.strip() + "\n"
+    text = cleaned.rstrip() + ("\n\n" if cleaned.strip() else "") + _nudge_block()
 
     path.write_text(text, encoding="utf-8")
 
-    return "memory nudge updated (v21)"
+    return "memory nudge updated (v22)"
 
 
 

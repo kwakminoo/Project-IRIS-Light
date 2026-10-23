@@ -1,8 +1,4 @@
-"""Hermes가 켜져 있으면 채팅 의도 가로채기를 모델 도구에 넘긴다.
-
-브라우저 play/pause/search는 예외 — 소형 모델이 도구를 안 부른다.
-`iris.browser.intent` / `MainWindow._try_local_browser_control`.
-"""
+"""Hermes가 켜져 있으면 채팅 의도 가로채기를 모델 도구에 넘긴다."""
 
 from __future__ import annotations
 

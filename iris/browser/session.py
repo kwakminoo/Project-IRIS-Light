@@ -53,6 +53,7 @@ class BrowserSession:
         self._snap = empty_snapshot(phase=BrowserPhase.CLOSED)
         self._listeners: list[SnapshotListener] = []
         self._visible = False
+        self._last_result: BrowserResult | None = None
 
     def set_ui_call(self, ui_call: UiCall) -> None:
         self._ui_call = ui_call
@@ -115,6 +116,11 @@ class BrowserSession:
             tab_count=tab_count,
             target_id=f"tab:{tab_index}",
         )
+
+    def last_result(self) -> BrowserResult | None:
+        """Last execute() result, or None if this process has not run a command."""
+        with self._lock:
+            return self._last_result
 
     def snapshot(self) -> BrowserSnapshot:
         with self._lock:
@@ -182,6 +188,12 @@ class BrowserSession:
                 pass
 
     def execute(self, cmd: BrowserCommand) -> BrowserResult:
+        result = self._execute_body(cmd)
+        with self._lock:
+            self._last_result = result
+        return result
+
+    def _execute_body(self, cmd: BrowserCommand) -> BrowserResult:
         with self._lock:
             kind = getattr(cmd, "kind", "unknown")
             log.info("cmd=%s", kind)

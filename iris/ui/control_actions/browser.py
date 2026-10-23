@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from iris.browser.observation import looks_sensitive_browser_act
 from iris.browser.registry import command_specs, parse_command
 from iris.browser.session import get_browser_session
+from iris.browser.types import Actor
 from iris.system.control_surface import ActionRegistry
 from iris.ui.control_actions.hosts import BrowserHost
 
@@ -33,6 +35,14 @@ def register_browser_actions(window: BrowserHost, reg: ActionRegistry) -> None:
             cmd = parse_command(wire)
         except (ValueError, TypeError) as exc:
             return err_result(action_name, str(exc))
+        if cmd.source != Actor.HUMAN and looks_sensitive_browser_act(
+            action_name, wire, session.snapshot()
+        ):
+            spec = reg.spec(action_name)
+            if spec is None:
+                return err_result(action_name, "human confirm required")
+            if not reg.ask_human(spec, wire):
+                return err_result(action_name, "cancelled")
         result = session.execute(cmd)
         _log(window, action_name, result.ok)
         if result.ok:

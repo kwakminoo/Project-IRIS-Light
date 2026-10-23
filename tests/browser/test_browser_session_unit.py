@@ -78,6 +78,12 @@ class SessionFakeDriverTests(unittest.TestCase):
         self.assertTrue(r.ok, r.detail)
         self.assertIn("watch?v=fixture-iu", r.snapshot.url)
         self.assertTrue(r.snapshot.media and r.snapshot.media.playing)
+        last = self.session.last_result()
+        self.assertIsNotNone(last)
+        assert last is not None
+        self.assertTrue(last.ok)
+        self.assertEqual(last.command_kind, "search")
+        self.assertIs(last, r)
 
     def test_youtube_play_fails_without_watch(self) -> None:
         from iris.browser._driver import FakePageDriver, _FakePage

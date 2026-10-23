@@ -40,7 +40,7 @@ Agent and human chrome share `BrowserSession`.
 - "구글에서 React 공식 문서 검색해줘" → `browser.search` `{query: "React 공식 문서", engine: "google"}` then `browser.click` the official result (or `browser.navigate` `https://react.dev`).
 - "유튜브에서 음악 틀어줘" → `browser.search` `{query: "음악", engine: "youtube", play: true}`.
 - "일시정지 해줘" / "다시 재생해줘" → `browser.media` `{action: "pause"|"resume"}`.
-- Iris also routes these phrases locally when the model skips tool calls. Same actions. Success requires `media.playing`, not just a watch URL.
+- Success requires `media.playing`, not just a watch URL.
 
 ## Notes
 

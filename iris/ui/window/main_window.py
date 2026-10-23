@@ -4165,39 +4165,6 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(0, apply)
 
-    def _try_local_browser_control(self, turn: UserTurn) -> bool:
-        """YouTube play/pause and explicit browser commands — even when Hermes is on.
-
-        gemma-class models often skip tool calls. Same browser.* actions as Hermes.
-        """
-        from iris.browser.intent import format_browser_reply, match_browser_intent
-
-        intent = match_browser_intent(turn.text or "")
-        if intent is None:
-            return False
-        display = self._format_user_turn_content(turn)
-        self._chat.append_message_instant("You", display)
-        self._record_history("user", display)
-        surface = getattr(self, "_control_surface", None)
-        if surface is None:
-            reply = "브라우저 제어면이 없습니다."
-        else:
-            try:
-                out = surface.registry.invoke(intent.control, dict(intent.args))
-            except Exception as exc:  # noqa: BLE001
-                out = {"ok": False, "error": str(exc), "result": {}}
-            if not isinstance(out, dict):
-                out = {"ok": False, "error": "browser invoke failed", "result": {}}
-            reply = format_browser_reply(intent, out)
-            self._live_activity.append_instant_line(
-                f"browser:{intent.kind} ok={bool(out.get('ok'))}"
-            )
-        self._chat.append_message_instant("Iris", reply)
-        self._record_history("assistant", reply)
-        self._refresh_context_gauge()
-        self._finish_current_turn(turn.id, open_followup=False)
-        return True
-
     def _try_local_pinned_status(self, turn: UserTurn) -> bool:
         """'고정한 창 지금 어때?' — 감시 결과를 모델 없이 그대로 답한다 (지어낼 일이 없게)."""
         if not is_pinned_status_question(turn.text or ""):
@@ -4508,8 +4475,6 @@ class MainWindow(QMainWindow):
         # 배운 업무(스킬) — Hermes 가 연결돼 있으면 모델이 learning.run 을 부르고,
         # 꺼져 있거나 죽어 있으면 여기서 이름으로 바로 고른다 (실제로 Hermes 가 죽어 실행 못 함)
         if self._try_local_pinned_status(turn):
-            return
-        if self._try_local_browser_control(turn):
             return
         if not (self._use_hermes_backend() and self._hermes_online):
             if self._try_local_skill_run(turn):
@@ -7509,17 +7474,6 @@ class MainWindow(QMainWindow):
                 "Use email.list_messages, email.read_message, email.open_compose, email.send. "
                 "Do not invent inbox contents."
             )
-        if mode == "browser":
-            from iris.browser.session import get_browser_session
-
-            snap = get_browser_session().snapshot()
-            return (
-                f"The user is on the built-in browser screen. "
-                f"URL: {snap.url or '(blank)'}. Title: {snap.title or '(none)'}. "
-                "Drive the page with browser.navigate, browser.search, browser.click, "
-                "browser.type, browser.scroll, browser.snapshot. "
-                "Do not invent page contents — call browser.snapshot first."
-            )
         return ""
 
     def _reset_assistant_slot_sizes(self) -> None:
@@ -8055,6 +8009,10 @@ class MainWindow(QMainWindow):
             "(끄기만 원하면 지우지 말고 update enabled=false). 지금 한 번 돌리기: routine.run. "
             "등록·변경하면 Iris Wiki IRIS 칸에 자동으로 남으니 따로 wiki 저장을 부르지 마라. ",
         )
+        from iris.browser.observation import browser_teaching_block, pack_browser_observation
+        from iris.browser.session import get_browser_session
+
+        bits.append(browser_teaching_block())
         if root:
             bits.append(f"Project root: {root}")
             bits.append(
@@ -8092,6 +8050,9 @@ class MainWindow(QMainWindow):
         if past:
             _before_user(past)
         _before_user(getattr(self, "_pending_web_evidence", ""))
+        trusted, page_text = pack_browser_observation(get_browser_session())
+        _before_user(trusted)
+        _before_user(page_text)
         return payload
 
     def _on_ide_icon(self) -> None:
