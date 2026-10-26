@@ -11,8 +11,26 @@
     return exact ? t === text : t.toLowerCase().includes(String(text).toLowerCase());
   }
 
+  let lastEls = [];
+
+  function inViewport(el) {
+    const r = el.getBoundingClientRect();
+    const vh = window.innerHeight || 0;
+    const vw = window.innerWidth || 0;
+    return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+  }
+
+  function inArticle(el) {
+    return !!(el.closest && el.closest("article, [role='article'], main, [role='main']"));
+  }
+
   function resolve(target) {
     if (!target || typeof target !== "object") return null;
+    if (target.kind === "ref") {
+      const index = Number(target.index);
+      if (!Number.isInteger(index) || index < 0) return null;
+      return lastEls[index] || null;
+    }
     const nth = Math.max(0, Number(target.nth) || 0);
     if (target.kind === "css") {
       const list = Array.from(document.querySelectorAll(target.css || ""));
@@ -43,29 +61,65 @@
     return null;
   }
 
-  function landmarks() {
+  function collectNodes() {
+    const raw = Array.from(
+      document.querySelectorAll("a[href], button, [role='button'], h1, h2, input, textarea, [role='link']")
+    );
+    raw.sort((a, b) => {
+      const av = inViewport(a) ? 0 : 1;
+      const bv = inViewport(b) ? 0 : 1;
+      if (av !== bv) return av - bv;
+      const aa = inArticle(a) ? 0 : 1;
+      const ba = inArticle(b) ? 0 : 1;
+      if (aa !== ba) return aa - ba;
+      return 0;
+    });
     const out = [];
-    const nodes = document.querySelectorAll("a[href], button, [role='button'], h1, h2, input, textarea");
-    for (const el of nodes) {
+    lastEls = [];
+    for (const el of raw) {
       if (out.length >= 40) break;
       const name = textOf(el) || el.getAttribute("placeholder") || el.getAttribute("name") || "";
       if (!name) continue;
+      const heading = el.tagName === "H1" || el.tagName === "H2";
       const role =
-        el.tagName === "A"
+        el.tagName === "A" || el.getAttribute("role") === "link"
           ? "link"
           : el.tagName === "BUTTON" || el.getAttribute("role") === "button"
             ? "button"
             : el.tagName === "INPUT" || el.tagName === "TEXTAREA"
               ? "textbox"
               : el.tagName.toLowerCase();
-      const r = el.getBoundingClientRect();
       out.push({
         role,
-        name: String(name).slice(0, 120),
-        bbox: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+        name: String(name).slice(0, 80),
+        interactive: !heading,
+        index: out.length,
       });
+      lastEls.push(el);
     }
     return out;
+  }
+
+  function excerptText() {
+    const root =
+      document.querySelector("article, [role='article'], main, [role='main']") || document.body;
+    const t = (root && root.innerText) || "";
+    return String(t).replace(/\s+/g, " ").trim().slice(0, 800);
+  }
+
+  function extract(opts) {
+    const options = opts || {};
+    const maxChars = Math.max(1, Math.min(Number(options.maxChars) || 4000, 8000));
+    let root = null;
+    if (typeof options.index === "number" && lastEls[options.index]) {
+      root = lastEls[options.index];
+    } else if (options.scope === "document") {
+      root = document.body;
+    } else {
+      root = document.querySelector("article, [role='article'], main, #content") || document.body;
+    }
+    const t = (root && root.innerText) || "";
+    return { ok: true, text: String(t).replace(/\s+/g, " ").trim().slice(0, maxChars) };
   }
 
   function pageBlock() {
@@ -198,11 +252,13 @@
         scrollX: Math.round(window.scrollX || 0),
         scrollY: Math.round(window.scrollY || 0),
         readyState: String(document.readyState || ""),
-        landmarks: landmarks(),
+        nodes: collectNodes(),
+        excerpt: excerptText(),
         media,
       };
     },
     mediaState,
+    extract,
     firstWatchUrl,
     playerBox,
     tryPlay() {

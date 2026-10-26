@@ -11,12 +11,12 @@ from iris.browser.observation import (
     looks_sensitive_browser_act,
     pack_browser_observation,
 )
-from iris.browser.registry import command_specs
+from iris.browser.registry import command_recipes, command_specs
 from iris.browser.session import BrowserSession, reset_browser_session_for_tests
 from iris.browser.types import (
     BrowserPhase,
     BrowserResult,
-    Landmark,
+    PageNode,
     MediaState,
     empty_snapshot,
 )
@@ -127,7 +127,17 @@ def main() -> int:
     teach = browser_teaching_block()
     for spec in command_specs():
         assert spec.control_name in teach
+    for recipe in command_recipes():
+        assert recipe.when
+        for name in recipe.control_names:
+            assert name in teach
     assert "browser.search" in teach and "play" in teach and "browser.media" in teach
+    assert "browser.extract" in teach
+    assert "by=text" not in teach
+    from iris.knowledge.answer_grounding import classify_turn
+
+    assert classify_turn("최신 뉴스 보여줘") == "browse"
+    assert classify_turn("오늘 날씨 알려줘") == "today"
     for chat in VETO_CHATS:
         assert chat in teach
     assert "not a browser action" in teach
@@ -148,7 +158,7 @@ def main() -> int:
     session._snap = empty_snapshot(phase=BrowserPhase.READY).evolve(
         url="https://evil.example",
         title=hostile,
-        landmarks=(Landmark(role="link", name=hostile),),
+        nodes=(PageNode(ref="g1e0", role="link", name=hostile, interactive=True),),
     )
     trusted, page_text = pack_browser_observation(session)
     assert hostile not in trusted
@@ -205,6 +215,12 @@ def main() -> int:
         / "SKILL.md"
     ).read_text(encoding="utf-8")
     assert "Iris also routes these phrases locally" not in skill
+    for spec in command_specs():
+        assert spec.control_name in skill, spec.control_name
+    assert "{ref}" in skill
+    assert "browser.extract" in skill
+    assert "by: \"text\"" not in skill
+    assert "{by: \"text\"" not in skill
 
     _veto_chats_reach_launch()
     reset_browser_session_for_tests()

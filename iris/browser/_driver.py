@@ -15,12 +15,16 @@ from iris.browser.types import (
     BrowserPhase,
     BrowserSnapshot,
     ByCss,
+    ByRef,
     ByRole,
     ByText,
-    Landmark,
+    EXTRACT_MAX,
+    EXCERPT_CAP,
     Locator,
+    PageNode,
     MediaState,
     media_from_dict,
+    split_page_ref,
 )
 
 log = logging.getLogger("iris.browser")
@@ -48,6 +52,12 @@ class PageDriver(Protocol):
 
 
 def _locator_payload(target: Locator) -> dict[str, Any]:
+    if isinstance(target, ByRef):
+        try:
+            _gen, index = split_page_ref(target.ref)
+        except ValueError:
+            index = -1
+        return {"kind": "ref", "index": index, "ref": target.ref}
     if isinstance(target, ByCss):
         return {"kind": "css", "css": target.css, "nth": 0}
     if isinstance(target, ByText):
@@ -72,7 +82,9 @@ def _locator_payload(target: Locator) -> dict[str, Any]:
 class _FakePage:
     url: str
     title: str
-    landmarks: list[Landmark] = field(default_factory=list)
+    nodes: list[PageNode] = field(default_factory=list)
+    excerpt: str = ""
+    article: str = ""
     scroll_y: int = 0
     links: dict[str, str] = field(default_factory=dict)
 
@@ -117,9 +129,29 @@ class FakePageDriver:
             scroll_x=self._scroll_x,
             scroll_y=self._scroll_y,
             last_error=self._last_error,
-            landmarks=tuple(page.landmarks),
+            nodes=tuple(page.nodes),
+            excerpt=page.excerpt,
             media=self.read_media(),
         )
+
+    def settle_after_act(self) -> None:
+        return
+
+    def read_text(self, *, scope: str, ref: str | None, max_chars: int) -> str:
+        page = self._current()
+        cap = max(1, min(int(max_chars), EXTRACT_MAX))
+        if scope == "document":
+            body = page.article or page.excerpt or page.title
+            return body[:cap]
+        if ref:
+            try:
+                _gen, index = split_page_ref(ref)
+            except ValueError:
+                return ""
+            if 0 <= index < len(page.nodes):
+                return (page.nodes[index].name or "")[:cap]
+        body = page.article or page.excerpt or page.title
+        return body[:cap]
 
     def read_media(self) -> MediaState:
         watch = "/watch" in self._history[self._index]
@@ -204,10 +236,18 @@ class FakePageDriver:
         page = self._current()
         key = _fake_locator_key(target)
         dest = page.links.get(key)
+        if dest is None and isinstance(target, ByRef):
+            try:
+                _gen, index = split_page_ref(target.ref)
+            except ValueError as exc:
+                raise LookupError("element not found") from exc
+            if 0 <= index < len(page.nodes):
+                name = page.nodes[index].name
+                dest = page.links.get(f"text:{name}") or page.links.get(name)
         if dest is None:
-            for lm in page.landmarks:
-                if _landmark_matches(lm, target):
-                    dest = page.links.get(lm.name) or page.links.get(f"text:{lm.name}")
+            for node in page.nodes:
+                if _node_matches(node, target):
+                    dest = page.links.get(node.name) or page.links.get(f"text:{node.name}")
                     if dest:
                         break
         if not dest:
@@ -220,7 +260,14 @@ class FakePageDriver:
     def type_text(self, target: Locator, text: str, *, clear: bool) -> None:
         page = self._current()
         key = _fake_locator_key(target)
-        if key not in page.links and not any(_landmark_matches(lm, target) for lm in page.landmarks):
+        named = any(_node_matches(node, target) for node in page.nodes)
+        if isinstance(target, ByRef):
+            try:
+                _gen, index = split_page_ref(target.ref)
+                named = named or (0 <= index < len(page.nodes))
+            except ValueError:
+                named = False
+        if key not in page.links and not named:
             self._last_error = "element not found"
             self._phase = BrowserPhase.FAULTED
             raise LookupError("element not found")
@@ -243,22 +290,24 @@ def _fake_locator_key(target: Locator) -> str:
         return f"text:{target.text}"
     if isinstance(target, ByRole):
         return f"role:{target.role}:{target.name or ''}"
+    if isinstance(target, ByRef):
+        return f"ref:{target.ref}"
     return repr(target)
 
 
-def _landmark_matches(lm: Landmark, target: Locator) -> bool:
+def _node_matches(node: PageNode, target: Locator) -> bool:
     if isinstance(target, ByText):
         if target.exact:
-            return lm.name == target.text
-        return target.text.lower() in lm.name.lower()
+            return node.name == target.text
+        return target.text.lower() in node.name.lower()
     if isinstance(target, ByRole):
-        if lm.role != target.role:
+        if node.role != target.role:
             return False
         if not target.name:
             return True
         if target.exact:
-            return lm.name == target.name
-        return target.name.lower() in lm.name.lower()
+            return node.name == target.name
+        return target.name.lower() in node.name.lower()
     return False
 
 
@@ -266,9 +315,9 @@ def youtube_like_fixture_driver() -> FakePageDriver:
     search = _FakePage(
         url="https://fixture.local/search",
         title="Search: IU night letter",
-        landmarks=[
-            Landmark(role="link", name="IU - 밤편지 (Night Letter)"),
-            Landmark(role="link", name="Other result"),
+        nodes=[
+            PageNode(ref="", role="link", name="IU - 밤편지 (Night Letter)", interactive=True),
+            PageNode(ref="", role="link", name="Other result", interactive=True),
         ],
         links={
             "text:IU": "https://fixture.local/watch?v=fixture-iu",
@@ -282,17 +331,17 @@ def youtube_like_fixture_driver() -> FakePageDriver:
     watch = _FakePage(
         url="https://fixture.local/watch?v=fixture-iu",
         title="IU - 밤편지 (Night Letter) - YouTube",
-        landmarks=[Landmark(role="heading", name="IU - 밤편지")],
+        nodes=[PageNode(ref="", role="heading", name="IU - 밤편지", interactive=False)],
     )
     react = _FakePage(
         url="https://fixture.local/react-docs",
         title="React",
-        landmarks=[Landmark(role="heading", name="React")],
+        nodes=[PageNode(ref="", role="heading", name="React", interactive=False)],
     )
     tall = _FakePage(
         url="https://fixture.local/tall",
         title="Tall page",
-        landmarks=[],
+        nodes=[],
     )
     driver = FakePageDriver(
         {
@@ -323,6 +372,19 @@ class WebEnginePageDriver:
         self._last_error: str | None = None
         self._phase = BrowserPhase.OPENING
         self._bridge_ready = False
+        self._nav_pending = False
+        try:
+            view.loadStarted.connect(self._on_load_started)
+            view.loadFinished.connect(self._on_load_finished)
+        except Exception:
+            pass
+
+    def _on_load_started(self, *_a: Any) -> None:
+        self._nav_pending = True
+        self._bridge_ready = False
+
+    def _on_load_finished(self, *_a: Any) -> None:
+        self._nav_pending = False
 
     def _run_ui(self, fn: Callable[[], Any]) -> Any:
         return self._ui_call(fn)
@@ -398,15 +460,18 @@ class WebEnginePageDriver:
 
         can_back, can_fwd, url, title = self._run_ui(hist_flags)
         data = raw if isinstance(raw, dict) else {}
-        landmarks = tuple(
-            Landmark(
+        raw_nodes = data.get("nodes") or data.get("landmarks") or []
+        nodes = tuple(
+            PageNode(
+                ref="",
                 role=str(item.get("role") or ""),
-                name=str(item.get("name") or ""),
-                bbox=_bbox4(item.get("bbox")),
+                name=str(item.get("name") or "")[:80],
+                interactive=bool(item.get("interactive", True)),
             )
-            for item in (data.get("landmarks") or [])
+            for item in raw_nodes
             if isinstance(item, dict)
         )
+        excerpt = str(data.get("excerpt") or "")[:EXCERPT_CAP]
         phase = self._phase
         if self._last_error:
             phase = BrowserPhase.FAULTED
@@ -423,9 +488,66 @@ class WebEnginePageDriver:
             scroll_x=int(data.get("scrollX") or 0),
             scroll_y=int(data.get("scrollY") or 0),
             last_error=self._last_error,
-            landmarks=landmarks,
+            nodes=nodes,
+            excerpt=excerpt,
             media=media_from_dict(data.get("media")),
         )
+
+    def settle_after_act(self) -> None:
+        if not self._nav_pending:
+            time.sleep(0.3)
+            return
+        done = threading.Event()
+
+        def arm() -> None:
+            if not self._nav_pending:
+                done.set()
+                return
+
+            def finished(_ok: bool) -> None:
+                try:
+                    self._view.loadFinished.disconnect(finished)
+                except Exception:
+                    pass
+                done.set()
+
+            self._view.loadFinished.connect(finished)
+            if not self._nav_pending:
+                try:
+                    self._view.loadFinished.disconnect(finished)
+                except Exception:
+                    pass
+                done.set()
+
+        self._run_ui(arm)
+        self._wait_event(done, 45.0)
+        self._nav_pending = False
+        self._bridge_ready = False
+        self._ensure_bridge()
+
+    def read_text(self, *, scope: str, ref: str | None, max_chars: int) -> str:
+        self._ensure_bridge()
+        index = None
+        if ref:
+            try:
+                _gen, index = split_page_ref(ref)
+            except ValueError:
+                index = None
+        payload = json.dumps(
+            {
+                "scope": scope,
+                "index": index,
+                "maxChars": max(1, min(int(max_chars), EXTRACT_MAX)),
+            }
+        )
+        try:
+            raw = self._eval_js(f"window.__irisBrowser.extract({payload})")
+        except Exception as exc:
+            log.warning("extract js failed: %s", exc)
+            return ""
+        if not isinstance(raw, dict):
+            return ""
+        return str(raw.get("text") or "")[:EXTRACT_MAX]
 
     def navigate(self, url: str) -> None:
         from PyQt6.QtCore import QUrl
@@ -613,7 +735,6 @@ class WebEnginePageDriver:
             raise LookupError(err)
         self._last_error = None
         self._phase = BrowserPhase.READY
-        time.sleep(0.1)
 
     def type_text(self, target: Locator, text: str, *, clear: bool) -> None:
         self._ensure_bridge()

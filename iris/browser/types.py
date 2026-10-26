@@ -1,8 +1,30 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal, Union
+
+NODE_CAP = 40
+NAME_CAP = 80
+EXCERPT_CAP = 800
+EXTRACT_DEFAULT = 4000
+EXTRACT_MAX = 8000
+
+_PAGE_REF = re.compile(r"^g(\d+)e(\d+)$")
+
+
+def make_page_ref(gen: int, index: int) -> str:
+    if gen < 1 or index < 0:
+        raise ValueError("ref parts out of range")
+    return f"g{gen}e{index}"
+
+
+def split_page_ref(ref: str) -> tuple[int, int]:
+    match = _PAGE_REF.match(str(ref or ""))
+    if match is None:
+        raise ValueError("bad_ref")
+    return int(match.group(1)), int(match.group(2))
 
 
 class BrowserPhase(str, Enum):
@@ -20,10 +42,11 @@ class Actor(str, Enum):
 
 
 @dataclass(frozen=True)
-class Landmark:
+class PageNode:
+    ref: str
     role: str
     name: str
-    bbox: tuple[int, int, int, int] | None = None
+    interactive: bool = True
 
 
 DockedSite = Literal["dedicated", "ide_internal"]
@@ -148,14 +171,16 @@ class BrowserSnapshot:
     scroll_x: int
     scroll_y: int
     last_error: str | None = None
-    landmarks: tuple[Landmark, ...] = ()
+    gen: int = 0
+    nodes: tuple[PageNode, ...] = ()
+    excerpt: str = ""
     mini_player: bool = False
     media: MediaState | None = None
     tab_index: int = 0
     tab_count: int = 1
     target_id: str = ""
 
-    def to_control_dict(self) -> dict[str, Any]:
+    def to_gui_dict(self) -> dict[str, Any]:
         media = self.media.to_dict() if self.media is not None else None
         return {
             "url": self.url,
@@ -167,14 +192,6 @@ class BrowserSnapshot:
             "scroll_x": self.scroll_x,
             "scroll_y": self.scroll_y,
             "last_error": self.last_error,
-            "landmarks": [
-                {
-                    "role": lm.role,
-                    "name": lm.name,
-                    "bbox": list(lm.bbox) if lm.bbox is not None else None,
-                }
-                for lm in self.landmarks
-            ],
             "browser_open": self.phase != BrowserPhase.CLOSED,
             "browser_url": self.url,
             "browser_title": self.title,
@@ -185,7 +202,11 @@ class BrowserSnapshot:
             "tab_index": self.tab_index,
             "tab_count": self.tab_count,
             "target_id": self.target_id or f"tab:{self.tab_index}",
+            "gen": self.gen,
         }
+
+    def to_control_dict(self) -> dict[str, Any]:
+        return self.to_gui_dict()
 
     def evolve(self, **kwargs: Any) -> "BrowserSnapshot":
         data = {
@@ -197,7 +218,9 @@ class BrowserSnapshot:
             "scroll_x": self.scroll_x,
             "scroll_y": self.scroll_y,
             "last_error": self.last_error,
-            "landmarks": self.landmarks,
+            "gen": self.gen,
+            "nodes": self.nodes,
+            "excerpt": self.excerpt,
             "mini_player": self.mini_player,
             "media": self.media,
             "tab_index": self.tab_index,
@@ -206,6 +229,11 @@ class BrowserSnapshot:
         }
         data.update(kwargs)
         return BrowserSnapshot(**data)
+
+
+@dataclass(frozen=True)
+class ByRef:
+    ref: str
 
 
 @dataclass(frozen=True)
@@ -228,7 +256,8 @@ class ByRole:
     exact: bool = False
 
 
-Locator = Union[ByCss, ByText, ByRole]
+DriverLocator = Union[ByCss, ByText, ByRole]
+Locator = Union[ByRef, DriverLocator]
 
 
 @dataclass(frozen=True)
@@ -268,14 +297,14 @@ class Search:
 
 @dataclass(frozen=True)
 class Click:
-    target: Locator
+    target: ByRef
     source: Actor = Actor.AGENT
     kind: Literal["click"] = "click"
 
 
 @dataclass(frozen=True)
 class TypeText:
-    target: Locator
+    target: ByRef
     text: str
     clear: bool = True
     source: Actor = Actor.AGENT
@@ -294,6 +323,15 @@ class Scroll:
 class Snapshot:
     source: Actor = Actor.AGENT
     kind: Literal["snapshot"] = "snapshot"
+
+
+@dataclass(frozen=True)
+class Extract:
+    scope: Literal["article", "document"] = "article"
+    ref: str | None = None
+    max_chars: int = EXTRACT_DEFAULT
+    source: Actor = Actor.AGENT
+    kind: Literal["extract"] = "extract"
 
 
 @dataclass(frozen=True)
@@ -320,6 +358,7 @@ BrowserCommand = Union[
     TypeText,
     Scroll,
     Snapshot,
+    Extract,
     MiniPlayer,
     Media,
 ]
@@ -331,14 +370,18 @@ class BrowserResult:
     command_kind: str
     snapshot: BrowserSnapshot
     detail: str = ""
+    read_text: str = ""
 
-    def to_control_dict(self) -> dict[str, Any]:
-        data = self.snapshot.to_control_dict()
+    def to_gui_dict(self) -> dict[str, Any]:
+        data = self.snapshot.to_gui_dict()
         data["ok"] = self.ok
         data["command_kind"] = self.command_kind
         if self.detail:
             data["detail"] = self.detail
         return data
+
+    def to_control_dict(self) -> dict[str, Any]:
+        return self.to_gui_dict()
 
 
 def empty_snapshot(*, phase: BrowserPhase = BrowserPhase.CLOSED) -> BrowserSnapshot:

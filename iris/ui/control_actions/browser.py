@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from iris.browser.observation import looks_sensitive_browser_act
+from iris.browser.observation import looks_sensitive_browser_act, pack_hermes_result
 from iris.browser.registry import command_specs, parse_command
 from iris.browser.session import get_browser_session
 from iris.browser.types import Actor, ViewHost
@@ -52,10 +52,11 @@ def register_browser_actions(window: BrowserHost, reg: ActionRegistry) -> None:
                 return err_result(action_name, "cancelled")
         result = session.execute(cmd)
         _log(window, action_name, result.ok)
+        payload = pack_hermes_result(result)
         if result.ok:
             _append_activity(window, f"browser: {result.command_kind}")
-            return ok_result(action_name, result.to_control_dict())
-        return err_result(action_name, result.detail or "browser command failed", result.to_control_dict())
+            return ok_result(action_name, payload)
+        return err_result(action_name, result.detail or "browser command failed", payload)
 
     def browser_invoke(a: dict[str, Any]) -> dict[str, Any]:
         return _handle("browser.invoke", a)

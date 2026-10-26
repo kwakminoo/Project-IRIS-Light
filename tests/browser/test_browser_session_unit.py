@@ -8,7 +8,7 @@ from iris.browser.search import search_url
 from iris.browser.session import BrowserSession
 from iris.browser.types import (
     BrowserPhase,
-    ByText,
+    ByRef,
     Click,
     HistoryStep,
     MiniHost,
@@ -39,10 +39,11 @@ class ParseBoundaryTests(unittest.TestCase):
     def test_parse_search_and_click(self) -> None:
         cmd = parse_command({"command": "search", "query": "IU night letter"})
         self.assertIsInstance(cmd, Search)
-        click = parse_command({"command": "click", "by": "text", "value": "IU"})
+        click = parse_command({"command": "click", "ref": "g1e0"})
         self.assertIsInstance(click, Click)
         assert isinstance(click, Click)
-        self.assertIsInstance(click.target, ByText)
+        self.assertIsInstance(click.target, ByRef)
+        self.assertEqual(click.target.ref, "g1e0")
 
     def test_parse_google_and_youtube_play(self) -> None:
         g = parse_command({"command": "search", "query": "React 공식 문서", "engine": "google"})
@@ -121,7 +122,8 @@ class SessionFakeDriverTests(unittest.TestCase):
         r = self.session.execute(Search(query="IU night letter"))
         self.assertTrue(r.ok)
         self.assertIn("search", r.snapshot.url)
-        r = self.session.execute(Click(target=ByText(text="IU")))
+        ref = next(node.ref for node in r.snapshot.nodes if "IU" in node.name)
+        r = self.session.execute(Click(target=ByRef(ref=ref)))
         self.assertTrue(r.ok)
         self.assertIn("watch?v=fixture-iu", r.snapshot.url)
         self.assertIn("IU", r.snapshot.title)
@@ -200,6 +202,7 @@ class SessionFakeDriverTests(unittest.TestCase):
             "browser.forward",
             "browser.reload",
             "browser.snapshot",
+            "browser.extract",
             "browser.mini_player",
             "browser.media",
         ):
@@ -288,6 +291,7 @@ class RegistrySyncTests(unittest.TestCase):
                 "browser.type",
                 "browser.scroll",
                 "browser.snapshot",
+                "browser.extract",
                 "browser.mini_player",
                 "browser.media",
             ),

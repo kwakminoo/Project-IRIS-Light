@@ -14,7 +14,7 @@ from pathlib import Path
 from iris.browser._driver import youtube_like_fixture_driver
 from iris.browser.registry import control_action_names
 from iris.browser.session import BrowserSession
-from iris.browser.types import ByText, Click, Navigate, Scroll, Search
+from iris.browser.types import ByRef, Click, Navigate, Scroll, Search
 from iris.system.control_surface import runs_off_ui_thread
 
 
@@ -53,10 +53,11 @@ def _run_fixture_scenarios() -> None:
 
     r = session.execute(Search(query="IU night letter"))
     assert r.ok, r.detail
-    r = session.execute(Click(target=ByText(text="IU")))
+    ref = next(node.ref for node in r.snapshot.nodes if "IU" in node.name)
+    r = session.execute(Click(target=ByRef(ref=ref)))
     assert r.ok, r.detail
     assert "fixture-iu" in r.snapshot.url
-    assert "IU" in r.snapshot.title or any("IU" in lm.name for lm in r.snapshot.landmarks)
+    assert "IU" in r.snapshot.title or any("IU" in node.name for node in r.snapshot.nodes)
     print("scenario A search→click ok")
 
     r = session.execute(Search(query="IU night letter", engine="youtube", play=True))

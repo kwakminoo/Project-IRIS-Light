@@ -7,12 +7,10 @@ from iris.browser.search import normalize_search_engine
 from iris.browser.types import (
     Actor,
     BrowserCommand,
-    ByCss,
-    ByRole,
-    ByText,
+    ByRef,
     Click,
+    Extract,
     HistoryStep,
-    Locator,
     Media,
     MiniPlayer,
     Navigate,
@@ -22,6 +20,8 @@ from iris.browser.types import (
     Search,
     Snapshot,
     TypeText,
+    EXTRACT_MAX,
+    EXTRACT_DEFAULT,
     parse_page_url,
 )
 
@@ -45,47 +45,13 @@ def _actor(args: dict[str, Any]) -> Actor:
     return Actor.AGENT
 
 
-def _parse_locator(args: dict[str, Any]) -> Locator:
+def _parse_ref(args: dict[str, Any]) -> ByRef:
     if isinstance(args.get("target"), dict):
-        return _parse_locator(args["target"])
-    by = str(args.get("by") or args.get("strategy") or "").strip().lower()
-    selector = str(args.get("selector") or "").strip()
-    if selector.startswith("text="):
-        return ByText(text=selector[5:], nth=int(args.get("nth") or 0), exact=bool(args.get("exact")))
-    if selector.startswith("css="):
-        return ByCss(css=selector[4:])
-    if selector.startswith("role="):
-        rest = selector[5:]
-        name = str(args.get("name") or "").strip() or None
-        return ByRole(role=rest, name=name, nth=int(args.get("nth") or 0), exact=bool(args.get("exact")))
-    if by in ("css", "css_selector") or args.get("css"):
-        css = str(args.get("css") or args.get("value") or args.get("name") or selector).strip()
-        if not css:
-            raise ValueError("css selector required")
-        return ByCss(css=css)
-    if by in ("text", "link") or (not by and args.get("text")):
-        text = str(args.get("text") or args.get("value") or args.get("name") or "").strip()
-        if not text:
-            raise ValueError("text required")
-        return ByText(
-            text=text,
-            nth=int(args.get("nth") or 0),
-            exact=bool(args.get("exact")),
-        )
-    if by == "role":
-        role = str(args.get("role") or args.get("value") or "").strip()
-        if not role:
-            raise ValueError("role required")
-        name = str(args.get("name") or "").strip() or None
-        return ByRole(
-            role=role,
-            name=name,
-            nth=int(args.get("nth") or 0),
-            exact=bool(args.get("exact")),
-        )
-    if selector:
-        return ByCss(css=selector)
-    raise ValueError("locator required (by=text|role|css)")
+        return _parse_ref(args["target"])
+    ref = str(args.get("ref") or "").strip()
+    if not ref:
+        raise ValueError("ref required")
+    return ByRef(ref=ref)
 
 
 def _parse_open(args: dict[str, Any]) -> BrowserCommand:
@@ -118,18 +84,37 @@ def _parse_search(args: dict[str, Any]) -> BrowserCommand:
 
 
 def _parse_click(args: dict[str, Any]) -> BrowserCommand:
-    return Click(target=_parse_locator(args), source=_actor(args))
+    return Click(target=_parse_ref(args), source=_actor(args))
 
 
 def _parse_type(args: dict[str, Any]) -> BrowserCommand:
     if "text" not in args:
         raise ValueError("text required")
     return TypeText(
-        target=_parse_locator(args),
+        target=_parse_ref(args),
         text=str(args.get("text") or ""),
         clear=bool(args.get("clear", True)),
         source=_actor(args),
     )
+
+
+def _parse_extract(args: dict[str, Any]) -> BrowserCommand:
+    scope = str(args.get("scope") or "article").strip().lower() or "article"
+    if scope not in ("article", "document"):
+        raise ValueError("scope must be article|document")
+    raw_ref = args.get("ref")
+    ref = str(raw_ref).strip() if raw_ref else None
+    if ref == "":
+        ref = None
+    try:
+        max_chars = int(args.get("max_chars") or EXTRACT_DEFAULT)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_chars must be int") from exc
+    if max_chars < 1:
+        max_chars = 1
+    if max_chars > EXTRACT_MAX:
+        max_chars = EXTRACT_MAX
+    return Extract(scope=scope, ref=ref, max_chars=max_chars, source=_actor(args))  # type: ignore[arg-type]
 
 
 def _parse_scroll(args: dict[str, Any]) -> BrowserCommand:
@@ -195,10 +180,17 @@ def command_specs() -> tuple[CommandSpec, ...]:
             _parse_search,
             control_name="browser.search",
         ),
-        CommandSpec("click", "Click locator on current page", "medium", _parse_click, control_name="browser.click"),
-        CommandSpec("type", "Type into locator on current page", "medium", _parse_type, control_name="browser.type"),
+        CommandSpec("click", "Click ref from the last PAGE TEXT", "medium", _parse_click, control_name="browser.click"),
+        CommandSpec("type", "Type into ref from the last PAGE TEXT", "medium", _parse_type, control_name="browser.type"),
         CommandSpec("scroll", "Scroll current page", "low", _parse_scroll, control_name="browser.scroll"),
         CommandSpec("snapshot", "Refresh browser observation", "low", _parse_snapshot, control_name="browser.snapshot"),
+        CommandSpec(
+            "extract",
+            "Read article or document text on the current page",
+            "low",
+            _parse_extract,
+            control_name="browser.extract",
+        ),
         CommandSpec(
             "mini_player",
             "Detach or restore browser view as mini player",
@@ -212,6 +204,53 @@ def command_specs() -> tuple[CommandSpec, ...]:
             "medium",
             _parse_media,
             control_name="browser.media",
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class Recipe:
+    when: str
+    text: str
+    control_names: tuple[str, ...]
+    success: str
+
+
+def command_recipes() -> tuple[Recipe, ...]:
+    return (
+        Recipe(
+            when="youtube_play",
+            text=(
+                "Play YouTube: iris_invoke browser.search {engine:youtube, play:true}. "
+                "Empty leftover query becomes 음악. Success is media.playing. "
+                "Do not claim speakers. Do not claim the video was analyzed."
+            ),
+            control_names=("browser.search", "browser.media"),
+            success="media.playing",
+        ),
+        Recipe(
+            when="news",
+            text=(
+                "Read news: iris_invoke browser.search or browser.navigate, then "
+                "browser.click {ref}, then browser.extract. Success is extract text in PAGE TEXT plus trusted url."
+            ),
+            control_names=("browser.search", "browser.navigate", "browser.click", "browser.extract"),
+            success="page_text",
+        ),
+        Recipe(
+            when="paper",
+            text=(
+                "Read a paper: browser.navigate or browser.search then browser.click {ref}, then browser.extract. "
+                "Cite PAGE TEXT. Do not claim figures or PDF layout were read."
+            ),
+            control_names=("browser.search", "browser.navigate", "browser.click", "browser.extract"),
+            success="page_text",
+        ),
+        Recipe(
+            when="not_browser",
+            text="Pause/resume: browser.media {action:pause|resume}.",
+            control_names=("browser.media",),
+            success="none",
         ),
     )
 

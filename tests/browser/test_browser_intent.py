@@ -15,9 +15,9 @@ from iris.browser.session import BrowserSession, reset_browser_session_for_tests
 from iris.browser.types import (
     BrowserPhase,
     BrowserResult,
-    Landmark,
     Media,
     MediaState,
+    PageNode,
     empty_snapshot,
 )
 from iris.browser.youtube import page_block_reason
@@ -134,7 +134,7 @@ class BrowserPackerTests(unittest.TestCase):
         session._snap = empty_snapshot(phase=BrowserPhase.READY).evolve(
             url="https://evil.example",
             title=hostile,
-            landmarks=(Landmark(role="link", name=hostile),),
+            nodes=(PageNode(ref="g1e0", role="link", name=hostile, interactive=True),),
         )
         trusted, page_text = pack_browser_observation(session)
         self.assertNotIn(hostile, trusted)

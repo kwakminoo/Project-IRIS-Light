@@ -12,11 +12,15 @@ from iris.browser.types import (
     BrowserResult,
     BrowserSnapshot,
     Click,
+    Extract,
     HistoryStep,
     Media,
     MiniPlayer,
+    NAME_CAP,
+    NODE_CAP,
     Navigate,
     Open,
+    PageNode,
     PanelHost,
     Reload,
     Scroll,
@@ -29,6 +33,8 @@ from iris.browser.types import (
     empty_snapshot,
     is_docked,
     is_mini,
+    make_page_ref,
+    split_page_ref,
 )
 from iris.browser.youtube import is_youtube_watch_url, page_block_reason
 
@@ -60,6 +66,7 @@ class BrowserSession:
         self._visible = False
         self._last_result: BrowserResult | None = None
         self._panel_ref: Any = None
+        self._gen = 0
 
     def set_ui_call(self, ui_call: UiCall) -> None:
         self._ui_call = ui_call
@@ -86,7 +93,7 @@ class BrowserSession:
         with self._lock:
             self._driver = driver
             if driver is not None:
-                self._snap = self._overlay_host(driver.read_snapshot())
+                self._snap = self._overlay_host(self._stamp(driver.read_snapshot()))
 
     def _ui_from_locked(self, fn: Callable[[], Any]) -> Any:
         """Drop _lock while on the UI thread. UI callbacks re-enter snapshot/note_*."""
@@ -145,7 +152,14 @@ class BrowserSession:
         try:
             if self._driver is not None:
                 try:
-                    self._snap = self._overlay_host(self._driver.read_snapshot())
+                    live = self._driver.read_snapshot()
+                    self._snap = self._overlay_host(
+                        live.evolve(
+                            gen=self._snap.gen,
+                            nodes=self._snap.nodes,
+                            excerpt=self._snap.excerpt or live.excerpt,
+                        )
+                    )
                 except Exception as exc:
                     self._snap = self._snap.evolve(
                         phase=BrowserPhase.FAULTED,
@@ -219,6 +233,44 @@ class BrowserSession:
             except Exception:
                 pass
 
+    def _stamp(self, snap: BrowserSnapshot) -> BrowserSnapshot:
+        self._gen += 1
+        nodes = tuple(
+            PageNode(
+                ref=make_page_ref(self._gen, i),
+                role=n.role,
+                name=(n.name or "")[:NAME_CAP],
+                interactive=n.interactive,
+            )
+            for i, n in enumerate(snap.nodes[:NODE_CAP])
+        )
+        return snap.evolve(gen=self._gen, nodes=nodes)
+
+    def _publish_fresh(self, snap: BrowserSnapshot) -> BrowserSnapshot:
+        stamped = self._stamp(snap)
+        self._publish(stamped)
+        return self._snap
+
+    def _resolve_ref(self, ref: str) -> PageNode:
+        snap = self._snap
+        try:
+            gen, index = split_page_ref(ref)
+        except ValueError as exc:
+            raise LookupError("bad_ref") from exc
+        if gen != snap.gen:
+            raise LookupError("stale_ref")
+        if index < 0 or index >= len(snap.nodes):
+            raise LookupError("unknown_ref")
+        node = snap.nodes[index]
+        if node.ref != ref:
+            raise LookupError("stale_ref")
+        return node
+
+    def _settle(self, driver: Any) -> None:
+        settle = getattr(driver, "settle_after_act", None)
+        if callable(settle):
+            settle()
+
     def execute(self, cmd: BrowserCommand) -> BrowserResult:
         result = self._execute_body(cmd)
         with self._lock:
@@ -244,7 +296,7 @@ class BrowserSession:
                         snap = self._driver.read_snapshot()
                     if snap.phase == BrowserPhase.CLOSED:
                         snap = snap.evolve(phase=BrowserPhase.READY, last_error=None, url=snap.url or "about:blank")
-                    self._publish(snap)
+                    snap = self._publish_fresh(snap)
                     return BrowserResult(True, "open", snap)
 
                 if isinstance(cmd, MiniPlayer):
@@ -252,20 +304,30 @@ class BrowserSession:
                     already = is_mini(self._view_host) if cmd.on else is_docked(self._view_host)
                     if already:
                         snap = self._overlay_host(self._driver.read_snapshot())
-                        self._publish(snap)
+                        snap = self._publish_fresh(snap)
                         return BrowserResult(True, "mini_player", snap, detail="idempotent")
                     target = as_mini(self._view_host) if cmd.on else as_docked(self._view_host)
                     self._apply_host_locked(target)
-                    snap = self._overlay_host(self._driver.read_snapshot())
-                    self._publish(snap)
+                    snap = self._publish_fresh(self._driver.read_snapshot())
                     return BrowserResult(True, "mini_player", snap)
 
                 driver = self._ensure_driver_locked()
 
                 if isinstance(cmd, Snapshot):
                     snap = driver.read_snapshot()
-                    self._publish(snap)
+                    snap = self._publish_fresh(snap)
                     return BrowserResult(True, "snapshot", snap)
+
+                if isinstance(cmd, Extract):
+                    read_text = ""
+                    reader = getattr(driver, "read_text", None)
+                    if callable(reader):
+                        read_text = str(
+                            reader(scope=cmd.scope, ref=cmd.ref, max_chars=cmd.max_chars) or ""
+                        )
+                    snap = self._overlay_host(self._snap)
+                    self._publish(snap)
+                    return BrowserResult(True, "extract", snap, read_text=read_text)
 
                 if isinstance(cmd, Navigate):
                     current = driver.read_snapshot()
@@ -273,11 +335,10 @@ class BrowserSession:
                         current.url.rstrip("/") == cmd.url.rstrip("/")
                         and current.phase == BrowserPhase.READY
                     ):
-                        self._publish(current)
-                        return BrowserResult(True, "navigate", current, detail="idempotent")
+                        snap = self._publish_fresh(current)
+                        return BrowserResult(True, "navigate", snap, detail="idempotent")
                     driver.navigate(cmd.url)
-                    snap = driver.read_snapshot()
-                    self._publish(snap)
+                    snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "navigate", snap)
 
                 if isinstance(cmd, Search):
@@ -287,7 +348,7 @@ class BrowserSession:
                     snap = driver.read_snapshot()
                     block = page_block_reason(snap.url, snap.title)
                     if block:
-                        self._publish(snap)
+                        snap = self._publish_fresh(snap)
                         log.warning("search blocked=%s url=%s", block, snap.url)
                         return BrowserResult(False, "search", snap, detail=block)
                     detail = ""
@@ -299,13 +360,12 @@ class BrowserSession:
                             detail = play_err or (
                                 (snap.media.block if snap.media else "") or "not playing"
                             )
-                            self._publish(snap)
+                            snap = self._publish_fresh(snap)
                             log.warning("youtube play failed detail=%s url=%s", detail, snap.url)
                             return BrowserResult(False, "search", snap, detail=detail)
                         if snap.media and snap.media.ad:
                             detail = "ad_playing"
-                    snap = driver.read_snapshot()
-                    self._publish(snap)
+                    snap = self._publish_fresh(driver.read_snapshot())
                     if "/sorry/" in (snap.url or ""):
                         log.warning("search captcha url=%s", snap.url)
                         return BrowserResult(False, "search", snap, detail="captcha")
@@ -316,6 +376,7 @@ class BrowserSession:
                     snap = driver.read_snapshot()
                     block = page_block_reason(snap.url, snap.title)
                     if block:
+                        snap = snap.evolve(gen=self._snap.gen, nodes=self._snap.nodes)
                         self._publish(snap)
                         return BrowserResult(False, "media", snap, detail=block)
                     if cmd.action == "pause":
@@ -323,6 +384,7 @@ class BrowserSession:
                     else:
                         err = driver.try_play() if hasattr(driver, "try_play") else "play unsupported"
                     snap = driver.read_snapshot()
+                    snap = snap.evolve(gen=self._snap.gen, nodes=self._snap.nodes)
                     playing = bool(snap.media and snap.media.playing)
                     ok = (not playing) if cmd.action == "pause" else playing
                     self._publish(snap)
@@ -335,42 +397,48 @@ class BrowserSession:
 
                 if isinstance(cmd, Reload):
                     driver.reload()
-                    snap = driver.read_snapshot()
-                    self._publish(snap)
+                    snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "reload", snap)
 
                 if isinstance(cmd, HistoryStep):
                     snap_before = driver.read_snapshot()
                     if cmd.delta < 0 and not snap_before.can_go_back:
-                        return BrowserResult(False, "history", snap_before, detail="cannot go back")
+                        return BrowserResult(False, "history", self._snap, detail="cannot go back")
                     if cmd.delta > 0 and not snap_before.can_go_forward:
-                        return BrowserResult(False, "history", snap_before, detail="cannot go forward")
+                        return BrowserResult(False, "history", self._snap, detail="cannot go forward")
                     try:
                         driver.history_step(cmd.delta)
                     except LookupError:
-                        snap = driver.read_snapshot()
-                        self._publish(snap)
+                        snap = self._publish_fresh(driver.read_snapshot())
                         return BrowserResult(False, "history", snap, detail="history edge")
-                    snap = driver.read_snapshot()
-                    self._publish(snap)
+                    self._settle(driver)
+                    snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "history", snap)
 
                 if isinstance(cmd, Click):
+                    try:
+                        self._resolve_ref(cmd.target.ref)
+                    except LookupError as exc:
+                        return BrowserResult(False, "click", self._overlay_host(self._snap), detail=str(exc))
                     driver.click(cmd.target)
-                    snap = driver.read_snapshot()
-                    self._publish(snap)
+                    self._settle(driver)
+                    snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "click", snap)
 
                 if isinstance(cmd, TypeText):
+                    try:
+                        self._resolve_ref(cmd.target.ref)
+                    except LookupError as exc:
+                        return BrowserResult(False, "type", self._overlay_host(self._snap), detail=str(exc))
                     driver.type_text(cmd.target, cmd.text, clear=cmd.clear)
-                    snap = driver.read_snapshot()
-                    self._publish(snap)
+                    self._settle(driver)
+                    snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "type", snap)
 
                 if isinstance(cmd, Scroll):
                     driver.scroll_by(cmd.delta_x, cmd.delta_y)
-                    snap = driver.read_snapshot()
-                    self._publish(snap)
+                    self._settle(driver)
+                    snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "scroll", snap)
 
                 snap = driver.read_snapshot()
@@ -439,10 +507,10 @@ def _play_first_result(driver: Any) -> str:
         if opened:
             break
         snap = driver.read_snapshot()
-        for lm in snap.landmarks:
-            if lm.role == "link" and lm.name:
+        for node in snap.nodes:
+            if node.role == "link" and node.name:
                 try:
-                    driver.click(ByText(text=lm.name, nth=0))
+                    driver.click(ByText(text=node.name, nth=0))
                     opened = True
                     last_err = ""
                     break
