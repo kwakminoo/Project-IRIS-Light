@@ -7,7 +7,7 @@ from pathlib import Path
 
 from iris.browser.registry import control_action_names, parse_command
 from iris.browser.session import BrowserSession, get_browser_session, reset_browser_session_for_tests
-from iris.browser.types import MiniPlayer, Navigate
+from iris.browser.types import MiniPlayer, Navigate, PanelHost, is_docked, is_mini
 from iris.browser.youtube import is_youtube_watch_url
 from iris.ui.browser.mini_player import reset_shared_browser_mini_for_tests
 from iris.ui.browser.panel import reset_shared_browser_panel_for_tests
@@ -39,12 +39,12 @@ def _check_fixture_host_toggle() -> None:
     r = session.execute(MiniPlayer(on=True))
     assert r.ok, r.detail
     assert r.snapshot.mini_player is True
-    assert session.view_host() == "mini"
+    assert is_mini(session.view_host())
     r = session.execute(MiniPlayer(on=True))
     assert r.detail == "idempotent"
     r = session.execute(MiniPlayer(on=False))
     assert r.ok and r.snapshot.mini_player is False
-    assert session.view_host() == "panel"
+    assert is_docked(session.view_host()) and not r.snapshot.mini_player
     print("fixture mini_player toggle ok")
 
 
@@ -87,6 +87,7 @@ def _check_qt_reparent() -> None:
 
     win.show_browser(show_window=False)
     assert win.is_browser_visible()
+    assert session.view_host() == PanelHost(site="ide_internal")
     driver_id = id(session._driver)
 
     win.show_welcome(show_window=False)
@@ -94,7 +95,7 @@ def _check_qt_reparent() -> None:
     assert not win.is_browser_visible()
     assert win.is_welcome_visible()
     assert win.is_browser_mini_visible(), "mini should show after leaving watch URL"
-    assert session.view_host() == "mini"
+    assert is_mini(session.view_host())
     assert session.snapshot().mini_player is True
     assert id(session._driver) == driver_id, "driver must not be recreated on reparent"
 
@@ -103,7 +104,8 @@ def _check_qt_reparent() -> None:
     app.processEvents()
     assert win.is_browser_visible()
     assert not win.is_browser_mini_visible()
-    assert session.view_host() == "panel"
+    assert is_docked(session.view_host())
+    assert session.view_host() == PanelHost(site="ide_internal")
     assert id(session._driver) == driver_id
 
     win.close()

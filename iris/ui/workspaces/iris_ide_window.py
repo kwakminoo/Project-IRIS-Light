@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from iris.assets.branding import load_app_icon
+from iris.browser.types import ViewHost
 from iris.ui.ide.iris_ide_welcome_layer import IrisIdeWelcomeLayer
 from iris.ui.shared.theme_tokens import TOKENS
 from iris.ui.window.frameless_chrome import (
@@ -386,20 +387,26 @@ class IrisIdeWindow(QMainWindow):
         return panel
 
     def ensure_browser_mini(self):
+        from iris.browser.session import get_browser_session
+        from iris.browser.types import as_docked
         from iris.ui.browser.mini_player import get_shared_browser_mini
 
         mini = get_shared_browser_mini(self)
         self._browser_mini = mini
         if not mini.signals_wired():
-            mini.expand_requested.connect(lambda: self.apply_browser_view_host("panel"))
+            mini.expand_requested.connect(
+                lambda: self.apply_browser_view_host(as_docked(get_browser_session().view_host()))
+            )
             mini.close_requested.connect(self._on_mini_close)
             mini.mark_signals_wired()
         return mini
 
     def show_browser(self, *, show_window: bool = True):
+        from iris.browser.types import PanelHost
+
         panel = self.ensure_browser_panel()
         panel.ensure_view()
-        self.apply_browser_view_host("panel")
+        self.apply_browser_view_host(PanelHost(site="ide_internal"))
         if show_window:
             self.show()
             self.raise_()
@@ -412,15 +419,21 @@ class IrisIdeWindow(QMainWindow):
         mini = self._browser_mini
         return mini is not None and mini.isVisible() and mini.has_view()
 
-    def apply_browser_view_host(self, host: str) -> None:
+    def apply_browser_view_host(self, host: ViewHost | str) -> None:
         from iris.browser.session import get_browser_session
-        from iris.browser.types import ViewHost
+        from iris.browser.types import MiniHost, PanelHost, is_mini, parse_view_host
 
-        target: ViewHost = "mini" if host == "mini" else "panel"
+        parsed = (
+            host
+            if isinstance(host, (PanelHost, MiniHost))
+            else parse_view_host(host, docked_default="ide_internal")
+        )
+        if isinstance(parsed, PanelHost) and parsed.site != "ide_internal":
+            raise ValueError("IrisIdeWindow cannot host dedicated")
         panel = self.ensure_browser_panel()
         view = panel.ensure_view()
         session = get_browser_session()
-        if target == "mini":
+        if is_mini(parsed):
             mini = self.ensure_browser_mini()
             if panel.view_in_slot():
                 panel.release_view()
@@ -428,7 +441,7 @@ class IrisIdeWindow(QMainWindow):
             mini.show_in_chat(mini.parentWidget() or self)
             if self._stack.currentWidget() is panel:
                 self._show_ide_stack_page()
-            session.note_view_host("mini")
+            session.note_view_host(parsed)
             return
         mini = self._browser_mini
         if mini is not None and mini.has_view():
@@ -438,10 +451,9 @@ class IrisIdeWindow(QMainWindow):
                 panel.place_view(detached)
         elif not panel.view_in_slot():
             panel.place_view(view)
-        # Panel may live on BrowserWorkspacePage — do not steal it back here.
         if self._stack.indexOf(panel) >= 0:
             self._stack.setCurrentWidget(panel)
-        session.note_view_host("panel")
+        session.note_view_host(PanelHost(site="ide_internal"))
 
     def leave_browser_stack(self) -> None:
         self._detach_youtube_to_mini_if_needed()
@@ -492,8 +504,9 @@ class IrisIdeWindow(QMainWindow):
             if view is not None:
                 panel.place_view(view)
         from iris.browser.session import get_browser_session
+        from iris.browser.types import PanelHost
 
-        get_browser_session().note_view_host("panel")
+        get_browser_session().note_view_host(PanelHost(site="ide_internal"))
 
 
 def iris_ide_icon(size: int = 40) -> QIcon:

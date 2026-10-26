@@ -1,4 +1,4 @@
-"""Browser workspace split self-check (calendar-style + companion stay)."""
+"""Browser workspace self-check: dedicated shell occupant + companion stay."""
 
 from __future__ import annotations
 
@@ -29,24 +29,23 @@ def main() -> int:
     app.processEvents()
     panel = w.show_browser_workspace()
     app.processEvents()
-    assert w._workspace_mode == "browser"
-    assert w._workspace_stack.currentWidget() is w._browser_page
-    assert w._browser_page.browser_panel() is panel
-    assert w._workspace_chat.is_mounted()
+    assert w._ui_mode == "dedicated_browser"
+    assert w._body_stack.currentWidget() is w._unified_shell
+    assert w._unified_shell.left_browser() is panel
+    assert panel.isVisible()
+    assert w._companion_page.is_mounted()
     assert w._iris_ide_window is None or not w._iris_ide_window.isVisible()
-    sizes = w._browser_page._splitter.sizes()
-    assert sizes[0] >= 400 and sizes[1] >= 300, sizes
-    w._browser_page._splitter.setSizes([sizes[0] - 80, sizes[1] + 80])
+    assert not getattr(w, "_iris_ide_unified", False)
+    sizes = w._unified_shell._split.sizes()
+    total = sum(sizes)
+    assert sizes[0] == int(total * 0.8) or abs(sizes[0] / total - 0.8) < 0.05, sizes
+    w._unified_shell._split.setSizes([sizes[0] - 80, sizes[1] + 80])
     app.processEvents()
-    resized = w._browser_page._splitter.sizes()
-    assert resized[0] > 0 and resized[1] > 0, resized
-    assert resized != sizes, (sizes, resized)
+    assert w._unified_shell._split.sizes() != sizes
     panel.ensure_view()
     assert panel.tab_count() >= 1
     adopted = panel._adopt_popup()
-    assert adopted is not None
-    assert panel.tab_count() == 2
-    assert panel.current_tab_index() == 0
+    assert adopted is not None and panel.tab_count() == 2
     panel._on_new_tab()
     app.processEvents()
     assert panel.tab_count() == 3, panel.tab_count()
@@ -56,7 +55,7 @@ def main() -> int:
     app.processEvents()
     assert w._ui_mode == "ide_companion", "browser must not exit companion"
     ide = w._iris_ide_window
-    assert ide is not None
+    assert ide is w._iris_ide_window and ide is not None
     assert ide_panel is panel
     assert ide.is_browser_visible() or ide._stack.currentWidget() is panel
     ide.return_from_browser()

@@ -49,7 +49,7 @@
   },
   {
     "name": "browser.open",
-    "summary": "Show Iris IDE browser stack page",
+    "summary": "Show dedicated browser or IDE-internal cover",
     "risk": "low",
     "confirm_required": false
   },

@@ -11,11 +11,19 @@ from iris.browser.types import (
     ByText,
     Click,
     HistoryStep,
+    MiniHost,
+    MiniPlayer,
     Navigate,
     Open,
+    PanelHost,
     Scroll,
     Search,
+    as_docked,
+    as_mini,
+    is_docked,
+    is_mini,
     parse_page_url,
+    parse_view_host,
 )
 from iris.system.control_surface import runs_off_ui_thread
 
@@ -53,6 +61,35 @@ class ParseBoundaryTests(unittest.TestCase):
         self.assertIn("youtube.com/results", search_url("음악", engine="youtube"))
 
 
+class ViewHostParseTests(unittest.TestCase):
+    def test_parse_rejects_panel_string(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            parse_view_host("panel", docked_default="dedicated")
+        self.assertIn("panel", str(ctx.exception))
+
+    def test_parse_mini_uses_docked_default(self) -> None:
+        host = parse_view_host("mini", docked_default="ide_internal")
+        self.assertEqual(host, MiniHost(resume="ide_internal"))
+
+    def test_parse_site_strings_and_pass_through(self) -> None:
+        self.assertEqual(
+            parse_view_host("dedicated", docked_default="ide_internal"),
+            PanelHost(site="dedicated"),
+        )
+        self.assertEqual(
+            parse_view_host("ide_internal", docked_default="dedicated"),
+            PanelHost(site="ide_internal"),
+        )
+        existing = MiniHost(resume="dedicated")
+        self.assertIs(parse_view_host(existing, docked_default="ide_internal"), existing)
+
+    def test_as_mini_as_docked_roundtrip(self) -> None:
+        docked = PanelHost(site="ide_internal")
+        mini = as_mini(docked)
+        self.assertTrue(is_mini(mini))
+        self.assertEqual(as_docked(mini), docked)
+
+
 class SessionFakeDriverTests(unittest.TestCase):
     def setUp(self) -> None:
         self.driver = youtube_like_fixture_driver()
@@ -63,6 +100,22 @@ class SessionFakeDriverTests(unittest.TestCase):
         self.assertTrue(r.ok)
         self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
         self.assertIn("google.com", r.snapshot.url)
+        self.assertTrue(is_docked(self.session.view_host()))
+        self.assertEqual(self.session.view_host(), PanelHost(site="dedicated"))
+
+    def test_mini_player_toggle_and_idempotent(self) -> None:
+        self.session.execute(Open())
+        r = self.session.execute(MiniPlayer(on=True))
+        self.assertTrue(r.ok)
+        self.assertTrue(r.snapshot.mini_player)
+        self.assertTrue(is_mini(self.session.view_host()))
+        again = self.session.execute(MiniPlayer(on=True))
+        self.assertEqual(again.detail, "idempotent")
+        off = self.session.execute(MiniPlayer(on=False))
+        self.assertTrue(off.ok)
+        self.assertFalse(off.snapshot.mini_player)
+        self.assertTrue(is_docked(self.session.view_host()))
+        self.assertEqual(self.session.view_host(), PanelHost(site="dedicated"))
 
     def test_search_then_click(self) -> None:
         r = self.session.execute(Search(query="IU night letter"))

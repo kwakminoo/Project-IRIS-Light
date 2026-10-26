@@ -11,9 +11,13 @@ from iris.browser.types import (
     BrowserPhase,
     BrowserResult,
     BrowserSnapshot,
+    MiniHost,
     Navigate,
+    PanelHost,
     Search,
     ViewHost,
+    is_docked,
+    is_mini,
 )
 from iris.browser.youtube import is_youtube_watch_url
 
@@ -23,9 +27,13 @@ __all__ = [
     "BrowserResult",
     "BrowserSession",
     "BrowserSnapshot",
+    "MiniHost",
     "Navigate",
+    "PanelHost",
     "Search",
     "ViewHost",
+    "is_docked",
+    "is_mini",
     "browser_teaching_block",
     "control_action_names",
     "get_browser_session",

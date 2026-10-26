@@ -183,7 +183,7 @@ def _parse_media(args: dict[str, Any]) -> BrowserCommand:
 
 def command_specs() -> tuple[CommandSpec, ...]:
     return (
-        CommandSpec("open", "Show Iris IDE browser stack page", "low", _parse_open, control_name="browser.open"),
+        CommandSpec("open", "Show dedicated browser or IDE-internal cover", "low", _parse_open, control_name="browser.open"),
         CommandSpec("navigate", "Navigate browser to url", "medium", _parse_navigate, control_name="browser.navigate"),
         CommandSpec("reload", "Reload current browser page", "low", _parse_reload, control_name="browser.reload"),
         CommandSpec("back", "Browser history back", "low", _parse_back, control_name="browser.back"),

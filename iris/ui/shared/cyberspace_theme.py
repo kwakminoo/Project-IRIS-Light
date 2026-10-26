@@ -107,8 +107,6 @@ def build_cyberspace_qss() -> str:
         QWidget#CalendarWorkspacePage,
         QWidget#CalendarIrisPanel,
         QWidget#CalendarChatHost,
-        QWidget#BrowserWorkspacePage,
-        QWidget#BrowserChatHost,
         QListWidget#EmailFolderList,
         QListWidget#EmailCenterList,
         QListWidget#CalendarDayList,

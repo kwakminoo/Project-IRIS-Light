@@ -26,8 +26,77 @@ class Landmark:
     bbox: tuple[int, int, int, int] | None = None
 
 
-ViewHost = Literal["panel", "mini"]
+DockedSite = Literal["dedicated", "ide_internal"]
+
+
+@dataclass(frozen=True)
+class PanelHost:
+    """QWebEngineView is in BrowserPanel on this screen."""
+
+    site: DockedSite
+    kind: Literal["panel"] = "panel"
+
+
+@dataclass(frozen=True)
+class MiniHost:
+    """QWebEngineView is in the Qt.Tool mini. resume is the dock to restore."""
+
+    resume: DockedSite
+    kind: Literal["mini"] = "mini"
+
+
+ViewHost = Union[PanelHost, MiniHost]
+UiMode = Literal["normal", "ide_hero", "ide_companion", "dedicated_browser"]
 MediaAction = Literal["play", "pause", "resume"]
+
+
+def is_mini(host: ViewHost) -> bool:
+    return isinstance(host, MiniHost)
+
+
+def is_docked(host: ViewHost) -> bool:
+    return isinstance(host, PanelHost)
+
+
+def docked_site(host: ViewHost) -> DockedSite:
+    if isinstance(host, MiniHost):
+        return host.resume
+    return host.site
+
+
+def as_mini(host: ViewHost) -> MiniHost:
+    return MiniHost(resume=docked_site(host))
+
+
+def as_docked(host: ViewHost) -> PanelHost:
+    return PanelHost(site=docked_site(host))
+
+
+def parse_view_host(raw: object, *, docked_default: DockedSite) -> ViewHost:
+    """Boundary only. Leftover 'panel' cannot name a screen."""
+    if isinstance(raw, (PanelHost, MiniHost)):
+        return raw
+    if raw == "mini":
+        return MiniHost(resume=docked_default)
+    if raw == "dedicated":
+        return PanelHost(site="dedicated")
+    if raw == "ide_internal":
+        return PanelHost(site="ide_internal")
+    if raw == "panel":
+        raise ValueError("view host 'panel' is gone; use dedicated or ide_internal")
+    raise ValueError(f"unknown view host: {raw!r}")
+
+
+def uses_unified_shell(mode: str) -> bool:
+    return mode in ("ide_companion", "dedicated_browser")
+
+
+def left_occupant(mode: str) -> Literal["none", "theia", "browser"]:
+    if mode == "ide_companion":
+        return "theia"
+    if mode == "dedicated_browser":
+        return "browser"
+    return "none"
 
 
 @dataclass(frozen=True)

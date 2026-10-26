@@ -17,13 +17,18 @@ from iris.browser.types import (
     MiniPlayer,
     Navigate,
     Open,
+    PanelHost,
     Reload,
     Scroll,
     Search,
     Snapshot,
     TypeText,
     ViewHost,
+    as_docked,
+    as_mini,
     empty_snapshot,
+    is_docked,
+    is_mini,
 )
 from iris.browser.youtube import is_youtube_watch_url, page_block_reason
 
@@ -49,7 +54,7 @@ class BrowserSession:
         self._ui_call: UiCall = ui_call or (lambda fn: fn())
         self._surface_provider = surface_provider
         self._host_applier = host_applier
-        self._view_host: ViewHost = "panel"
+        self._view_host: ViewHost = PanelHost(site="dedicated")
         self._snap = empty_snapshot(phase=BrowserPhase.CLOSED)
         self._listeners: list[SnapshotListener] = []
         self._visible = False
@@ -108,10 +113,9 @@ class BrowserSession:
         return idx, max(1, count)
 
     def _overlay_host(self, snap: BrowserSnapshot) -> BrowserSnapshot:
-        flag = self._view_host == "mini"
         tab_index, tab_count = self._tab_meta()
         return snap.evolve(
-            mini_player=flag,
+            mini_player=is_mini(self._view_host),
             tab_index=tab_index,
             tab_count=tab_count,
             target_id=f"tab:{tab_index}",
@@ -131,7 +135,7 @@ class BrowserSession:
                     self._snap = self._snap.evolve(
                         phase=BrowserPhase.FAULTED,
                         last_error=str(exc),
-                        mini_player=self._view_host == "mini",
+                        mini_player=is_mini(self._view_host),
                     )
             else:
                 self._snap = self._overlay_host(self._snap)
@@ -146,7 +150,7 @@ class BrowserSession:
             if (
                 not self._visible
                 and self._surface_provider is not None
-                and self._view_host == "panel"
+                and is_docked(self._view_host)
             ):
                 self._ui_call(self._show_surface)
                 self._visible = True
@@ -164,7 +168,7 @@ class BrowserSession:
         driver, _panel = self._ui_call(create)
         self._driver = driver
         self._visible = True
-        self._view_host = "panel"
+        self._view_host = as_docked(self._view_host)
         self._snap = empty_snapshot(phase=BrowserPhase.READY)
         return self._driver
 
@@ -173,7 +177,10 @@ class BrowserSession:
             self._surface_provider()
 
     def _apply_host_locked(self, host: ViewHost) -> None:
-        if self._view_host == host:
+        current = self._view_host
+        if is_mini(current) and is_mini(host):
+            return
+        if is_docked(current) and is_docked(host) and current.site == host.site:
             return
         if self._host_applier is not None:
             self._ui_call(lambda h=host: self._host_applier(h))
@@ -204,7 +211,7 @@ class BrowserSession:
 
                 if isinstance(cmd, Open):
                     self._ensure_driver_locked()
-                    self._apply_host_locked("panel")
+                    self._apply_host_locked(as_docked(self._view_host))
                     snap = self._driver.read_snapshot()
                     url = (snap.url or "").strip()
                     if not url or url in ("about:blank", "about:blank#blocked"):
@@ -216,12 +223,13 @@ class BrowserSession:
                     return BrowserResult(True, "open", snap)
 
                 if isinstance(cmd, MiniPlayer):
-                    target: ViewHost = "mini" if cmd.on else "panel"
                     self._ensure_driver_locked()
-                    if self._view_host == target:
+                    already = is_mini(self._view_host) if cmd.on else is_docked(self._view_host)
+                    if already:
                         snap = self._overlay_host(self._driver.read_snapshot())
                         self._publish(snap)
                         return BrowserResult(True, "mini_player", snap, detail="idempotent")
+                    target = as_mini(self._view_host) if cmd.on else as_docked(self._view_host)
                     self._apply_host_locked(target)
                     snap = self._overlay_host(self._driver.read_snapshot())
                     self._publish(snap)

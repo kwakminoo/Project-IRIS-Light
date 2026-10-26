@@ -5,7 +5,7 @@ from typing import Any
 from iris.browser.observation import looks_sensitive_browser_act
 from iris.browser.registry import command_specs, parse_command
 from iris.browser.session import get_browser_session
-from iris.browser.types import Actor
+from iris.browser.types import Actor, ViewHost
 from iris.system.control_surface import ActionRegistry
 from iris.ui.control_actions.hosts import BrowserHost
 
@@ -19,7 +19,7 @@ def register_browser_actions(window: BrowserHost, reg: ActionRegistry) -> None:
     def _surface():
         return window.show_browser_workspace()
 
-    def _apply_host(host: str) -> None:
+    def _apply_host(host: ViewHost | str) -> None:
         window.apply_browser_view_host(host)
 
     session.set_surface_provider(_surface)

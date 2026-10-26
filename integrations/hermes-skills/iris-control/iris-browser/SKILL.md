@@ -10,7 +10,7 @@ description: >
 
 # Iris browser
 
-One visible QWebEngine page inside IRIS IDE (companion: left work area + right chat).
+One visible QWebEngine page: dedicated 80:20 shell, or companion left work area plus right chat.
 Agent and human chrome share `BrowserSession`.
 
 ## Steps

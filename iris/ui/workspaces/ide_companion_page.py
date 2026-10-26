@@ -82,6 +82,7 @@ class IdeUnifiedShell(QWidget):
 
         self._ide: QWidget | None = None
         self._companion: IdeCompanionPage | None = None
+        self._left_browser: QWidget | None = None
         self._on_split_changed = None
         self._user_ratio: float | None = None
         self._split.splitterMoved.connect(self._remember_split)
@@ -93,6 +94,24 @@ class IdeUnifiedShell(QWidget):
     def set_ide_insets(self, left: int, top: int, right: int, bottom: int) -> None:
         """Companion grip 숨김 시 Theia 여백 조정."""
         self._ide_lay.setContentsMargins(left, top, right, bottom)
+
+    def mount_left_browser(self, panel: QWidget) -> None:
+        """addWidget panel into _ide_lay. Caller owns HWND policy."""
+        if self._ide_lay.indexOf(panel) >= 0:
+            panel.show()
+            self._left_browser = panel
+            return
+        self._ide_lay.addWidget(panel)
+        panel.show()
+        self._left_browser = panel
+        self.set_ide_insets(0, 0, 0, 0)
+
+    def left_browser(self) -> QWidget | None:
+        return self._left_browser
+
+    def clear_left_browser(self) -> None:
+        """Drop the left-browser ref only. Caller addWidget-moves the panel."""
+        self._left_browser = None
 
     def mount(self, ide: QWidget | None, companion: IdeCompanionPage, *, total_w: int) -> None:
         """좌측은 HWND 도킹 placeholder(ide=None), 우측 Companion만 Qt 자식."""
