@@ -20,6 +20,11 @@ def save_selected_model(db: Database, runtime_name: str) -> None:
         db.set_preference(SELECTED_MODEL_KEY, name)
 
 
+def pick_reload_model(saved: str, current: str = "", settings: str = "") -> str:
+    """Ollama 껐다 켜도 마지막 사용자 선택을 유지."""
+    return (saved or current or settings or "").strip()
+
+
 def load_ollama_model_probes(db: Database) -> dict[str, dict[str, str]]:
     raw = db.get_preference(OLLAMA_PROBE_KEY, "")
     if not raw:
@@ -59,3 +64,10 @@ def ollama_cleanup_has_verdict(db: Database) -> bool:
         rec.get("state") in ("ok", "unavailable")
         for rec in load_ollama_model_probes(db).values()
     )
+
+
+if __name__ == "__main__":
+    assert pick_reload_model("gemma4:e2b", "api:oa:gpt", "other") == "gemma4:e2b"
+    assert pick_reload_model("", "api:oa:gpt", "other") == "api:oa:gpt"
+    assert pick_reload_model("", "", "other") == "other"
+    print("model_prefs ok")

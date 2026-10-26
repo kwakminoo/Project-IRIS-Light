@@ -1,0 +1,11 @@
+ts	phase	decision	why	evidence	result
+2026-10-26T13:19:00Z	start	started HEAD browser inventory plus live verify, no code changes	user asked what is implemented and whether dedicated and IDE browsers actually work	HEAD 7ec66566505d9b002927dce80fd0f8bb358618af	open
+2026-10-26T13:20:00Z	frame	matched Investigation playbook, then how skill, then live unit/GUI checks	code existence is not PASS; prove-it-works needs the running app	playbooks/investigation.md	open
+2026-10-26T13:32:24Z	verify	ran unit, intent, webengine smoke, mini Qt, workspace Qt, live Hermes emit	code existence is not PASS	tests/browser + _check_* exit 0	unit and widget PASS
+2026-10-26T13:32:24Z	verify	computer-use sidecar unavailable, drove live HUD via /v1/invoke plus PIL grabs	prove against the running app not a proxy	sidecar_unavailable then live_invoke.py	live dedicated PASS, IDE-internal FAIL
+2026-10-26T13:32:24Z	verify	browser.open from ide_companion flipped dedicated and left Theia visible	execute Open uses as_docked of leftover dedicated host	15-ide-browser2.png session.py apply_host	FAIL live IDE-internal
+2026-10-26T13:32:24Z	verify	assistant after IDE+browser left Theia filling the window	stability list asked for IDE/chat regression	16-home-cleanup.png	FAIL chrome until ide.exit_companion
+2026-10-26T13:33:37Z	how	folded four how-explorers into the live FAIL without changing product code	widget checks skip iris_invoke and leftover dedicated host	explorers 8df855fb e22258a2 944f99df d8164c70	IDE-internal live FAIL stands. dedicated remount does not steal mini view
+2026-10-26T13:34:20Z	audit	supersede live_invoke.json ide_browser_ok as HTTP ok not Theia cover	Open returned ok while ui_mode stayed dedicated_browser	live_invoke.json ide-browser-open plus 15-ide-browser2.png	IDE-internal still FAIL
+2026-10-26T13:34:20Z	audit	supersede browser_playing as pixel PASS	JSON playing true next to white webview	07-mini-off.png vs persist_playing true	PARTIAL YouTube pixels
+2026-10-26T13:34:20Z	audit	record two pythonw -m iris still alive	reviewer asked for a process artifact	pids 42616 venv and 28364 Python312	confound stands
