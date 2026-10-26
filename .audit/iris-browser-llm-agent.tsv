@@ -1,0 +1,11 @@
+ts	phase	decision	why	evidence	result
+2026-10-26T13:53:00Z	start	opened figure-it-out run for a general-purpose Hermes browser agent	user asked for analysis, public comparison, design, implementation, E2E, and commit in one go	agent 2e1c4f5c-5679-4ba4-b94a-fbea311180c9	open
+2026-10-26T14:05:00Z	frame	treated this as figure-it-out, not Feature or Orchestrate	cross-cutting observation plus agent loop plus live Hermes, one session budget	.cursor/plugins/.../figure-it-out/SKILL.md	framed
+2026-10-26T14:10:00Z	frame	measured news fail as no browser.* invoke, not a broken WebEngine	iris.log has no cmd= between 22:47 and 22:51 while chat_messages 183-186 refuse tools	C:\Users\serin\.iris-light\logs\iris.log:366-379, iris_light.db chat_messages 183-186	measured
+2026-10-26T14:10:00Z	frame	measured scripted YouTube play works when BrowserSession.execute is called directly	22:26:20 search engine=youtube play=True then watch URL playing=True	iris.log:339-345	measured
+2026-10-26T14:11:00Z	frame	kept Playwright off the default path	QWebEngine already searches, clicks, and plays. the gap is what Hermes sees and is taught to call	iris/browser/_bridge.js landmarks(), observation.py browser_teaching_block	open
+2026-10-26T14:25:00Z	how	news turns are stolen by classify_turn today plus SerpAPI missing key	iris.log system chars 67 matches search_failure_reply; classify_turn matches 뉴스	iris/knowledge/answer_grounding.py:25-28, past_chats_worker.py:45-74, chat_messages 183-186	measured
+2026-10-26T14:25:00Z	how	page body never reaches Hermes	landmarks 40 names only; no extract command; click does not wait for navigation	iris/browser/_bridge.js:46-68, observation.py:93-110, session.py:358-362	measured
+2026-10-26T14:26:00Z	design	spawned two architect candidates on QWebEngine observe/read shape	one-way door is observation plus today-steal, not a second Chromium	.tmp/arena-browser-agent/GROUNDING.md	open
+2026-10-26T14:26:00Z	arena	candidate 1 is a gen-stamped PageIndex plus extract verb	Hermes copies g{gen}e{n}, extract is a scoped read, TurnKind.BROWSE	.tmp/arena-browser-agent/candidate-1/DESIGN.md	landed
+2026-10-26T14:26:00Z	arena	candidate 2 is a PageView with prose on every snapshot	no extract verb, browse kind, settle in execute	.tmp/arena-browser-agent/candidate-2/DESIGN.md	landed

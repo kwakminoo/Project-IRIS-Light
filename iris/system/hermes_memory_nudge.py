@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from iris.browser.observation import browser_teaching_block
 from iris.system.hermes_iris_control_sync import hermes_home
 
 _MARKER = "<!-- iris-control-nudge-v25 -->"
@@ -87,7 +88,15 @@ CORRECT: call chat.exec_python, then include the returned `chat_markdown` (`![pl
 WRONG: invent pooling / wrong layers from noisy OCR `grid2`…`grid7` lists.
 
 CORRECT: trust STRUCTURED BINARY GRID only for `image` / `kernel` (or say the attachment is unclear) and show steps with ```matrix.
+
+23. Browser page driving uses the same iris_invoke path.
+
 """
+
+
+def _nudge_block() -> str:
+    return _BLOCK.strip() + "\n" + browser_teaching_block() + "\n"
+
 
 
 def _strip_old_nudge(text: str) -> str:
@@ -134,12 +143,15 @@ def ensure_memory_nudge() -> str:
         and "chat.exec_python" in existing
         and "WRONG" in existing
         and "CORRECT" in existing
+        and "browser.search" in existing
+        and "not a browser action" in existing
     ):
         return "memory nudge already present"
     cleaned = _strip_old_nudge(existing) if "iris-control-nudge" in existing else existing
-    text = cleaned.rstrip() + ("\n\n" if cleaned.strip() else "") + _BLOCK.strip() + "\n"
+    text = cleaned.rstrip() + ("\n\n" if cleaned.strip() else "") + _nudge_block()
     path.write_text(text, encoding="utf-8")
     return "memory nudge updated (v25)"
+
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ _CLIENT_GONE = (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, T
 
 # ponytail: adb/kill sleep·IMAP을 Qt 메인에 올리면 Windows "응답 없음". HTTP 워커에서 실행.
 # 천장: 핸들러가 UI 위젯을 직접 건드리면 안 됨 — control_bindings._call_on_ui 가 마샬함.
-_OFF_UI_PREFIXES = ("emulator.",)
+_OFF_UI_PREFIXES = ("emulator.", "browser.")
 _OFF_UI_ACTIONS = frozenset(
     {
         "email.list_messages",
@@ -238,6 +238,20 @@ class ActionRegistry:
     def __init__(self) -> None:
         self._specs: dict[str, ActionSpec] = {}
         self._handlers: dict[str, HandlerFn] = {}
+        self._human_confirm: Callable[[ActionSpec, dict[str, Any]], bool] | None = None
+
+    def set_human_confirm(
+        self, fn: Callable[[ActionSpec, dict[str, Any]], bool] | None
+    ) -> None:
+        self._human_confirm = fn
+
+    def spec(self, name: str) -> ActionSpec | None:
+        return self._specs.get(name)
+
+    def ask_human(self, spec: ActionSpec, args: dict[str, Any]) -> bool:
+        if self._human_confirm is None:
+            return False
+        return bool(self._human_confirm(spec, args))
 
     def register(
         self,
@@ -275,12 +289,20 @@ class ActionRegistry:
         spec = self._specs.get(name)
         if spec is None:
             return err_result(name, f"unknown action: {name}")
-        if spec.confirm_required and not bool(args.get("confirm")):
-            return err_result(
-                name,
-                "confirm=true required for this action",
-                {"confirm_required": True, "risk": spec.risk},
-            )
+        if spec.confirm_required:
+            args.pop("confirm", None)
+            if self._human_confirm is None:
+                return err_result(
+                    name,
+                    "human confirm required",
+                    {"confirm_required": True, "risk": spec.risk},
+                )
+            if not self.ask_human(spec, args):
+                return err_result(
+                    name,
+                    "cancelled",
+                    {"confirm_required": True, "risk": spec.risk},
+                )
         handler = self._handlers[name]
         try:
             out = handler(args)
@@ -542,7 +564,13 @@ def _self_check() -> None:
     )
     denied = high.invoke("email.send", {})
     assert denied["ok"] is False
-    allowed = high.invoke("email.send", {"confirm": True})
+    denied_wire = high.invoke("email.send", {"confirm": True})
+    assert denied_wire["ok"] is False
+    high.set_human_confirm(lambda spec, args: False)
+    denied_hud = high.invoke("email.send", {"confirm": True, "to": "a@b.c"})
+    assert denied_hud["ok"] is False
+    high.set_human_confirm(lambda spec, args: True)
+    allowed = high.invoke("email.send", {"confirm": True, "to": "a@b.c"})
     assert allowed["ok"] is True
     # 긴 액션이 UI 스레드로 돌아가면 Windows "응답 없음"
     assert runs_off_ui_thread("project.run")

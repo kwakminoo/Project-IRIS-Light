@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from iris.assets.branding import load_app_icon
+from iris.browser.types import ViewHost
 from iris.ui.ide.iris_ide_welcome_layer import IrisIdeWelcomeLayer
 from iris.ui.shared.theme_tokens import TOKENS
 from iris.ui.window.frameless_chrome import (
@@ -112,6 +113,8 @@ class IrisIdeWindow(QMainWindow):
         self._stack.addWidget(self._welcome)
 
         self._view: QWebEngineView | None = None
+        self._browser_panel = None
+        self._browser_mini = None
         self._loaded_url = ""
         self._loaded_workspace = ""
         self._defer_show = False
@@ -257,6 +260,7 @@ class IrisIdeWindow(QMainWindow):
 
     def show_welcome(self, *, show_window: bool = True) -> None:
         """Companion 진입 기본화면 — 저장된 폴더를 자동으로 열지 않음."""
+        self._detach_youtube_to_mini_if_needed()
         self._welcome.refresh_recent_folders()
         self._stack.setCurrentWidget(self._welcome)
         if show_window:
@@ -264,6 +268,7 @@ class IrisIdeWindow(QMainWindow):
             self.raise_()
 
     def show_loading(self, message: str = "IRIS IDE 시작 중…", *, show_window: bool = True) -> None:
+        self._detach_youtube_to_mini_if_needed()
         self._loading_label.setText(message)
         self._stack.setCurrentWidget(self._loading)
         if show_window:
@@ -318,6 +323,7 @@ class IrisIdeWindow(QMainWindow):
                 self.show()
                 self.raise_()
             return
+        self._detach_youtube_to_mini_if_needed()
         self._loaded_url = url
         self._loaded_workspace = ws
         view.load(QUrl(url))
@@ -361,6 +367,147 @@ class IrisIdeWindow(QMainWindow):
     def is_theia_loaded(self) -> bool:
         return bool(self._loaded_url) and self._view is not None and self._stack.currentWidget() is self._view
 
+    def ensure_browser_panel(self):
+        if self._browser_panel is not None:
+            return self._browser_panel
+        from iris.browser.session import get_browser_session
+        from iris.ui.browser.panel import get_shared_browser_panel
+
+        panel = get_shared_browser_panel(get_browser_session())
+        self._browser_panel = panel
+        if self._stack.indexOf(panel) < 0:
+            self._stack.addWidget(panel)
+        return panel
+
+    def reclaim_browser_panel(self):
+        """Workspace가 패널을 가져갔으면 IDE 스택으로 되돌린다."""
+        panel = self.ensure_browser_panel()
+        if self._stack.indexOf(panel) < 0:
+            self._stack.addWidget(panel)
+        return panel
+
+    def ensure_browser_mini(self):
+        from iris.browser.session import get_browser_session
+        from iris.browser.types import as_docked
+        from iris.ui.browser.mini_player import get_shared_browser_mini
+
+        mini = get_shared_browser_mini(self)
+        self._browser_mini = mini
+        if not mini.signals_wired():
+            mini.expand_requested.connect(
+                lambda: self.apply_browser_view_host(as_docked(get_browser_session().view_host()))
+            )
+            mini.close_requested.connect(self._on_mini_close)
+            mini.mark_signals_wired()
+        return mini
+
+    def show_browser(self, *, show_window: bool = True):
+        from iris.browser.types import PanelHost
+
+        panel = self.ensure_browser_panel()
+        panel.ensure_view()
+        self.apply_browser_view_host(PanelHost(site="ide_internal"))
+        if show_window:
+            self.show()
+            self.raise_()
+        return panel
+
+    def is_browser_visible(self) -> bool:
+        return self._browser_panel is not None and self._stack.currentWidget() is self._browser_panel
+
+    def is_browser_mini_visible(self) -> bool:
+        mini = self._browser_mini
+        return mini is not None and mini.isVisible() and mini.has_view()
+
+    def apply_browser_view_host(self, host: ViewHost | str) -> None:
+        from iris.browser.session import get_browser_session
+        from iris.browser.types import MiniHost, PanelHost, is_mini, parse_view_host
+
+        parsed = (
+            host
+            if isinstance(host, (PanelHost, MiniHost))
+            else parse_view_host(host, docked_default="ide_internal")
+        )
+        if isinstance(parsed, PanelHost) and parsed.site != "ide_internal":
+            raise ValueError("IrisIdeWindow cannot host dedicated")
+        panel = self.ensure_browser_panel()
+        view = panel.ensure_view()
+        session = get_browser_session()
+        if is_mini(parsed):
+            mini = self.ensure_browser_mini()
+            if panel.view_in_slot():
+                panel.release_view()
+            mini.attach_view(view)
+            mini.show_in_chat(mini.parentWidget() or self)
+            if self._stack.currentWidget() is panel:
+                self._show_ide_stack_page()
+            session.note_view_host(parsed)
+            return
+        mini = self._browser_mini
+        if mini is not None and mini.has_view():
+            detached = mini.detach_view()
+            mini.hide()
+            if detached is not None:
+                panel.place_view(detached)
+        elif not panel.view_in_slot():
+            panel.place_view(view)
+        if self._stack.indexOf(panel) >= 0:
+            self._stack.setCurrentWidget(panel)
+        session.note_view_host(PanelHost(site="ide_internal"))
+
+    def leave_browser_stack(self) -> None:
+        self._detach_youtube_to_mini_if_needed()
+        if self.is_browser_visible():
+            self._show_ide_stack_page()
+
+    def return_from_browser(self) -> None:
+        self.leave_browser_stack()
+
+    def _show_ide_stack_page(self) -> None:
+        if self._view is not None and self._loaded_url:
+            self._stack.setCurrentWidget(self._view)
+        else:
+            self._welcome.refresh_recent_folders()
+            self._stack.setCurrentWidget(self._welcome)
+
+    def _browser_current_url(self) -> str:
+        panel = self._browser_panel
+        if panel is None:
+            return ""
+        view = panel.view()
+        if view is not None:
+            try:
+                text = view.url().toString()
+                if text:
+                    return text
+            except Exception:
+                pass
+        from iris.browser.session import get_browser_session
+
+        return get_browser_session().snapshot().url or ""
+
+    def _detach_youtube_to_mini_if_needed(self) -> None:
+        from iris.browser.session import get_browser_session
+        from iris.browser.types import Actor, MiniPlayer
+        from iris.browser.youtube import is_youtube_watch_url
+
+        if not is_youtube_watch_url(self._browser_current_url()):
+            return
+        get_browser_session().execute(MiniPlayer(on=True, source=Actor.SYSTEM))
+
+    def _on_mini_close(self) -> None:
+        panel = self.ensure_browser_panel()
+        mini = self._browser_mini
+        if mini is not None and mini.has_view():
+            view = mini.detach_view()
+            mini.hide()
+            if view is not None:
+                panel.place_view(view)
+        from iris.browser.session import get_browser_session
+        from iris.browser.types import PanelHost
+
+        get_browser_session().note_view_host(PanelHost(site="ide_internal"))
+
 
 def iris_ide_icon(size: int = 40) -> QIcon:
     return load_app_icon()
@@ -379,6 +526,8 @@ def _self_check() -> None:
     w.show_welcome()
     assert w.is_welcome_visible()
     assert w.windowTitle() == IRIS_IDE_TITLE
+    assert hasattr(w, "show_browser")
+    assert hasattr(w, "ensure_browser_panel")
     icon_path = Path(__file__).resolve().parents[2] / "assets" / "iris_icon.png"
     assert icon_path.is_file()
     assert TOKENS.void_black in w.styleSheet()

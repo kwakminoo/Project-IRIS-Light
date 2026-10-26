@@ -7,9 +7,20 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 
+
+class TurnKind(str, Enum):
+    BROWSE = "browse"
+    TODAY = "today"
+    STORED = "stored"
+    ACTION = "action"
+    OTHER = "other"
+
+
+_BROWSE = re.compile(r"뉴스|속보|논문|arxiv", re.IGNORECASE)
 _TODAY = re.compile(
-    r"뉴스|날씨|기온|미세먼지|환율|주가|시세|코스피|코스닥|비트코인|경기\s*결과|스코어|속보"
+    r"날씨|기온|미세먼지|환율|주가|시세|코스피|코스닥|비트코인|경기\s*결과|스코어"
 )
 _NOT_TODAY = re.compile(r"계산|코드|의견|소설|번역|설계")
 _STORED = re.compile(r"위키|노트|inbox|첨부|저장(?:해\s*둔|된\s*자료|한\s*자료)")
@@ -24,13 +35,15 @@ _MARKERS = ("[자료 본문]", "BEGIN ATTACHMENT TEXT")
 
 def classify_turn(text: str) -> str:
     raw = text or ""
+    if _BROWSE.search(raw) and not _NOT_TODAY.search(raw):
+        return TurnKind.BROWSE
     if _TODAY.search(raw) and not _NOT_TODAY.search(raw):
-        return "today"
+        return TurnKind.TODAY
     if _STORED.search(raw) and not _SAVE_ACT.search(raw):
-        return "stored"
+        return TurnKind.STORED
     if _SAVE_ACT.search(raw):
-        return "action"
-    return "other"
+        return TurnKind.ACTION
+    return TurnKind.OTHER
 
 
 def turn_has_grounding_material(text: str, history: list | None, attachments: list | None) -> bool:
@@ -132,7 +145,8 @@ def settle_grounded_answer(
 def _check() -> None:
     assert classify_turn("오늘 날씨 알려줘") == "today"
     assert classify_turn("주가 알려줘") == "today"
-    assert classify_turn("오늘 뉴스 3개") == "today"
+    assert classify_turn("오늘 뉴스 3개") == "browse"
+    assert classify_turn("최신 뉴스 보여줘") == "browse"
     assert classify_turn("환율 계산해줘") == "other"
     assert classify_turn("위키에 강화학습 있어?") == "stored"
     assert classify_turn("위키에 저장해줘") == "action"

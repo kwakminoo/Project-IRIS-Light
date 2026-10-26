@@ -1,0 +1,645 @@
+ISSUES_COUNT 16
+PRS_COUNT 15
+===== ALL ISSUES =====
+#16 [closed] Pinned-window monitoring and local work learning created=2026-10-05T16:58:35Z updated=2026-10-07T07:29:12Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/16
+#15 [closed] 대화 기록 검색·모델 자동 전환·예약 루틴 + 이전 대화 참고 created=2026-09-29T12:46:53Z updated=2026-09-30T01:34:10Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/15
+#14 [open] docs: good first — hermes-skills README에 스킬 목록 표 추가 created=2026-09-23T07:19:59Z updated=2026-09-23T07:19:59Z labels=['good first issue'] pr=False url=https://github.com/kwakminoo/Project-IRIS-Light/issues/14
+#13 [closed] 설치 프로그램 0.1.1 — 무음 실패·긴 경로 롤백·번들 잔재 수정 created=2026-09-16T01:57:42Z updated=2026-09-22T14:49:20Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/13
+#12 [closed] 소개 사이트를 별도 저장소로 분리 created=2026-09-15T02:22:33Z updated=2026-09-15T06:39:05Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/12
+#11 [closed] 설치가 끊긴 뒤 앱이 조용히 죽던 문제 수정 + 설치 안내 개편 created=2026-09-15T02:21:01Z updated=2026-09-15T06:39:01Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/11
+#10 [closed] 설치 프로그램 배포 준비 — 무음 기동 실패 수정과 설치 안내 개편 created=2026-09-14T16:52:22Z updated=2026-09-15T02:22:46Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/10
+#9 [closed] docs: IRIS 소개 랜딩 페이지 추가 (GitHub Pages) created=2026-09-09T12:00:59Z updated=2026-09-14T01:37:46Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/9
+#8 [closed] fix(setup): PowerShell irm 진행률 렌더링으로 Core 설치가 멈추는 문제 created=2026-09-09T11:59:58Z updated=2026-09-14T01:37:46Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/8
+#7 [closed] fix: 에뮬레이터 콘솔 숨김 · 음성 런타임 venv 자동 구성 created=2026-08-25T10:55:39Z updated=2026-09-14T01:37:46Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/7
+#6 [closed] docs: IRIS 시스템 아키텍처 다이어그램 + 문서 현황 최신화 created=2026-08-25T10:38:53Z updated=2026-09-14T01:37:46Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/6
+#5 [closed] Prefer live source over stale IRIS.exe for local runs created=2026-08-25T01:32:58Z updated=2026-09-14T01:37:46Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/5
+#4 [closed] 교수님 피드백 3건 + 남은 버그 2건 + 알림·전화 음성 (통합) created=2026-08-24T10:07:07Z updated=2026-08-24T16:53:15Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/4
+#3 [closed] Fix Hermes chat 401 and Ollama login/min-model setup created=2026-08-24T07:50:27Z updated=2026-09-14T01:37:46Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/3
+#2 [closed] feat(voice): IRIS 보이스 프로필 — 2차 녹음 기반 상황별 톤 TTS created=2026-08-12T20:16:27Z updated=2026-08-16T07:28:06Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/2
+#1 [closed] Feat/pinned window ai monitor . 모니터링 노출 화면 조정, 모니터링 화면 고정 핀 추가 created=2026-08-05T13:39:27Z updated=2026-08-16T07:28:06Z labels=[] pr=True url=https://github.com/kwakminoo/Project-IRIS-Light/pull/1
+===== ALL PR TITLES =====
+#16 [closed/merged] Pinned-window monitoring and local work learning created=2026-10-05T16:58:35Z merged=2026-10-07T07:29:12Z head=feat/monitor-and-work-learning url=https://github.com/kwakminoo/Project-IRIS-Light/pull/16
+#15 [closed/merged] 대화 기록 검색·모델 자동 전환·예약 루틴 + 이전 대화 참고 created=2026-09-29T12:46:53Z merged=2026-09-30T01:34:10Z head=feat/history-rag-routines url=https://github.com/kwakminoo/Project-IRIS-Light/pull/15
+#13 [closed/merged] 설치 프로그램 0.1.1 — 무음 실패·긴 경로 롤백·번들 잔재 수정 created=2026-09-16T01:57:42Z merged=2026-09-22T14:49:20Z head=fix/installer-0.1.1 url=https://github.com/kwakminoo/Project-IRIS-Light/pull/13
+#12 [closed/merged] 소개 사이트를 별도 저장소로 분리 created=2026-09-15T02:22:32Z merged=2026-09-15T06:39:05Z head=chore/split-landing-site url=https://github.com/kwakminoo/Project-IRIS-Light/pull/12
+#11 [closed/merged] 설치가 끊긴 뒤 앱이 조용히 죽던 문제 수정 + 설치 안내 개편 created=2026-09-15T02:21:01Z merged=2026-09-15T06:39:01Z head=fix/setup-launcher-failure url=https://github.com/kwakminoo/Project-IRIS-Light/pull/11
+#10 [closed/unmerged] 설치 프로그램 배포 준비 — 무음 기동 실패 수정과 설치 안내 개편 created=2026-09-14T16:52:22Z merged=None head=feat/landing-site url=https://github.com/kwakminoo/Project-IRIS-Light/pull/10
+#9 [closed/merged] docs: IRIS 소개 랜딩 페이지 추가 (GitHub Pages) created=2026-09-09T12:00:59Z merged=2026-09-14T01:37:46Z head=feat/landing-site url=https://github.com/kwakminoo/Project-IRIS-Light/pull/9
+#8 [closed/merged] fix(setup): PowerShell irm 진행률 렌더링으로 Core 설치가 멈추는 문제 created=2026-09-09T11:59:58Z merged=2026-09-14T01:37:46Z head=fix/setup-ps-progress-preference url=https://github.com/kwakminoo/Project-IRIS-Light/pull/8
+#7 [closed/merged] fix: 에뮬레이터 콘솔 숨김 · 음성 런타임 venv 자동 구성 created=2026-08-25T10:55:39Z merged=2026-09-14T01:37:46Z head=cursor/emulator-voice-runtime-fix-d4fa url=https://github.com/kwakminoo/Project-IRIS-Light/pull/7
+#6 [closed/merged] docs: IRIS 시스템 아키텍처 다이어그램 + 문서 현황 최신화 created=2026-08-25T10:38:53Z merged=2026-09-14T01:37:46Z head=cursor/iris-system-architecture-diagram-4b96 url=https://github.com/kwakminoo/Project-IRIS-Light/pull/6
+#5 [closed/merged] Prefer live source over stale IRIS.exe for local runs created=2026-08-25T01:32:58Z merged=2026-09-14T01:37:46Z head=cursor/always-latest-launch-ccc0 url=https://github.com/kwakminoo/Project-IRIS-Light/pull/5
+#4 [closed/merged] 교수님 피드백 3건 + 남은 버그 2건 + 알림·전화 음성 (통합) created=2026-08-24T10:07:07Z merged=2026-08-24T16:53:14Z head=feat/call-alert-voice url=https://github.com/kwakminoo/Project-IRIS-Light/pull/4
+#3 [closed/merged] Fix Hermes chat 401 and Ollama login/min-model setup created=2026-08-24T07:50:27Z merged=2026-09-14T01:37:46Z head=cursor/hermes-401-setup-protocol-ccc0 url=https://github.com/kwakminoo/Project-IRIS-Light/pull/3
+#2 [closed/merged] feat(voice): IRIS 보이스 프로필 — 2차 녹음 기반 상황별 톤 TTS created=2026-08-12T20:16:27Z merged=2026-08-16T07:28:06Z head=feat/iris-voice-profile url=https://github.com/kwakminoo/Project-IRIS-Light/pull/2
+#1 [closed/merged] Feat/pinned window ai monitor . 모니터링 노출 화면 조정, 모니터링 화면 고정 핀 추가 created=2026-08-05T13:39:27Z merged=2026-08-16T07:28:06Z head=feat/pinned-window-ai-monitor url=https://github.com/kwakminoo/Project-IRIS-Light/pull/1
+===== MATCHES =====
+--- ISSUE #16 hits=['hermes', '재생'] title=Pinned-window monitoring and local work learning ---
+## 무엇을 바꿨나
+
+**고정(📌) 창 감시가 실제로 화면을 본다**
+- 고정한 창을 1초마다 확인하고, 화면이 바뀌면 그때 로컬 비전 모델(qwen2.5vl:3b)로 분석한다. 화면이 그대로여도 60초마다 한 번은 다시 본다.
+- 앱을 켜면 이미 고정된 창을 바로 분석한다. Ollama가 아직 뜨는 중이면 켠 뒤 2분 동안 10초마다 다시 시도한다.
+- 닫힌 고정 창도 카드로 보여 줘서 고정을 풀 수 있다.
+- 채팅으로 "고정한 창 어때?"라고 물으면 감시 결과로 바로 답한다. 해제·열기 같은 요청은 가로채지 않는다.
+
+**업무 학습 — 전부 로컬 (ShowUI-Aloha 대체)**
+- 시연을 녹화해 스킬(단계 + 바꿔 넣을 칸)로 만들고, 채팅으로 부르면 로컬 모델로 실행한다.
+- 클릭 위치는 녹화 화면 맞추기 → 창 기준 위치 → 비전 모델 + 화면 글자 재확인 순서로 찾는다.
+- Aloha는 학습·실행 모두 OpenAI 클라우드 전용이라 쓰지 않는다. 예전 방식으로 배운 업무는 다시 녹화하라고 안내한다.
+
+**리뷰에서 나온 버그 수정**
+- 비밀번호 칸이나 "글자 저장 안 함" 설정에서도 키 코드·원본 키·입력창 글자가 남던 문제를 고쳤다. 입력한 뒤 Alt+Tab 하는 경우도 포함한다.
+- Shift+Enter·Shift+Tab을 녹화할 때 Shift가 빠지던 문제를 고쳤다. 이름 없는 키(`vkXX`) 재생도 고쳤다.
+- 녹화된 Esc를 재생하면 실행이 멈추던 문제를 고쳤다.
+- 스킬 등록 창에서 긴 글자 안에 있는 칸이 사라지던 문제를 고쳤다.
+- 재부팅 뒤 엉뚱한 창으로 넘어간 창 번호(hwnd)는 버린다.
+- Hermes 설치 때 Python 범위가 비어 어떤 Python도 통과하지 못하던 경우를 고쳤다.
+
+**기타**
+- IRIS 로그를 `~/.iris-light/logs/iris.log`에 남긴다 (1MB × 4개 순환).
+
+## 확인한 것
+- 실제 앱: 테스트 창을 고정하고 화면을 정상↔에러로 바꿨다. 다시 분석될 때까지 4.4초 / 9.1초 걸렸고, 카드와 알림에 결과가 나왔다. 시작할 때 Ollama 재시도와 닫힌 고정 창 카드도 확인했다.
+- 실제 앱: 카톡 "나와의 채팅" 스킬 실행 성공 (이전 커밋들).
+- 테스트: 새로 추가한 테스트는 모두 통과한다. 전체 테스트에서 실패하는 22개는 최신 `main`에서도 똑같이 실패한다 (이 PR이 만든 실패는 없음).
+- `test_attachment_pipeline.py::test_production_main_window_dispatch_and_deleted_after_selection`은 최신 `main`에서도 테스트 프로세스를 죽인다. 그래서 위 비교에서는 이 테스트를 빼고 돌렸다.
+
+## 확인하지 못한 것 / 한계
+- 리뷰 버그 수정은 단위 테스트로만 확인했다. Shift+Enter 메시지와 Esc가 들어간 업무는 실제 앱에서 녹화·실행해 보지 않았다.
+- 핀 감시는 멈춤(화면이 안 바뀌는 상태)을 감지하지 못한다. 계속 바뀌는 창은 3초마다 GPU를 쓴다.
+- 3B 모델 정확도: 한글 화면이나 덜 뚜렷한 에러는 시험하지 않았다.
+- 이 PC의 Hermes가 고장(`uv trampoline failed`)이라 Hermes가 켜진 경로는 확인하지 못했다.
+
+🤖 Generated with Claude Code
+
+
+--- ISSUE #15 hits=['gemma', 'hermes', '재생'] title=대화 기록 검색·모델 자동 전환·예약 루틴 + 이전 대화 참고 ---
+IRIS가 **지난 일을 기억하고, 정해 둔 일을 알아서 하게** 만드는 작업입니다. 커밋이 두 개로 나뉘어 있습니다 — `8ab0e75`(기록·모델 전환·루틴), `48b13cb`(평소 채팅의 이전 대화 참고 + 앱에서 돌려 보다 찾은 버그). 올리기 전에 최신 `main`(0.1.17)을 합쳤고, 충돌은 `main_window.py` 의 import 목록 한 곳뿐이었습니다.
+
+## 들어간 것
+
+**1. 위키 History** — 대화·수행·생성물·입력을 `user/history/` 와 SQLite 에 함께 남기고 검색합니다. 키워드(FTS5 trigram + 한국어 조사 보충)가 기본이고, Ollama 에 임베딩 모델(`bge-m3` 권장)이 있으면 의미검색이 더해집니다.
+
+**2. 모델 전환 때 맥락 넘기기** — claude-code-router(MIT)의 방식을 옮겼습니다. 세 백엔드 모두 할당량이 떨어지면 다음 모델로 자동으로 넘어가고, 원문이 새 모델에 들어가면 요약하지 않고 그대로 넘깁니다. 안 들어가면 인수인계문 + History 발췌를 붙입니다.
+
+**3. 예약 루틴** — "매일 9시에 뉴스 3개" 같은 요청을 MCP `routine.*` 으로 등록합니다. 루틴별로 모델을 고정할 수 있고, 설정에 목록이 생겼습니다. **앱이 꺼져 있어도** 작업 스케줄러가 `iris/routine_cli.py` 를 깨워 실행하고 토스트로 알립니다. 토스트를 누르면 `iris-light:` 프로토콜로 앱이 뜹니다.
+
+**4. 루틴 웹 검색** — 도구가 없는 백엔드에 "오늘 뉴스"를 시키면 **가짜 헤드라인을 지어냈습니다**(gemma4:e4b 로 실제 확인). 루틴에 `search` 검색어가 있으면 IRIS 가 SerpApi 로 직접 찾아 근거로 넣습니다. `hl=ko&gl=kr` 이 없으면 몇 년 전 기사가 와서 넣었습니다.
+
+**5. 평소 채팅에서 이전 대화 참고** — ChatGPT 의 "이전 대화 참조"와 같습니다. 보낼 때마다 **다른** 대화에서 관련 기록을 최대 3건 찾아 붙이고, 답변 위에 무엇을 참고했는지 한 줄로 보여 줍니다. 설정 History 칸의 「새 채팅에서도 이전 대화 참고」로 끌 수 있습니다(기본 켜짐). 걸린 기록은 같은 대화의 앞뒤 한 턴과 함께 붙어서, "됐어요!" 같은 후속 말이 걸려도 그 앞의 해결법이 같이 갑니다.
+
+## 측정
+
+의미검색을 넣을지는 재 보고 정했습니다(`scripts/eval_history_search.py`, 정답을 검색 전에 고정한 18개 질의, top-5).
+
+| | 키워드만 | 키워드+의미(bge-m3) |
+|---|---|---|
+| 같은 말 | 5/5 | 5/5 |
+| 조사 변형 | 4/5 | 4/5 |
+| **바꿔 말하기** | **3/8** | **8/8** |
+| 전체 | 12/18 | 17/18 |
+
+평소 채팅은 "관련 기록이 있기나 한가"를 판정해야 해서 기준을 따로 뒀습니다. 결과를 보기 전에 고정한 관련 21개·무관 12개 질문에서 **관련 19/21 찾고, 무관 1/12 새어 듭니다**("운동 루틴 짜줘"가 루틴 기록에 걸림).
+
+## 앱에서 돌려 보다 고친 버그
+
+- **채팅을 지워도 History 가 남아 있었습니다.** 이전 대화 참고를 켜면 지운 대화가 되살아났을 겁니다. 이제 채팅을 지우면 DB·검색 색인·벡터·위키 사본에서 같이 지워집니다.
+- **답변 중에 다른 채팅으로 옮기면 제목이 "대화 전환으로 응답을 중단했습니다."가 됐습니다**(기존 동작). 제목을 만들 때 그 안내문을 빼고, 이미 망가진 제목은 DB 를 열 때 「새 채팅」으로 되돌립니다. 직접 붙인 제목은 건드리지 않습니다.
+- **앱이 시작하다 굳었습니다(응답 없음).** 화면 모니터의 캡처 스레드가 `win32ui` 를 처음 import 하면서 로더 잠금을 쥔 채 GIL 을 기다리고, 메인 스레드는 GIL 을 쥔 채 Qt 페인트 스레드를 기다리는 교착입니다. py-spy 로 두 번 같은 자리에서 멈춘 것을 확인했고, `win32ui` 를 메인 스레드에서 미리 import 하게 바꾼 뒤로는 재현되지 않았습니다(`iris/monitoring/screen_capture.py`).
+- 안내 줄(참고한 이전 대화, 모델 전환)에 [재생] 버튼이 붙고 TTS 의 "마지막 답변"으로 등록되던 것을 분리했습니다.
+
+## 확인한 것
+
+- 테스트 **774 통과**. 실패 12개(`test_code_index`, `test_emulator_off_ui`, `test_ide_run_no_hang`, `test_launcher_failure_report`, `test_voice_turn_logic`)는 이 브랜치 전에도 똑같이 실패합니다.
+- 실제 앱을 **사용자 DB 복사본**으로 띄워, 새 채팅에서 "저번에 설치 오류 어떻게 고쳤지?"를 보내고 참고 줄·제목 복구·교착 해소를 화면으로 확인했습니다.
+- 루틴은 gemma4:e4b 로 실제 실행하며 결함 세 개(가짜 헤드라인, 인수인계문에 프롬프트 지시문이 새는 것, 오래된 기사)를 찾아 고쳤고, 토스트 클릭으로 앱이 뜨는 것도 실제로 확인했습니다.
+
+## 한계 — 알고 머지해 주세요
+
+- **임베딩 모델이 없으면 이전 대화 참고는 거의 안 붙습니다.** 키워드만으로는 엉뚱한 게 붙지 않는 쪽을 골라서, 관련 기록도 21개 중 5개만 찾습니다. `ollama pull bge-m3`(1.2GB)가 필요합니다.
+- 임베딩 모델 콜드 로드가 9초라 입력을 시작하면 미리 깨웁니다. 그래도 **오래 쉬다가 6초 안에 보낸 짧은 메시지**는 한 번 키워드로 빠집니다. 한 번 뜨면 30분 붙잡아 둡니다(GPU 664MB).
+- 기준값은 합성 데이터로 정했습니다. 실제 기록이 쌓이면 다시 재야 합니다.
+- 테스트하는 동안 Hermes 경유 답변이 3분 넘게 안 온 적이 있습니다. 이 브랜치와 관련은 없어 보이지만 원인은 보지 못했습니다.
+
+## 설치 프로그램 쪽에 필요한 것
+
+토스트 알림과 클릭이 동작하려면 두 가지가 등록돼 있어야 하는데, **지금은 제 PC 에만** 되어 있습니다.
+
+1. 시작 메뉴 `Iris Light.lnk` — 토스트 AppUserModelID 용. 지금 `pythonw.exe` 를 가리키는데 실제 IRIS 실행 파일을 가리켜야 합니다.
+2. `HKCU\Software\Classes\iris-light` — 토스트 클릭 핸들러.
+
+설치 프로그램에서 이 둘을 등록하도록 다음 작업으로 맞추겠습니다.
+
+🤖 Generated with Claude Code
+
+
+--- ISSUE #14 hits=['hermes'] title=docs: good first — hermes-skills README에 스킬 목록 표 추가 ---
+## 목표 (1–2시간)
+`integrations/hermes-skills/README.md`에 현재 `iris-control/*` 스킬 목록 표를 추가한다.
+
+## 손댈 파일
+- `integrations/hermes-skills/README.md` 만
+- Core(`iris/runtime|system|infrastructure`) diff = 0
+
+## 완료 기준
+- [ ] 각 스킬 폴더명 + SKILL.md description 한 줄 표
+- [ ] `docs/guides/extending-iris.md` 링크 1줄
+
+## 참고
+- CONTRIBUTING.md
+- docs/guides/extending-iris.md
+
+--- ISSUE #8 hits=['hermes'] title=fix(setup): PowerShell irm 진행률 렌더링으로 Core 설치가 멈추는 문제 ---
+첫 실행이 Hermes 설치 단계에서 15분 넘게 멈추는 문제를 고칩니다.
+
+원인은 PowerShell 5.1의 `irm`입니다. `$ProgressPreference` 기본값이 `Continue`라 진행률을 바이트 블록마다 렌더링하는데, 이게 병목이 되어 245KB짜리 install.ps1 하나 받는 데 **187초**가 걸립니다. 같은 파일을 `curl.exe`는 **0.59초**에 받습니다.
+
+실측 (동일 머신·동일 네트워크)
+- 수정 전: 16분 경과, CPU 11.8초, `hermes-agent` 디렉터리 미생성 — 설치 스크립트 본체에 도달조차 못함
+- 수정 후: Node·FFmpeg·클론·`uv pip install` 정상 완료. Core 10단계 done, `core_smoke` 통과, gateway :8642 LISTEN
+
+Core는 건너뛸 수 없어서 이 상태면 앱이 첫 화면을 못 넘어갑니다. 심사위원이 클린 PC에서 받으면 "설치 실행 중…"에 갇힙니다. Ollama 설치 경로도 같은 패턴이라 함께 고쳤습니다.
+
+**시연 영상 촬영 전에 머지가 필요합니다.**
+
+--- ISSUE #6 hits=['youtube', 'hermes', '재생'] title=docs: IRIS 시스템 아키텍처 다이어그램 + 문서 현황 최신화 ---
+ 
+## 목적
+IRIS `0.1.0-light` 코드 현황에 맞춰 시스템 아키텍처 이미지를 추가하고, 구식 문서·위키를 최신화합니다.
+
+## 변경 요약
+### 아키텍처
+- `docs/ia/iris-system-architecture.png` — 구성도 · 기술 스택 · 데이터 흐름 개조식 다이어그램
+
+### 문서 동기화 (2026-08-25)
+- `docs/domain.md` — 실제 폴더/기능 상태 반영 (Voice·IDE·Email·Calendar·Control 완료)
+- `docs/ia/IA.md` — Control `:8765` · Voice `:18765` · iris-control 스킬 · env 범위
+- `docs/api/API-명세서.md` · vault API 요약 — env·포트·워커 경로
+- `docs/voice.md` · `voice_architecture.md` — UserTurn 자동 제출 · VAD/AEC · mock 기본값
+- `README.md` · `.env.example` · vault 프로젝트 개요
+- `obsidian-vault/코드/` — `generate_code_docs.py` 재생성 (learning/runtime/audio 등)
+
+## 현황 스냅샷
+| 상태 | 항목 |
+|------|------|
+| 완료 | HUD · Ollama/Hermes · Wiki · Email · Calendar · IDE Companion · Control/MCP · Setup |
+| 선택 | Voice · Android 에뮬 · Aloha |
+| 준비 중 | 메신저 4종 · 데모 YouTube |
+
+## 테스트
+- [x] 문서·위키 경로 확인
+- [x] code docs 재생성 (203 notes)
+- [ ] 리뷰어 시각 확인
+
+ 
+
+     
+
+
+
+--- ISSUE #4 hits=['intent', 'webengine', '유튜브', '재생'] title=교수님 피드백 3건 + 남은 버그 2건 + 알림·전화 음성 (통합) ---
+교수님 피드백 3건 + 남아 있던 버그 2건 + 친구 요청 4건을 한 PR로 묶었습니다.
+성격이 다른 세 덩어리라 아래 목차 순서로 보시면 됩니다.
+
+| # | 내용 | 커밋 |
+|---|------|------|
+| A | 교수님 피드백 — 라이선스 · 자동 설치 · 데모 영상 | `e9e5932` `e5bad45` |
+| B | 남아 있던 버그 2건 — 모니터링 상태 · × 버튼 | `97ce288` |
+| C | 알림·전화 음성 + 실측에서 잡은 버그 3건 | `e4f1648` `ce12da0` `5f62fb8` |
+
+**테스트: 신규 88건 · 전체 333 passed / 1 skipped** (기존 245건 그대로 통과)
+
+---
+
+# A. 교수님 피드백 (제출 전 정리)
+
+## A-1. 라이선스 → `GPL-3.0-or-later`
+
+루트에 `LICENSE`(GPL v3 전문)와 `LICENSE.md`(선정 근거 + 서드파티 인벤토리)를 추가했습니다.
+
+**MIT / Apache-2.0 은 선택할 수 없습니다.**
+
+- **PyQt6 가 GPL-3.0-only** 입니다. 설치 메타데이터가 명시합니다:
+ `pyqt6-6.11.0.dist-info/METADATA` → `License-Expression: GPL-3.0-only`
+- PyQt6 를 import 하는 앱은 GPL v3 의 **결합 저작물**로 취급됩니다. IRIS 의 UI 전체가 해당합니다.
+- 게다가 이건 이론이 아닙니다. 저장소가 **PyQt6 를 번들한 `dist/IRIS.exe` 를 직접 배포**하고
+ 있어서 GPL v3 §6(비소스 배포 시 대응 소스 제공)이 그대로 걸립니다.
+
+그래서 **제약을 만족하는 것 중 가장 개방적인** `GPL-3.0-or-later` 를 골랐습니다.
+
+의존성을 전수 확인했고 **충돌은 없습니다.** 눈여겨볼 항목:
+
+| 항목 | 라이선스 | 비고 |
+|------|----------|------|
+| PyQt6, PyQt6-WebEngine | GPL-3.0-only | 제약의 근원 |
+| **mutagen** | **GPL-2.0-or-later** | `or later` 덕분에 GPLv3 선택 가능. **GPL-2.0-only 였으면 여기서 충돌** |
+| pynput / soxr | LGPL-3.0 / LGPL-2.1+ | 호환 |
+| ShowUI-Aloha (벤더링) | Apache-2.0 | 일방향 호환. 원본 `LICENSE`·`UPSTREAM.md` 보존 필수 |
+| 그 외 | MIT / BSD / Apache-2.0 / MPL-2.0 | 호환 |
+
+코드와 **별도로** 다뤄야 하는 것도 `LICENSE.md` 에 정리했습니다 —
+모델 가중치(저장소 미포함), Silero VAD(런타임 다운로드), FFmpeg 구성,
+그리고 **음성 녹음 데이터**(현재 `.gitignore` 로 미커밋, 이 상태 유지 권장).
+
+더 개방적인 라이선스로 가는 유일한 경로(PyQt6 → PySide6)도 난이도와 함께 적어 뒀지만,
+**지금 일정에는 권장하지 않습니다.**
+
+## A-2. 자동 설치 · 환경 구성
+
+> "GUI로 초보자도 쓸 수 있게 한 건 좋은데 설치가 어려울 것 같다"
+
+| 파일 | 역할 |
+|------|------|
+| **`setup.bat`** | **더블클릭 진입점.** ExecutionPolicy 우회 포함 — 터미널을 열 필요가 없습니다 |
+| `setup.ps1` | 자동 설치 본체 (Windows) |
+| `setup.sh` | Linux / macOS 동등 기능 |
+| `.env.example` | 환경 설정 템플릿 — **지금까지 없던 파일** |
+
+6단계이고 **각 단계가 실패하면 구체적인 해결 명령을 화면에 출력**합니다.
+Python 탐색 → venv → pip → 의존성 → `.env` → **PyQt6 import 검증**.
+옵션: `-Run` / `-Voice` / `-Recreate`.
+
+> `.env.example` 이 없던 게 실제 함정이었습니다. 기존 `.env` 가 주석으로
+> "템플릿: .env.example" 이라고 안내하는데 정작 그 파일이 저장소에 없었습니다.
+
+**검증**: `setup.ps1` 과 `setup.bat` 모두 실제로 끝까지 실행해 통과 확인.
+`setup.sh` 는 `bash -n` 문법 검사만 했고 Linux 실행은 확인하지 못했습니다.
+
+> 참고로 발견한 것 — **Windows PowerShell 5.1 은 BOM 없는 UTF-8 `.ps1` 을 cp949 로 읽어서**
+> 한글이 든 스크립트가 파싱 에러를 냅니다. `setup.ps1` 에는 BOM 을 넣어 해결했는데,
+> 기존 `scripts/setup_voice_runtime.ps1` 도 BOM 이 없어 같은 문제가 날 수 있습니다.
+> 이번 PR 범위 밖이라 손대지 않았습니다.
+
+## A-3. 설치·동작 데모 영상
+
+영상 촬영/업로드는 못 하지만 **바로 찍을 수 있는 상태**까지 준비했습니다.
+
+- **`docs/demo-video-script.md`** — 3분 대본. 씬별 타임코드 · 화면 구성 · 내레이션 원고 ·
+ 자막 · 편집 지시 · 유튜브 제목/설명란/챕터 타임스탬프 · 체크리스트
+- **README 상단 ` ` 블록** — 업로드 후 **`VIDEO_ID` 11자리만 교체**하면 끝
+
+대본은 **씬 2(`setup.bat` 더블클릭)를 영상의 중심**으로 잡았습니다.
+피드백 2번과 3번이 결국 같은 메시지라서요.
+
+## A-4. 그 외
+
+- README: 배지 3개, 상단 "3분 만에 시작하기", 설치 방법 A/B, 문제 해결 표 6행,
+ 라이선스 섹션 전면 교체(기존엔 *"루트 LICENSE 파일이 아직 없습니다"*)
+- `tmp_voice_test.db-shm/-wal` 제거 — `29e8949` 에서 실수로 들어온 SQLite 사이드카.
+ 코드 어디서도 참조하지 않습니다(전체 검색 0건). `.gitignore` 에 재발 방지 패턴 추가
+
+---
+
+# B. 남아 있던 버그 2건
+
+## B-1. `×` 닫기 버튼이 보이지 않음
+
+`window_list_panel._make_row` 의 `×` 는 `setFixedSize(20, 20)` 인데 로컬 스타일시트에
+`padding` 선언이 없어, 전역 규칙 `QPushButton { padding: 6px 12px }` 가 그대로 먹었습니다.
+20px 폭에 좌우 24px 패딩 → **글리프가 버튼 밖으로 밀려나 아무것도 안 보임.**
+
+`padding: 0` 한 줄로 해결. `unified_monitor_panel._make_pin_button` 이 이미 같은 처방을
+쓰고 있어 그 패턴에 맞췄습니다.
+
+## B-2. 모니터링 상태가 한 번도 표시된 적 없음
+
+원인이 **두 개**였습니다. 하나만 고쳐서는 여전히 안 나옵니다.
+
+**(a) 스키마 드리프트** — `MonitoredTarget` 은 `status`/`last_event`/`last_checked_at` 을
+선언하는데 `targets` 테이블에는 그 컬럼이 **없었습니다.**
+`_load_monitor_meta()` 가 매 행 예외를 냈고 포괄 `except: continue` 가 전부 삼켜서
+결과는 **항상 빈 dict** 였습니다. 에러 로그조차 안 남아 오래 숨어 있었습니다.
+
+→ 컬럼 추가 + **기존 DB 를 위한 `ALTER TABLE` 마이그레이션**(`_migrate_targets`).
+`CREATE TABLE IF NOT EXISTS` 로는 이미 만들어진 `~/.iris-light/iris_light.db` 가
+갱신되지 않기 때문에 이게 반드시 필요합니다.
+
+**(b) 행을 넣는 코드가 아예 없었다** — `INSERT INTO targets` 전체 검색 **0건**.
+스키마를 고쳐도 테이블이 비어 있으면 여전히 아무것도 안 
+
+--- ISSUE #3 hits=['hermes'] title=Fix Hermes chat 401 and Ollama login/min-model setup ---
+ 
+## 목적
+설정 → 시작 프로토콜 「검사」/「다시 설정」은 정상인데, 채팅을 보내면 `Hermes HTTP 401 Unauthorized`가 나던 문제를 시작 프로토콜에서 재발하지 않게 고칩니다.
+
+## 원인
+- 검사는 GET `/health`·`/v1/models`만 봐서 통과하고, 실제 채팅 POST `/v1/chat/completions`만 Bearer/업스트림 401이 났습니다.
+- `/api/tags`에 클라우드 스텁(`*:cloud`, `*-cloud`)만 있어도 “모델 준비됨”으로 통과했습니다. 미로그인이면 채팅이 401입니다.
+
+## 변경 요약
+- **검사(`verify_core`)**가 채팅과 같은 POST로 401을 탐지합니다.
+- 검사는 **최소 로컬 모델 유무**와 **Ollama 클라우드 로그인**을 함께 보여 줍니다.
+- **로그인되어 있고 최소 모델이 없으면** 다운로드 없이 클라우드를 쓰는 것을 권장하는 안내창을 띄웁니다.
+- 시작 프로토콜 Ollama 단계에서 **「로그인」**과 **「최소 모델 설치」** 버튼을 제공합니다. 둘 중 하나만 하면 됩니다.
+- Core smoke가 401이면 API 키를 다시 맞추고 gateway를 재기동합니다.
+
+## 테스트
+- [x] `python3 -m unittest tests.test_hermes_auth tests.test_setup_protocol_inference -v`
+- [x] `python3 -m iris.ui._check_setup_protocol`
+
+## 사용 방법
+설정 → 시작 프로토콜에서 **검사**로 최소 모델·로그인 상태를 확인하세요. 둘 다 없으면 **다시 설정**에서 로그인하거나 최소 모델을 설치하면 됩니다.
+
+ 
+
+     
+
+
+
+--- PR #16 hits=['hermes', '재생'] title=Pinned-window monitoring and local work learning ---
+## 무엇을 바꿨나
+
+**고정(📌) 창 감시가 실제로 화면을 본다**
+- 고정한 창을 1초마다 확인하고, 화면이 바뀌면 그때 로컬 비전 모델(qwen2.5vl:3b)로 분석한다. 화면이 그대로여도 60초마다 한 번은 다시 본다.
+- 앱을 켜면 이미 고정된 창을 바로 분석한다. Ollama가 아직 뜨는 중이면 켠 뒤 2분 동안 10초마다 다시 시도한다.
+- 닫힌 고정 창도 카드로 보여 줘서 고정을 풀 수 있다.
+- 채팅으로 "고정한 창 어때?"라고 물으면 감시 결과로 바로 답한다. 해제·열기 같은 요청은 가로채지 않는다.
+
+**업무 학습 — 전부 로컬 (ShowUI-Aloha 대체)**
+- 시연을 녹화해 스킬(단계 + 바꿔 넣을 칸)로 만들고, 채팅으로 부르면 로컬 모델로 실행한다.
+- 클릭 위치는 녹화 화면 맞추기 → 창 기준 위치 → 비전 모델 + 화면 글자 재확인 순서로 찾는다.
+- Aloha는 학습·실행 모두 OpenAI 클라우드 전용이라 쓰지 않는다. 예전 방식으로 배운 업무는 다시 녹화하라고 안내한다.
+
+**리뷰에서 나온 버그 수정**
+- 비밀번호 칸이나 "글자 저장 안 함" 설정에서도 키 코드·원본 키·입력창 글자가 남던 문제를 고쳤다. 입력한 뒤 Alt+Tab 하는 경우도 포함한다.
+- Shift+Enter·Shift+Tab을 녹화할 때 Shift가 빠지던 문제를 고쳤다. 이름 없는 키(`vkXX`) 재생도 고쳤다.
+- 녹화된 Esc를 재생하면 실행이 멈추던 문제를 고쳤다.
+- 스킬 등록 창에서 긴 글자 안에 있는 칸이 사라지던 문제를 고쳤다.
+- 재부팅 뒤 엉뚱한 창으로 넘어간 창 번호(hwnd)는 버린다.
+- Hermes 설치 때 Python 범위가 비어 어떤 Python도 통과하지 못하던 경우를 고쳤다.
+
+**기타**
+- IRIS 로그를 `~/.iris-light/logs/iris.log`에 남긴다 (1MB × 4개 순환).
+
+## 확인한 것
+- 실제 앱: 테스트 창을 고정하고 화면을 정상↔에러로 바꿨다. 다시 분석될 때까지 4.4초 / 9.1초 걸렸고, 카드와 알림에 결과가 나왔다. 시작할 때 Ollama 재시도와 닫힌 고정 창 카드도 확인했다.
+- 실제 앱: 카톡 "나와의 채팅" 스킬 실행 성공 (이전 커밋들).
+- 테스트: 새로 추가한 테스트는 모두 통과한다. 전체 테스트에서 실패하는 22개는 최신 `main`에서도 똑같이 실패한다 (이 PR이 만든 실패는 없음).
+- `test_attachment_pipeline.py::test_production_main_window_dispatch_and_deleted_after_selection`은 최신 `main`에서도 테스트 프로세스를 죽인다. 그래서 위 비교에서는 이 테스트를 빼고 돌렸다.
+
+## 확인하지 못한 것 / 한계
+- 리뷰 버그 수정은 단위 테스트로만 확인했다. Shift+Enter 메시지와 Esc가 들어간 업무는 실제 앱에서 녹화·실행해 보지 않았다.
+- 핀 감시는 멈춤(화면이 안 바뀌는 상태)을 감지하지 못한다. 계속 바뀌는 창은 3초마다 GPU를 쓴다.
+- 3B 모델 정확도: 한글 화면이나 덜 뚜렷한 에러는 시험하지 않았다.
+- 이 PC의 Hermes가 고장(`uv trampoline failed`)이라 Hermes가 켜진 경로는 확인하지 못했다.
+
+🤖 Generated with Claude Code
+
+
+--- PR #15 hits=['gemma', 'hermes', '재생'] title=대화 기록 검색·모델 자동 전환·예약 루틴 + 이전 대화 참고 ---
+IRIS가 **지난 일을 기억하고, 정해 둔 일을 알아서 하게** 만드는 작업입니다. 커밋이 두 개로 나뉘어 있습니다 — `8ab0e75`(기록·모델 전환·루틴), `48b13cb`(평소 채팅의 이전 대화 참고 + 앱에서 돌려 보다 찾은 버그). 올리기 전에 최신 `main`(0.1.17)을 합쳤고, 충돌은 `main_window.py` 의 import 목록 한 곳뿐이었습니다.
+
+## 들어간 것
+
+**1. 위키 History** — 대화·수행·생성물·입력을 `user/history/` 와 SQLite 에 함께 남기고 검색합니다. 키워드(FTS5 trigram + 한국어 조사 보충)가 기본이고, Ollama 에 임베딩 모델(`bge-m3` 권장)이 있으면 의미검색이 더해집니다.
+
+**2. 모델 전환 때 맥락 넘기기** — claude-code-router(MIT)의 방식을 옮겼습니다. 세 백엔드 모두 할당량이 떨어지면 다음 모델로 자동으로 넘어가고, 원문이 새 모델에 들어가면 요약하지 않고 그대로 넘깁니다. 안 들어가면 인수인계문 + History 발췌를 붙입니다.
+
+**3. 예약 루틴** — "매일 9시에 뉴스 3개" 같은 요청을 MCP `routine.*` 으로 등록합니다. 루틴별로 모델을 고정할 수 있고, 설정에 목록이 생겼습니다. **앱이 꺼져 있어도** 작업 스케줄러가 `iris/routine_cli.py` 를 깨워 실행하고 토스트로 알립니다. 토스트를 누르면 `iris-light:` 프로토콜로 앱이 뜹니다.
+
+**4. 루틴 웹 검색** — 도구가 없는 백엔드에 "오늘 뉴스"를 시키면 **가짜 헤드라인을 지어냈습니다**(gemma4:e4b 로 실제 확인). 루틴에 `search` 검색어가 있으면 IRIS 가 SerpApi 로 직접 찾아 근거로 넣습니다. `hl=ko&gl=kr` 이 없으면 몇 년 전 기사가 와서 넣었습니다.
+
+**5. 평소 채팅에서 이전 대화 참고** — ChatGPT 의 "이전 대화 참조"와 같습니다. 보낼 때마다 **다른** 대화에서 관련 기록을 최대 3건 찾아 붙이고, 답변 위에 무엇을 참고했는지 한 줄로 보여 줍니다. 설정 History 칸의 「새 채팅에서도 이전 대화 참고」로 끌 수 있습니다(기본 켜짐). 걸린 기록은 같은 대화의 앞뒤 한 턴과 함께 붙어서, "됐어요!" 같은 후속 말이 걸려도 그 앞의 해결법이 같이 갑니다.
+
+## 측정
+
+의미검색을 넣을지는 재 보고 정했습니다(`scripts/eval_history_search.py`, 정답을 검색 전에 고정한 18개 질의, top-5).
+
+| | 키워드만 | 키워드+의미(bge-m3) |
+|---|---|---|
+| 같은 말 | 5/5 | 5/5 |
+| 조사 변형 | 4/5 | 4/5 |
+| **바꿔 말하기** | **3/8** | **8/8** |
+| 전체 | 12/18 | 17/18 |
+
+평소 채팅은 "관련 기록이 있기나 한가"를 판정해야 해서 기준을 따로 뒀습니다. 결과를 보기 전에 고정한 관련 21개·무관 12개 질문에서 **관련 19/21 찾고, 무관 1/12 새어 듭니다**("운동 루틴 짜줘"가 루틴 기록에 걸림).
+
+## 앱에서 돌려 보다 고친 버그
+
+- **채팅을 지워도 History 가 남아 있었습니다.** 이전 대화 참고를 켜면 지운 대화가 되살아났을 겁니다. 이제 채팅을 지우면 DB·검색 색인·벡터·위키 사본에서 같이 지워집니다.
+- **답변 중에 다른 채팅으로 옮기면 제목이 "대화 전환으로 응답을 중단했습니다."가 됐습니다**(기존 동작). 제목을 만들 때 그 안내문을 빼고, 이미 망가진 제목은 DB 를 열 때 「새 채팅」으로 되돌립니다. 직접 붙인 제목은 건드리지 않습니다.
+- **앱이 시작하다 굳었습니다(응답 없음).** 화면 모니터의 캡처 스레드가 `win32ui` 를 처음 import 하면서 로더 잠금을 쥔 채 GIL 을 기다리고, 메인 스레드는 GIL 을 쥔 채 Qt 페인트 스레드를 기다리는 교착입니다. py-spy 로 두 번 같은 자리에서 멈춘 것을 확인했고, `win32ui` 를 메인 스레드에서 미리 import 하게 바꾼 뒤로는 재현되지 않았습니다(`iris/monitoring/screen_capture.py`).
+- 안내 줄(참고한 이전 대화, 모델 전환)에 [재생] 버튼이 붙고 TTS 의 "마지막 답변"으로 등록되던 것을 분리했습니다.
+
+## 확인한 것
+
+- 테스트 **774 통과**. 실패 12개(`test_code_index`, `test_emulator_off_ui`, `test_ide_run_no_hang`, `test_launcher_failure_report`, `test_voice_turn_logic`)는 이 브랜치 전에도 똑같이 실패합니다.
+- 실제 앱을 **사용자 DB 복사본**으로 띄워, 새 채팅에서 "저번에 설치 오류 어떻게 고쳤지?"를 보내고 참고 줄·제목 복구·교착 해소를 화면으로 확인했습니다.
+- 루틴은 gemma4:e4b 로 실제 실행하며 결함 세 개(가짜 헤드라인, 인수인계문에 프롬프트 지시문이 새는 것, 오래된 기사)를 찾아 고쳤고, 토스트 클릭으로 앱이 뜨는 것도 실제로 확인했습니다.
+
+## 한계 — 알고 머지해 주세요
+
+- **임베딩 모델이 없으면 이전 대화 참고는 거의 안 붙습니다.** 키워드만으로는 엉뚱한 게 붙지 않는 쪽을 골라서, 관련 기록도 21개 중 5개만 찾습니다. `ollama pull bge-m3`(1.2GB)가 필요합니다.
+- 임베딩 모델 콜드 로드가 9초라 입력을 시작하면 미리 깨웁니다. 그래도 **오래 쉬다가 6초 안에 보낸 짧은 메시지**는 한 번 키워드로 빠집니다. 한 번 뜨면 30분 붙잡아 둡니다(GPU 664MB).
+- 기준값은 합성 데이터로 정했습니다. 실제 기록이 쌓이면 다시 재야 합니다.
+- 테스트하는 동안 Hermes 경유 답변이 3분 넘게 안 온 적이 있습니다. 이 브랜치와 관련은 없어 보이지만 원인은 보지 못했습니다.
+
+## 설치 프로그램 쪽에 필요한 것
+
+토스트 알림과 클릭이 동작하려면 두 가지가 등록돼 있어야 하는데, **지금은 제 PC 에만** 되어 있습니다.
+
+1. 시작 메뉴 `Iris Light.lnk` — 토스트 AppUserModelID 용. 지금 `pythonw.exe` 를 가리키는데 실제 IRIS 실행 파일을 가리켜야 합니다.
+2. `HKCU\Software\Classes\iris-light` — 토스트 클릭 핸들러.
+
+설치 프로그램에서 이 둘을 등록하도록 다음 작업으로 맞추겠습니다.
+
+🤖 Generated with Claude Code
+
+
+--- PR #8 hits=['hermes'] title=fix(setup): PowerShell irm 진행률 렌더링으로 Core 설치가 멈추는 문제 ---
+첫 실행이 Hermes 설치 단계에서 15분 넘게 멈추는 문제를 고칩니다.
+
+원인은 PowerShell 5.1의 `irm`입니다. `$ProgressPreference` 기본값이 `Continue`라 진행률을 바이트 블록마다 렌더링하는데, 이게 병목이 되어 245KB짜리 install.ps1 하나 받는 데 **187초**가 걸립니다. 같은 파일을 `curl.exe`는 **0.59초**에 받습니다.
+
+실측 (동일 머신·동일 네트워크)
+- 수정 전: 16분 경과, CPU 11.8초, `hermes-agent` 디렉터리 미생성 — 설치 스크립트 본체에 도달조차 못함
+- 수정 후: Node·FFmpeg·클론·`uv pip install` 정상 완료. Core 10단계 done, `core_smoke` 통과, gateway :8642 LISTEN
+
+Core는 건너뛸 수 없어서 이 상태면 앱이 첫 화면을 못 넘어갑니다. 심사위원이 클린 PC에서 받으면 "설치 실행 중…"에 갇힙니다. Ollama 설치 경로도 같은 패턴이라 함께 고쳤습니다.
+
+**시연 영상 촬영 전에 머지가 필요합니다.**
+
+--- PR #6 hits=['youtube', 'hermes', '재생'] title=docs: IRIS 시스템 아키텍처 다이어그램 + 문서 현황 최신화 ---
+ 
+## 목적
+IRIS `0.1.0-light` 코드 현황에 맞춰 시스템 아키텍처 이미지를 추가하고, 구식 문서·위키를 최신화합니다.
+
+## 변경 요약
+### 아키텍처
+- `docs/ia/iris-system-architecture.png` — 구성도 · 기술 스택 · 데이터 흐름 개조식 다이어그램
+
+### 문서 동기화 (2026-08-25)
+- `docs/domain.md` — 실제 폴더/기능 상태 반영 (Voice·IDE·Email·Calendar·Control 완료)
+- `docs/ia/IA.md` — Control `:8765` · Voice `:18765` · iris-control 스킬 · env 범위
+- `docs/api/API-명세서.md` · vault API 요약 — env·포트·워커 경로
+- `docs/voice.md` · `voice_architecture.md` — UserTurn 자동 제출 · VAD/AEC · mock 기본값
+- `README.md` · `.env.example` · vault 프로젝트 개요
+- `obsidian-vault/코드/` — `generate_code_docs.py` 재생성 (learning/runtime/audio 등)
+
+## 현황 스냅샷
+| 상태 | 항목 |
+|------|------|
+| 완료 | HUD · Ollama/Hermes · Wiki · Email · Calendar · IDE Companion · Control/MCP · Setup |
+| 선택 | Voice · Android 에뮬 · Aloha |
+| 준비 중 | 메신저 4종 · 데모 YouTube |
+
+## 테스트
+- [x] 문서·위키 경로 확인
+- [x] code docs 재생성 (203 notes)
+- [ ] 리뷰어 시각 확인
+
+ 
+
+     
+
+
+
+--- PR #4 hits=['intent', 'webengine', '유튜브', '재생'] title=교수님 피드백 3건 + 남은 버그 2건 + 알림·전화 음성 (통합) ---
+교수님 피드백 3건 + 남아 있던 버그 2건 + 친구 요청 4건을 한 PR로 묶었습니다.
+성격이 다른 세 덩어리라 아래 목차 순서로 보시면 됩니다.
+
+| # | 내용 | 커밋 |
+|---|------|------|
+| A | 교수님 피드백 — 라이선스 · 자동 설치 · 데모 영상 | `e9e5932` `e5bad45` |
+| B | 남아 있던 버그 2건 — 모니터링 상태 · × 버튼 | `97ce288` |
+| C | 알림·전화 음성 + 실측에서 잡은 버그 3건 | `e4f1648` `ce12da0` `5f62fb8` |
+
+**테스트: 신규 88건 · 전체 333 passed / 1 skipped** (기존 245건 그대로 통과)
+
+---
+
+# A. 교수님 피드백 (제출 전 정리)
+
+## A-1. 라이선스 → `GPL-3.0-or-later`
+
+루트에 `LICENSE`(GPL v3 전문)와 `LICENSE.md`(선정 근거 + 서드파티 인벤토리)를 추가했습니다.
+
+**MIT / Apache-2.0 은 선택할 수 없습니다.**
+
+- **PyQt6 가 GPL-3.0-only** 입니다. 설치 메타데이터가 명시합니다:
+ `pyqt6-6.11.0.dist-info/METADATA` → `License-Expression: GPL-3.0-only`
+- PyQt6 를 import 하는 앱은 GPL v3 의 **결합 저작물**로 취급됩니다. IRIS 의 UI 전체가 해당합니다.
+- 게다가 이건 이론이 아닙니다. 저장소가 **PyQt6 를 번들한 `dist/IRIS.exe` 를 직접 배포**하고
+ 있어서 GPL v3 §6(비소스 배포 시 대응 소스 제공)이 그대로 걸립니다.
+
+그래서 **제약을 만족하는 것 중 가장 개방적인** `GPL-3.0-or-later` 를 골랐습니다.
+
+의존성을 전수 확인했고 **충돌은 없습니다.** 눈여겨볼 항목:
+
+| 항목 | 라이선스 | 비고 |
+|------|----------|------|
+| PyQt6, PyQt6-WebEngine | GPL-3.0-only | 제약의 근원 |
+| **mutagen** | **GPL-2.0-or-later** | `or later` 덕분에 GPLv3 선택 가능. **GPL-2.0-only 였으면 여기서 충돌** |
+| pynput / soxr | LGPL-3.0 / LGPL-2.1+ | 호환 |
+| ShowUI-Aloha (벤더링) | Apache-2.0 | 일방향 호환. 원본 `LICENSE`·`UPSTREAM.md` 보존 필수 |
+| 그 외 | MIT / BSD / Apache-2.0 / MPL-2.0 | 호환 |
+
+코드와 **별도로** 다뤄야 하는 것도 `LICENSE.md` 에 정리했습니다 —
+모델 가중치(저장소 미포함), Silero VAD(런타임 다운로드), FFmpeg 구성,
+그리고 **음성 녹음 데이터**(현재 `.gitignore` 로 미커밋, 이 상태 유지 권장).
+
+더 개방적인 라이선스로 가는 유일한 경로(PyQt6 → PySide6)도 난이도와 함께 적어 뒀지만,
+**지금 일정에는 권장하지 않습니다.**
+
+## A-2. 자동 설치 · 환경 구성
+
+> "GUI로 초보자도 쓸 수 있게 한 건 좋은데 설치가 어려울 것 같다"
+
+| 파일 | 역할 |
+|------|------|
+| **`setup.bat`** | **더블클릭 진입점.** ExecutionPolicy 우회 포함 — 터미널을 열 필요가 없습니다 |
+| `setup.ps1` | 자동 설치 본체 (Windows) |
+| `setup.sh` | Linux / macOS 동등 기능 |
+| `.env.example` | 환경 설정 템플릿 — **지금까지 없던 파일** |
+
+6단계이고 **각 단계가 실패하면 구체적인 해결 명령을 화면에 출력**합니다.
+Python 탐색 → venv → pip → 의존성 → `.env` → **PyQt6 import 검증**.
+옵션: `-Run` / `-Voice` / `-Recreate`.
+
+> `.env.example` 이 없던 게 실제 함정이었습니다. 기존 `.env` 가 주석으로
+> "템플릿: .env.example" 이라고 안내하는데 정작 그 파일이 저장소에 없었습니다.
+
+**검증**: `setup.ps1` 과 `setup.bat` 모두 실제로 끝까지 실행해 통과 확인.
+`setup.sh` 는 `bash -n` 문법 검사만 했고 Linux 실행은 확인하지 못했습니다.
+
+> 참고로 발견한 것 — **Windows PowerShell 5.1 은 BOM 없는 UTF-8 `.ps1` 을 cp949 로 읽어서**
+> 한글이 든 스크립트가 파싱 에러를 냅니다. `setup.ps1` 에는 BOM 을 넣어 해결했는데,
+> 기존 `scripts/setup_voice_runtime.ps1` 도 BOM 이 없어 같은 문제가 날 수 있습니다.
+> 이번 PR 범위 밖이라 손대지 않았습니다.
+
+## A-3. 설치·동작 데모 영상
+
+영상 촬영/업로드는 못 하지만 **바로 찍을 수 있는 상태**까지 준비했습니다.
+
+- **`docs/demo-video-script.md`** — 3분 대본. 씬별 타임코드 · 화면 구성 · 내레이션 원고 ·
+ 자막 · 편집 지시 · 유튜브 제목/설명란/챕터 타임스탬프 · 체크리스트
+- **README 상단 ` ` 블록** — 업로드 후 **`VIDEO_ID` 11자리만 교체**하면 끝
+
+대본은 **씬 2(`setup.bat` 더블클릭)를 영상의 중심**으로 잡았습니다.
+피드백 2번과 3번이 결국 같은 메시지라서요.
+
+## A-4. 그 외
+
+- README: 배지 3개, 상단 "3분 만에 시작하기", 설치 방법 A/B, 문제 해결 표 6행,
+ 라이선스 섹션 전면 교체(기존엔 *"루트 LICENSE 파일이 아직 없습니다"*)
+- `tmp_voice_test.db-shm/-wal` 제거 — `29e8949` 에서 실수로 들어온 SQLite 사이드카.
+ 코드 어디서도 참조하지 않습니다(전체 검색 0건). `.gitignore` 에 재발 방지 패턴 추가
+
+---
+
+# B. 남아 있던 버그 2건
+
+## B-1. `×` 닫기 버튼이 보이지 않음
+
+`window_list_panel._make_row` 의 `×` 는 `setFixedSize(20, 20)` 인데 로컬 스타일시트에
+`padding` 선언이 없어, 전역 규칙 `QPushButton { padding: 6px 12px }` 가 그대로 먹었습니다.
+20px 폭에 좌우 24px 패딩 → **글리프가 버튼 밖으로 밀려나 아무것도 안 보임.**
+
+`padding: 0` 한 줄로 해결. `unified_monitor_panel._make_pin_button` 이 이미 같은 처방을
+쓰고 있어 그 패턴에 맞췄습니다.
+
+## B-2. 모니터링 상태가 한 번도 표시된 적 없음
+
+원인이 **두 개**였습니다. 하나만 고쳐서는 여전히 안 나옵니다.
+
+**(a) 스키마 드리프트** — `MonitoredTarget` 은 `status`/`last_event`/`last_checked_at` 을
+선언하는데 `targets` 테이블에는 그 컬럼이 **없었습니다.**
+`_load_monitor_meta()` 가 매 행 예외를 냈고 포괄 `except: continue` 가 전부 삼켜서
+결과는 **항상 빈 dict** 였습니다. 에러 로그조차 안 남아 오래 숨어 있었습니다.
+
+→ 컬럼 추가 + **기존 DB 를 위한 `ALTER TABLE` 마이그레이션**(`_migrate_targets`).
+`CREATE TABLE IF NOT EXISTS` 로는 이미 만들어진 `~/.iris-light/iris_light.db` 가
+갱신되지 않기 때문에 이게 반드시 필요합니다.
+
+**(b) 행을 넣는 코드가 아예 없었다** — `INSERT INTO targets` 전체 검색 **0건**.
+스키마를 고쳐도 테이블이 비어 있으면 여전히 아무것도 안 
+
+--- PR #3 hits=['hermes'] title=Fix Hermes chat 401 and Ollama login/min-model setup ---
+ 
+## 목적
+설정 → 시작 프로토콜 「검사」/「다시 설정」은 정상인데, 채팅을 보내면 `Hermes HTTP 401 Unauthorized`가 나던 문제를 시작 프로토콜에서 재발하지 않게 고칩니다.
+
+## 원인
+- 검사는 GET `/health`·`/v1/models`만 봐서 통과하고, 실제 채팅 POST `/v1/chat/completions`만 Bearer/업스트림 401이 났습니다.
+- `/api/tags`에 클라우드 스텁(`*:cloud`, `*-cloud`)만 있어도 “모델 준비됨”으로 통과했습니다. 미로그인이면 채팅이 401입니다.
+
+## 변경 요약
+- **검사(`verify_core`)**가 채팅과 같은 POST로 401을 탐지합니다.
+- 검사는 **최소 로컬 모델 유무**와 **Ollama 클라우드 로그인**을 함께 보여 줍니다.
+- **로그인되어 있고 최소 모델이 없으면** 다운로드 없이 클라우드를 쓰는 것을 권장하는 안내창을 띄웁니다.
+- 시작 프로토콜 Ollama 단계에서 **「로그인」**과 **「최소 모델 설치」** 버튼을 제공합니다. 둘 중 하나만 하면 됩니다.
+- Core smoke가 401이면 API 키를 다시 맞추고 gateway를 재기동합니다.
+
+## 테스트
+- [x] `python3 -m unittest tests.test_hermes_auth tests.test_setup_protocol_inference -v`
+- [x] `python3 -m iris.ui._check_setup_protocol`
+
+## 사용 방법
+설정 → 시작 프로토콜에서 **검사**로 최소 모델·로그인 상태를 확인하세요. 둘 다 없으면 **다시 설정**에서 로그인하거나 최소 모델을 설치하면 됩니다.
+
+ 
+
+     
+
+

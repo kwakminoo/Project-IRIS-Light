@@ -15,6 +15,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from iris.browser.observation import browser_teaching_block
+
 
 def _state_dir() -> Path:
     return Path.home() / ".iris-light"
@@ -158,8 +160,8 @@ TOOLS = [
         "description": (
             "Invoke an Iris Light UI control action by name (same handlers as sidebar icons / settings). "
             "NOT for opening folders via terminal — use Iris actions so Companion tiling works. "
-            "High-risk actions require args.confirm=true (email.send, email.add_account, "
-            "email.remove_account, chat.clear_history). "
+            "High-risk actions show an Iris HUD. Do not set args.confirm. "
+            "email.send, email.add_account, email.remove_account, chat.clear_history need the HUD. "
             "Chat sessions: chat.new_session / chat.list_sessions / chat.open_session args={id}. "
             "Examples: action=ide.open_folder args={path} (there is no project.open_folder). "
             "action=ide.open_file args={path} or {project_root, rel_path}. "
@@ -174,7 +176,8 @@ TOOLS = [
             "action=calendar.add_event args={title,start_at,note,place}; "
             "action=calendar.list_events; action=calendar.select_day args={date}; "
             "action=ide.set_project_root args={path}; "
-            "action=profile.set args={project_root, preferred_ide, project_parents}."
+            "action=profile.set args={project_root, preferred_ide, project_parents}. "
+            + browser_teaching_block()
         ),
         "inputSchema": {
             "type": "object",

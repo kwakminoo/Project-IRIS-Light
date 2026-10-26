@@ -109,9 +109,9 @@ class SileroVad:
                 self._state = np.zeros((2, 1, 128), dtype=np.float32)
                 self._context = np.zeros((1, 64), dtype=np.float32)
 
-    def speech_prob(self, pcm_int16: bytes) -> float:
+    def speech_prob(self, pcm_int16: bytes) -> float | None:
         if not self._available and self._score_fn is None:
-            return 0.0
+            return None
         if not pcm_int16:
             return 0.0
         usable = len(pcm_int16) - (len(pcm_int16) % 2)
@@ -123,23 +123,32 @@ class SileroVad:
         while self._pending.size >= _WINDOW:
             window = self._pending[:_WINDOW]
             self._pending = self._pending[_WINDOW:]
-            probs.append(self._score(window))
+            prob = self._score(window)
+            if prob is None:
+                return None
+            probs.append(prob)
         if not probs:
             return 0.0
         return float(max(probs))
 
-    def _score(self, window: np.ndarray) -> float:
+    def _score(self, window: np.ndarray) -> float | None:
         if self._score_fn is not None:
             return float(max(0.0, min(1.0, self._score_fn(window))))
         with self._lock:
             session = self._session
             if session is None:
-                return 0.0
+                return None
             try:
                 inputs = session.get_inputs()
                 names = {i.name for i in inputs}
                 feed: dict[str, object] = {}
                 audio = window.reshape(1, -1).astype(np.float32)
+                # Silero v5's three-input graph expects 64 context samples
+                # prepended to each 512-sample window (576 samples total).
+                if "context" not in names:
+                    if self._context is None:
+                        self._context = np.zeros((1, 64), dtype=np.float32)
+                    audio = np.concatenate([self._context, audio], axis=1)
                 if "input" in names:
                     feed["input"] = audio
                 if "context" in names:
@@ -154,6 +163,8 @@ class SileroVad:
                     feed["sr"] = np.array(_SR, dtype=np.int64)
                 out = session.run(None, feed)
                 prob = float(np.squeeze(out[0]))
+                if "context" not in names:
+                    self._context = audio[:, -64:].copy()
                 if len(out) > 1:
                     nxt = out[1]
                     if getattr(nxt, "shape", None) == (2, 1, 128):
@@ -164,8 +175,9 @@ class SileroVad:
                     self._state = out[2]
                 return max(0.0, min(1.0, prob))
             except Exception as exc:  # noqa: BLE001
-                LOGGER.debug("Silero VAD score failed: %s", exc)
-                return 0.0
+                self._available = False
+                LOGGER.warning("Silero VAD score failed, using RMS gate: %s", exc)
+                return None
 
     def _try_load(self) -> None:
         if not ensure_onnxruntime():

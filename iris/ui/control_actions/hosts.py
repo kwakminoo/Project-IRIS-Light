@@ -1,9 +1,9 @@
 """액션 모듈이 요구하는 호스트 속성.
 
 MainWindow가 이 프로토콜을 만족하지만, 액션 모듈은 MainWindow를 import하지 않는다.
-실행 스레드: HTTP 워커가 registry.invoke를 부른다. project.run·chat.exec_python·email.list_messages·email.read_message·emulator.*·note.export_pdf·extension.install_github·project.write_image_code·wiki.reprocess_note 만 UI 스레드 밖이다 (iris.system.control_surface.runs_off_ui_thread). 나머지는 Qt 메인 스레드.
+실행 스레드: HTTP 워커가 registry.invoke를 부른다. project.run·chat.exec_python·email.list_messages·email.read_message·emulator.*·browser.*·note.export_pdf·extension.install_github·project.write_image_code·wiki.reprocess_note 만 UI 스레드 밖이다 (iris.system.control_surface.runs_off_ui_thread). 나머지는 Qt 메인 스레드.
 반환: ok_result / err_result. 예외는 ActionRegistry.invoke가 err_result로 감싼다.
-confirm_required 액션은 args.confirm 이 없으면 거절된다.
+confirm_required 액션은 HUD가 아니면 거절된다. args.confirm 은 무시된다.
 """
 
 from __future__ import annotations
@@ -63,6 +63,7 @@ class ProfileHost(Protocol):
 class WorkspaceHost(Protocol):
     _calendar_page: Any
     _db: Any
+    _on_browser_workspace_icon: Any
     _on_calendar_icon: Any
     _on_email_icon: Any
     _on_mobile_icon: Any
@@ -77,6 +78,13 @@ class WorkspaceHost(Protocol):
 
 class EmulatorHost(Protocol):
     _live_activity: Any
+
+
+class BrowserHost(Protocol):
+    _ensure_iris_ide_window: Any
+    _live_activity: Any
+    apply_browser_view_host: Any
+    show_browser_workspace: Any
 
 
 class LearningHost(Protocol):

@@ -51,10 +51,12 @@ class _QtInvoker(QObject):
             box["exc"] = exc
         box["event"].set()
 
-    def run(self, fn: Callable[[], Any], timeout: float = 15.0) -> Any:
+    def run(self, fn: Callable[[], Any], timeout: float | None = 15.0) -> Any:
         box: dict[str, Any] = {"event": threading.Event()}
         self._call.emit(fn, box)
-        if not box["event"].wait(timeout):
+        if timeout is None:
+            box["event"].wait()
+        elif not box["event"].wait(timeout):
             raise UiThreadTimeout()
         if box["exc"] is not None:
             raise box["exc"]
@@ -368,11 +370,35 @@ def _call_on_ui(window: MainWindow, fn: Callable[[], Any]) -> Any:
         return None
 
 
+def _call_on_ui_unbounded(window: MainWindow, fn: Callable[[], Any]) -> Any:
+    """HUD confirm waits until the dialog returns. The 3s UI marshal is too short."""
+    try:
+        from PyQt6.QtCore import QThread
+
+        if QThread.currentThread() is window.thread():
+            return fn()
+    except Exception:
+        return fn()
+    qt = getattr(window, "_control_qt_invoker", None)
+    if qt is None:
+        return fn()
+    return qt.run(fn, timeout=None)
+
+
+def _confirm_body(spec: Any, args: dict[str, Any]) -> str:
+    bits = [spec.summary or spec.name]
+    for key in ("to", "subject", "text", "url", "value", "name"):
+        if args.get(key):
+            bits.append(f"{key}={args[key]}")
+    return "\n".join(bits)[:800]
+
+
 def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     """기능별 등록 조립. 실행은 iris.ui.control_actions."""
     from iris.ui.control_actions.agent_turn import register_agent_turn_actions
     from iris.ui.control_actions.chat import register_chat_actions
     from iris.ui.control_actions.email import register_email_actions
+    from iris.ui.control_actions.browser import register_browser_actions
     from iris.ui.control_actions.emulator import register_emulator_actions
     from iris.ui.control_actions.ide import register_ide_actions
     from iris.ui.control_actions.learning import register_learning_actions
@@ -391,6 +417,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     register_profile_actions(window, reg)
     register_workspace_actions(window, reg)
     register_emulator_actions(window, reg)
+    register_browser_actions(window, reg)
     register_learning_actions(window, reg)
     register_routine_actions(window, reg)
     register_settings_actions(window, reg)
@@ -398,6 +425,24 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     register_wiki_actions(window, reg)
     register_chat_actions(window, reg)
     register_agent_turn_actions(window, reg)
+    from iris.ui.settings.hud_dialog import run_hud_confirm
+
+    def _human_confirm(spec: Any, args: dict[str, Any]) -> bool:
+        def _ask() -> bool:
+            return run_hud_confirm(
+                None,
+                title=spec.name,
+                body=_confirm_body(spec, args),
+                hint="모델이 확인을 대신할 수 없습니다.",
+                badge="CONFIRM",
+                ok_text="실행",
+                cancel_text="취소",
+                default_ok=False,
+            )
+
+        return bool(_call_on_ui_unbounded(window, _ask))
+
+    reg.set_human_confirm(_human_confirm)
     names = [a["name"] for a in reg.catalog()]
     assert len(names) == len(set(names)), "duplicate control actions"
 
@@ -462,6 +507,39 @@ def _emulator_state_fields() -> dict[str, Any]:
             "emulator_adb_ready": False,
             "emulator_boot_completed": False,
             "emulator_keyboard_hint": None,
+        }
+
+
+def _browser_state_fields() -> dict[str, Any]:
+    try:
+        from iris.browser.session import get_browser_session
+        from iris.browser.types import BrowserPhase
+
+        snap = get_browser_session().snapshot()
+        return {
+            "browser_open": snap.phase != BrowserPhase.CLOSED,
+            "browser_url": snap.url,
+            "browser_title": snap.title,
+            "browser_phase": snap.phase.value,
+            "mini_player": bool(snap.mini_player),
+            "browser_playing": bool(snap.media and snap.media.playing),
+            "browser_media_block": (snap.media.block if snap.media else "") or "",
+            "browser_target": snap.target_id or f"tab:{snap.tab_index}",
+            "browser_tab_index": snap.tab_index,
+            "browser_tab_count": snap.tab_count,
+        }
+    except Exception:
+        return {
+            "browser_open": False,
+            "browser_url": "",
+            "browser_title": "",
+            "browser_phase": "closed",
+            "mini_player": False,
+            "browser_playing": False,
+            "browser_media_block": "",
+            "browser_target": "tab:0",
+            "browser_tab_index": 0,
+            "browser_tab_count": 1,
         }
 
 

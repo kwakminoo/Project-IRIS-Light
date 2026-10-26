@@ -1,0 +1,530 @@
+{
+  "open_folder": {
+    "ok": true,
+    "action": "ide.open_folder",
+    "status": "success",
+    "result": {
+      "path": "C:\\Users\\serin\\IRIS-TEST",
+      "ui_mode": "ide_companion",
+      "ide_hwnd": 6293220,
+      "new_window": false
+    },
+    "error": null
+  },
+  "browser": {
+    "ok": true,
+    "action": "browser.open",
+    "status": "success",
+    "result": {
+      "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster) - YouTube",
+      "phase": "ready",
+      "browser_phase": "ready",
+      "can_go_back": true,
+      "can_go_forward": false,
+      "scroll_x": 0,
+      "scroll_y": 0,
+      "last_error": null,
+      "landmarks": [
+        {
+          "role": "button",
+          "name": "탐색 건너뛰기",
+          "bbox": [
+            16,
+            -1000,
+            113,
+            40
+          ]
+        },
+        {
+          "role": "textbox",
+          "name": "검색",
+          "bbox": [
+            278,
+            16,
+            458,
+            24
+          ]
+        },
+        {
+          "role": "button",
+          "name": "Search",
+          "bbox": [
+            771,
+            8,
+            64,
+            40
+          ]
+        },
+        {
+          "role": "button",
+          "name": "검색",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "음성으로 검색",
+          "bbox": [
+            851,
+            8,
+            40,
+            40
+          ]
+        },
+        {
+          "role": "button",
+          "name": "설정",
+          "bbox": [
+            975,
+            16,
+            24,
+            24
+          ]
+        },
+        {
+          "role": "link",
+          "name": "로그인",
+          "bbox": [
+            1015,
+            8,
+            101,
+            40
+          ]
+        },
+        {
+          "role": "button",
+          "name": "탭하여 음소거 해제",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "닫기",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "재생",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)Rick Astley   조회수 1,830,674,734회   17년 전",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "h2",
+          "name": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "정보쇼핑",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "카드 보기",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "닫기",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "더보기",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "재생목록",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "다른 사용자 19,497,703명과 함께 이 동영상에 좋아요 표시",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "동영상에 싫어요 표시",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "댓글",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "공유",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "추가 작업",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "취소",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "확인",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "취소",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "link",
+          "name": "지금 재생하기",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "이전",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "다음",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "link",
+          "name": "Rick Astley",
+          "bbox": [
+            50,
+            133,
+            115,
+            16
+          ]
+        },
+        {
+          "role": "link",
+          "name": "Rick Astley - Never : The Autobiography - Listen to the introduction of the Audiobook12:00",
+          "bbox": [
+            143,
+            179,
+            70,
+            40
+          ]
+        },
+        {
+          "role": "link",
+          "name": "Rick Astley - The Reflection Tour 2026 - Trailer0:40",
+          "bbox": [
+            143,
+            131,
+            70,
+            40
+          ]
+        },
+        {
+          "role": "link",
+          "name": "Rick Astley: Official Music Videos동영상 43개",
+          "bbox": [
+            8,
+            177,
+            70,
+            40
+          ]
+        },
+        {
+          "role": "button",
+          "name": "숨기기",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "닫기",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "나중에 시청하기",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "공유",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "링크 복사",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "닫기",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "role": "button",
+          "name": "일시중지(k)",
+          "bbox": [
+            12,
+            562,
+            40,
+            40
+          ]
+        },
+        {
+          "role": "link",
+          "name": "다음(SHIFT+n)",
+          "bbox": [
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "browser_open": true,
+      "browser_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "browser_title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster) - YouTube",
+      "mini_player": false,
+      "media": {
+        "playing": true,
+        "paused": false,
+        "current_time": 115.497695,
+        "ready_state": 4,
+        "block": "",
+        "ad": false,
+        "kind": "video"
+      },
+      "browser_playing": true,
+      "browser_media_block": "",
+      "tab_index": 0,
+      "tab_count": 1,
+      "target_id": "tab:0",
+      "ok": true,
+      "command_kind": "open"
+    },
+    "error": null
+  },
+  "state": {
+    "booting": false,
+    "ui_mode": "dedicated_browser",
+    "workspace_mode": "browser",
+    "preferred_ide": "iris_ide",
+    "project_root": "C:\\Users\\serin\\IRIS-TEST",
+    "project_parents": [
+      "C:\\Users\\serin\\IRIS-TEST"
+    ],
+    "ide_attached": true,
+    "ide_pid": null,
+    "ide_session": {
+      "active": true,
+      "ide_id": "iris_ide",
+      "hwnd": 6293220,
+      "pid": null,
+      "workspace_root": "C:\\Users\\serin\\IRIS-TEST",
+      "mode": "workspace",
+      "source": "chat",
+      "last_seen_at": 1793021346.7366838
+    },
+    "hermes_online": true,
+    "hermes_enabled": true,
+    "model": "gemma4:e2b",
+    "email_accounts": [
+      {
+        "id": "65f5658c1fd6",
+        "address": "dlfksmfqwr@gmail.com",
+        "label": "개인 gmail"
+      }
+    ],
+    "selected_email_account_id": "",
+    "calendar": {
+      "year": 2026,
+      "month": 10,
+      "selected_day": "2026-10-26",
+      "holiday_api_key": false
+    },
+    "mic": {
+      "state": "off",
+      "listening": false,
+      "stt_enabled": true,
+      "preferred": false
+    },
+    "emulator_running": false,
+    "emulator_serial": null,
+    "emulator_serials": [],
+    "emulator_headless": false,
+    "emulator_avd": "IrisLight_Pixel",
+    "emulator_phase": "stopped",
+    "emulator_adb_ready": false,
+    "emulator_boot_completed": false,
+    "emulator_keyboard_hint": "한글은 에뮬 화면 키보드(IME) 사용. PC 키보드는 영문·특수키(hw.keyboard)용.",
+    "browser_open": true,
+    "browser_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "browser_title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster) - YouTube",
+    "browser_phase": "ready",
+    "mini_player": false,
+    "browser_playing": true,
+    "browser_media_block": "",
+    "browser_target": "tab:0",
+    "browser_tab_index": 0,
+    "browser_tab_count": 1,
+    "iris_ide": {
+      "workspace": "C:\\Users\\serin\\IRIS-TEST",
+      "active_editor": null,
+      "cursor": {
+        "line": 1,
+        "column": 1
+      },
+      "selection": null,
+      "diagnostics": {
+        "reported": false,
+        "diagnostics": null
+      }
+    }
+  }
+}
