@@ -1,4 +1,4 @@
-"""전송↔정지 버튼 토글 자검."""
+"""전송↔정지 버튼 토글 자검 (생성 + 타이핑/TTS 제시)."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ def main() -> int:
     assert isinstance(btn, ComposerSendButton)
     assert not btn.is_stop_mode()
     assert not panel.is_generating()
+    assert not panel.is_presenting()
 
     stopped: list[int] = []
     panel.stop_clicked.connect(lambda: stopped.append(1))
@@ -39,6 +40,32 @@ def main() -> int:
     panel.set_generating(False)
     app.processEvents()
     assert not btn.is_stop_mode() and btn.toolTip() == "전송"
+
+    # 생성 종료 후에도 타이핑/TTS 제시 중이면 정지 유지
+    stopped.clear()
+    panel.set_presenting(True)
+    app.processEvents()
+    assert panel.is_presenting() and btn.is_stop_mode() and btn.isEnabled()
+    assert btn.toolTip() == "중지"
+    btn.click()
+    app.processEvents()
+    assert stopped == [1]
+
+    panel.set_presenting(False)
+    app.processEvents()
+    assert not btn.is_stop_mode() and btn.toolTip() == "전송"
+
+    # finish_typing → typing_finished (제시 해제 훅용)
+    finished: list[int] = []
+    panel.typing_finished.connect(lambda: finished.append(1))
+    panel.append_message_typed("Iris", "긴 답변 타이핑 테스트", speech_sync=False)
+    app.processEvents()
+    assert panel.is_typing_active()
+    panel.finish_typing()
+    app.processEvents()
+    assert not panel.is_typing_active()
+    assert finished == [1]
+    assert "긴 답변 타이핑 테스트" in panel._log.toPlainText()
 
     print("chat_stop_button ok")
     return 0

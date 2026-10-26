@@ -88,8 +88,10 @@ from iris.ui.chat.chat_display import (
     visible_typing_text,
 )
 from iris.ui.chat.message_regions import speaker_prefix_html
+from iris.knowledge.wiki_quote import format_quotes_for_model
 from iris.ui.chat.composer_attachments import ComposerAttachmentStrip
 from iris.ui.chat.composer_plus_menu import ComposerPlusButton, ComposerPlusMenu, ComposerSendButton
+from iris.ui.knowledge.wiki_study_widgets import ComposerWikiQuoteStrip, parse_wiki_quote_from_mime
 from iris.ui.chat.model_picker_menu import (
     ModelBrandDialog,
     ModelPickerMenu,
@@ -407,6 +409,7 @@ class ChatComposerInput(QPlainTextEdit):
     """멀티라인 입력 — 줄바꿈 시 세로 확장, Enter=전송, Shift+Enter=개행 (Cursor 스타일)."""
 
     files_attached = pyqtSignal(list)
+    wiki_quote_pasted = pyqtSignal(object)
     submit_requested = pyqtSignal()
 
     _MIN_LINES = 1
@@ -538,14 +541,26 @@ class ChatComposerInput(QPlainTextEdit):
         if paths:
             self.files_attached.emit(paths)
             return
+        cb = QGuiApplication.clipboard()
+        if cb is not None:
+            quote = parse_wiki_quote_from_mime(cb.mimeData())
+            if quote is not None:
+                self.wiki_quote_pasted.emit(quote)
+                return
         super().paste()
 
     def canInsertFromMimeData(self, source) -> bool:  # noqa: N802
+        if parse_wiki_quote_from_mime(source) is not None:
+            return True
         if _mime_has_attachable(source):
             return True
         return super().canInsertFromMimeData(source)
 
     def insertFromMimeData(self, source) -> None:  # noqa: N802
+        quote = parse_wiki_quote_from_mime(source)
+        if quote is not None:
+            self.wiki_quote_pasted.emit(quote)
+            return
         paths = _drop_targets_from_mime(source, text_paths=False)
         if not paths and source is not None and source.hasImage():
             data = source.imageData()
@@ -923,6 +938,7 @@ class _ChatInputBar(QWidget):
     """입력칸 — + · 텍스트 · 모델 · 전송을 한 줄(투명 셸) 안에 배치."""
 
     files_attached = pyqtSignal(list)  # list[str] paths
+    wiki_quote_pasted = pyqtSignal(object)
     skill_inserted = pyqtSignal(str)
     mcp_inserted = pyqtSignal(str)
     mic_clicked = pyqtSignal()
@@ -986,6 +1002,7 @@ class _ChatInputBar(QWidget):
         _ph.setColor(QPalette.ColorRole.PlaceholderText, _PLACEHOLDER_COLOR)
         self.input.setPalette(_ph)
         self.input.files_attached.connect(self._on_paths_attached)
+        self.input.wiki_quote_pasted.connect(self.wiki_quote_pasted.emit)
 
         self.model_combo = _ModelCombo()
         self.model_combo.setObjectName("ChatModelCombo")
@@ -1272,6 +1289,7 @@ class _ChatInputArea(QWidget):
         col.setSpacing(0)
 
         self.attachment_strip = ComposerAttachmentStrip()
+        self.wiki_quote_strip = ComposerWikiQuoteStrip()
         self.attach_notice = QLabel()
         self.attach_notice.setObjectName("ComposerAttachNotice")
         self.attach_notice.setWordWrap(True)
@@ -1290,6 +1308,7 @@ class _ChatInputArea(QWidget):
             """
         )
 
+        col.addWidget(self.wiki_quote_strip)
         col.addWidget(self.attachment_strip)
         col.addWidget(self.attach_notice)
         col.addWidget(self.input_bar)
@@ -1305,8 +1324,9 @@ class _ChatInputArea(QWidget):
         inp_h = max(self.input_bar.input.height(), self.input_bar.input.sizeHint().height())
         bar_h = inp_h + 8
         strip_h = self.attachment_strip.sizeHint().height() if self.attachment_strip.isVisible() else 0
+        quote_h = self.wiki_quote_strip.sizeHint().height() if self.wiki_quote_strip.isVisible() else 0
         notice_h = self.attach_notice.sizeHint().height() if self.attach_notice.isVisible() else 0
-        need = bar_h + strip_h + notice_h + self.waveform.minimumHeight()
+        need = bar_h + strip_h + quote_h + notice_h + self.waveform.minimumHeight()
         if self.height() != need or self.minimumHeight() != need:
             self.setFixedHeight(need)
         self.updateGeometry()
@@ -1357,6 +1377,8 @@ class _ChatInputArea(QWidget):
 class ChatPanel(QWidget):
     send_clicked = pyqtSignal(str, list)
     stop_clicked = pyqtSignal()
+    # 타이핑 효과가 끝났을 때 — 정지 버튼(presenting) 해제용
+    typing_finished = pyqtSignal()
     model_changed = pyqtSignal(str)
     files_attached = pyqtSignal(list)
     skill_inserted = pyqtSignal(str)
@@ -1375,6 +1397,8 @@ class ChatPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAcceptDrops(True)
         self._generating = False
+        # LLM 생성 종료 후에도 타이핑 중이면 정지 버튼 유지 (TTS만으로는 유지하지 않음)
+        self._presenting = False
         self._orb_visualizer = None
         self._workspace_root = ""
         self._log = ChatLogTextEdit()
@@ -1479,6 +1503,8 @@ class ChatPanel(QWidget):
         bar.skill_inserted.connect(self.skill_inserted.emit)
         bar.mcp_inserted.connect(self.mcp_inserted.emit)
         self._input_area.attachment_strip.changed.connect(self._on_input_changed)
+        self._input_area.wiki_quote_strip.changed.connect(self._on_input_changed)
+        bar.wiki_quote_pasted.connect(self._on_wiki_quote_pasted)
         self._log.speaker_clicked.connect(self.speaker_clicked.emit)
         self._log.update_action_clicked.connect(self.update_action_clicked.emit)
         self._log.hermes_update_action_clicked.connect(self.hermes_update_action_clicked.emit)
@@ -2914,6 +2940,17 @@ class ChatPanel(QWidget):
         if flush and self._typing_speech_sync:
             self.finish_typing()
 
+    def is_typing_active(self) -> bool:
+        """타이핑 효과가 아직 끝나지 않았으면 True (TTS 대기 포함)."""
+        if self._typing_wait_for_tts_completion and bool(self._typing_text):
+            return True
+        if self._typing_timer.isActive():
+            return True
+        prose = prose_char_count(self._typing_text)
+        if prose > 0 and self._typing_index < prose:
+            return True
+        return bool(self._typing_text) and self._typing_body_start is not None
+
     def finish_typing(self) -> None:
         """진행 중인 타이핑 효과를 즉시 완료한다."""
         if not self._typing_timer.isActive() and not self._typing_text:
@@ -2938,6 +2975,8 @@ class ChatPanel(QWidget):
         if had_body:
             self._append_trailing_blank_line()
         self._scroll_log_to_bottom()
+        if had_body:
+            self.typing_finished.emit()
 
     def _append_typing_buffer(self, chunk: str) -> None:
         """타이핑 버퍼만 확장 — 스트리밍 중 화면에는 아직 표시하지 않음."""
@@ -3057,6 +3096,7 @@ class ChatPanel(QWidget):
                 return
             if self._typing_render_markdown and self._typing_body_start is not None:
                 self._render_markdown_body()
+            had_body = bool(self._typing_text) or self._typing_body_start is not None
             self._typing_text = ""
             self._typing_index = 0
             self._typing_speech_sync = False
@@ -3066,6 +3106,8 @@ class ChatPanel(QWidget):
             self._typing_render_markdown = False
             self._append_trailing_blank_line()
             self._scroll_log_to_bottom()
+            if had_body:
+                self.typing_finished.emit()
             return
 
         if self._typing_speech_sync and self._typing_speech_duration_ms:
@@ -3096,12 +3138,21 @@ class ChatPanel(QWidget):
         self._replace_typing_body()
         self._scroll_log_to_bottom()
 
+    def _on_wiki_quote_pasted(self, quote: object) -> None:
+        from iris.knowledge.wiki_quote import WikiQuote
+
+        if isinstance(quote, WikiQuote):
+            self._input_area.wiki_quote_strip.add_quote(quote)
+            self._input_area.sync_height_to_contents()
+            self._on_input_changed()
+
     def _composer_can_send(self) -> bool:
-        if self._generating:
+        if self._generating or self._presenting:
             return True
         has_text = bool(self._input.text().strip())
         has_files = bool(self._input_area.attachment_strip.paths())
-        return has_text or has_files
+        has_quotes = bool(self._input_area.wiki_quote_strip.quotes())
+        return has_text or has_files or has_quotes
 
     def _on_input_changed(self) -> None:
         self._input_area.sync_height_to_contents()
@@ -3109,36 +3160,55 @@ class ChatPanel(QWidget):
         if self._input.toPlainText().strip():
             self.composing.emit()
 
-    def set_generating(self, active: bool) -> None:
-        """생성 중이면 전송 화살표 → 정지 네모. 클릭 시 stop_clicked."""
-        on = bool(active)
-        self._generating = on
+    def _refresh_stop_mode(self) -> None:
+        """생성 중 또는 타이핑 제시 중이면 정지 버튼."""
+        on = self._generating or self._presenting
         btn = self._input_area.input_bar.send_button
         btn.set_stop_mode(on)
         btn.setEnabled(self._composer_can_send())
 
+    def set_generating(self, active: bool) -> None:
+        """생성 중이면 전송 화살표 → 정지 네모. 클릭 시 stop_clicked."""
+        self._generating = bool(active)
+        self._refresh_stop_mode()
+
+    def set_presenting(self, active: bool) -> None:
+        """답변 타이핑 중에도 정지 버튼을 유지한다."""
+        self._presenting = bool(active)
+        self._refresh_stop_mode()
+
     def is_generating(self) -> bool:
         return self._generating
 
+    def is_presenting(self) -> bool:
+        return self._presenting
+
     def _on_submit_or_stop(self) -> None:
-        if self._generating:
+        if self._generating or self._presenting:
             self.stop_clicked.emit()
             return
         self._emit_send()
 
     def _emit_send(self) -> None:
         paths = self._input_area.attachment_strip.take_paths()
+        quotes = self._input_area.wiki_quote_strip.take_quotes()
         t = self._input.text().strip()
-        if not t and not paths:
+        if not t and not paths and not quotes:
             return
         from iris.ui.chat.composer_attachments import chip_fs_path
 
         attachments = [str(chip_fs_path(p, workspace_root=self._workspace_root) or p) for p in paths]
+        payload = format_quotes_for_model(quotes, t)
         from iris.runtime.attachment_context import trace
-        trace("composer_send", paths=attachments, text_chars=len(t))
+        trace(
+            "composer_send",
+            paths=attachments,
+            text_chars=len(payload),
+            wiki_quotes=len(quotes),
+        )
         self._input.clear()
         self._input_area.sync_height_to_contents()
-        self.send_clicked.emit(t, attachments)
+        self.send_clicked.emit(payload, attachments)
 
 
 if __name__ == "__main__":

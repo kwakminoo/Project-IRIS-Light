@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PyQt6.QtCore import QEvent, QSize, Qt
+from PyQt6.QtCore import QEvent, QSize, Qt, QTimer
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QSizePolicy,
     QSplitter,
+    QSplitterHandle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -24,11 +25,77 @@ CHAT_LIST_WIDTH = 220
 # 상단 구체 슬롯 — 좁은 20% 컬럼에서 3.0 스케일은 슬롯 밖으로 번져 로그와 겹쳤음
 EMAIL_ORB_HEIGHT = 260
 EMAIL_ORB_SCALE = 2.1
-_UNIFIED_IDE_RATIO = 0.8
+COMPANION_CONTENT_RATIO = 0.8
+_UNIFIED_IDE_RATIO = COMPANION_CONTENT_RATIO
+_HANDLE_REVEAL_MS = 1000
+_HANDLE_BAR_COLOR = QColor(255, 255, 255, 56)
+
+
+class _CompanionSplitHandle(QSplitterHandle):
+    """평소 투명, 1초 호버·드래그 때만 막대."""
+
+    def __init__(self, orientation: Qt.Orientation, parent: QSplitter) -> None:
+        super().__init__(orientation, parent)
+        self.setObjectName("CompanionSplitHandle")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
+        self._bar_on = False
+        self._pressed = False
+        self._reveal = QTimer(self)
+        self._reveal.setSingleShot(True)
+        self._reveal.setInterval(_HANDLE_REVEAL_MS)
+        self._reveal.timeout.connect(self._on_reveal_timeout)
+
+    def _set_bar(self, on: bool) -> None:
+        on = bool(on)
+        if on == self._bar_on:
+            return
+        self._bar_on = on
+        self.update()
+
+    def _on_reveal_timeout(self) -> None:
+        if self._pressed or self.underMouse():
+            self._set_bar(True)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        if not self._pressed:
+            self._reveal.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._reveal.stop()
+        if not self._pressed:
+            self._set_bar(False)
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self._pressed = True
+        self._reveal.stop()
+        self._set_bar(True)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._pressed = False
+        self._set_bar(False)
+        if self.underMouse():
+            self._reveal.start()
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802, ARG002
+        if not self._bar_on:
+            return
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), _HANDLE_BAR_COLOR)
+        painter.end()
+
+
+class _CompanionSplit(QSplitter):
+    def createHandle(self) -> QSplitterHandle:  # noqa: N802
+        return _CompanionSplitHandle(self.orientation(), self)
 
 
 class IdeUnifiedShell(QWidget):
-    """단일 창 내부 — 좌 IDE 80% + 우 Iris Companion 20% (두 창 타일 대체)."""
+    """단일 창 내부 — 좌 본문 80% + 우 Iris Companion 20%."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -38,7 +105,7 @@ class IdeUnifiedShell(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.setStyleSheet("background: transparent;")
 
-        self._split = QSplitter(Qt.Orientation.Horizontal, self)
+        self._split = _CompanionSplit(Qt.Orientation.Horizontal, self)
         self._split.setObjectName("IdeUnifiedHSplit")
         self._split.setChildrenCollapsible(False)
         self._split.setHandleWidth(6)
@@ -46,7 +113,7 @@ class IdeUnifiedShell(QWidget):
         self._split.setStyleSheet(
             "QSplitter#IdeUnifiedHSplit { background: transparent; }"
             "QSplitter#IdeUnifiedHSplit::handle {"
-            " width: 6px; margin: 0; border: none; background: rgba(255,255,255,0.22);"
+            " width: 6px; margin: 0; border: none; background: transparent;"
             "}"
         )
 
@@ -113,6 +180,9 @@ class IdeUnifiedShell(QWidget):
         """Drop the left-browser ref only. Caller addWidget-moves the panel."""
         self._left_browser = None
 
+    def splitter(self) -> QSplitter:
+        return self._split
+
     def mount(self, ide: QWidget | None, companion: IdeCompanionPage, *, total_w: int) -> None:
         """좌측은 HWND 도킹 placeholder(ide=None), 우측 Companion만 Qt 자식."""
         if self._ide is not None and ide is not None and self._ide is not ide:
@@ -130,6 +200,20 @@ class IdeUnifiedShell(QWidget):
         companion.show()
         self.apply_ratio(total_w)
 
+    def mount_workspace(self, content: QWidget, *, total_w: int) -> None:
+        """메일/캘린더/위키 — 좌 본문만 붙이고 우 칸은 place_chat_host가 채운다."""
+        self.set_ide_insets(0, 0, 0, 0)
+        self._ide_host.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._ide_host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self._ide_host.setStyleSheet("background: transparent;")
+        if self._ide is not None and self._ide is not content:
+            self._ide_lay.removeWidget(self._ide)
+        self._ide_lay.addWidget(content)
+        self._ide = content
+        content.show()
+        self.reset_user_ratio()
+        self.apply_ratio(total_w)
+
     def reset_user_ratio(self) -> None:
         """컴패니언에 새로 들어갈 때만 8:2로 되돌린다."""
         self._user_ratio = None
@@ -140,12 +224,22 @@ class IdeUnifiedShell(QWidget):
     def apply_ratio(self, total_w: int, ratio: float | None = None) -> None:
         use = self._user_ratio if ratio is None else ratio
         if use is None:
-            use = _UNIFIED_IDE_RATIO
+            use = COMPANION_CONTENT_RATIO
         use = min(0.88, max(0.5, float(use)))
         w = max(1, int(total_w))
         ide_w = int(w * use)
         iris_w = w - ide_w
         self._split.setSizes([ide_w, max(1, iris_w)])
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if getattr(self, "_applying_ratio", False) or self.width() <= 1:
+            return
+        self._applying_ratio = True
+        try:
+            self.apply_ratio(self.width())
+        finally:
+            self._applying_ratio = False
 
     def shift_iris_width(self, delta: int) -> None:
         """채팅 목록 폭만큼 기존 스플리터 비율을 옮긴다. 드래그와 같은 기억 경로."""

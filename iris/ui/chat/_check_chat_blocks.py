@@ -91,7 +91,9 @@ def _assert_mono_in_html(html: str, *, label: str = "") -> None:
 def _assert_tokens() -> None:
     t = TOKENS
     assert t.chat_block_radius == 8
-    assert "Consolas" in t.chat_block_mono_font
+    # typography.ChatTokens 는 설치된 고정폭 폰트를 CSS-escape 한다 (오프스크린은 monospace 폴백).
+    mono = t.chat_block_mono_font
+    assert any(s in mono for s in ("Consolas", "Cascadia", "JetBrains", "monospace")), mono
 
     from iris.core.activity_privacy import prepare_chat_text
 
@@ -254,6 +256,40 @@ def _assert_file_chips_and_diff() -> None:
     _assert_html_contains(fenced, t.success, t.error, label="render_iris_message diff fence")
 
 
+def _assert_matrix_fence() -> None:
+    """```matrix → 색 칠한 표. 코드 카드가 되면 안 된다."""
+    t = TOKENS
+    one_bg = getattr(t, "chat_matrix_one_bg", None)
+    zero_bg = getattr(t, "chat_matrix_zero_bg", None)
+    assert one_bg and zero_bg, "theme_tokens must define chat_matrix_one_bg / chat_matrix_zero_bg"
+
+    sample = (
+        "## 1단계. 침식(Erosion)\n\n"
+        f"{_BACKTICK3}matrix\n"
+        "# 침식 결과\n"
+        "0 0 0 0 0\n"
+        "0 0 0 0 0\n"
+        "0 0 1 0 0\n"
+        "0 0 0 0 0\n"
+        "0 0 0 0 0\n"
+        f"{_BACKTICK3}"
+    )
+    html_out = render_iris_message(sample)
+    _assert_html_contains(
+        html_out,
+        "data-iris-matrix",
+        "침식 결과",
+        f"background-color:{one_bg}",
+        f"background-color:{zero_bg}",
+        ">1<",
+        label="matrix fence",
+    )
+    assert "iris-copy://" not in html_out, "matrix must not become a code card"
+    assert "language-matrix" not in html_out
+    assert html_out.count(f"background-color:{one_bg}") >= 1
+    assert html_out.count(f"background-color:{zero_bg}") >= 20
+
+
 def _assert_wiki_document() -> None:
     t = TOKENS
     wiki_html = render_wiki_document(WIKI_SAMPLE)
@@ -348,15 +384,17 @@ def _smoke_obsidian_wiki(app: QApplication) -> None:
 
 
 def main() -> int:
+    # render_* / typography defaults 는 QApplication 필요 (없으면 0xC0000409)
+    app = QApplication.instance() or QApplication(sys.argv)
     _assert_tokens()
     _assert_prose()
     _assert_fenced_code()
     _assert_tool_shell()
     _assert_error_and_user()
     _assert_file_chips_and_diff()
+    _assert_matrix_fence()
     _assert_wiki_document()
 
-    app = QApplication.instance() or QApplication(sys.argv)
     _smoke_chat_panel(app)
     _smoke_workspace_log(app)
     _smoke_obsidian_wiki(app)

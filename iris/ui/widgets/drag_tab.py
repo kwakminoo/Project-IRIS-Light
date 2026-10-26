@@ -85,6 +85,56 @@ def _waveform_mic_icon(*, active: bool, size: QSize | None = None) -> QIcon:
     return QIcon(pm)
 
 
+def _speaker_icon(*, active: bool, size: QSize | None = None) -> QIcon:
+    """네온 스피커. 켜짐은 파동, 꺼짐은 사선."""
+    sz = size or QSize(_MIC_BTN_W, _MIC_BTN_H)
+    pm = QPixmap(sz)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    base = QColor(34, 211, 238) if active else QColor(248, 113, 113)
+    w, h = float(sz.width()), float(sz.height())
+    body = QRectF(0.14 * w, 0.38 * h, 0.12 * w, 0.24 * h)
+    cone = QPainterPath()
+    cone.moveTo(0.26 * w, 0.38 * h)
+    cone.lineTo(0.46 * w, 0.22 * h)
+    cone.lineTo(0.46 * w, 0.78 * h)
+    cone.lineTo(0.26 * w, 0.62 * h)
+    cone.closeSubpath()
+
+    def _stroke(width: float, alpha: int) -> None:
+        color = QColor(base)
+        color.setAlpha(alpha)
+        if width < 0.6:
+            color = QColor(255, 255, 255, alpha)
+        pen = QPen(color)
+        pen.setWidthF(width)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    for width, alpha in ((2.6, 28), (1.45, 72), (0.9, 230)):
+        _stroke(width, alpha)
+        painter.drawRect(body)
+        painter.drawPath(cone)
+        if active:
+            for grow in (0.0, 0.08):
+                arc = QRectF(
+                    0.40 * w,
+                    (0.30 - grow) * h,
+                    (0.28 + grow * 1.6) * w,
+                    (0.40 + grow * 2.0) * h,
+                )
+                painter.drawArc(arc, -55 * 16, 110 * 16)
+        else:
+            painter.drawLine(QPointF(0.56 * w, 0.26 * h), QPointF(0.86 * w, 0.74 * h))
+
+    painter.end()
+    return QIcon(pm)
+
+
 def _learning_icon(state: LearningState, *, size: QSize | None = None, pulse: float = 1.0) -> QIcon:
     """미니멀 모니터 선형 아이콘 — 화면 베젤 + 스탠드 (26–30px에서도 식별)."""
     sz = size or QSize(_LEARN_BTN_W, _LEARN_BTN_H)
@@ -181,6 +231,7 @@ class DragTab(QWidget):
     ide_toggle_clicked = pyqtSignal()
     learning_clicked = pyqtSignal()
     mic_clicked = pyqtSignal()
+    tts_clicked = pyqtSignal()
 
     def __init__(self, parent_window: QWidget) -> None:
         super().__init__()
@@ -248,6 +299,16 @@ class DragTab(QWidget):
         self._btn_mic.setCheckable(True)
         self._btn_mic.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._btn_mic.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._btn_tts = QPushButton()
+        self._btn_tts.setObjectName("WinCtrlTts")
+        self._btn_tts.setToolTip("TTS 켜기")
+        self._btn_tts.setFixedSize(_MIC_BTN_W, _MIC_BTN_H)
+        self._btn_tts.setIconSize(QSize(_MIC_BTN_W - 8, _MIC_BTN_H - 6))
+        self._btn_tts.setIcon(_speaker_icon(active=False))
+        self._btn_tts.setText("")
+        self._btn_tts.setCheckable(True)
+        self._btn_tts.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._btn_tts.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn_profile = _win_ctrl_button("👤", "사용자 프로필")
         self._btn_settings = _win_ctrl_button("⚙", "설정")
         self._btn_min = _win_ctrl_button("−", "창 내리기")
@@ -258,6 +319,7 @@ class DragTab(QWidget):
             self._btn_ide,
             self._btn_learning,
             self._btn_mic,
+            self._btn_tts,
             self._btn_profile,
             self._btn_settings,
             self._btn_min,
@@ -278,6 +340,7 @@ class DragTab(QWidget):
         self._btn_ide.clicked.connect(self.ide_toggle_clicked.emit)
         self._btn_learning.clicked.connect(self.learning_clicked.emit)
         self._btn_mic.clicked.connect(self.mic_clicked.emit)
+        self._btn_tts.clicked.connect(self.tts_clicked.emit)
         self._btn_min.clicked.connect(self.minimize_clicked.emit)
         self._btn_max.clicked.connect(self.maximize_clicked.emit)
         self._btn_close.clicked.connect(parent_window.close)
@@ -340,6 +403,14 @@ class DragTab(QWidget):
             return
         self._btn_mic.setIcon(_waveform_mic_icon(active=on))
         self._btn_mic.setToolTip("음성 인식 끄기" if on else "음성 인식 켜기")
+
+    def set_tts_enabled(self, enabled: bool) -> None:
+        on = bool(enabled)
+        self._btn_tts.blockSignals(True)
+        self._btn_tts.setChecked(on)
+        self._btn_tts.blockSignals(False)
+        self._btn_tts.setIcon(_speaker_icon(active=on))
+        self._btn_tts.setToolTip("TTS 끄기" if on else "TTS 켜기")
 
     def set_ide_companion_active(self, active: bool) -> None:
         """Companion(Iris≈20%): 상태행 숨김, IDE 버튼 표시, 최소화 숨김."""

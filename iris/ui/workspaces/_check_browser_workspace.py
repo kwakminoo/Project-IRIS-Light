@@ -34,6 +34,10 @@ def main() -> int:
     assert w._unified_shell.left_browser() is panel
     assert panel.isVisible()
     assert w._companion_page.is_mounted()
+    mounted = getattr(w._companion_page, "_mounted", None) or []
+    assert w._chat in mounted, "dedicated browser must remount the same ChatPanel"
+    assert hasattr(w._chat, "set_presenting")
+    assert hasattr(w._drag, "set_tts_enabled")
     assert w._iris_ide_window is None or not w._iris_ide_window.isVisible()
     assert not getattr(w, "_iris_ide_unified", False)
     sizes = w._unified_shell._split.sizes()

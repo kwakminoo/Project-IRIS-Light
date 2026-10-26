@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import re
+from dataclasses import dataclass
 
 from iris.ui.chat.chat_blocks import (
     ToolShellBlock,
@@ -288,11 +289,15 @@ def _upgrade_inline_code_file_chips(html_body: str) -> str:
 
 
 def _markdown_body_to_html(text: str) -> str:
+    from iris.ui.chat.gpt_answer_contract import normalize_binary_fences_for_display
     from iris.ui.chat.markdown_normalization import normalize_markdown_source
     from iris.ui.chat.math_latex import restore_chat_math, stash_chat_math
 
     # 수식은 기호 치환보다 먼저 걷어 낸다. 안 그러면 $\frac$가 평문으로 사라진다.
-    source, formulas = stash_chat_math(normalize_markdown_source(text))
+    # display-only: 일반 0/1 fence → matrix (DB 원문은 건드리지 않음)
+    source, formulas = stash_chat_math(
+        normalize_binary_fences_for_display(normalize_markdown_source(text))
+    )
     source = _inject_file_chips_in_source(_normalize_prose_symbols(source))
     try:
         import markdown as md
@@ -334,12 +339,65 @@ def _normalize_prose_symbols(text: str) -> str:
     return "".join(chunks)
 
 
+@dataclass(frozen=True)
+class MatrixGrid:
+    caption: str | None
+    rows: list[list[str]]
+
+
+def parse_matrix_grid(body: str) -> MatrixGrid:
+    lines = [ln.strip() for ln in (body or "").splitlines() if ln.strip()]
+    caption: str | None = None
+    if lines and lines[0].startswith("#"):
+        caption = lines[0].lstrip("#").strip() or None
+        lines = lines[1:]
+    rows: list[list[str]] = []
+    for line in lines:
+        cells = [c for c in re.split(r"[\s,]+", line) if c]
+        if cells:
+            rows.append(cells)
+    return MatrixGrid(caption=caption, rows=rows)
+
+
+def matrix_grid_to_html(grid: MatrixGrid) -> str:
+    t = TOKENS
+    parts: list[str] = []
+    if grid.caption:
+        parts.append(f"<p>{html.escape(grid.caption)}</p>")
+    parts.append(
+        '<table data-iris-matrix="1" border="0" cellspacing="0" cellpadding="0" '
+        'style="border-collapse:collapse;margin:6px 0;">'
+    )
+    for row in grid.rows:
+        parts.append("<tr>")
+        for cell in row:
+            if cell == "1":
+                bg = f"background-color:{t.chat_matrix_one_bg};"
+            elif cell == "0":
+                bg = f"background-color:{t.chat_matrix_zero_bg};"
+            else:
+                bg = ""
+            style = (
+                f"{bg}text-align:center;padding:4px 8px;min-width:28px;"
+                f"color:{t.text_primary};"
+                f"border:1px solid {t.chat_table_row_border};"
+            )
+            parts.append(
+                f'<td data-iris-matrix-cell style="{style}">{html.escape(cell)}</td>'
+            )
+        parts.append("</tr>")
+    parts.append("</table>")
+    return "".join(parts)
+
+
 def _upgrade_fenced_pre_to_cards(html_body: str) -> str:
     from iris.ui.chat.chat_blocks import FencedCodeBlock, fenced_code_to_html
 
     def _repl(match: re.Match[str]) -> str:
         lang = (match.group(1) or "").strip()
         code = html.unescape(match.group(2) or "")
+        if lang.lower() == "matrix":
+            return matrix_grid_to_html(parse_matrix_grid(code))
         if lang.lower() == "diff" or _looks_like_git_diff(code):
             return diff_block_to_html(code)
         return fenced_code_to_html(FencedCodeBlock(code, language=lang))

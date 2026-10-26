@@ -347,6 +347,11 @@ class MainWindow(QMainWindow):
         self._stt_warmup_model = ""
         self._tts_worker: TTSStreamWorker | None = None
         self._tts_cancelled_workers: list[TTSStreamWorker] = []
+        self._tts_replay_pending = False
+        self._tts_replay_depth = 0
+        self._tts_replay_again = False
+        self._tts_replay_token = ""
+        self._tts_replay_chat = None
         self._tts_warmup_worker: TTSWarmupWorker | None = None
         self._tts_warmup_model = ""
         self._tts_runtime_ready = False
@@ -548,6 +553,8 @@ class MainWindow(QMainWindow):
         self._drag.maximize_clicked.connect(self._toggle_maximize)
         self._drag.learning_clicked.connect(self._on_learning_toggle)
         self._drag.mic_clicked.connect(self._on_chat_mic_clicked)
+        self._drag.tts_clicked.connect(self._on_tts_header_clicked)
+        self._drag.set_tts_enabled(bool(self._voice_prefs.tts_enabled))
         root.addWidget(self._drag)
 
         # 업무 학습 — test_mode에서는 mock learner/executor
@@ -745,6 +752,7 @@ class MainWindow(QMainWindow):
         self._chat.set_speech_threshold_rms(self._voice_prefs.stt_speech_rms)
         self._chat.send_clicked.connect(self._on_user_text)
         self._chat.stop_clicked.connect(self._on_chat_stop)
+        self._chat.typing_finished.connect(self._sync_chat_stop_for_presentation)
         self._chat.model_changed.connect(self._on_model_changed)
         self._chat.files_attached.connect(self._on_composer_files)
         self._chat.skill_inserted.connect(self._on_composer_skill)
@@ -3138,6 +3146,7 @@ class MainWindow(QMainWindow):
                 self._state.set_state(AppState.PROCESSING)
             return
         self._chat.set_generating(False)
+        self._sync_chat_stop_for_presentation()
         reply = slot.away_reply
         slot.away_reply = ""
         if not (self._tts_active_play or self._tts_busy() or self._tts_queue):
@@ -5156,10 +5165,11 @@ class MainWindow(QMainWindow):
         """생성 중 turn을 안전하게 끊고 다음 turn이 진행되게 한다."""
         self._drop_followthrough()
         if not self._busy:
-            if self._tts_active_play or self._tts_busy() or self._tts_queue:
+            if self._chat.is_typing_active() or self._tts_output_busy():
                 # setHtml(speaker) 전에 타이핑 확정 — 커서 무효화로 로그가 날아가는 것 방지
                 self._chat.finish_typing()
                 self._stop_tts_playback()
+                self._chat.set_presenting(False)
                 self._sync_voice_conversation_state()
             return
         self._turn_gate.suppress_result()
@@ -5551,6 +5561,7 @@ class MainWindow(QMainWindow):
             )
         self._busy = False
         self._chat.set_generating(False)
+        self._sync_chat_stop_for_presentation()
         self._chat_worker = None
         self._mark_tts_perf("llm_finished")
         self._set_tts_orb_warmup(False)
@@ -5559,6 +5570,7 @@ class MainWindow(QMainWindow):
         if self._tts_pump is not None and text and not self._tts_stream_had_content:
             self._feed_tts_stream(text)
         self._feed_tts_stream("", flush=True)
+        self._sync_chat_stop_for_presentation()
         if (
             not self._tts_active_msg_id
             and (
@@ -6044,6 +6056,7 @@ class MainWindow(QMainWindow):
         self._chat.set_mic_recording(recording)
 
     def _sync_voice_conversation_state(self) -> None:
+        self._sync_chat_stop_for_presentation()
         if self._tts_active_play or self._tts_busy() or self._tts_queue:
             self._state.set_state(AppState.RESPONDING)
             self._status_header.set_app_state(AppState.RESPONDING, label="TTS")
@@ -6487,6 +6500,26 @@ class MainWindow(QMainWindow):
                 f"마이크 상태 저장 실패: {str(exc)[:80]}"
             )
 
+    def _on_tts_header_clicked(self) -> None:
+        enabled = not bool(self._voice_prefs.tts_enabled)
+        self._voice_prefs.tts_enabled = enabled
+        self._drag.set_tts_enabled(enabled)
+        self._status_header.set_tts_status(self._tts_idle_status())
+        try:
+            save_voice_preferences(self._db, self._voice_prefs)
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(
+                f"TTS 상태 저장 실패: {str(exc)[:80]}"
+            )
+        if enabled:
+            self._live_activity.append_instant_line("TTS를 켰습니다.")
+            QTimer.singleShot(0, self._schedule_tts_runtime_bootstrap)
+            return
+        self._live_activity.append_instant_line("TTS를 껐습니다.")
+        self._stop_tts_playback()
+        self._set_tts_orb_warmup(False)
+        self._sync_voice_conversation_state()
+
     def _start_mic_listen(self) -> None:
         self._request_stt_warmup()
         self._stt_queue.runtime_url = self._voice_prefs.voice_runtime_url
@@ -6664,8 +6697,51 @@ class MainWindow(QMainWindow):
         except ValueError:
             pass
 
+    def _tts_output_busy(self) -> bool:
+        """자동/수동 TTS가 아직 나오거나 재생 중이면 True."""
+        return bool(
+            self._tts_active_play
+            or self._tts_busy()
+            or self._tts_queue
+            or (self._tts_pump is not None and not self._tts_input_finished)
+        )
+
+    def _sync_chat_stop_for_presentation(self) -> None:
+        """생성 종료 후에도 타이핑 중이면 정지 버튼을 유지한다 (TTS만으로는 유지하지 않음)."""
+        self._chat.set_presenting(self._chat.is_typing_active())
+
     def _on_chat_speaker_clicked(self, token: str, chat=None) -> None:
-        chat = chat if chat is not None else self._chat
+        """[재생]은 겹쳐 받지 않는다. 이미 읽는 중이면 끊고 그 답변을 처음부터 다시."""
+        self._tts_replay_token = token
+        self._tts_replay_chat = chat if chat is not None else self._chat
+        if self._tts_output_busy():
+            self._stop_tts_playback()
+            self._set_tts_orb_warmup(False)
+            self._sync_voice_conversation_state()
+        if self._tts_replay_depth:
+            self._tts_replay_again = True
+            return
+        if self._tts_replay_pending:
+            return
+        self._tts_replay_pending = True
+        QTimer.singleShot(0, self._fire_tts_replay)
+
+    def _fire_tts_replay(self) -> None:
+        if not self._tts_replay_pending:
+            return
+        self._tts_replay_pending = False
+        token = self._tts_replay_token
+        chat = self._tts_replay_chat if self._tts_replay_chat is not None else self._chat
+        self._tts_replay_depth += 1
+        try:
+            self._start_tts_replay(token, chat)
+        finally:
+            self._tts_replay_depth -= 1
+        if self._tts_replay_again:
+            self._tts_replay_again = False
+            self._on_chat_speaker_clicked(token, chat)
+
+    def _start_tts_replay(self, token: str, chat) -> None:
         text = chat.get_tts_text(token)
         if not text and self._last_assistant_text:
             text = self._last_assistant_text
@@ -10160,6 +10236,7 @@ class MainWindow(QMainWindow):
                 self._learning.set_learning_prefs(self._learning_prefs)
                 if not self._test_mode:
                     self._learning.set_learner(self._build_learner())
+            self._drag.set_tts_enabled(bool(self._voice_prefs.tts_enabled))
             self._status_header.set_tts_status(self._tts_idle_status())
             self._status_header.set_stt_status(self._stt_idle_status())
             self._saved_model = sel.ollama_model.strip()

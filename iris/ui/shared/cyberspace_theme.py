@@ -115,14 +115,20 @@ def build_cyberspace_qss() -> str:
         QTextBrowser#EmailPreviewBody,
         QComboBox#EmailAccountCombo,
         QListWidget#ObsidianNoteList,
-        QPlainTextEdit#ObsidianPreviewBody,
-        QTextBrowser#ObsidianPreviewBody {{
+        QPlainTextEdit#ObsidianPreviewBody {{
             background: transparent;
             border: none;
         }}
+        /* 원본 패널과 겹쳐 보일 때 글이 비치지 않게 불투명 패널 배경 */
         QTextBrowser#ObsidianPreviewBody {{
+            background-color: rgba(6, 14, 28, 0.94);
+            border: none;
             color: {t.text_primary};
             selection-background-color: {t.neon_purple};
+        }}
+        QLabel#WikiOriginalPreview {{
+            background-color: rgba(6, 14, 28, 0.94);
+            border: none;
         }}
         QTextBrowser#EmailPreviewBody {{
             color: {t.text_primary};
@@ -204,7 +210,8 @@ def build_cyberspace_qss() -> str:
         QPushButton#WinCtrl:pressed {{
             background-color: rgba(30, 58, 138, 0.5);
         }}
-        QPushButton#WinCtrlMic {{
+        QPushButton#WinCtrlMic,
+        QPushButton#WinCtrlTts {{
             background-color: transparent;
             border: 1px solid {t.border_subtle};
             padding: 0;
@@ -214,11 +221,13 @@ def build_cyberspace_qss() -> str:
             max-height: 26px;
             border-radius: 3px;
         }}
-        QPushButton#WinCtrlMic:hover {{
+        QPushButton#WinCtrlMic:hover,
+        QPushButton#WinCtrlTts:hover {{
             background-color: {t.accent_primary};
             border-color: {t.accent_border};
         }}
-        QPushButton#WinCtrlMic:checked {{
+        QPushButton#WinCtrlMic:checked,
+        QPushButton#WinCtrlTts:checked {{
             background-color: rgba(8, 51, 68, 0.92);
             border-color: rgba(34, 211, 238, 0.55);
         }}

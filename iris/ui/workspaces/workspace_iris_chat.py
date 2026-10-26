@@ -1,4 +1,4 @@
-"""Mail/calendar shell around the same ChatPanel used by the IDE."""
+"""Mail/calendar/wiki shell around the same ChatPanel used by the IDE."""
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -6,7 +6,12 @@ from PyQt6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.widgets.particle_visualizer import ParticleVisualizer
-from iris.ui.workspaces.ide_companion_page import IdeCompanionPage, EMAIL_ORB_HEIGHT, EMAIL_ORB_SCALE
+from iris.ui.workspaces.ide_companion_page import (
+    EMAIL_ORB_HEIGHT,
+    EMAIL_ORB_SCALE,
+    IdeCompanionPage,
+    IdeUnifiedShell,
+)
 
 
 class WorkspaceIrisPanel(IdeCompanionPage):
@@ -116,8 +121,27 @@ class WorkspaceIrisPanel(IdeCompanionPage):
         self._activity_host.hide()
 
 
+def install_companion_shell(
+    page: QWidget,
+    content: QWidget,
+    *,
+    root: QVBoxLayout,
+    total_w: int = 1200,
+) -> IdeUnifiedShell:
+    """좌 본문 80% + 우 채팅 20% — IDE IdeUnifiedShell을 그대로 재사용."""
+    shell = IdeUnifiedShell(page)
+    shell.mount_workspace(content, total_w=max(1, int(total_w)))
+    page._companion_shell = shell
+    page._chat_host = shell.iris_host()
+    page._chat_lay = page._chat_host.layout()
+    page._splitter = shell.splitter()
+    page._chat_list_extra = 0
+    root.addWidget(shell)
+    return shell
+
+
 def mount_chat_host(page: QWidget, host: QWidget) -> None:
-    """메일/캘린더 오른쪽 칸에 IDE 채팅 호스트를 붙인다."""
+    """메일/캘린더/위키 오른쪽 칸에 IDE 채팅 호스트를 붙인다."""
     if page._chat_lay.indexOf(host) < 0:
         page._chat_lay.addWidget(host)
     host.show()
@@ -127,7 +151,12 @@ def mount_chat_host(page: QWidget, host: QWidget) -> None:
 
 
 def shift_chat_column(page: QWidget, delta: int) -> None:
-    """채팅 목록 폭만큼 오른쪽 칸을 늘리거나 줄인다."""
+    """채팅 목록 폭만큼 오른쪽 칸을 늘리거나 줄인다 — IDE shift_iris_width와 동일."""
+    shell = getattr(page, "_companion_shell", None)
+    if isinstance(shell, IdeUnifiedShell):
+        shell.shift_iris_width(int(delta))
+        return
+    # ponytail: 구 페이지 폴백 — 셸 없는 테스트 더미용
     sizes = page._splitter.sizes()
     if len(sizes) != 2 or not delta:
         return
@@ -135,7 +164,7 @@ def shift_chat_column(page: QWidget, delta: int) -> None:
     if total <= 0:
         return
     chat = sizes[1] + int(delta)
-    chat = max(300, min(total - 240, chat))
+    chat = max(160, min(total - 240, chat))
     page._splitter.setSizes([total - chat, chat])
 
 

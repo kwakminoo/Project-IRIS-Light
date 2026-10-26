@@ -30,6 +30,7 @@ _OFF_UI_ACTIONS = frozenset(
         "email.read_message",
         # 터미널 로그 폴링·브리지 왕복이 최대 90초 — UI 스레드면 Windows "응답 없음"
         "project.run",
+        "chat.exec_python",
         "note.export_pdf",
         "extension.install_github",
         "ide.marketplace_search",
