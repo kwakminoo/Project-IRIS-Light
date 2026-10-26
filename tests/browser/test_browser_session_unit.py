@@ -206,6 +206,70 @@ class SessionFakeDriverTests(unittest.TestCase):
             self.assertTrue(runs_off_ui_thread(name), name)
 
 
+class SessionUiCallFailureTests(unittest.TestCase):
+    def test_open_when_ui_call_returns_none_does_not_unpack(self) -> None:
+        session = BrowserSession()
+        session.set_surface_provider(lambda: object())
+        session.set_ui_call(lambda fn: None)
+        result = session.execute(Open())
+        self.assertFalse(result.ok)
+        self.assertIsNone(session._driver)
+        detail = (result.detail or "").lower()
+        self.assertNotIn("unpack", detail)
+        self.assertIn("create failed", detail)
+
+    def test_ui_create_reentering_session_does_not_deadlock(self) -> None:
+        import threading
+        from types import SimpleNamespace
+
+        session = BrowserSession()
+
+        def provider():
+            session.note_surface_ready(SimpleNamespace())
+            session.note_view_host(PanelHost(site="dedicated"))
+            return SimpleNamespace(ensure_view=lambda: SimpleNamespace())
+
+        def ui_call(fn):
+            box: dict[str, object] = {}
+            error: list[BaseException] = []
+
+            def ui() -> None:
+                try:
+                    box["v"] = fn()
+                except BaseException as exc:  # noqa: BLE001
+                    error.append(exc)
+
+            thread = threading.Thread(target=ui)
+            thread.start()
+            thread.join(5)
+            self.assertFalse(thread.is_alive(), "session lock deadlock during view create")
+            if error:
+                raise error[0]
+            return box.get("v")
+
+        session.set_surface_provider(provider)
+        session.set_ui_call(ui_call)
+        result = session.execute(Open())
+        self.assertIsNotNone(result)
+        self.assertNotIn("unpack", (result.detail or "").lower())
+
+    def test_set_ui_call_updates_existing_driver(self) -> None:
+        from types import SimpleNamespace
+
+        session = BrowserSession(driver=SimpleNamespace(_ui_call=lambda fn: fn()))
+        session.set_ui_call(lambda fn: "patched")
+        self.assertEqual(session._driver._ui_call(lambda: None), "patched")
+
+    def test_browser_actions_wait_for_ui_create(self) -> None:
+        import inspect
+
+        from iris.ui.control_actions.browser import register_browser_actions
+
+        src = inspect.getsource(register_browser_actions)
+        self.assertIn("_call_on_ui_unbounded", src)
+        self.assertIn("session.set_ui_call(lambda fn: _call_on_ui_unbounded(window, fn))", src)
+
+
 class RegistrySyncTests(unittest.TestCase):
     def test_control_names_match_specs(self) -> None:
         from iris.browser.registry import command_specs, control_action_names

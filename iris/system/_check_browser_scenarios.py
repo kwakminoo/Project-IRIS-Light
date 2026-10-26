@@ -23,13 +23,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _check_no_playwright_in_control_actions() -> None:
     path = ROOT / "iris" / "ui" / "control_actions" / "browser.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    src = path.read_text(encoding="utf-8")
+    tree = ast.parse(src)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 assert "playwright" not in alias.name.lower(), alias.name
         if isinstance(node, ast.ImportFrom) and node.module:
             assert "playwright" not in node.module.lower(), node.module
+    assert "_call_on_ui_unbounded" in src
+    assert "session.set_ui_call(lambda fn: _call_on_ui_unbounded(window, fn))" in src
 
 
 def _check_off_ui_and_catalog() -> None:

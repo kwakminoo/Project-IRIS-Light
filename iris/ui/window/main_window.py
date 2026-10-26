@@ -7179,18 +7179,25 @@ class MainWindow(QMainWindow):
         ensure_qt_webengine_ready()
         session = get_browser_session()
         panel = get_shared_browser_panel(session)
+        panel.ensure_view()
         if self._ui_mode != "dedicated_browser":
             work = work_area_for(self)
-            self.setMinimumSize(960, 640)
-            self._root_lay.setContentsMargins(0, 0, 0, 0)
-            self._mount_unified_companion_body()
-            self._unified_shell.mount(None, self._companion_page, total_w=work.width())
-            self._body_stack.setCurrentWidget(self._unified_shell)
-            self._ui_mode = "dedicated_browser"
-            self._drag.set_ide_companion_active(True)
-            self._embed_viz_in_companion_slot()
-        self._unified_shell.mount_left_browser(panel)
-        panel.ensure_view()
+            painted = self.updatesEnabled()
+            self.setUpdatesEnabled(False)
+            try:
+                self.setMinimumSize(960, 640)
+                self._root_lay.setContentsMargins(0, 0, 0, 0)
+                self._mount_unified_companion_body()
+                self._unified_shell.mount(None, self._companion_page, total_w=work.width())
+                self._unified_shell.mount_left_browser(panel)
+                self._ui_mode = "dedicated_browser"
+                self._drag.set_ide_companion_active(True)
+                self._embed_viz_in_companion_slot()
+                self._body_stack.setCurrentWidget(self._unified_shell)
+            finally:
+                self.setUpdatesEnabled(painted)
+        else:
+            self._unified_shell.mount_left_browser(panel)
         session.note_surface_ready(panel.view())
         session.note_view_host(PanelHost(site="dedicated"))
         try:
@@ -7224,19 +7231,24 @@ class MainWindow(QMainWindow):
     def _exit_dedicated_browser(self) -> None:
         if self._ui_mode != "dedicated_browser":
             return
-        self._maybe_detach_browser_to_mini()
-        self._unified_shell.clear_left_browser()
-        self._unified_shell.clear_hosts()
-        if self._body_stack.indexOf(self._companion_page) < 0:
-            self._body_stack.addWidget(self._companion_page)
-        self._unmount_companion_body()
-        self._root_lay.setContentsMargins(*self._normal_root_margins)
-        self._workspace_mode = "assistant"
-        self._workspace_stack.setCurrentWidget(self._assistant_page)
-        self._left_sidebar.set_workspace_mode("assistant")
-        self._set_workspace_icon_active(None)
-        self._ui_mode = "normal"
-        self._drag.set_ide_companion_active(False)
+        painted = self.updatesEnabled()
+        self.setUpdatesEnabled(False)
+        try:
+            self._maybe_detach_browser_to_mini()
+            self._unified_shell.clear_left_browser()
+            self._unified_shell.clear_hosts()
+            if self._body_stack.indexOf(self._companion_page) < 0:
+                self._body_stack.addWidget(self._companion_page)
+            self._unmount_companion_body()
+            self._root_lay.setContentsMargins(*self._normal_root_margins)
+            self._workspace_mode = "assistant"
+            self._workspace_stack.setCurrentWidget(self._assistant_page)
+            self._left_sidebar.set_workspace_mode("assistant")
+            self._set_workspace_icon_active(None)
+            self._ui_mode = "normal"
+            self._drag.set_ide_companion_active(False)
+        finally:
+            self.setUpdatesEnabled(painted)
 
     def _mount_unified_companion_body(self) -> None:
         work = work_area_for(self)

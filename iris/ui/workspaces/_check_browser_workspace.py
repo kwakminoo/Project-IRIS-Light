@@ -42,6 +42,16 @@ def main() -> int:
     w._unified_shell._split.setSizes([sizes[0] - 80, sizes[1] + 80])
     app.processEvents()
     assert w._unified_shell._split.sizes() != sizes
+    assert panel.view() is not None
+    assert w._unified_shell.left_browser() is panel
+    w._exit_dedicated_browser()
+    app.processEvents()
+    assert w._ui_mode == "normal"
+    panel = w.show_browser_workspace()
+    app.processEvents()
+    assert w._ui_mode == "dedicated_browser"
+    assert w._body_stack.currentWidget() is w._unified_shell
+    assert panel.view() is not None
     panel.ensure_view()
     assert panel.tab_count() >= 1
     adopted = panel._adopt_popup()

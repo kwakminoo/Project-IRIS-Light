@@ -59,9 +59,13 @@ class BrowserSession:
         self._listeners: list[SnapshotListener] = []
         self._visible = False
         self._last_result: BrowserResult | None = None
+        self._panel_ref: Any = None
 
     def set_ui_call(self, ui_call: UiCall) -> None:
         self._ui_call = ui_call
+        driver = self._driver
+        if driver is not None:
+            driver._ui_call = ui_call
 
     def set_surface_provider(self, provider: SurfaceProvider | None) -> None:
         self._surface_provider = provider
@@ -84,6 +88,14 @@ class BrowserSession:
             if driver is not None:
                 self._snap = self._overlay_host(driver.read_snapshot())
 
+    def _ui_from_locked(self, fn: Callable[[], Any]) -> Any:
+        """Drop _lock while on the UI thread. UI callbacks re-enter snapshot/note_*."""
+        self._lock.release()
+        try:
+            return self._ui_call(fn)
+        finally:
+            self._lock.acquire()
+
     def note_surface_ready(self, view: Any) -> None:
         """HUD already showed the panel — do not show IrisIdeWindow on the next command."""
         with self._lock:
@@ -91,26 +103,27 @@ class BrowserSession:
                 from iris.browser._driver import WebEnginePageDriver
 
                 self._driver = WebEnginePageDriver(view, ui_call=self._ui_call)
+            parent = getattr(view, "parent", None)
+            widget = parent() if callable(parent) else parent
+            if widget is not None and hasattr(widget, "tab_count"):
+                self._panel_ref = widget
             self._visible = True
 
     def add_listener(self, listener: SnapshotListener) -> None:
         self._listeners.append(listener)
 
     def _tab_meta(self) -> tuple[int, int]:
-        provider = self._surface_provider
-        if provider is None:
-            return 0, 1
-        try:
-            panel = provider()
-        except Exception:
-            return 0, 1
+        panel = self._panel_ref
         if panel is None:
             return 0, 1
-        count_fn = getattr(panel, "tab_count", None)
-        idx_fn = getattr(panel, "current_tab_index", None)
-        count = int(count_fn() if callable(count_fn) else 1) or 1
-        idx = int(idx_fn() if callable(idx_fn) else 0)
-        return idx, max(1, count)
+        try:
+            count_fn = getattr(panel, "tab_count", None)
+            idx_fn = getattr(panel, "current_tab_index", None)
+            count = int(count_fn() if callable(count_fn) else 1) or 1
+            idx = int(idx_fn() if callable(idx_fn) else 0)
+            return idx, max(1, count)
+        except Exception:
+            return 0, 1
 
     def _overlay_host(self, snap: BrowserSnapshot) -> BrowserSnapshot:
         tab_index, tab_count = self._tab_meta()
@@ -127,7 +140,9 @@ class BrowserSession:
             return self._last_result
 
     def snapshot(self) -> BrowserSnapshot:
-        with self._lock:
+        if not self._lock.acquire(blocking=False):
+            return self._snap
+        try:
             if self._driver is not None:
                 try:
                     self._snap = self._overlay_host(self._driver.read_snapshot())
@@ -140,6 +155,8 @@ class BrowserSession:
             else:
                 self._snap = self._overlay_host(self._snap)
             return self._snap
+        finally:
+            self._lock.release()
 
     def ensure_visible(self) -> None:
         with self._lock:
@@ -152,7 +169,7 @@ class BrowserSession:
                 and self._surface_provider is not None
                 and is_docked(self._view_host)
             ):
-                self._ui_call(self._show_surface)
+                self._ui_from_locked(self._show_surface)
                 self._visible = True
             return self._driver
         if self._surface_provider is None:
@@ -160,13 +177,21 @@ class BrowserSession:
 
         def create() -> Any:
             panel = self._surface_provider()
+            if panel is None:
+                raise RuntimeError("browser view create failed")
             view = panel.ensure_view()
             from iris.browser._driver import WebEnginePageDriver
 
             return WebEnginePageDriver(view, ui_call=self._ui_call), panel
 
-        driver, _panel = self._ui_call(create)
-        self._driver = driver
+        packed = self._ui_from_locked(create)
+        if not isinstance(packed, tuple) or packed[0] is None:
+            raise RuntimeError("browser view create failed")
+        driver, panel = packed
+        if self._driver is None:
+            self._driver = driver
+        if panel is not None:
+            self._panel_ref = panel
         self._visible = True
         self._view_host = as_docked(self._view_host)
         self._snap = empty_snapshot(phase=BrowserPhase.READY)
@@ -183,7 +208,7 @@ class BrowserSession:
         if is_docked(current) and is_docked(host) and current.site == host.site:
             return
         if self._host_applier is not None:
-            self._ui_call(lambda h=host: self._host_applier(h))
+            self._ui_from_locked(lambda h=host: self._host_applier(h))
         self._view_host = host
 
     def _publish(self, snap: BrowserSnapshot) -> None:

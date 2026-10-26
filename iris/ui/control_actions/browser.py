@@ -11,10 +11,17 @@ from iris.ui.control_actions.hosts import BrowserHost
 
 
 def register_browser_actions(window: BrowserHost, reg: ActionRegistry) -> None:
-    from iris.ui.control_bindings import _append_activity, _call_on_ui, _log, err_result, ok_result
+    from iris.ui.control_bindings import (
+        _append_activity,
+        _call_on_ui_unbounded,
+        _log,
+        err_result,
+        ok_result,
+    )
 
     session = get_browser_session()
-    session.set_ui_call(lambda fn: _call_on_ui(window, fn))
+    # ponytail: 3s marshal returns None while WebEngine create keeps running.
+    session.set_ui_call(lambda fn: _call_on_ui_unbounded(window, fn))
 
     def _surface():
         return window.show_browser_workspace()
