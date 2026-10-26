@@ -83,6 +83,8 @@ class EmulatorHost(Protocol):
 class BrowserHost(Protocol):
     _ensure_iris_ide_window: Any
     _live_activity: Any
+    apply_browser_view_host: Any
+    show_browser_workspace: Any
 
 
 class LearningHost(Protocol):

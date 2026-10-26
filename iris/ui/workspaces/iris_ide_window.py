@@ -386,14 +386,14 @@ class IrisIdeWindow(QMainWindow):
         return panel
 
     def ensure_browser_mini(self):
-        if self._browser_mini is not None:
-            return self._browser_mini
-        from iris.ui.browser.mini_player import BrowserMiniPlayer
+        from iris.ui.browser.mini_player import get_shared_browser_mini
 
-        mini = BrowserMiniPlayer(self)
-        mini.expand_requested.connect(lambda: self.apply_browser_view_host("panel"))
-        mini.close_requested.connect(self._on_mini_close)
+        mini = get_shared_browser_mini(self)
         self._browser_mini = mini
+        if not mini.signals_wired():
+            mini.expand_requested.connect(lambda: self.apply_browser_view_host("panel"))
+            mini.close_requested.connect(self._on_mini_close)
+            mini.mark_signals_wired()
         return mini
 
     def show_browser(self, *, show_window: bool = True):
@@ -425,7 +425,7 @@ class IrisIdeWindow(QMainWindow):
             if panel.view_in_slot():
                 panel.release_view()
             mini.attach_view(view)
-            mini.show_anchored(self)
+            mini.show_in_chat(mini.parentWidget() or self)
             if self._stack.currentWidget() is panel:
                 self._show_ide_stack_page()
             session.note_view_host("mini")
@@ -475,12 +475,13 @@ class IrisIdeWindow(QMainWindow):
         return get_browser_session().snapshot().url or ""
 
     def _detach_youtube_to_mini_if_needed(self) -> None:
-        if not self.is_browser_visible():
-            return
+        from iris.browser.session import get_browser_session
+        from iris.browser.types import Actor, MiniPlayer
         from iris.browser.youtube import is_youtube_watch_url
 
-        if is_youtube_watch_url(self._browser_current_url()):
-            self.apply_browser_view_host("mini")
+        if not is_youtube_watch_url(self._browser_current_url()):
+            return
+        get_browser_session().execute(MiniPlayer(on=True, source=Actor.SYSTEM))
 
     def _on_mini_close(self) -> None:
         panel = self.ensure_browser_panel()

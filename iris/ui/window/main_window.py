@@ -764,6 +764,7 @@ class MainWindow(QMainWindow):
         self._companion_page.set_width_delta_callback(self._unified_shell.shift_iris_width)
         self._workspace_chat = IdeCompanionPage(self)
         self._workspace_chat.hide()
+        self._browser_mini = None
         for history_panel in (
             self._left_sidebar.chat_history,
             self._companion_page.chat_history,
@@ -7174,6 +7175,11 @@ class MainWindow(QMainWindow):
         self._browser_page.place_browser_panel(panel)
         panel.ensure_view()
         get_browser_session().note_surface_ready(panel.view())
+        try:
+            panel.ide_requested.disconnect()
+        except TypeError:
+            pass
+        panel.ide_requested.connect(self._on_browser_ide_requested)
 
         self._workspace_mode = "browser"
         self._workspace_stack.setCurrentWidget(self._browser_page)
@@ -7198,27 +7204,70 @@ class MainWindow(QMainWindow):
         return panel
 
     def apply_browser_view_host(self, host: str) -> None:
-        if host == "panel":
-            if self._ui_mode == "ide_companion":
-                self._show_browser_in_ide()
-                return
-            if (
-                self._workspace_mode != "browser"
-                or self._workspace_stack.currentWidget() is not self._browser_page
-            ):
-                self.show_browser_workspace()
-                return
-            from iris.browser.session import get_browser_session
-            from iris.ui.browser.panel import get_shared_browser_panel
+        from iris.browser.session import get_browser_session
+        from iris.ui.browser.panel import get_shared_browser_panel
 
-            panel = get_shared_browser_panel(get_browser_session())
-            self._browser_page.place_browser_panel(panel)
+        session = get_browser_session()
+        panel = get_shared_browser_panel(session)
+        view = panel.ensure_view()
+        if host == "mini":
+            mini = self.ensure_browser_mini()
+            if panel.view_in_slot():
+                panel.release_view()
+            mini.attach_view(view)
+            mini.show_in_chat(self._chat)
+            ide = self._iris_ide_window
+            if ide is not None and ide.is_browser_visible():
+                ide._show_ide_stack_page()
+            session.note_view_host("mini")
             return
-        ide = self._ensure_iris_ide_window()
-        ide.apply_browser_view_host("mini")
-        # IrisIdeWindow may be hidden while browser lives in workspace.
-        if not ide.isVisible():
-            ide.ensure_browser_mini().show_anchored(self)
+        mini = self._browser_mini
+        if mini is not None and mini.has_view():
+            detached = mini.detach_view()
+            mini.hide()
+            if detached is not None:
+                panel.place_view(detached)
+        elif not panel.view_in_slot():
+            panel.place_view(view)
+        if self._ui_mode == "ide_companion":
+            self._show_browser_in_ide()
+        elif (
+            self._workspace_mode != "browser"
+            or self._workspace_stack.currentWidget() is not self._browser_page
+        ):
+            self.show_browser_workspace()
+        else:
+            self._browser_page.place_browser_panel(panel)
+        session.note_view_host("panel")
+
+    def ensure_browser_mini(self):
+        from iris.ui.browser.mini_player import get_shared_browser_mini
+
+        mini = get_shared_browser_mini(self._chat)
+        self._browser_mini = mini
+        if not mini.signals_wired():
+            mini.expand_requested.connect(lambda: self.apply_browser_view_host("panel"))
+            mini.close_requested.connect(self._on_browser_mini_close)
+            mini.mark_signals_wired()
+        return mini
+
+    def _on_browser_mini_close(self) -> None:
+        from iris.browser.session import get_browser_session
+        from iris.browser.types import Actor, Media
+        from iris.ui.browser.panel import get_shared_browser_panel
+
+        session = get_browser_session()
+        try:
+            session.execute(Media(action="pause", source=Actor.HUMAN))
+        except Exception:
+            pass
+        mini = self.ensure_browser_mini()
+        view = mini.detach_view() if mini.has_view() else None
+        mini.hide()
+        panel = get_shared_browser_panel(session)
+        if view is not None:
+            panel.place_view(view)
+        session.note_view_host("panel")
 
     def _on_browser_ide_requested(self) -> None:
         if self._ui_mode == "ide_companion":
@@ -7232,12 +7281,27 @@ class MainWindow(QMainWindow):
         self._enter_ide_companion(source="browser")
 
     def _maybe_detach_browser_to_mini(self) -> None:
-        if getattr(self, "_workspace_mode", "") != "browser":
+        from iris.browser.session import get_browser_session
+        from iris.browser.types import Actor, MiniPlayer
+        from iris.browser.youtube import is_youtube_watch_url
+
+        session = get_browser_session()
+        url = session.snapshot().url or ""
+        media = session.snapshot().media
+        playing = bool(media and media.playing)
+        try:
+            from iris.ui.browser.panel import get_shared_browser_panel
+
+            view = get_shared_browser_panel(session).view()
+            if view is not None:
+                text = view.url().toString()
+                if text:
+                    url = text
+        except Exception:
+            pass
+        if not (is_youtube_watch_url(url) or playing):
             return
-        ide = self._iris_ide_window
-        if ide is None:
-            return
-        ide._detach_youtube_to_mini_if_needed()
+        session.execute(MiniPlayer(on=True, source=Actor.SYSTEM))
 
     def _on_browser_workspace_icon(self) -> None:
         try:
@@ -8062,6 +8126,11 @@ class MainWindow(QMainWindow):
             self._exit_iris_ide_hero()
             return
         if self._ui_mode == "ide_companion":
+            ide = self._iris_ide_window
+            if ide is not None and ide.is_browser_visible():
+                ide.return_from_browser()
+                self._set_workspace_icon_active("ide")
+                return
             self._exit_ide_companion()
             return
         self._enter_ide_companion(source="icon")
