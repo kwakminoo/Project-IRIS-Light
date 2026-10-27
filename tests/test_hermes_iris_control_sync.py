@@ -31,6 +31,13 @@ def _assert_synced(home: Path) -> None:
     assert "browser" in names
     skill = home / "skills" / "iris-control" / "iris-browser" / "SKILL.md"
     assert skill.is_file(), skill
+    tools = data.get("tools") or {}
+    search = tools.get("tool_search") if isinstance(tools, dict) else None
+    assert isinstance(search, dict), data
+    assert str(search.get("enabled") or "").strip() == "off"
+    memory = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "iris_invoke" in memory
+    assert "mcp__iris_control__iris_invoke" not in memory
 
 
 class SyncIrisControlHomeTests(TestCase):

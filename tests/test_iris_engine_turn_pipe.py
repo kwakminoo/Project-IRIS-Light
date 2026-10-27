@@ -103,6 +103,41 @@ def _safe_sidecar_env(home: EngineHome, python: Path) -> dict[str, str]:
     return env
 
 
+class SidecarUtf8EnvTests(TestCase):
+    def test_sidecar_env_forces_utf8_stdio(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = EngineHome(Path(tmp))
+            env = _sidecar_env(home, Path(sys.executable))
+        self.assertEqual(env.get("PYTHONUTF8"), "1")
+        self.assertEqual(env.get("PYTHONIOENCODING"), "utf-8")
+
+    def test_sidecar_child_keeps_korean_on_stdin(self) -> None:
+        payload = {"t": "probe", "text": "네이버에서 오늘 날씨 검색해줘"}
+        line = json.dumps(payload, ensure_ascii=False) + "\n"
+        with TemporaryDirectory() as tmp:
+            home = EngineHome(Path(tmp))
+            env = _sidecar_env(home, Path(sys.executable))
+            env["PYTHONUNBUFFERED"] = "1"
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import json,sys; print(json.loads(sys.stdin.readline())['text'])",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                env=env,
+                **no_window_kwargs(),
+            )
+            out, err = proc.communicate(line, timeout=10)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertEqual(out.strip(), "네이버에서 오늘 날씨 검색해줘")
+
+
 class SidecarTurnPipeTests(TestCase):
     def tearDown(self) -> None:
         proc = getattr(self, "_proc", None)

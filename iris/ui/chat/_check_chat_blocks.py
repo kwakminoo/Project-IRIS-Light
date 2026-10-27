@@ -209,6 +209,19 @@ def _assert_error_and_user() -> None:
     )
     _assert_html_contains(iris, "SOURCES", "docs.example.com", label="iris citations")
 
+    korean = (
+        "네이버에서 오늘 날씨를 검색했습니다. "
+        "자세한 내용은 [서울 날씨](https://weather.naver.com) 를 보세요.\n\n"
+        "## Sources\n"
+        "- [서울 날씨](https://weather.naver.com)\n"
+    )
+    rendered = iris_message_to_chat_html(korean)
+    _assert_html_contains(
+        rendered, "네이버에서 오늘 날씨를", "weather.naver.com", label="korean sources"
+    )
+    for bad in ("ȭ", "ϸ", "ڽ", "\ufffd"):
+        assert bad not in rendered, f"korean markdown produced {bad!r}"
+
     assert render_markdown_document("", citations=False) == ""
     assert ChatBlockKind.FENCED_CODE.value == "fenced_code"
     assert ChatBlockKind.FILE_CHIP.value == "file_chip"
