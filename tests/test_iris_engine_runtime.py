@@ -23,7 +23,7 @@ from iris.engine import (
     parse_engine_source,
     shared_engine,
 )
-from iris.engine.runtime import reset_shared_engine
+from iris.engine.runtime import _turn_api_key, reset_shared_engine
 from iris.infrastructure.hermes_client import HermesInferenceTarget
 
 
@@ -130,6 +130,29 @@ class EngineReadyStubTests(TestCase):
             events = list(engine.run_turn(turn))
         self.assertEqual(events, [TurnCancelled()])
         forget.assert_called()
+
+    def test_ollama_turn_sends_compat_api_key(self) -> None:
+        turn = StatelessTurn(
+            transcript=ChatTranscript.parse([{"role": "user", "content": "hi"}]),
+            model=HermesInferenceTarget(
+                model="gemma4:e2b",
+                provider="custom",
+                base_url="http://127.0.0.1:11434/v1",
+            ),
+            cancel=CancelToken(),
+        )
+        self.assertEqual(_turn_api_key(turn), "ollama")
+        keyed = StatelessTurn(
+            transcript=turn.transcript,
+            model=HermesInferenceTarget(
+                model="gpt",
+                provider="custom",
+                base_url="https://api.example/v1",
+                api_key="sk-user",
+            ),
+            cancel=CancelToken(),
+        )
+        self.assertEqual(_turn_api_key(keyed), "sk-user")
 
 
 class ParseEngineSourceTests(TestCase):

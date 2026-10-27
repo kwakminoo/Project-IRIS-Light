@@ -45,6 +45,7 @@ from iris.engine.types import (
     TurnFinished,
     parse_engine_source,
 )
+from iris.system.hermes_ollama_guard import looks_like_ollama_endpoint
 from iris.system.win_subprocess import no_window_kwargs
 
 _SIDECAR_MAIN = Path(__file__).resolve().parent / "_sidecar_main.py"
@@ -171,6 +172,17 @@ def _failed(code: EngineErrorCode, detail: str) -> EngineFailed:
     return EngineFailed(EngineError(code, detail))
 
 
+def _turn_api_key(turn: StatelessTurn) -> str:
+    """Hermes `_init_openai_client` only takes the explicit path when both
+    api_key and base_url are set. Ollama's OpenAI adapter accepts any token."""
+    key = (turn.model.api_key or "").strip()
+    if key:
+        return key
+    if looks_like_ollama_endpoint(turn.model.base_url):
+        return "ollama"
+    return ""
+
+
 def _spawn_sidecar(home: EngineHome) -> EngineFailed | subprocess.Popen[str]:
     python = engine_python(home)
     if python is None:
@@ -283,8 +295,9 @@ class Engine:
         }
         if turn.model.base_url:
             fields["base_url"] = turn.model.base_url
-        if turn.model.api_key:
-            fields["api_key"] = turn.model.api_key
+        api_key = _turn_api_key(turn)
+        if api_key:
+            fields["api_key"] = api_key
         child.stdin.write(encode_host_command("turn", **fields))
         child.stdin.flush()
 
