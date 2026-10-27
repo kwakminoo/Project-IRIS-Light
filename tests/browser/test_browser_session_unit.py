@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import unittest
 
-from iris.browser._driver import youtube_like_fixture_driver
+from iris.browser._driver import FakePageDriver, _FakePage, youtube_like_fixture_driver
 from iris.browser.registry import parse_command
 from iris.browser.search import search_url
 from iris.browser.session import BrowserSession
 from iris.browser.types import (
     BrowserPhase,
     ByRef,
+    CTX_CAP,
     Click,
     HistoryStep,
     MiniHost,
     MiniPlayer,
     Navigate,
     Open,
+    PageNode,
     PanelHost,
     Reload,
     Scroll,
@@ -236,6 +238,44 @@ class SessionFakeDriverTests(unittest.TestCase):
         self.assertFalse(scroll_miss.ok)
         self.assertEqual(scroll_miss.detail, "stale_ref")
         self.assertEqual(scroll_miss.snapshot.phase, BrowserPhase.READY)
+
+    def test_idle_snapshot_does_not_restamp(self) -> None:
+        first = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertTrue(first.ok)
+        gen = first.snapshot.gen
+        refs = [node.ref for node in first.snapshot.nodes]
+        idle = self.session.snapshot()
+        self.assertEqual(idle.gen, gen)
+        self.assertEqual([node.ref for node in idle.nodes], refs)
+
+    def test_stamp_copies_flags_and_clips_context(self) -> None:
+        page = _FakePage(
+            url="https://fixture.local/flags",
+            title="Flags",
+            nodes=[
+                PageNode(
+                    ref="",
+                    role="button",
+                    name="Go",
+                    disabled=True,
+                    checked=True,
+                    selected=True,
+                    focused=True,
+                    context="C" * 80,
+                )
+            ],
+        )
+        session = BrowserSession(driver=FakePageDriver({page.url: page}))
+        stamped = session.execute(Navigate(url=page.url))
+        self.assertTrue(stamped.ok, stamped.detail)
+        self.assertEqual(stamped.snapshot.phase, BrowserPhase.READY)
+        node = stamped.snapshot.nodes[0]
+        self.assertTrue(node.disabled)
+        self.assertTrue(node.checked)
+        self.assertTrue(node.selected)
+        self.assertTrue(node.focused)
+        self.assertEqual(node.context, "C" * CTX_CAP)
+        self.assertRegex(node.ref, r"^g\d+e0$")
 
     def test_idempotent_navigate(self) -> None:
         self.session.execute(Navigate(url="https://react.dev"))

@@ -101,6 +101,8 @@ class BrowserPackerTests(unittest.TestCase):
         for chat in VETO_CHATS:
             self.assertIn(chat, text)
         self.assertIn("not a browser action", text)
+        self.assertIn("ctx=", text)
+        self.assertIn("disabled/checked/selected/focused", text)
 
     def test_teaching_derives_names_from_specs(self) -> None:
         from iris.browser.registry import command_specs
@@ -183,8 +185,88 @@ class BrowserPackerTests(unittest.TestCase):
         trusted, page_text = pack_browser_observation(session)
         self.assertIn("g1e0 button Inner Submit frame=f0", page_text)
         self.assertIn("g1e1 button Below Fold in_view=false", page_text)
+        self.assertNotIn("g1e0 button Inner Submit frame=f0 ctx=", page_text)
+        self.assertNotIn("g1e1 button Below Fold in_view=false ctx=", page_text)
+        self.assertNotIn(" disabled", page_text)
+        self.assertNotIn("value=", page_text)
         self.assertIn("frames=f0:https://fixture.local:ok,f1:https://example.com:cross_origin", trusted)
         self.assertNotIn("Example Domain", page_text)
+
+    def test_page_text_true_only_flags_and_ctx(self) -> None:
+        session = BrowserSession()
+        session._snap = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            url="https://example.test/auth",
+            title="Welcome",
+            nodes=(
+                PageNode(ref="g1e0", role="button", name="Submit", context="login"),
+                PageNode(ref="g1e1", role="button", name="Submit", context="signup", disabled=True),
+                PageNode(ref="g1e2", role="checkbox", name="Remember me", checked=True),
+                PageNode(ref="g1e3", role="textbox", name="Email", focused=True),
+                PageNode(ref="g1e4", role="link", name="Billing", selected=True),
+                PageNode(ref="g1e5", role="button", name="Save", context="settings"),
+            ),
+        )
+        _trusted, page_text = pack_browser_observation(session)
+        self.assertIn("g1e0 button Submit ctx=login", page_text)
+        self.assertIn("g1e1 button Submit ctx=signup disabled", page_text)
+        self.assertIn("g1e2 checkbox Remember me checked", page_text)
+        self.assertIn("g1e3 textbox Email focused", page_text)
+        self.assertIn("g1e4 link Billing selected", page_text)
+        self.assertIn("g1e5 button Save", page_text)
+        self.assertNotIn("ctx=settings", page_text)
+        self.assertNotIn("disabled=false", page_text)
+        self.assertNotIn("checked=false", page_text)
+        self.assertNotIn("value=", page_text)
+
+    def test_password_value_absent_from_page_text(self) -> None:
+        session = BrowserSession()
+        session._snap = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            url="https://example.test/login",
+            title="Sign in",
+            excerpt="Sign in to continue",
+            nodes=(PageNode(ref="g1e0", role="textbox", name="Password", focused=True),),
+        )
+        _trusted, page_text = pack_browser_observation(session)
+        self.assertIn("g1e0 textbox Password focused", page_text)
+        self.assertNotIn("hunter2", page_text)
+        self.assertNotIn("value=", page_text)
+
+    def test_dense_nodes_drop_excerpt_and_keep_every_ref(self) -> None:
+        long_name = "Item-" + ("N" * 74)
+        nodes = tuple(
+            PageNode(ref=f"g1e{i}", role="link", name=f"{i:02d}-{long_name}", interactive=True)
+            for i in range(40)
+        )
+        session = BrowserSession()
+        session._snap = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            url="https://news.example/dense",
+            title="Dense",
+            excerpt="KEEPME " * 80,
+            nodes=nodes,
+        )
+        session._last_result = BrowserResult(
+            ok=True,
+            command_kind="extract",
+            snapshot=session._snap,
+            detail="",
+            read_text="EXTRACT_MARK " * 40,
+        )
+        _trusted, page_text = pack_browser_observation(session)
+        self.assertNotIn("excerpt=", page_text)
+        self.assertIn("extract=EXTRACT_MARK", page_text)
+        for i in range(40):
+            self.assertIn(f"g1e{i}", page_text)
+        self.assertNotIn("KEEPME", page_text)
+
+    def test_looks_sensitive_ignores_context(self) -> None:
+        snap = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            nodes=(PageNode(ref="g1e0", role="button", name="OK", context="checkout"),),
+        )
+        self.assertFalse(looks_sensitive_browser_act("browser.click", {"ref": "g1e0"}, snap))
+        buy = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            nodes=(PageNode(ref="g1e0", role="button", name="Checkout"),),
+        )
+        self.assertTrue(looks_sensitive_browser_act("browser.click", {"ref": "g1e0"}, buy))
 
 
 class ConfirmHudTests(unittest.TestCase):

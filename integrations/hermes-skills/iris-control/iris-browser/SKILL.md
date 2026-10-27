@@ -48,6 +48,7 @@ Agent and human chrome share `BrowserSession`.
 ## Notes
 
 - Click copies `{ref}` (`g4e3`) from the last PAGE TEXT. Do not guess CSS or link text.
+- Landmark lines add `ctx=` when two packed controls share a role and name, and `disabled` / `checked` / `selected` / `focused` only when those flags are true.
 - `browser.phase` values: `closed` | `opening` | `ready` | `busy` | `faulted`.
 - YouTube/Google may show consent, login, or autoplay blocks. Do not bypass. Read `detail` / `last_error` and tell the user.
 - Do not register or call a sibling Playwright MCP for the same clicks.

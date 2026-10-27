@@ -7,6 +7,7 @@ from typing import Any, Literal, Union
 
 NODE_CAP = 40
 NAME_CAP = 80
+CTX_CAP = 24
 EXCERPT_CAP = 800
 EXTRACT_DEFAULT = 4000
 EXTRACT_MAX = 8000
@@ -49,6 +50,11 @@ class PageNode:
     interactive: bool = True
     frame: str = ""
     in_view: bool = True
+    disabled: bool = False
+    checked: bool = False
+    selected: bool = False
+    focused: bool = False
+    context: str = ""
 
 
 @dataclass(frozen=True)

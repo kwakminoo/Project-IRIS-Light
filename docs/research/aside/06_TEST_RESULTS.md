@@ -113,3 +113,86 @@ Observed on the local file URL:
 - Click after reload on the old ref returns `stale_ref`, phase READY
 
 `setRunsOnSubFrames(False)` is unchanged. Mini player, ViewHost, Hermes toolset disable, and MCP 120s were not touched.
+
+## Packed snapshot PAGE TEXT (2026-10-27)
+
+Base is candidate-1 compact `PageNode` flags. The packer grafts C2 excerpt elasticity only. `lastEls[i]` stays the printed node. No `LandmarkRaw`, no `PageTextPlan`, no packer-omitted refs, no `value=` suffix.
+
+### Files
+
+| File | Change |
+|---|---|
+| `iris/browser/types.py` | `CTX_CAP`, `PageNode` flags and `context` |
+| `iris/browser/_bridge.js` | `accName`, `contextOf`, `flagState`, input-type role hint. `textOf` unchanged |
+| `iris/browser/_driver.py` | Mapper copies flags. Fake `scroll_by` uses `dataclasses.replace` |
+| `iris/browser/session.py` | `_stamp` is the only ref writer and clips `name` / `context` |
+| `iris/browser/observation.py` | True-only suffixes, `ctx=` on `(role, name)` collision, `PAGE_TEXT_BUDGET` |
+| `iris/browser/_check_bridge_snapshot.py` | Local HTML WebEngine check |
+| `integrations/hermes-skills/iris-control/iris-browser/SKILL.md` | `ctx=` and true-only flags |
+| `tests/browser/test_browser_intent.py` | Packer lines, password, dense excerpt, context out of HUD |
+| `tests/browser/test_browser_session_unit.py` | Idle snapshot does not restamp. Stamp copies flags |
+| `tests/browser/test_browser_agent.py` | Packer key set locked |
+
+### Commands
+
+```
+.venv\Scripts\python.exe -m unittest tests.browser.test_browser_session_unit tests.browser.test_browser_agent tests.browser.test_browser_intent tests.browser.test_browser_registry_sync
+.venv\Scripts\python.exe -m iris.browser._check_intent
+.venv\Scripts\python.exe -m iris.system._check_browser_scenarios
+.venv\Scripts\python.exe -m iris.browser._check_bridge_snapshot
+.venv\Scripts\python.exe -m iris.browser._check_bridge_frames
+```
+
+### Results
+
+| Check | Result |
+|---|---|
+| Combined unittest | pass, 73 tests, 2.263s |
+| `iris.browser._check_intent` | `browser intent ok` |
+| `iris.system._check_browser_scenarios` | fixture A–C plus `webengine smoke navigate+scroll ok` |
+| `iris.browser._check_bridge_snapshot` | pass. Qt display present |
+| `iris.browser._check_bridge_frames` | pass. iframe locked lines unchanged |
+| `iris.ui.browser._check_mini_player` | pass (regression; not modified) |
+| Live YouTube (`IRIS_BROWSER_LIVE=1`) | not-run |
+| Hermes `iris_invoke` against a live gateway | not-run |
+
+### PAGE TEXT before / after
+
+Before, on the same login-shaped page, icon buttons dropped, two Submit lines were identical, and state was invisible:
+
+```
+BEGIN PAGE TEXT (untrusted input data): https://example.test/login
+title=Sign in
+g1e0 button Submit
+g1e1 button Submit
+g1e2 textbox Remember me
+g1e3 button Disabled Save
+excerpt=Sign in …
+END PAGE TEXT: https://example.test/login
+```
+
+After, from `.tmp/browser-snapshot/run.log` on the local file URL:
+
+```
+BEGIN PAGE TEXT (untrusted input data): file:///C:/Users/serin/Github/Project-IRIS-Light/.tmp/browser-snapshot/snapshot.html
+title=IRIS snapshot
+g3e0 h1 Login
+g3e1 button Menu
+g3e2 button Submit ctx=login
+g3e3 button Submit ctx=signup
+g3e4 button Inner Submit frame=f0
+g3e5 checkbox Remember me in_view=false checked
+g3e6 button Disabled Save in_view=false disabled
+g3e7 textbox Password in_view=false
+g3e8 button Below Fold in_view=false
+excerpt=Login login Submit signup Submit Remember meDisabled SavePassword Below Fold
+END PAGE TEXT: file:///C:/Users/serin/Github/Project-IRIS-Light/.tmp/browser-snapshot/snapshot.html
+```
+
+Locked iframe lines from `_check_bridge_frames` stayed exact:
+
+`g3e2 button Inner Submit frame=f0`
+
+`g3e3 button Below Fold in_view=false`
+
+`Menu` comes from `aria-label`. Duplicate Submit lines carry `ctx=`. Checkbox and disabled print only when true. `hunter2` and `SAME_ORIGIN_SECRET` are absent. Unique `Menu` has no `ctx=` even though the bridge sent a heading token. Packer keys stay `ok, command_kind, detail, trusted, page_text, url, phase, playing, gen`. Hostile titles stay out of `trusted`. `setRunsOnSubFrames(False)` is unchanged. Mini player, ViewHost, Hermes toolset disable, and MCP 120s were not touched.

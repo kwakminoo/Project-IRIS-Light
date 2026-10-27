@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Callable
 
 from iris.browser._driver import recovery_text, remaining_wait
@@ -12,6 +13,7 @@ from iris.browser.types import (
     BrowserPhase,
     BrowserResult,
     BrowserSnapshot,
+    CTX_CAP,
     Click,
     Extract,
     HistoryStep,
@@ -248,13 +250,17 @@ class BrowserSession:
     def _stamp(self, snap: BrowserSnapshot) -> BrowserSnapshot:
         self._gen += 1
         nodes = tuple(
-            PageNode(
+            replace(
+                n,
                 ref=make_page_ref(self._gen, i),
-                role=n.role,
                 name=(n.name or "")[:NAME_CAP],
-                interactive=n.interactive,
                 frame=n.frame or "",
                 in_view=bool(n.in_view),
+                disabled=bool(n.disabled),
+                checked=bool(n.checked),
+                selected=bool(n.selected),
+                focused=bool(n.focused),
+                context=(n.context or "")[:CTX_CAP],
             )
             for i, n in enumerate(snap.nodes[:NODE_CAP])
         )

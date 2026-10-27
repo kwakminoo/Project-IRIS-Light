@@ -6,7 +6,7 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Protocol
 from urllib.parse import parse_qs, urlparse
@@ -22,6 +22,7 @@ from iris.browser.types import (
     EXCERPT_CAP,
     FrameInfo,
     Locator,
+    NAME_CAP,
     PageNode,
     MediaState,
     media_from_dict,
@@ -380,14 +381,7 @@ class FakePageDriver:
             if index < 0 or index >= len(page.nodes):
                 raise LookupError("unknown_ref")
             node = page.nodes[index]
-            page.nodes[index] = PageNode(
-                ref=node.ref,
-                role=node.role,
-                name=node.name,
-                interactive=node.interactive,
-                frame=node.frame,
-                in_view=True,
-            )
+            page.nodes[index] = replace(node, in_view=True)
             self._scroll_y = max(self._scroll_y, 1)
             page.scroll_y = self._scroll_y
             self._phase = BrowserPhase.READY
@@ -473,6 +467,22 @@ def youtube_like_fixture_driver() -> FakePageDriver:
         }
     )
     return driver
+
+
+def _map_node(item: dict) -> PageNode:
+    return PageNode(
+        ref="",
+        role=str(item.get("role") or ""),
+        name=str(item.get("name") or "")[:NAME_CAP],
+        interactive=bool(item.get("interactive", True)),
+        frame=str(item.get("frame") or ""),
+        in_view=bool(item.get("in_view", item.get("inView", True))),
+        disabled=bool(item.get("disabled", False)),
+        checked=bool(item.get("checked", False)),
+        selected=bool(item.get("selected", False)),
+        focused=bool(item.get("focused", False)),
+        context=str(item.get("context") or ""),
+    )
 
 
 class WebEnginePageDriver:
@@ -611,18 +621,7 @@ class WebEnginePageDriver:
         can_back, can_fwd, url, title = self._run_ui(hist_flags)
         data = raw if isinstance(raw, dict) else {}
         raw_nodes = data.get("nodes") or data.get("landmarks") or []
-        nodes = tuple(
-            PageNode(
-                ref="",
-                role=str(item.get("role") or ""),
-                name=str(item.get("name") or "")[:80],
-                interactive=bool(item.get("interactive", True)),
-                frame=str(item.get("frame") or ""),
-                in_view=bool(item.get("in_view", item.get("inView", True))),
-            )
-            for item in raw_nodes
-            if isinstance(item, dict)
-        )
+        nodes = tuple(_map_node(item) for item in raw_nodes if isinstance(item, dict))
         raw_frames = data.get("frames") or ()
         frames = tuple(
             FrameInfo(
