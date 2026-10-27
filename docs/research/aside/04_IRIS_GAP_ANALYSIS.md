@@ -59,8 +59,8 @@ Key types:
 | --- | --- | --- |
 | `BrowserSession` in `iris/browser/session.py` | One process-wide command bus. Holds driver, `ViewHost`, last snapshot, last result. Exceptions set `BrowserPhase.FAULTED`. No auto-reconnect. | One visible page. Aside Agent Tabs are many agent-owned Chromium tabs that do not steal focus. |
 | `ViewHost` in `iris/browser/types.py` | `PanelHost` or `MiniHost`. Reparent, not a second engine. | Does not isolate agent work from the tab the person is looking at. |
-| `WebEnginePageDriver` + `_bridge.js` | Injected script snapshot, click-by-ref, type, extract, media. `navigate` waits `loadFinished` 45s then `TimeoutError`. JS eval 8s. | Asidewright claims no injected scripts and a CDP wrapper. Qt WebEngine has no first-class CDP for the agent. A hung site looks like "connection failed". |
-| `command_specs()` in `iris/browser/registry.py` | Thirteen `browser.*` names: open, navigate, reload, back, forward, search, click, type, scroll, snapshot, extract, mini_player, media. | Dedicated toolset. Aside's blog names this family (and Hermes) as the design they rejected. |
+| `WebEnginePageDriver` + `_bridge.js` | Injected script snapshot, click-by-ref, type, extract, media. `navigate` waits `loadFinished` 45s then `TimeoutError`. JS eval 8s. Bridge is injected twice: profile `DocumentReady` MainWorld, and `_ensure_bridge` `runJavaScript`. `setRunsOnSubFrames(False)`. | Asidewright claims no injected scripts and a CDP wrapper. Qt WebEngine has no first-class CDP for the agent. A hung site looks like "connection failed". Iframes never see the bridge. |
+| `command_specs()` in `iris/browser/registry.py` | Thirteen `browser.*` names: open, navigate, reload, back, forward, search, click, type, scroll, snapshot, extract, mini_player, media. Registry also registers catch-all `browser.invoke`. | Dedicated toolset. Aside's blog names this family (and Hermes) as the design they rejected. |
 | `PageNode` + `NODE_CAP = 40` | `_bridge.js` stops at 40 named elements and skips nodes with empty `textOf`. No iframe walk. | Aside markets a packed a11y tree with iframe id. Icon-only buttons never enter PAGE TEXT. |
 | `looks_sensitive_browser_act` | Token list: purchase, send, checkout, 결제, 구매, buy, pay. Search/media/open never sensitive. | Keyword heuristic, not a vault. |
 | `pack_browser_observation` | Trusted Iris-owned block plus untrusted `BEGIN PAGE TEXT`. | No episodic browser memory. |
@@ -71,8 +71,9 @@ Key types:
 | `BrowserPanel` tabs | Human chrome only. No `browser.tab_*`. Last tab close navigates home. | Aside Agent Tabs are agent-owned. |
 | `BrowserSession.snapshot()` | Live URL/title overlay. Keeps previous `gen` and `nodes`. `_on_tab_changed` calls this. | Click after a human tab switch can hit `stale_ref` or the old `lastEls`. |
 | `IrisWebEnginePage.certificateError` | `acceptCertificate()`. | Trust trade. Can also hide a real TLS failure. |
-| `_wire_page_logging` `renderProcessTerminated` | Logs `status` and `code`. Does not recreate the page. | The 2026-10-22 review already said there is no render-process recovery. Source still only logs. |
-| `ensure_qt_webengine_ready` in `iris/ui/qt_bootstrap.py` | Before `QApplication`. Default `--disable-gpu-compositing`. Honors `QTWEBENGINE_CHROMIUM_FLAGS` if set. | Missing this call is 0xC0000409. `--disable-gpu` used to add `kFatalFailure` without stopping the GPU process. Black IDE screen is item 19 in `docs/code-review/조치-소요-사항-총괄표.md`, observation still open. |
+| `_wire_page_logging` `renderProcessTerminated` | Logs `status` and `code`. Does not set `FAULTED` and does not recreate the page. | The 2026-10-22 review already said there is no render-process recovery. A blank view can still show READY from the last snapshot. |
+| `WebEnginePageDriver.reload` | Waits `loadFinished` 30s, then sets `READY` even if the wait expired. | Chip can read READY on a still-blank document. |
+| `ensure_qt_webengine_ready` in `iris/ui/qt_bootstrap.py` | Before `QApplication`. Default `--disable-gpu-compositing`. Honors `QTWEBENGINE_CHROMIUM_FLAGS` if set. Does not import `QtWebEngineWidgets`. | Missing `AA_ShareOpenGLContexts` before first WebEngine import is 0xC0000409. `--disable-gpu` used to add `kFatalFailure` without stopping the GPU process. `.cursor/rules/qt-webengine-bootstrap.mdc` still says this function pre-imports widgets. Source does not. Black IDE screen is item 19 in `docs/code-review/조치-소요-사항-총괄표.md`, observation still open. |
 | `BrowserMiniPlayer` | `Qt.Tool` because parenting Chromium into translucent `ChatPanel` access-violates. | Keep. Do not reparent the view into chat. |
 
 Not reviewed for this gap: Theia `IrisIdeWindow._view`, ShowUI/Aloha desktop Computer Use, email/calendar workspaces.
@@ -84,12 +85,12 @@ Status is measured from source. `partial` means a path exists but a documented h
 | Capability | Status | Owner | Hole |
 | --- | --- | --- | --- |
 | Open dedicated or IDE-internal surface | done | `BrowserSession._execute_body` `Open`, `MainWindow.show_browser_workspace` | First `ensure_view` is lazy. Init-time construct is forbidden (UI freeze). |
-| Navigate / reload / back / forward | done | `WebEnginePageDriver.navigate` / `reload` / `history_step`, `parse_page_url` | 45s timeout → FAULTED. `javascript:` and `data:` rejected. `loadFinished(False)` accepted if URL left `about:blank`. |
+| Navigate / reload / back / forward | partial | `WebEnginePageDriver.navigate` / `reload` / `history_step`, `parse_page_url` | Navigate 45s timeout → FAULTED. Reload 30s then forces READY. `javascript:`/`data:` rejected. Human URL bar swallows that `ValueError`. `loadFinished(False)` accepted if URL left `about:blank`. |
 | Web / Google / YouTube search | done | `iris/browser/search.py` `search_url`, `Search` | Home is Google. System Chrome search is not this profile. |
 | DOM landmark snapshot | partial | `_bridge.js` snapshot, `BrowserSession._stamp`, `NODE_CAP=40` | Skips nameless nodes. No iframe. No a11y tree. Cap 40. |
 | Click by ref | partial | `Click` → `_resolve_ref` → `__irisBrowser.click` | Agent wire is `ByRef` only. CSS/text/role exist on the driver for YouTube play internals. Stale gen after human tab switch. |
-| Type into ref | partial | `TypeText` | Same ref rules. No secret fill that hides the value from PAGE TEXT. |
-| Scroll | done | `Scroll` → `window.scrollBy` | Document scroll only. No element scroll, no page-into-view for a ref. |
+| Type into ref | partial | `TypeText` → `__irisBrowser.type` | Sets `value`/`textContent` and fires `input`/`change`. Not key events. React-controlled fields can miss. inferred. No secret fill that hides the value from PAGE TEXT. |
+| Scroll | partial | `Scroll` → `window.scrollBy` | Page deltas or `page=up\|down` (800px). `_parse_scroll` has no `ref`. No element scroll. |
 | Extract article/document | done | `Extract` → `__irisBrowser.extract` | innerText only. Skill says do not claim PDF layout. |
 | Media play/pause/resume | partial | `Media`, `__irisBrowser.tryPlay`, `QTest.mouseClick` fallback | Consent/signin/age/captcha returned as `detail`, not bypassed. Speaker output unconfirmed. |
 | Mini player | partial | `MiniPlayer` → `MainWindow.apply_browser_view_host` → `BrowserMiniPlayer` | Command restore in non-companion can leave the view in the Tool window (`.tmp/browser-unify-how/EXPLANATION.md`; verify before treating as current). Explicit mini works. |
@@ -99,7 +100,7 @@ Status is measured from source. `partial` means a path exists but a documented h
 | Popups | partial | `IrisWebEnginePage.createWindow` → `_adopt_popup` | New page is appended. Agent `target_id` after popup unconfirmed. |
 | Downloads / file picker | missing | no `downloadRequested` / file dialog handler under `iris/ui/browser` | unconfirmed Qt default. |
 | Screenshot / CUA | missing | no `grab()` in browser driver | Snapshot teaching forbids claiming figures were read. |
-| iframe | missing | no iframe in `_bridge.js` | Aside a11y claims iframe id. |
+| iframe | missing | `setRunsOnSubFrames(False)`, no iframe in `_bridge.js` | Aside a11y claims iframe id. Same-origin walk would still need the flag flipped. |
 | Password vault | missing | no vault on `BrowserSession` | |
 | Browser episodic memory | missing | chat/wiki memory is a different subsystem | |
 | Render-process recovery | missing | `_on_crash` logs only | |
@@ -149,7 +150,11 @@ Aside's blog argues that dedicated `browser.*` tools fight the model's training 
 | --- | --- | --- | --- |
 | Agent says it cannot browse while the panel is open | Model never emits `iris_invoke`. Local phrase router was removed on purpose. | `_check_intent.py` forbids `intent.py`. 2026-10-22 review: gemma4 answered in text only. | measured contract, runtime depends on the model |
 | Navigate hangs then dies | `WebEnginePageDriver.navigate` 45s `loadFinished` wait | `_driver.py` raises `TimeoutError("navigate timeout")`, session sets FAULTED | measured |
-| Page looks dead after a Chromium crash | `renderProcessTerminated` only logs | `webengine_setup.py` `_on_crash` | measured, no restore |
+| Click continues on a page that is still navigating | `settle_after_act` waits 45s and does not raise | `_driver.py` | measured. Snapshot after the wait can still be the old document. |
+| Page looks dead after a Chromium crash | `renderProcessTerminated` only logs. Does not set FAULTED. | `webengine_setup.py` `_on_crash` | measured, no restore. Chip can stay READY. |
+| Reload looks done while blank | `reload` 30s wait then `_phase = READY` | `_driver.py` `reload` | measured |
+| YouTube play hangs then MCP drops | Stacked waits: navigate 45s + click loop 15s + watch 12s + tryPlay 16s, plus a second navigate | `_play_first_result`, `try_play`, MCP `urlopen` 120s | measured in source. Live 120s race unconfirmed. Worker is not cancelled when the MCP client leaves. |
+| Human `javascript:` URL does nothing | `_on_url_submitted` `except ValueError: return` | `panel.py` | measured. Agent path returns `disallowed url scheme`. |
 | Black or frozen first paint | WebEngine imported after `QApplication`, or GPU flags | `ensure_qt_webengine_ready`, 총괄표 item 19 | measured bootstrap, black screen recurrence unconfirmed |
 | Site blocks the embed | Residual Qt/WebEngine fingerprint after UA strip | `chrome_like_user_agent` | remaining blocks unconfirmed |
 | "I am not logged in" | Different cookie jar from system Chrome | `~/.iris-light/browser-profile` | measured isolation |
@@ -186,11 +191,11 @@ Ranked for the person using Iris chat plus the in-window page. Each item stays o
 
 1. Stamp a new `gen` on human tab switch. `BrowserSession.snapshot()` currently overlays URL and keeps old nodes. `_on_tab_changed` calls it. Clicks then resolve against the previous document. Smallest correctness fix. Files: `iris/browser/session.py` `snapshot`, `iris/ui/browser/panel.py` `_on_tab_changed`.
 2. Packed snapshot. Stop dropping nameless controls. Raise or replace `NODE_CAP`. Walk same-origin iframes if Qt JS can reach them. Keep `g{gen}e{index}`. Files: `iris/browser/_bridge.js`, `iris/browser/types.py` `NODE_CAP`, `PageNode`.
-3. Recreate the page after `renderProcessTerminated`, and surface FAULTED with a retry. Today the log line is the whole recovery. Files: `iris/ui/browser/webengine_setup.py` `_on_crash`, `BrowserSession.execute` FAULTED branch.
+3. Recreate the page after `renderProcessTerminated`, set FAULTED from that slot, and stop `reload` from forcing READY after a 30s miss. Today the log line is the whole recovery. Files: `iris/ui/browser/webengine_setup.py` `_on_crash`, `WebEnginePageDriver.reload`, `BrowserSession.execute` FAULTED branch.
 4. Screenshot fallback when `nodes` is empty or `stale_ref` hits a canvas. Do not add a second click API until this miss is real on YouTube/canvas. Files: `WebEnginePageDriver`, observation packer.
 5. Secret fill that never copies the password into PAGE TEXT, plus a wider `looks_sensitive_browser_act`. Files: `observation.py`, type path in `session.py`.
 
-Later, still in place: Qt download signal, incognito `QWebEngineProfile` flag, origin markdown notes, popup `target_id` after `_adopt_popup`.
+Later, still in place: Qt download signal, incognito `QWebEngineProfile` flag, origin markdown notes, popup `target_id` after `_adopt_popup`, `setRunsOnSubFrames` if iframe snapshot is in scope, cap YouTube play so stacked waits stay under the 120s MCP client.
 
 Do not: fork Chromium, add Asidewright, add `aside repl`, enable Hermes built-in `browser_*`, drive Theia with `BrowserSession`, parent the view into `ChatPanel`.
 
@@ -246,4 +251,4 @@ Modules that import `iris.browser` or `iris.ui.browser` (product, not tests): `i
 
 `.tmp/browser-unify-how/EXPLANATION.md` still describes `ViewHost` as `Literal["panel", "mini"]`. Source is `PanelHost` / `MiniHost`. Treat that note as stale.
 
-Earlier explorers: [IRIS browser stack](ac4a82f3-993a-4d6b-9acb-1eaddac5bdf0), [IRIS Hermes browser](414be7e4-7cbc-4c99-939c-acc34156d197), [IRIS browser instability](bc02a582-59d5-47b4-8832-eae86527973c), [IRIS browser feature status](0232bdad-1f4b-49fc-91e1-951778aca95f). This rewrite re-read session, driver, bridge, panel, webengine_setup, qt_bootstrap, control_surface, and control_bindings.
+Earlier explorers: [IRIS browser stack](ac4a82f3-993a-4d6b-9acb-1eaddac5bdf0), [IRIS Hermes browser](414be7e4-7cbc-4c99-939c-acc34156d197). This rewrite folded [IRIS browser instability](bc02a582-59d5-47b4-8832-eae86527973c) and [IRIS browser feature status](0232bdad-1f4b-49fc-91e1-951778aca95f) after they finished: dual bridge inject, `setRunsOnSubFrames(False)`, reload-forces-READY, renderer death leaving READY, YouTube wait stack vs 120s MCP, human URL-bar swallow, type as value events not keydown. Source re-checked those paths.
