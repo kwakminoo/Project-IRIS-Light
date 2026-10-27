@@ -11,9 +11,12 @@ from PyQt6.QtWidgets import QApplication
 
 _APP = QApplication.instance() or QApplication(sys.argv)
 
+from iris.engine import ExternalGateway  # noqa: E402
 from iris.infrastructure.hermes_client import HermesClient, HermesInferenceTarget  # noqa: E402
 from iris.runtime.chat_run_slot import ChatRunSlot, choose_turn_model  # noqa: E402
 from iris.ui.workers.hermes_workers import HermesChatWorker  # noqa: E402
+
+_EXTERNAL = ExternalGateway(base_url="http://127.0.0.1:8642/v1", api_key="")
 
 
 def _slot() -> ChatRunSlot:
@@ -116,12 +119,12 @@ class ChatWorkerModelTests(TestCase):
             HermesInferenceTarget(model="gemma-b", provider="openrouter", display="B"),
         )
         with (
+            patch("iris.ui.workers.hermes_workers._engine_source", return_value=_EXTERNAL),
             patch("iris.ui.workers.hermes_workers.HermesClient", return_value=client),
             patch("iris.ui.workers.hermes_workers.is_hermes_gateway_running", return_value=True),
         ):
             for target in targets:
                 worker = HermesChatWorker(
-                    "http://127.0.0.1:8642/v1",
                     target.label,
                     [{"role": "user", "content": "hi"}],
                     target=target,

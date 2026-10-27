@@ -201,6 +201,11 @@ class Engine:
         self._lock = Lock()
         self._child: subprocess.Popen[str] | None = None
 
+    @property
+    def source(self) -> EngineSource:
+        """Parsed source for this handle. Same object shared_engine() stored."""
+        return self._source
+
     def ensure_ready(self) -> EngineEnsureResult:
         try:
             with self._lock:

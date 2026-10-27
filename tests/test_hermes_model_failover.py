@@ -15,8 +15,11 @@ from PyQt6.QtWidgets import QApplication
 
 _APP = QApplication.instance() or QApplication(sys.argv)
 
+from iris.engine import ExternalGateway  # noqa: E402
 from iris.ui.workers.chat_attempt import ChatAttempt  # noqa: E402
 from iris.ui.workers.hermes_workers import HermesChatWorker  # noqa: E402
+
+_EXTERNAL = ExternalGateway(base_url="http://127.0.0.1:8642/v1", api_key="")
 
 
 class _FakeHermesClient:
@@ -71,13 +74,13 @@ class HermesFailoverTests(TestCase):
 
     def _run(self, attempts, client, *, gateway_up: bool = True) -> _Collector:
         worker = HermesChatWorker(
-            "http://127.0.0.1:8642/v1",
             attempts[0].label,
             attempts[0].messages,
             attempts=attempts,
         )
         out = _Collector(worker)
         with (
+            patch("iris.ui.workers.hermes_workers._engine_source", return_value=_EXTERNAL),
             patch("iris.ui.workers.hermes_workers.HermesClient", client),
             patch(
                 "iris.ui.workers.hermes_workers.is_hermes_gateway_running",
@@ -229,7 +232,6 @@ class HermesFailoverTests(TestCase):
             "upstream-free": "불려선 안 됨",
         })
         worker = HermesChatWorker(
-            "http://127.0.0.1:8642/v1",
             "paid:big",
             self.msgs,
             attempts=[
@@ -240,6 +242,7 @@ class HermesFailoverTests(TestCase):
         out = _Collector(worker)
         worker.request_cancel()
         with (
+            patch("iris.ui.workers.hermes_workers._engine_source", return_value=_EXTERNAL),
             patch("iris.ui.workers.hermes_workers.HermesClient", client),
             patch(
                 "iris.ui.workers.hermes_workers.is_hermes_gateway_running",
@@ -254,13 +257,13 @@ class HermesFailoverTests(TestCase):
         """attempts 를 안 넘기는 기존 호출부 호환."""
         client = _FakeHermesClient({"upstream-solo": "예전 방식"})
         worker = HermesChatWorker(
-            "http://127.0.0.1:8642/v1",
             "solo-label",
             self.msgs,
             target=_target("upstream-solo", "solo-label"),
         )
         out = _Collector(worker)
         with (
+            patch("iris.ui.workers.hermes_workers._engine_source", return_value=_EXTERNAL),
             patch("iris.ui.workers.hermes_workers.HermesClient", client),
             patch(
                 "iris.ui.workers.hermes_workers.is_hermes_gateway_running",

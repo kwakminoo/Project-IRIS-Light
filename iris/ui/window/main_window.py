@@ -1480,12 +1480,7 @@ class MainWindow(QMainWindow):
             return
         if self._hermes_health_worker is not None and self._hermes_health_worker.isRunning():
             return
-        worker = HermesHealthWorker(
-            self._settings.hermes_base_url,
-            api_key=self._settings.hermes_api_key,
-            command=self._settings.hermes_command,
-            parent=self,
-        )
+        worker = HermesHealthWorker(parent=self)
         self._hermes_health_worker = worker
         worker.notice.connect(self._on_hermes_gateway_notice)
         worker.finished_ok.connect(self._on_hermes_health)
@@ -5044,11 +5039,8 @@ class MainWindow(QMainWindow):
                 return
             self._slot_now().inference_provider = target.provider
             worker = HermesChatWorker(
-                self._settings.hermes_base_url,
                 target.label,
                 messages,
-                api_key=self._settings.hermes_api_key,
-                command=self._settings.hermes_command,
                 target=target,
                 attempts=self._hermes_fallback_attempts(model, messages, target),
                 parent=self,
@@ -10390,6 +10382,12 @@ class MainWindow(QMainWindow):
             wiz.abort_and_close()
         try:
             stop_control_surface(self)
+            try:
+                from iris.engine import shared_engine
+
+                shared_engine().shutdown()
+            except Exception:
+                pass
             self._pinned_monitor.stop()
             try:
                 self._call_monitor.stop()
