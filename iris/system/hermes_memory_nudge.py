@@ -7,6 +7,7 @@ from __future__ import annotations
 
 
 import re
+from pathlib import Path
 
 
 
@@ -100,9 +101,9 @@ def _strip_old_nudge(text: str) -> str:
 
 
 
-def ensure_memory_nudge() -> str:
+def ensure_memory_nudge(home: Path | None = None) -> str:
 
-    mem_dir = hermes_home() / "memories"
+    mem_dir = (Path(home) if home is not None else hermes_home()) / "memories"
 
     mem_dir.mkdir(parents=True, exist_ok=True)
 

@@ -13,6 +13,7 @@ from iris.engine import (
     EngineReady,
     EngineSource,
     ExternalGateway,
+    InternalSidecar,
     StatelessTurn,
     ToolProgress,
     TurnCancelled,
@@ -68,6 +69,17 @@ class HermesHealthWorker(QThread):
                 return
             if isinstance(result, EngineReady) and result.summary:
                 self.notice.emit(result.summary)
+            if isinstance(source, InternalSidecar):
+                try:
+                    report = sync_iris_control(
+                        home=source.home,
+                        reconnect_gateway=False,
+                    )
+                    self.notice.emit(report.summary_line())
+                except Exception as sync_exc:  # noqa: BLE001
+                    self.notice.emit(
+                        f"Iris↔engine control sync skip: {str(sync_exc)[:120]}"
+                    )
             self.finished_ok.emit(True)
         except Exception as e:
             self.failed.emit(str(e))

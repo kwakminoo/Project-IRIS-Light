@@ -84,6 +84,10 @@ class InternalHealthWorkerTests(TestCase):
         with (
             patch("iris.ui.workers.hermes_workers.shared_engine", return_value=engine),
             patch(
+                "iris.ui.workers.hermes_workers.sync_iris_control",
+                return_value=SimpleNamespace(summary_line=lambda: "skip"),
+            ),
+            patch(
                 "iris.ui.workers.hermes_workers.ensure_hermes_gateway_running"
             ) as start_gateway,
             patch("iris.ui.workers.hermes_workers.restart_hermes_gateway") as restart,
@@ -95,15 +99,45 @@ class InternalHealthWorkerTests(TestCase):
         start_gateway.assert_not_called()
         restart.assert_not_called()
 
+    def test_engine_ready_syncs_engine_home_without_reconnecting_gateway(self) -> None:
+        engine = _StubEngine()
+        worker = HermesHealthWorker()
+        out = _Collector(worker)
+        report = SimpleNamespace(summary_line=lambda: "engine sync")
+        with (
+            patch("iris.ui.workers.hermes_workers.shared_engine", return_value=engine),
+            patch(
+                "iris.ui.workers.hermes_workers.sync_iris_control",
+                return_value=report,
+            ) as sync,
+            patch(
+                "iris.ui.workers.hermes_workers.ensure_hermes_gateway_running"
+            ) as start_gateway,
+            patch("iris.ui.workers.hermes_workers.restart_hermes_gateway") as restart,
+        ):
+            worker.run()
+        self.assertEqual(out.ok, [True])
+        self.assertEqual(out.failed, [])
+        sync.assert_called_once()
+        kwargs = sync.call_args.kwargs
+        self.assertEqual(kwargs.get("home"), engine.source.home)
+        self.assertIs(kwargs.get("reconnect_gateway"), False)
+        start_gateway.assert_not_called()
+        restart.assert_not_called()
+
     def test_engine_failed_emits_user_message(self) -> None:
         error = EngineError(EngineErrorCode.NOT_INSTALLED, "missing")
         engine = _StubEngine(ready=EngineFailed(error))
         worker = HermesHealthWorker()
         out = _Collector(worker)
-        with patch("iris.ui.workers.hermes_workers.shared_engine", return_value=engine):
+        with (
+            patch("iris.ui.workers.hermes_workers.shared_engine", return_value=engine),
+            patch("iris.ui.workers.hermes_workers.sync_iris_control") as sync,
+        ):
             worker.run()
         self.assertEqual(out.ok, [])
         self.assertEqual(out.failed, [error.user_message])
+        sync.assert_not_called()
 
 
 class InternalChatWorkerTests(TestCase):

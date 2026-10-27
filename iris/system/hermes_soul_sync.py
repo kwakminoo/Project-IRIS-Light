@@ -19,8 +19,8 @@ def repo_soul_path() -> Path:
     return project_root() / "integrations" / "hermes-soul" / "SOUL.md"
 
 
-def hermes_soul_path() -> Path:
-    return hermes_home() / "SOUL.md"
+def hermes_soul_path(home: Path | None = None) -> Path:
+    return (Path(home) if home is not None else hermes_home()) / "SOUL.md"
 
 
 def load_iris_persona_text() -> str:
@@ -35,7 +35,7 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def ensure_soul() -> str:
+def ensure_soul(home: Path | None = None) -> str:
     src = repo_soul_path()
     if not src.is_file():
         return "soul skip: repo SOUL.md missing"
@@ -44,7 +44,7 @@ def ensure_soul() -> str:
         return "soul skip: repo SOUL.md missing Iris marker"
     desired_norm = desired.strip() + "\n"
 
-    dst = hermes_soul_path()
+    dst = hermes_soul_path(home)
     dst.parent.mkdir(parents=True, exist_ok=True)
     existing = ""
     if dst.is_file():
@@ -52,7 +52,7 @@ def ensure_soul() -> str:
         if _sha(existing.strip() + "\n") == _sha(desired_norm):
             return "soul already current"
 
-    bak = hermes_home() / "SOUL.md.bak-iris"
+    bak = dst.with_name("SOUL.md.bak-iris")
     if existing.strip() and not bak.is_file():
         bak.write_text(existing, encoding="utf-8")
 
