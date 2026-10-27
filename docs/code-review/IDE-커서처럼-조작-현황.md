@@ -28,8 +28,8 @@
 | 파일 생성은 `project.write_file` 성공뿐이다. | 같은 함수 주석. `settle_completion_claim`은 완료 문장으로 쓰지 않는다. |
 | 쓰기 루트는 대화마다 git worktree로 바뀔 수 있다. | `work_root_for`. 첫 대화는 본 체크아웃, 다음 대화는 `*.iris-worktrees/chat-<id>` |
 | 그 루트가 열린 IDE 폴더와 다르면 쓰기도 실행도 거절한다. | `project.write_file` / `project.run`의 workspace 불일치 오류 |
-| IRIS IDE에 쓴 뒤에는 탭 확인 없이 보였다고 답한다. | `via: iris_ide_bridge`, `visible: True` 고정 |
-| 편집기 열기 대기가 실패해도 열린 것으로 반환할 수 있다. | `standalone-bridge.js` `openFile`의 `via: bridge_fallback` |
+| IRIS IDE에 쓴 뒤 탭이 안 열리면 오류다. | `iris_ide_editor_opened`가 `bridge_fallback`/`opened:false`를 거절 (2026-10-27) |
+| 편집기 열기 대기는 하드 오류다. | `openFile`에 `bridge_fallback` 없음 — 타임아웃은 HTTP 400 (2026-10-27) |
 | 실행은 디스크 명령이고 기본으로 터미널을 연다. | `project.run`의 `reveal_terminal` 기본값 True. 정적 HTML만 브라우저 |
 | 탭 드래그는 HTML5 `dragstart`가 막혀 포인터로 흉내 낸다. | `installComposerDragBridge` 주석. Lumino `preventDefault` |
 | 첨부는 커서가 Iris `frameGeometry` 안일 때만 한다. | `_finish_ide_companion_drag` |

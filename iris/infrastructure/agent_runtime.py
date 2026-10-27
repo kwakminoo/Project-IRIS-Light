@@ -539,26 +539,32 @@ def ensure_iris_agent_runtime(
             log.warning("iris agent runtime provider: %s", exc)
 
     if not start_gateway:
-        return IrisAgentRuntimeEnsureResult(
-            ok=True,
-            home=home,
-            gateway_ok=False,
-            messages=messages + ["gateway skipped"],
+        gateway_ok = False
+        messages.append("gateway skipped")
+    else:
+        gateway_ok = bool(
+            ensure_hermes_gateway_running(
+                base_url,
+                api_key=api_key,
+                command=command,
+                wait_sec=wait_sec,
+                should_abort=should_abort,
+                on_progress=on_progress,
+            )
         )
+        messages.append("gateway ok" if gateway_ok else "gateway fail")
 
-    gateway_ok = bool(
-        ensure_hermes_gateway_running(
-            base_url,
-            api_key=api_key,
-            command=command,
-            wait_sec=wait_sec,
-            should_abort=should_abort,
-            on_progress=on_progress,
-        )
-    )
-    messages.append("gateway ok" if gateway_ok else "gateway fail")
+    # Hermes install/gateway가 업스트림 SOUL.md를 심은 뒤 Iris 페르소나로 되돌린다.
+    try:
+        from iris.system.hermes_soul_sync import ensure_soul
+
+        messages.append(ensure_soul())
+    except Exception as exc:  # noqa: BLE001
+        messages.append(f"soul sync skip: {exc}")
+        log.warning("iris agent runtime soul: %s", exc)
+
     return IrisAgentRuntimeEnsureResult(
-        ok=gateway_ok,
+        ok=gateway_ok if start_gateway else True,
         home=home,
         gateway_ok=gateway_ok,
         messages=messages,
@@ -568,8 +574,8 @@ def ensure_iris_agent_runtime(
 def apply_iris_agent_baseline_overlays(agent_root: Path) -> list[str]:
     """install/update 직후 1회. ollama options 가드를 기준선에 흡수한다.
 
-    gateway 핫패스에서는 호출하지 않는다. dead-check 는 업스트림 pin 이
-    이미 고친 경우 verify 메시지만 남긴다.
+    gateway ensure 는 가드 부재 시 ``apply_ollama_options_guard`` 만 직접 호출한다.
+    dead-check 는 업스트림 pin 이 이미 고친 경우 verify 메시지만 남긴다.
     """
     root = Path(agent_root)
     messages: list[str] = []

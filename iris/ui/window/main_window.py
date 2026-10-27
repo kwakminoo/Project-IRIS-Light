@@ -1420,7 +1420,7 @@ class MainWindow(QMainWindow):
         kind = (action or "").strip().lower()
         if kind == "later":
             self._chat.dismiss_hermes_update_prompt(
-                "이 채팅에서는 Hermes 안내를 닫았습니다. 새 채팅을 열거나 Iris를 다시 시작하면 다시 안내합니다."
+                "이 채팅에서는 Iris Agent 안내를 닫았습니다. 새 채팅을 열거나 Iris를 다시 시작하면 다시 안내합니다."
             )
             return
         if kind != "apply":
@@ -1433,7 +1433,7 @@ class MainWindow(QMainWindow):
         from iris.ui.workers.hermes_update_worker import HermesUpdateApplyWorker
 
         self._chat.dismiss_hermes_update_prompt(
-            "Hermes 업데이트를 적용하는 중… 끝나면 gateway를 다시 시작합니다."
+            "Iris Agent 업데이트를 적용하는 중… 끝나면 gateway를 다시 시작합니다."
         )
         worker = HermesUpdateApplyWorker(
             command=self._settings.hermes_command,
@@ -1456,7 +1456,7 @@ class MainWindow(QMainWindow):
         )
         self._chat.append_message_instant(
             "Iris",
-            (message or "Hermes 업데이트가 끝났고 gateway를 재시작했습니다.").strip(),
+            (message or "Iris Agent 업데이트가 끝났고 gateway를 재시작했습니다.").strip(),
         )
 
     def _on_hermes_update_apply_failed(self, message: str) -> None:
@@ -1464,7 +1464,7 @@ class MainWindow(QMainWindow):
         self._refresh_hermes_health()
         self._chat.append_message_instant(
             "Iris",
-            f"Hermes 업데이트 실패: {(message or '알 수 없는 오류').strip()}",
+            f"Iris Agent 업데이트 실패: {(message or '알 수 없는 오류').strip()}",
         )
 
     def _on_app_update_applied(self, message: str) -> None:
@@ -1492,12 +1492,8 @@ class MainWindow(QMainWindow):
             return
         if self._hermes_health_worker is not None and self._hermes_health_worker.isRunning():
             return
-        worker = HermesHealthWorker(
-            self._settings.hermes_base_url,
-            api_key=self._settings.hermes_api_key,
-            command=self._settings.hermes_command,
-            parent=self,
-        )
+        # Credentials come from shared_engine().source (InternalSidecar / ExternalGateway).
+        worker = HermesHealthWorker(parent=self)
         self._hermes_health_worker = worker
         worker.notice.connect(self._on_hermes_gateway_notice)
         worker.finished_ok.connect(self._on_hermes_health)
@@ -1563,7 +1559,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             try:
                 self._live_activity.append_instant_line(
-                    f"Hermes model sync skip: {str(exc)[:120]}"
+                    f"Iris Agent model sync skip: {str(exc)[:120]}"
                 )
             except Exception:
                 pass
@@ -1576,7 +1572,7 @@ class MainWindow(QMainWindow):
             self._remember_blocked_cloud_model(model)
             local = self._first_local_picker_model()
             self._live_activity.append_instant_line(
-                f"Hermes model sync skip (클라우드 미로그인): {model}"
+                f"Iris Agent model sync skip (클라우드 미로그인): {model}"
             )
             if local and local != model and self._chat.select_model_silent(local):
                 self._settings.ollama_model = local
@@ -1597,7 +1593,7 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:  # noqa: BLE001
             self._live_activity.append_instant_line(
-                f"Hermes model sync skip: {str(exc)[:120]}"
+                f"Iris Agent model sync skip: {str(exc)[:120]}"
             )
             return
         worker = HermesModelSyncWorker(
@@ -1615,11 +1611,11 @@ class MainWindow(QMainWindow):
 
     def _on_hermes_model_synced(self) -> None:
         model = self._chat.current_model() or self._settings.ollama_model
-        self._live_activity.append_instant_line(f"Hermes model synced: {model}")
+        self._live_activity.append_instant_line(f"Iris Agent model synced: {model}")
         self._hermes_model_worker = None
 
     def _on_hermes_model_sync_failed(self, err: str) -> None:
-        self._live_activity.append_instant_line(f"Hermes model sync failed: {err[:160]}")
+        self._live_activity.append_instant_line(f"Iris Agent model sync failed: {err[:160]}")
         self._hermes_model_worker = None
 
     def _refresh_models(self, *, probe_cloud: bool = True) -> None:
@@ -2425,12 +2421,12 @@ class MainWindow(QMainWindow):
             status = sync(wanted)
         except Exception as exc:  # noqa: BLE001
             self._live_activity.append_instant_line(
-                f"Hermes 미리 기동 동기화 실패 — {str(exc)[:100]}"
+                f"Iris Agent 미리 기동 동기화 실패 — {str(exc)[:100]}"
             )
             return
         if wanted and not status.registered:
             self._live_activity.append_instant_line(
-                f"Hermes 미리 기동 등록 실패 — {status.detail[:100]}"
+                f"Iris Agent 미리 기동 등록 실패 — {status.detail[:100]}"
             )
 
     def _tick_routines(self) -> None:
@@ -3667,7 +3663,7 @@ class MainWindow(QMainWindow):
         return bool(self._settings.hermes_enabled)
 
     def _backend_label(self) -> str:
-        return "Hermes" if self._use_hermes_backend() else "Ollama"
+        return "Iris Agent" if self._use_hermes_backend() else "Ollama"
 
     def _on_composer_files(self, paths: object) -> None:
         items = [str(p) for p in (paths or []) if str(p).strip()]
@@ -5203,12 +5199,10 @@ class MainWindow(QMainWindow):
                 _fail(str(exc))
                 return
             self._slot_now().inference_provider = target.provider
+            # Credentials live on shared_engine().source; ctor is model+messages only.
             worker = HermesChatWorker(
-                self._settings.hermes_base_url,
-                target.label,
+                target.model or model,
                 messages,
-                api_key=self._settings.hermes_api_key,
-                command=self._settings.hermes_command,
                 target=target,
                 attempts=self._hermes_fallback_attempts(model, messages, target),
                 parent=self,
@@ -5610,7 +5604,7 @@ class MainWindow(QMainWindow):
             from iris.ui.wiki_turn import note_wiki_tool
 
             note_wiki_tool(self, text)
-            self._live_activity.append_instant_line(f"[Hermes tool] {text}")
+            self._live_activity.append_instant_line(f"[IRIS tool] {text}")
             # 도구 왕복 중에도 생성 중 표시를 유지한다.
             if not self._busy:
                 self._busy = True
@@ -8520,7 +8514,7 @@ class MainWindow(QMainWindow):
             "use MCP tools iris_get_state / iris_get_catalog / iris_invoke "
             "(e.g. iris_invoke action=ide.enter_companion). "
             "Do NOT use terminal cursor/code alone — that skips Companion tiling. "
-            "Do NOT use Hermes built-in terminal tool — it is disabled; ALWAYS iris_invoke project.run "
+            "Do NOT use Iris Agent built-in terminal tool — it is disabled; ALWAYS iris_invoke project.run "
             "so commands run in the bound IDE integrated terminal (IRIS IDE or Cursor). "
             "Do NOT invent that Iris has no IDE — Iris controls the preferred IDE via MCP. "
             "Writing code: project.write_file with open=true and rel_path set to the filename the user asked for. "
@@ -8530,7 +8524,7 @@ class MainWindow(QMainWindow):
             "Diagrams: call diagram.render only when the user asks to see structure, flow, sequence, or architecture, "
             "or when explaining or summarizing a change that spans multiple modules. One call per turn. "
             "Do not call it for a single-file edit, a bugfix, or a run result. "
-            "Do not use the Hermes architecture-diagram skill or write a standalone HTML diagram file — "
+            "Do not use a separate architecture-diagram skill or write a standalone HTML diagram file — "
             "diagram.render shows the viewer inside the Iris chat column. "
             "When you use ANY web search/browse/fetch tool, the final answer MUST include a "
             "Sources section with markdown links [title](https://url) for each page you relied on. "
@@ -8545,7 +8539,7 @@ class MainWindow(QMainWindow):
             "params 는 스킬마다 다르다 (예: {\"text\": \"내일 9시 회의\"}). 사용자가 값을 말하지 않았으면 "
             "녹화 때 값(example)으로 실행하지 말고 무엇을 넣을지 먼저 물어라. "
             "learning.run 은 마우스·키보드를 실제로 움직이니 실행 전에 무엇을 할지 한 줄로 알려라. "
-            "위키에 저장: Hermes가 켜져 있으면 문장 키워드로 가로채지 않는다. "
+            "위키에 저장: 아이리스 에이전트가 켜져 있으면 문장 키워드로 가로채지 않는다. "
             "PDF·URL·파일 한 건은 wiki.import_content (source). "
             "여러 PDF·파일은 wiki.import_pages (sources 에 실제 경로) 한 번. "
             "첨부가 있으면 wiki.write_user_note 로 그 본문을 쓰지 말 것. "
@@ -8565,7 +8559,7 @@ class MainWindow(QMainWindow):
             "한글(HWP)은 아직 읽지 못한다. "
             "이 읽기는 위키 저장과 별개다. "
             "코드·메모·제출용 PDF는 note.export_pdf (content 및/또는 sources, optional path) 만 쓴다. "
-            "헤르메스 켜짐과 무관하다. 상대 경로는 열린 프로젝트. .pdf 를 project.write_file 로 쓰지 말 것. "
+            "아이리스 에이전트 켜짐과 무관하다. 상대 경로는 열린 프로젝트. .pdf 를 project.write_file 로 쓰지 말 것. "
             "pdf_create.py·PyMuPDF·reportlab 을 직접 돌리지 말 것. ok와 파일이 없으면 저장했다고 말하지 말 것. "
             "GitHub MCP 또는 Skill: extension.install_github (url, kind=auto|mcp|skill, scope=project|iris). "
             "IDE에서 연 프로젝트는 scope=project. 아이리스 본체는 기본 화면에서만 scope=iris. "
@@ -9610,7 +9604,7 @@ class MainWindow(QMainWindow):
             self._chat.append_message_instant("Iris", "IDE 화면 로드에 실패했습니다.")
             self._live_activity.append_instant_line("IDE 화면 로드 실패 (QWebEngine)")
             win = self._ensure_iris_ide_window()
-            win.show_loading("IDE 화면 로드 실패 — WebEngine/Theia URL을 확인하세요")
+            win.show_loading("IDE 화면 로드 실패 — WebEngine URL을 확인하세요")
             QTimer.singleShot(2500, win.show_welcome)
             return
         source = getattr(self, "_pending_iris_ide_source", "icon")
@@ -9632,7 +9626,7 @@ class MainWindow(QMainWindow):
             source=source,
             owned=True,
         )
-        self._live_activity.append_instant_line("IDE Companion: IRIS IDE (Theia)")
+        self._live_activity.append_instant_line("IDE Companion: IRIS IDE")
 
     def _open_iris_ide_folder(
         self, folder: str, *, source: str = "chat", from_hero: bool = False

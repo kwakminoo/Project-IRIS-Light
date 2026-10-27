@@ -288,7 +288,12 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
         } else {
             throw new Error(`file not found: ${rel}`);
         }
+        const isPdf = uri.path.toString().toLowerCase().endsWith('.pdf');
         await open(this.openerService, uri, { mode: 'activate' });
+        if (isPdf) {
+            // IrisPdfOpenHandler owns *.pdf — Monaco binary tabs must not follow.
+            return { path: uri.toString(), opened: true, viewer: 'iris.pdf' };
+        }
         const line = Math.max(1, parseInt(String(args.line || 1), 10) || 1);
         const column = Math.max(1, parseInt(String(args.column || 1), 10) || 1);
         const editor = await this.editorManager.open(uri, { mode: 'activate' });
@@ -298,7 +303,7 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
             editor.editor.cursor = pos as never;
             editor.editor.revealPosition(pos as never);
         }
-        return { path: uri.toString(), opened: true, line, column };
+        return { path: uri.toString(), opened: true, viewer: 'monaco', line, column };
     }
 
     protected async createTerminal(args: Record<string, unknown>): Promise<Record<string, unknown>> {

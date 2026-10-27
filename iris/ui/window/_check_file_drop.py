@@ -81,6 +81,9 @@ def main() -> None:
     assert "SHELL_TABBAR_CONTEXT_MENU" in contrib, "탭 첨부 메뉴가 사라짐"
     assert "chat.drag_start" in contrib, "companion drag_start 우회가 사라짐"
     assert "chat.drag_end" in contrib, "companion drag_end 우회가 사라짐"
+    assert "seedCompanionDragSync" in contrib, "sync drag_start seed가 사라짐"
+    assert "xhr.open(" in contrib and ", false)" in contrib, "sync XHR(open async=false) seed가 사라짐"
+    assert "finishCompanionDrag" in contrib and "pointercancel" in contrib
     assert "NAVIGATOR_CONTEXT_MENU" in contrib, "탐색기 첨부 메뉴가 사라짐"
     assert "onTabPointerDown" in contrib, "탭 pointer 제스처가 사라짐"
     assert "onTabHtml5DragStart" in contrib, "탭 HTML5 copy 드래그가 사라짐"
@@ -91,6 +94,7 @@ def main() -> None:
     check_chat_attach_action()
     check_chat_drag_actions()
     check_finish_keeps_pending_outside()
+    check_companion_drag_race()
     check_win_shell_drop_arm()
     check_explorer_overlay_drop()
     check_ole_explorer_drop()
@@ -110,6 +114,9 @@ def main() -> None:
         assert "iris.ide.attachToChat" in text, f"{label} bundle missing attach-to-chat"
         assert "chat.drag_start" in text, f"{label} bundle missing chat.drag_start"
         assert "chat.drag_end" in text, f"{label} bundle missing chat.drag_end"
+        assert "seedCompanionDragSync" in text or ",!1)" in text or ", false)" in text, (
+            f"{label} bundle missing sync drag seed"
+        )
         assert "getDraggedEditorUris" in text or "theia-editor-dnd" in text, f"{label} missing editor dnd MIME"
     print("file_drop_menu ok")
     app.quit()
@@ -194,6 +201,39 @@ def check_finish_keeps_pending_outside() -> None:
         assert bound_finish() == [r"C:\proj\tab.py"]
     assert inst._pending_ide_drag == []
     inst._attach_os_drop_paths.assert_called_with([r"C:\proj\tab.py"])
+
+
+def check_companion_drag_race() -> None:
+    """빠른 드롭 레이스 — pending 선도착 + 늦은 drag_end paths 둘 다 첨부."""
+    from unittest.mock import MagicMock, patch
+
+    from PyQt6.QtCore import QPoint, QRect
+
+    from iris.ui.window.main_window import MainWindow
+
+    inst = MagicMock(spec=MainWindow)
+    inst._pending_ide_drag = []
+    inst._attach_os_drop_paths = MagicMock(return_value=True)
+    inst.frameGeometry = MagicMock(return_value=QRect(100, 100, 400, 800))
+
+    bound_begin = MainWindow._begin_ide_companion_drag.__get__(inst, MainWindow)
+    bound_finish = MainWindow._finish_ide_companion_drag.__get__(inst, MainWindow)
+
+    # 1) sync seed가 pending을 먼저 채운 뒤, Iris 위 release(경로 없이)로 첨부
+    with patch("PyQt6.QtWidgets.QApplication.instance", return_value=None):
+        bound_begin([r"C:\proj\race.py"])
+    assert inst._pending_ide_drag == [r"C:\proj\race.py"], "pending 선도착 실패"
+    with patch("PyQt6.QtGui.QCursor.pos", return_value=QPoint(150, 200)):
+        assert bound_finish() == [r"C:\proj\race.py"]
+    assert inst._pending_ide_drag == []
+    inst._attach_os_drop_paths.assert_called_with([r"C:\proj\race.py"])
+
+    # 2) drag_start HTTP가 늦어 pending이 비어 있어도 drag_end paths로 첨부
+    inst._pending_ide_drag = []
+    inst._attach_os_drop_paths.reset_mock()
+    with patch("PyQt6.QtGui.QCursor.pos", return_value=QPoint(150, 200)):
+        assert bound_finish([r"C:\proj\late.py"]) == [r"C:\proj\late.py"]
+    inst._attach_os_drop_paths.assert_called_with([r"C:\proj\late.py"])
 
 
 def check_ole_explorer_drop() -> None:

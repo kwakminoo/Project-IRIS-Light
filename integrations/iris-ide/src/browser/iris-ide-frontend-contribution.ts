@@ -185,7 +185,13 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         document.addEventListener('pointermove', (ev: PointerEvent) => this.onTabPointerMove(ev), true);
         document.addEventListener('dragstart', (ev: DragEvent) => this.onTabHtml5DragStart(ev), true);
         document.addEventListener('pointerup', (ev: PointerEvent) => this.onTabPointerUp(ev), true);
-        document.addEventListener('pointercancel', () => { this.tabDrag = null; }, true);
+        document.addEventListener('pointercancel', () => {
+            const drag = this.tabDrag;
+            this.tabDrag = null;
+            if (drag?.armed) {
+                void this.finishCompanionDrag();
+            }
+        }, true);
     }
 
     protected patchDataTransferForCompanionDrag(): void {
@@ -268,8 +274,29 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
             return;
         }
         this.companionDragPaths = paths;
-        // await 금지 — Iris pending을 최대한 빨리 심어 Copy 커서 수락에 맞춤
-        void this.askIris('chat.drag_start', { paths });
+        // Sync seed so Iris _pending_ide_drag exists before a fast pointerup.
+        this.seedCompanionDragSync(paths);
+    }
+
+    /** Fire-and-forget fetch is too late for quick tab drops; sync XHR seeds pending first. */
+    protected seedCompanionDragSync(paths: string[]): void {
+        this.resolveControl();
+        if (!paths.length) {
+            return;
+        }
+        if (!this.controlPort || !this.controlToken) {
+            void this.askIris('chat.drag_start', { paths });
+            return;
+        }
+        try {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `http://127.0.0.1:${this.controlPort}/v1/invoke`, false);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.setRequestHeader('Authorization', `Bearer ${this.controlToken}`);
+            xhr.send(JSON.stringify({ action: 'chat.drag_start', args: { paths } }));
+        } catch {
+            void this.askIris('chat.drag_start', { paths });
+        }
     }
 
     protected async finishCompanionDrag(): Promise<void> {

@@ -214,20 +214,12 @@ export class IrisIdeBridgeServer {
             case 'getDiagnostics':
                 throw new Error('diagnostics are reported by the standalone bridge frontend');
             case 'openFile':
-            case 'gotoFile': {
-                const rel = String(args.path || params.get('path') || '');
-                const abs = this.resolvePath(rel);
-                if (!fs.existsSync(abs)) {
-                    throw new Error(`file not found: ${rel}`);
-                }
-                this.editorState = {
-                    uri: abs,
-                    path: rel,
-                    line: parseInt(String(args.line || 1), 10) || 1,
-                    column: parseInt(String(args.column || 1), 10) || 1,
-                };
-                return { path: abs, opened: true };
-            }
+            case 'gotoFile':
+                // Honesty: do not claim opened:true without the frontend poller.
+                // Product path uses standalone-bridge.js (IRIS_IDE_STANDALONE_BRIDGE=1).
+                throw new Error(
+                    `${cmd} must go through standalone-bridge frontend queue (IRIS IDE editor)`
+                );
             case 'saveFile':
             case 'saveAll':
                 throw new Error('save goes through the standalone bridge frontend');
@@ -268,7 +260,7 @@ export class IrisIdeBridgeServer {
                 const command = String(args.command || args.cmd || 'echo IRIS_IDE_TEST');
                 const cwd = args.cwd ? this.resolvePath(String(args.cwd)) : this.workspaceRoot;
                 throw new Error(
-                    'runTerminalCommand must go through standalone-bridge frontend queue (Theia integrated terminal)',
+                    'runTerminalCommand must go through standalone-bridge frontend queue (IRIS IDE integrated terminal)',
                 );
             }
             case 'getTerminalState':
@@ -287,6 +279,7 @@ export class IrisIdeBridgeServer {
                         cwd: this.workspaceRoot,
                         encoding: 'utf-8',
                         timeout: 15000,
+                        windowsHide: true,
                     });
                     return { porcelain: out };
                 } catch {
@@ -298,7 +291,12 @@ export class IrisIdeBridgeServer {
                     const { execSync } = require('child_process') as typeof import('child_process');
                     const rel = String(args.path || '');
                     const cmd = rel ? `git diff -- ${rel}` : 'git diff';
-                    const out = execSync(cmd, { cwd: this.workspaceRoot, encoding: 'utf-8', timeout: 15000 });
+                    const out = execSync(cmd, {
+                        cwd: this.workspaceRoot,
+                        encoding: 'utf-8',
+                        timeout: 15000,
+                        windowsHide: true,
+                    });
                     return { diff: out };
                 } catch {
                     return { diff: '' };

@@ -1,8 +1,9 @@
 """Hermes SOUL.md에 Iris 페르소나를 동기화.
 
-Hermes는 HERMES_HOME/SOUL.md를 system prompt identity(slot #1)로 쓴다.
-레포 `integrations/hermes-soul/SOUL.md`를 원본으로 두고, Iris↔Hermes sync 때 반영한다.
-ponytail: 내용이 같으면 쓰기 생략. 덮어쓰기 전 SOUL.md.bak-iris 1회 백업.
+Hermes는 제품 홈(iris_agent_home)/SOUL.md를 system prompt identity(slot #1)로 쓴다.
+레포 `integrations/hermes-soul/SOUL.md`를 원본으로 두고, sync·runtime ensure 때 반영한다.
+ponytail: 마커·내용이 같으면 쓰기 생략. 덮어쓰기 전 SOUL.md.bak-iris 1회 백업.
+천장: Hermes install이 업스트림 SOUL을 다시 심으면 runtime ensure가 재적용.
 """
 
 from __future__ import annotations
@@ -10,7 +11,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from iris.system.hermes_iris_control_sync import hermes_home, project_root
+from iris.infrastructure.agent_runtime import iris_agent_home
+from iris.system.hermes_iris_control_sync import project_root
 
 _MARKER = "# IRIS Light Persona"
 
@@ -20,7 +22,8 @@ def repo_soul_path() -> Path:
 
 
 def hermes_soul_path() -> Path:
-    return hermes_home() / "SOUL.md"
+    """제품 홈 SOUL만. 레거시 LOCALAPPDATA/hermes 는 보지 않는다."""
+    return iris_agent_home() / "SOUL.md"
 
 
 def load_iris_persona_text() -> str:
@@ -49,10 +52,11 @@ def ensure_soul() -> str:
     existing = ""
     if dst.is_file():
         existing = dst.read_text(encoding="utf-8", errors="replace")
-        if _sha(existing.strip() + "\n") == _sha(desired_norm):
+        # 마커 없으면 업스트림 Hermes SOUL로 보고 강제 갱신 (SHA만으로 current 오인 금지).
+        if _MARKER in existing and _sha(existing.strip() + "\n") == _sha(desired_norm):
             return "soul already current"
 
-    bak = hermes_home() / "SOUL.md.bak-iris"
+    bak = iris_agent_home() / "SOUL.md.bak-iris"
     if existing.strip() and not bak.is_file():
         bak.write_text(existing, encoding="utf-8")
 
@@ -65,4 +69,9 @@ if __name__ == "__main__":
     text = load_iris_persona_text()
     assert _MARKER in text
     assert "아이리스" in text
-    print("ok", len(text), "chars")
+    product = hermes_soul_path().read_text(encoding="utf-8", errors="replace")
+    assert _MARKER in product
+    assert "아이리스" in product
+    assert "Hermes Agent" not in product
+    assert "Nous Research" not in product
+    print("ok", hermes_soul_path(), len(product), "chars")

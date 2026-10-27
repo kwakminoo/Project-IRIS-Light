@@ -7,6 +7,7 @@ ponytail: PyYAML로 mcp_servers만 upsert. 최초 변경 전 config.yaml.bak-iri
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -131,6 +132,7 @@ class SyncReport:
     skills_copied: list[str] = field(default_factory=list)
     skills_ok: list[str] = field(default_factory=list)
     skills_missing: list[str] = field(default_factory=list)
+    skills_stale: list[str] = field(default_factory=list)
     messages: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     needs_gateway_reload: bool = False
@@ -568,8 +570,36 @@ def ensure_hermes_disabled_terminal() -> tuple[bool, str]:
     return True, "hermes disabled_toolsets: terminal, browser (IDE terminal via project.run; Iris QWebEngine for pages)"
 
 
+def _skill_md_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def skills_content_stale(repo: Path | None = None) -> list[str]:
+    """SKILL.md bytes/hash differ from repo (presence alone is not enough)."""
+    repo = repo or project_root()
+    src_root = repo / "integrations" / "hermes-skills" / "iris-control"
+    dst_root = hermes_skills_iris_control_dir()
+    stale: list[str] = []
+    if not src_root.is_dir():
+        return list(SKILL_NAMES)
+    for name in SKILL_NAMES:
+        src_md = src_root / name / "SKILL.md"
+        dst_md = dst_root / name / "SKILL.md"
+        if not src_md.is_file():
+            continue
+        if not dst_md.is_file():
+            stale.append(name)
+            continue
+        try:
+            if _skill_md_sha256(src_md) != _skill_md_sha256(dst_md):
+                stale.append(name)
+        except OSError:
+            stale.append(name)
+    return stale
+
+
 def ensure_skills_installed(repo: Path | None = None) -> tuple[list[str], list[str], list[str]]:
-    """Returns (copied, ok, missing)."""
+    """Returns (copied, ok, missing). Force re-copy when SKILL.md hash differs."""
     repo = repo or project_root()
     src_root = repo / "integrations" / "hermes-skills" / "iris-control"
     dst_root = hermes_skills_iris_control_dir()
@@ -592,7 +622,8 @@ def ensure_skills_installed(repo: Path | None = None) -> tuple[list[str], list[s
         dst_md = dst / "SKILL.md"
         if dst_md.is_file():
             try:
-                if dst_md.read_bytes() == skill_md.read_bytes():
+                # Hash compare — presence-only "skills_ok" used to hide MCP-only drift.
+                if _skill_md_sha256(dst_md) == _skill_md_sha256(skill_md):
                     need = False
             except OSError:
                 need = True
@@ -800,6 +831,13 @@ def verify_install(repo: Path | None = None) -> SyncReport:
             report.ok = False
     if report.skills_missing:
         report.errors.append("skills missing: " + ", ".join(report.skills_missing))
+    stale = skills_content_stale(repo)
+    report.skills_stale = stale
+    if stale:
+        report.ok = False
+        report.errors.append("skills stale (hash != repo): " + ", ".join(stale))
+        # Presence without matching bytes must not count as ok.
+        report.skills_ok = [n for n in report.skills_ok if n not in stale]
     return report
 
 
@@ -895,6 +933,7 @@ def sync_iris_control(
     report.mobile_mcp_installed = verified.mobile_mcp_installed
     report.skills_ok = verified.skills_ok
     report.skills_missing = verified.skills_missing
+    report.skills_stale = verified.skills_stale
     for m in verified.messages:
         if m not in report.messages:
             report.messages.append(m)

@@ -63,5 +63,5 @@ class ExtensionInstallWorker(QThread):
         except Exception as exc:  # noqa: BLE001
             return f"설정은 저장됐지만 gateway 재시작에 실패했습니다: {exc}"[:300]
         if ok:
-            return "Hermes gateway를 재시작했습니다. 이제 이 MCP 도구를 사용할 수 있습니다."
+            return "Iris Agent gateway를 재시작했습니다. 이제 이 MCP 도구를 사용할 수 있습니다."
         return "설정은 저장됐지만 gateway 재시작에 실패했습니다. Hermes를 다시 켜면 적용됩니다."

@@ -149,11 +149,11 @@ CORE_STEP_LABELS: dict[str, str] = {
     "mcp_venv": "MCP용 Python 가상환경",
     "ollama_install": "Ollama 설치·기동",
     "ollama_model": "추론 모델 준비",
-    "hermes_install": "Hermes 설치",
-    "hermes_env": "Hermes API 키·서버 설정",
-    "hermes_provider": "Hermes ↔ Ollama 연결",
+    "hermes_install": "Iris Agent 설치",
+    "hermes_env": "Iris Agent API 키·서버 설정",
+    "hermes_provider": "Iris Agent ↔ Ollama 연결",
     "iris_control_sync": "iris-control MCP·스킬",
-    "hermes_gateway": "Hermes gateway 기동",
+    "hermes_gateway": "Iris Agent gateway 기동",
     "core_smoke": "Core 연결 검증",
 }
 
@@ -457,7 +457,7 @@ def mark_core_ready_if_healthy(
     - Ollama 응답 + 가용 추론(로컬 모델 또는 클라우드 로그인) + Hermes /health
     - MCP stdio·채팅 401은 포함하지 않음 (느림) — 그건 verify_core(full)
 
-    - Ollama/Hermes 실행 파일이 없으면 False (위저드).
+    - Ollama/Iris Agent 실행 파일이 없으면 False (위저드).
     - core_ready가 이미 True면 헬스 실패로 플래그를 지우지 않고, 서비스 기동만
       시도한 뒤 True (재부팅 직후 일시 미응답은 일반 부팅에서 복구).
     - core_ready가 아니면 기동 시도 후 verify_core_quick 통과 시에만 core_ready 기록.
@@ -718,7 +718,7 @@ def _ollama_provider_model(
 
     setdefault를 쓰면 예전 provider(openai 등)의 base_url/model이 그대로 남는다 —
     항상 명시적으로 대입해 stale 값이 남지 않게 한다.
-    ollama_num_ctx 는 Hermes 64K 하한 이상(이미 더 크면 유지).
+    ollama_num_ctx 는 Iris Agent 64K 하한 이상(이미 더 크면 유지).
     클라우드 모델인데 미로그인이면 (force_local_if_unsigned) default를 비워
     호출부가 로컬로 채우게 한다 — 여기서는 이름만 검사.
     """
@@ -1109,7 +1109,7 @@ class SetupProtocol:
         *,
         timeout_sec: float = 1.0,
     ) -> dict[str, Any]:
-        """detect_local 결과에 Ollama/Hermes 실행 여부를 짧은 타임아웃으로 채운다."""
+        """detect_local 결과에 Ollama/Iris Agent 실행 여부를 짧은 타임아웃으로 채운다."""
         out = dict(snap)
         out["ollama_running"] = is_ollama_running(
             self.ollama_base_url,
@@ -1208,14 +1208,14 @@ class SetupProtocol:
         }
 
     def verify_core_quick(self) -> tuple[bool, str]:
-        """빠른 헬스체크 — Ollama 응답·min_model 존재·Hermes gateway만 본다.
+        """빠른 헬스체크 — Ollama 응답·min_model 존재·Iris Agent gateway만 본다.
 
         MCP stdio 핸드셰이크(최대 수십 초, 프로세스 스폰)는 느리므로 뺀다.
         앱 시작 시 core_ready 여부를 판단할 때처럼 자주 호출되는 경로에서 쓴다.
         Ready(core_ready) 기준 = 이 quick 수준.
         """
         if self.simulate or self.dry_run:
-            detail = "Ollama·Hermes 정상 (quick)"
+            detail = "Ollama·Iris Agent 정상 (quick)"
             self._record_last_verify("quick", True, detail)
             return True, detail
         info = self.inspect_inference()
@@ -1253,7 +1253,7 @@ class SetupProtocol:
                 )
             self._record_last_verify("quick", False, detail)
             return False, detail
-        detail = "Ollama·Hermes 정상"
+        detail = "Ollama·Iris Agent 정상"
         self._record_last_verify("quick", True, detail)
         return True, detail
 
@@ -1264,7 +1264,7 @@ class SetupProtocol:
         core_ready 여부와 무관하게 채팅이 실패할 수 있다.
         """
         if self.simulate or self.dry_run:
-            detail = "Ollama·Hermes·MCP 정상"
+            detail = "Ollama·Iris Agent·MCP 정상"
             self._record_last_verify("full", True, detail)
             return True, detail
         info = self.inspect_inference()
@@ -1309,7 +1309,7 @@ class SetupProtocol:
                     )
             else:
                 health_msg = (
-                    f"[HEALTH] Hermes gateway /health 실패 ({health.code})"
+                    f"[HEALTH] Iris Agent gateway /health 실패 ({health.code})"
                 )
             detail = health_msg + "\n" + report_gw
             self._record_last_verify("full", False, detail)
@@ -1341,7 +1341,7 @@ class SetupProtocol:
         auth = HermesClient(self.hermes_base_url, api_key=key).probe_chat_auth()
         if auth == "unauthorized":
             detail = (
-                "[API_KEY] Hermes 게이트웨이 채팅 401 Unauthorized "
+                "[API_KEY] Iris Agent 게이트웨이 채팅 401 Unauthorized "
                 "(gateway /health 생존과는 별개).\n"
                 "API 키가 게이트웨이(.env API_SERVER_KEY)와 다릅니다.\n"
                 + report
@@ -1349,7 +1349,7 @@ class SetupProtocol:
             self._record_last_verify("full", False, detail)
             return False, detail
         if auth == "unreachable":
-            detail = "Hermes 채팅 엔드포인트에 연결할 수 없습니다\n" + report
+            detail = "Iris Agent 채팅 엔드포인트에 연결할 수 없습니다\n" + report
             self._record_last_verify("full", False, detail)
             return False, detail
         mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self.hermes_command)
@@ -1358,7 +1358,7 @@ class SetupProtocol:
             self._record_last_verify("full", False, detail)
             return False, detail
         kind = "로컬 모델" if info.get("has_local") else "클라우드 로그인"
-        detail = f"Ollama·Hermes·MCP 정상 ({kind})\n{report}"
+        detail = f"Ollama·Iris Agent·MCP 정상 ({kind})\n{report}"
         self._record_last_verify("full", True, detail)
         return True, detail
 
@@ -1463,7 +1463,7 @@ class SetupProtocol:
                 "「열기」는 참고용입니다. 「완료했어요」를 누르면 다음으로 갑니다.",
             ),
             "hermes_install": (
-                "[데모] Hermes 설치 확인이 필요합니다. 실제로는 설치하지 않습니다.",
+                "[데모] Iris Agent 설치 확인이 필요합니다. 실제로는 설치하지 않습니다.",
                 HERMES_INSTALL_URL,
                 "데모이므로 「완료했어요」만 누르면 됩니다.",
             ),
@@ -1510,7 +1510,7 @@ class SetupProtocol:
                     "mcp_venv": "[데모] .venv 준비됨 (실제 pip 없음)",
                     "ollama_install": "[데모] Ollama 연결됨",
                     "ollama_model": f"[데모] 모델 {self.min_model} 준비됨",
-                    "hermes_install": "[데모] Hermes 실행 파일 확인",
+                    "hermes_install": "[데모] Iris Agent 실행 파일 확인",
                     "hermes_env": "[데모] API 키 동기화됨 (파일 미기록)",
                     "hermes_provider": "[데모] provider 설정됨 (config 미변경)",
                     "iris_control_sync": "[데모] iris-control MCP·스킬 OK",
@@ -1541,7 +1541,7 @@ class SetupProtocol:
                 "UAC가 뜨면 허용하세요. 수동 설치 시 「열기」 후 「완료했어요」.",
             ),
             "hermes_install": (
-                "Hermes Agent가 없습니다. 「설치」를 누르면 공식 설치 스크립트를 실행합니다.",
+                "Iris Agent가 없습니다. 「설치」를 누르면 공식 설치 스크립트를 실행합니다.",
                 HERMES_INSTALL_URL,
                 "설치에 수 분이 걸릴 수 있습니다. 수동이면 「열기」 후 「완료했어요」.",
             ),
@@ -1552,9 +1552,9 @@ class SetupProtocol:
             "ollama_model": f"{self.min_model} 준비됨",
             "hermes_env": "API_SERVER_ENABLED·키 동기화됨",
             "hermes_provider": "provider → Ollama(custom) 설정",
-            "iris_control_sync": "Iris↔Hermes: MCP iris-control ok, skills 6/6",
+            "iris_control_sync": "Iris↔Agent: MCP iris-control ok, skills 6/6",
             "hermes_gateway": "iris-control tools ok (iris_get_state/catalog/invoke)",
-            "core_smoke": "Ollama·Hermes·MCP 정상",
+            "core_smoke": "Ollama·Iris Agent·MCP 정상",
         }
         for step_id in CORE_STEP_IDS:
             label = CORE_STEP_LABELS.get(step_id, step_id)
@@ -1599,7 +1599,7 @@ class SetupProtocol:
                             "done",
                             "공식 스크립트로 Ollama 설치됨"
                             if step_id == "ollama_install"
-                            else "Hermes 설치됨",
+                            else "Iris Agent 설치됨",
                         )
                         self._emit(on_progress, done)
                         break
@@ -1846,9 +1846,9 @@ class SetupProtocol:
             ),
             "iris_ide": (
                 OPTIONAL_LABELS["iris_ide"],
-                "IRIS IDE(Theia)가 없습니다. 「설치」로 Node·Theia를 준비하거나 「나중에」.",
+                "IRIS IDE가 없습니다. 「설치」로 Node·IDE를 준비하거나 「나중에」.",
                 "",
-                "Eclipse Theia 1.74 · Node 22+. 용량이 큽니다.",
+                "IRIS IDE · Node 22+. 용량이 큽니다.",
                 True,
             ),
             "external_api": (
@@ -1914,7 +1914,7 @@ class SetupProtocol:
                 "voice_full": "Full TTS 준비됨 (CUDA·qwen)",
                 "learning": "Aloha runtime ready",
                 "emulator": "실행 가능 (AVD IrisLight_Pixel)",
-                "mobile_mcp": "Node 확인됨 (Hermes MCP에 등록됨)",
+                "mobile_mcp": "Node 확인됨 (Iris Agent MCP에 등록됨)",
                 "iris_ide": "IRIS IDE runtime ready",
             }.get(which, f"{label} 확인됨")
             done = SetupStepResult(which, "done", done_msg, label=label)
@@ -1943,14 +1943,14 @@ class SetupProtocol:
                     "ollama_install", "done", "공식 스크립트로 Ollama 설치됨"
                 )
             if step_id == "hermes_install":
-                return self._record_step("hermes_install", "done", "Hermes 설치됨")
+                return self._record_step("hermes_install", "done", "Iris Agent 설치됨")
             label = OPTIONAL_LABELS.get(step_id, step_id)
             done_msg = {
                 "emulator": "실행 가능 (AVD IrisLight_Pixel)",
                 "voice": "STT 음성 런타임 준비됨",
                 "voice_full": "Full TTS 준비됨 (CUDA·qwen)",
                 "learning": "Aloha runtime ready",
-                "mobile_mcp": "Node 확인됨 (Hermes MCP에 등록됨)",
+                "mobile_mcp": "Node 확인됨 (Iris Agent MCP에 등록됨)",
                 "iris_ide": "IRIS IDE runtime ready",
                 "ollama_model": f"{DEFAULT_MIN_MODEL} 준비됨",
                 "ollama_cloud": f"{DEFAULT_MIN_MODEL} 준비됨",
@@ -2421,7 +2421,7 @@ class SetupProtocol:
         ok, detail = probe_hermes_runtime(command=self.hermes_command)
         if ok:
             return self._record_step(
-                "hermes_install", "done", f"Hermes 사용 가능 ({detail})"
+                "hermes_install", "done", f"Iris Agent 사용 가능 ({detail})"
             )
         broken = bool(hermes_executable(self.hermes_command)) or (
             hermes_home() / "hermes-agent"
@@ -2431,7 +2431,7 @@ class SetupProtocol:
                 step_id="hermes_install",
                 status="needs_user",
                 message=(
-                    "Hermes 실행 파일은 있으나 런타임이 깨져 있습니다 "
+                    "Iris Agent 실행 파일은 있으나 런타임이 깨져 있습니다 "
                     f"({detail[:160]}). 자동으로 재설치합니다."
                 ),
                 action_url=HERMES_INSTALL_URL,
@@ -2442,7 +2442,7 @@ class SetupProtocol:
         return SetupStepResult(
             step_id="hermes_install",
             status="needs_user",
-            message="Hermes Agent가 없습니다. 공식 설치 스크립트를 자동 실행합니다.",
+            message="Iris Agent가 없습니다. 공식 설치 스크립트를 자동 실행합니다.",
             action_url=HERMES_INSTALL_URL,
             action_hint="설치에 수 분이 걸릴 수 있습니다. 실패 시에만 수동 「열기」/「완료했어요」가 필요합니다.",
             label=CORE_STEP_LABELS["hermes_install"],
@@ -2552,7 +2552,7 @@ class SetupProtocol:
             return self._hermes_cancelled()
         self._hermes_prefer_bypass = True
         self._emit_stream(
-            "시스템 Python으로 Hermes 우회 설치 (staging)…",
+            "시스템 Python으로 Iris Agent 우회 설치 (staging)…",
             None,
             replace=False,
         )
@@ -2590,7 +2590,7 @@ class SetupProtocol:
             return self._hermes_cancelled()
         ok, detail = probe_hermes_runtime(command=self.hermes_command)
         if ok:
-            return self._hermes_done(f"Hermes 이미 사용 가능 ({detail})")
+            return self._hermes_done(f"Iris Agent 이미 사용 가능 ({detail})")
         if sys.platform != "win32":
             return SetupStepResult(
                 step_id="hermes_install",
@@ -2615,10 +2615,10 @@ class SetupProtocol:
             self.hermes_command
         ):
             wipe_msg = self._wipe_hermes_agent_runtime()
-            self._emit_stream(f"깨진 Hermes 런타임 정리… {wipe_msg}", None, replace=False)
+            self._emit_stream(f"깨진 Iris Agent 런타임 정리… {wipe_msg}", None, replace=False)
             self._hermes_runtime_repaired = True
 
-        self._emit_stream("Hermes 공식 설치 스크립트 실행 중…", None, replace=False)
+        self._emit_stream("Iris Agent 공식 설치 스크립트 실행 중…", None, replace=False)
         proc: subprocess.CompletedProcess[str] | None = None
         try:
             proc = self._run_hermes_official_installer()
@@ -2628,7 +2628,7 @@ class SetupProtocol:
             refresh_process_path()
             ok_after, detail_after = probe_hermes_runtime(command=self.hermes_command)
             if ok_after:
-                return self._hermes_done(f"시간 초과 후 Hermes 사용 가능 ({detail_after})")
+                return self._hermes_done(f"시간 초과 후 Iris Agent 사용 가능 ({detail_after})")
             kind = getattr(exc, "kind", "") or "exit"
             if kind not in ("idle", "hard"):
                 kind = "hard" if isinstance(exc, subprocess.TimeoutExpired) else "exit"
@@ -2646,7 +2646,7 @@ class SetupProtocol:
         ok_after, detail_after = probe_hermes_runtime(command=self.hermes_command)
         if ok_after:
             _guard_fresh_hermes_tree()
-            return self._hermes_done(f"Hermes 설치됨 ({detail_after})")
+            return self._hermes_done(f"Iris Agent 설치됨 ({detail_after})")
         official_out = (proc.stdout or "") if proc is not None else ""
         blob = "\n".join(
             p
@@ -2871,7 +2871,7 @@ class SetupProtocol:
             )
 
         need_restart = bool(force_restart or self._hermes_key_rotated)
-        _progress("Hermes gateway 상태 확인…")
+        _progress("Iris Agent gateway 상태 확인…")
         # health-only(timeout)와 ready(/v1/models)를 분리 — 예전엔 health만으로 done
         health_up = is_hermes_gateway_running(
             self.hermes_base_url, api_key=key, timeout_sec=2.0
@@ -2938,7 +2938,7 @@ class SetupProtocol:
                     _progress(f"기동 실패 스냅샷: [{diag.code}] {diag.message}")
                 if _should_auto_repair_runtime():
                     _progress(
-                        "깨진 Hermes 런타임 감지 — 자동 재설치 후 재시도…"
+                        "깨진 Iris Agent 런타임 감지 — 자동 재설치 후 재시도…"
                     )
                     repaired = self._install_hermes()
                     self._emit_stream(repaired.message, None, replace=False)
@@ -3082,7 +3082,7 @@ class SetupProtocol:
             if _detail_looks_like_ctx_below_min(detail_s):
                 detail_s = (
                     detail_s.rstrip()
-                    + "\nHermes 64K: config ollama_num_ctx 확인"
+                    + "\nIris Agent 64K: config ollama_num_ctx 확인"
                 )
             return self._record_step("core_smoke", "failed", detail_s)
         return self._record_step("core_smoke", "done", detail_s)
@@ -3444,7 +3444,7 @@ class SetupProtocol:
             return SetupStepResult(
                 "mobile_mcp",
                 "done",
-                "Node 확인됨 (Hermes MCP에 등록됨)",
+                "Node 확인됨 (Iris Agent MCP에 등록됨)",
                 label=label,
             )
         return SetupStepResult(
@@ -3489,9 +3489,9 @@ class SetupProtocol:
         return SetupStepResult(
             step_id="iris_ide",
             status="needs_user",
-            message=f"{msg}. 「설치」로 Node·Theia를 준비하거나 「나중에」.",
+            message=f"{msg}. 「설치」로 Node·IDE를 준비하거나 「나중에」.",
             action_url=NODE_DOWNLOAD_URL,
-            action_hint="Theia 1.74 · Node 22+. 외부 IDE는 그대로 사용 가능.",
+            action_hint="IRIS IDE · Node 22+. 외부 IDE는 그대로 사용 가능.",
             label=label,
             can_install=True,
         )
@@ -3508,14 +3508,14 @@ class SetupProtocol:
         ok, msg = mgr.install(progress=_progress, run_streamed=self._run_streamed)
         if not ok:
             return SetupStepResult("iris_ide", "failed", msg[:240], label=label)
-        self._emit_stream("Theia runtime health check…", None, replace=False)
+        self._emit_stream("IRIS IDE runtime health check…", None, replace=False)
         started, start_msg = mgr.start(project_root())
         if not started:
             mgr.stop()
             return SetupStepResult("iris_ide", "failed", start_msg[:240], label=label)
         if not mgr.health():
             mgr.stop()
-            return SetupStepResult("iris_ide", "failed", "Theia health check failed", label=label)
+            return SetupStepResult("iris_ide", "failed", "IRIS IDE health check failed", label=label)
         mgr.stop()
         return SetupStepResult("iris_ide", "done", "IRIS IDE runtime ready", label=label)
 

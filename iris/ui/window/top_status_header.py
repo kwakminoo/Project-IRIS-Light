@@ -100,8 +100,8 @@ class TopStatusHeader:
         grid.addWidget(self._local_chip, 1, 0, alignment=cell_align)
         grid.addWidget(self._agent_chip, 1, 1, alignment=cell_align)
         grid.addWidget(self._stt_chip, 1, 2, alignment=cell_align)
-        self._browser_chip.setToolTip("Iris 내장 브라우저 제어 상태 (Hermes AGENT와 별개)")
-        self._agent_chip.setToolTip("Hermes gateway 연결. 브라우저 제어 가능 여부가 아닙니다.")
+        self._browser_chip.setToolTip("Iris 내장 브라우저 제어 상태 (Iris Agent와 별개)")
+        self._agent_chip.setToolTip("Iris Agent 연결. 브라우저 제어 가능 여부가 아닙니다.")
 
         self._state_chip.set_value("IDLE", dot_kind="idle")
         self._model_chip.set_value("-", dot_kind="idle")
@@ -193,19 +193,19 @@ class TopStatusHeader:
         *,
         hermes_online: bool = False,
     ) -> None:
-        """AGENT(Hermes) 가용성 갱신."""
+        """Iris Agent 가용성 갱신."""
         line = external_backend_status_line(settings, hermes_online=hermes_online)
         hm = "UNAVAILABLE"
-        if "Hermes (Connected)" in line:
+        if "Iris Agent (Connected)" in line:
             hm = "CONNECTED"
-        elif "Hermes (Offline)" in line:
+        elif "Iris Agent (Offline)" in line:
             hm = "OFFLINE"
         self._agent_chip.set_value(
             hm,
             dot_kind="connected" if hm == "CONNECTED" else "unavailable",
         )
         self._agent_chip.setToolTip(
-            "Hermes gateway 연결. 브라우저 제어 가능 여부가 아닙니다."
+            "Iris Agent 연결. 브라우저 제어 가능 여부가 아닙니다."
         )
 
     def set_browser_status(self, text: str, *, dot_kind: str = "idle") -> None:

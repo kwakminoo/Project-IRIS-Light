@@ -1,0 +1,34 @@
+.iris-pdf-widget {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #1e1e1e;
+    color: #ddd;
+}
+
+.iris-pdf-scroll {
+    flex: 1;
+    overflow: auto;
+    padding: 12px;
+    text-align: center;
+}
+
+.iris-pdf-scroll canvas {
+    display: block;
+    margin: 0 auto 12px;
+    max-width: 100%;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+    background: #fff;
+}
+
+.iris-pdf-status {
+    padding: 8px 12px;
+    font-size: 12px;
+    opacity: 0.85;
+}
+
+.iris-pdf-error {
+    color: #f48771;
+    padding: 16px;
+    white-space: pre-wrap;
+}

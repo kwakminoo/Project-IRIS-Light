@@ -153,7 +153,7 @@ class HermesHealthWorker(QThread):
                 )
 
             if report.needs_gateway_reload:
-                self.notice.emit("MCP 연결 — Hermes gateway 완전 재기동…")
+                self.notice.emit("MCP 연결 — Iris Agent gateway 완전 재기동…")
                 ok = restart_hermes_gateway(
                     base_url,
                     api_key=api_key,
@@ -163,7 +163,7 @@ class HermesHealthWorker(QThread):
                 if ok:
                     mcp_ok, mcp_detail = verify_iris_mcp_tools(command=command)
                     if mcp_ok:
-                        self.notice.emit(f"Hermes MCP 재연결 완료 — {mcp_detail}")
+                        self.notice.emit(f"Iris Agent MCP 재연결 완료 — {mcp_detail}")
                     else:
                         self.notice.emit(
                             f"Gateway는 떴지만 MCP 검증 실패: {mcp_detail}"
@@ -199,7 +199,7 @@ class HermesHealthWorker(QThread):
                 if ok:
                     mcp_ok2, mcp_detail2 = verify_iris_mcp_tools(command=command)
                     self.notice.emit(
-                        f"Hermes MCP 재연결: {mcp_detail2}"
+                        f"Iris Agent MCP 재연결: {mcp_detail2}"
                         if mcp_ok2
                         else f"MCP 재검증 실패: {mcp_detail2}"
                     )
@@ -218,12 +218,12 @@ class HermesHealthWorker(QThread):
                 self.finished_ok.emit(ok)
                 return
         except Exception as sync_exc:  # noqa: BLE001
-            self.notice.emit(f"Iris↔Hermes control sync skip: {str(sync_exc)[:120]}")
+            self.notice.emit(f"Iris Agent control sync skip: {str(sync_exc)[:120]}")
 
         if is_hermes_gateway_running(base_url, api_key=api_key):
             self.finished_ok.emit(True)
             return
-        self.notice.emit("Hermes gateway가 꺼져 있습니다. 시작합니다…")
+        self.notice.emit("Iris Agent gateway가 꺼져 있습니다. 시작합니다…")
         ok = ensure_hermes_gateway_running(
             base_url,
             api_key=api_key,
@@ -232,7 +232,7 @@ class HermesHealthWorker(QThread):
         if ok:
             mcp_ok, mcp_detail = verify_iris_mcp_tools(command=command)
             self.notice.emit(
-                f"Hermes gateway 시작됨 — {mcp_detail}"
+                f"Iris Agent gateway 시작됨 — {mcp_detail}"
                 if mcp_ok
                 else f"Gateway 시작됐지만 MCP 실패: {mcp_detail}"
             )
@@ -245,8 +245,8 @@ class HermesHealthWorker(QThread):
                 self.notice.emit(diag.user_message()[:400])
             else:
                 self.notice.emit(
-                    "Hermes gateway를 시작할 수 없습니다. "
-                    "hermes 설치·포트 8642·로그(%LOCALAPPDATA%\\hermes\\logs\\iris-gateway)를 확인하세요."
+                    "Iris Agent gateway를 시작할 수 없습니다. "
+                    "설치·포트 8642·로그(%LOCALAPPDATA%\\hermes\\logs\\iris-gateway)를 확인하세요."
                 )
         self.finished_ok.emit(ok)
 
@@ -289,7 +289,7 @@ class HermesControlSyncWorker(QThread):
             if report.errors:
                 lines.append("오류: " + "; ".join(report.errors[:2]))
 
-            self.progress.emit("상태: Hermes gateway 재기동…")
+            self.progress.emit("상태: Iris Agent gateway 재기동…")
             ok = restart_hermes_gateway(
                 self._base_url,
                 api_key=self._api_key,
@@ -435,7 +435,7 @@ class HermesChatWorker(QThread):
         """게이트웨이 기동 보장. 실패하면 사용자에게 보일 문구를 돌려준다."""
         if is_hermes_gateway_running(source.base_url, api_key=source.api_key):
             return ""
-        self.tool_progress.emit("Hermes gateway 기동 중…")
+        self.tool_progress.emit("Iris Agent gateway 기동 중…")
         if ensure_hermes_gateway_running(
             source.base_url, api_key=source.api_key, command="hermes"
         ):
@@ -446,7 +446,7 @@ class HermesChatWorker(QThread):
         if diag is not None:
             return diag.user_message()[:400]
         return (
-            "Hermes gateway를 시작할 수 없습니다. "
+            "Iris Agent gateway를 시작할 수 없습니다. "
             r"설치·포트·%LOCALAPPDATA%\hermes\logs\iris-gateway 로그를 확인하세요."
         )
 

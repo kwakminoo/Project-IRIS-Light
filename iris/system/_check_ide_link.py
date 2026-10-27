@@ -50,8 +50,8 @@ class _Files(BaseHTTPRequestHandler):
                 time.sleep(5)
                 return
             elif body.get("path") == "fallback.py":
-                payload = {"ok": True, "result": {"via": "bridge_fallback", "path": "fallback.py"}}
-                code = 200
+                payload = {"ok": False, "error": "frontend open timed out"}
+                code = 400
             else:
                 payload = {
                     "ok": True,
@@ -151,9 +151,34 @@ def check_commands() -> None:
             assert time.monotonic() - started < 1.5, "타임아웃이 늦음"
         else:
             raise AssertionError("타임아웃이 성공으로 남음")
-        fallback = link.open_file("fallback.py")
-        assert fallback.get("via") == "bridge_fallback"
-        assert fallback.get("via") != "theia", "bridge_fallback을 실제 개방으로 보면 안 됨"
+        try:
+            link.open_file("fallback.py")
+        except IrisIdeClientError as exc:
+            assert "timed out" in str(exc).lower() or "frontend" in str(exc).lower(), exc
+        else:
+            raise AssertionError("open timeout must hard-fail, not return bridge_fallback")
+        from iris.ui.control_bindings import iris_ide_editor_opened
+
+        ok_vis, _err = iris_ide_editor_opened({"via": "bridge_fallback", "opened": True})
+        assert ok_vis is False, "legacy bridge_fallback payload must still be rejected"
+        from iris.ui.control_bindings import iris_ide_edit_ok, iris_ide_query_ok, iris_ide_save_ok
+
+        ok_save, save_err = iris_ide_save_ok({"saved": True, "via": "disk", "editor": False})
+        assert ok_save is False and "editor" in save_err.lower(), save_err
+        ok_save2, _ = iris_ide_save_ok({"saved": True, "via": "editor"})
+        assert ok_save2 is True
+        ok_save3, _ = iris_ide_save_ok({"saved": False, "reason": "nope"})
+        assert ok_save3 is False
+        ok_edit, edit_err = iris_ide_edit_ok({"via": "disk", "applied": "append"})
+        assert ok_edit is False and "editor" in edit_err.lower(), edit_err
+        ok_edit2, _ = iris_ide_edit_ok({"via": "editor", "applied": "selection"})
+        assert ok_edit2 is True
+        ok_edit3, _ = iris_ide_edit_ok({"noEditor": True})
+        assert ok_edit3 is False
+        ok_q, q_err = iris_ide_query_ok({"items": [], "queried": False})
+        assert ok_q is False and "query" in q_err.lower(), q_err
+        ok_q2, _ = iris_ide_query_ok({"items": [], "queried": True, "via": "theia"})
+        assert ok_q2 is True
     finally:
         _stop(srv)
 

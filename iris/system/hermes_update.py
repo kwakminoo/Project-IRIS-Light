@@ -201,7 +201,7 @@ def apply_hermes_update(
         raise RuntimeError("Hermes git 설치 없음 — pin checkout 불가")
 
     pin = load_pinned_sha()
-    _note(on_progress, "Hermes gateway 중지…")
+    _note(on_progress, "Iris Agent gateway 중지…")
     stop_hermes_gateway(command, wait_sec=20.0)
 
     _note(on_progress, f"Iris Agent pin {pin[:7]} checkout…")
@@ -212,7 +212,7 @@ def apply_hermes_update(
         _restart_after(command, base_url, api_key, on_progress)
         raise RuntimeError(str(exc)) from exc
 
-    _note(on_progress, "Hermes gateway 재시작…")
+    _note(on_progress, "Iris Agent gateway 재시작…")
     ok = restart_hermes_gateway(
         base_url,
         api_key=api_key,
@@ -235,7 +235,7 @@ def _restart_after(
 ) -> None:
     from iris.system.hermes_gateway import restart_hermes_gateway
 
-    _note(on_progress, "Hermes gateway 재시작…")
+    _note(on_progress, "Iris Agent gateway 재시작…")
     try:
         restart_hermes_gateway(
             base_url,

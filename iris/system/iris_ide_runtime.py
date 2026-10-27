@@ -188,7 +188,7 @@ class IrisIdeRuntimeManager:
             True,
             False,
             True,
-            f"IRIS IDE 설치됨 (Theia {THEIA_VERSION})",
+            f"IRIS IDE 설치됨 ({THEIA_VERSION})",
             int(st.get("port") or 0) or None,
             int(st.get("bridge_port") or 0) or None,
         )
@@ -221,7 +221,7 @@ class IrisIdeRuntimeManager:
         if not st.node_ok:
             return False, st.detail
         if not self.is_installed():
-            return False, "Theia build output 또는 node_modules가 없습니다 (손상됨)"
+            return False, "IRIS IDE 빌드 출력 또는 node_modules가 없습니다 (손상됨)"
         return True, "설치 검증 OK"
 
     def install(
@@ -283,6 +283,8 @@ class IrisIdeRuntimeManager:
             "lib/browser/iris-ide-frontend-module.js",
             "lib/browser/iris-ide-bridge-poller.js",
             "lib/browser/iris-ide-bridge-ops.js",
+            "lib/browser/iris-pdf-widget.js",
+            "lib/browser/iris-pdf-open-handler.js",
             "lib/node/iris-ide-backend-contribution.js",
             "lib/node/iris-ide-backend-module.js",
             "lib/node/iris-ide-bridge-server.js",
@@ -294,6 +296,12 @@ class IrisIdeRuntimeManager:
                 out = dest / rel
                 out.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(s, out)
+        pdfjs_src = src / "lib" / "frontend" / "pdfjs"
+        if pdfjs_src.is_dir():
+            pdfjs_dest = dest / "lib" / "frontend" / "pdfjs"
+            if pdfjs_dest.exists():
+                shutil.rmtree(pdfjs_dest)
+            shutil.copytree(pdfjs_src, pdfjs_dest)
         patch_src = src / "scripts" / "patch-theia-build.js"
         patch_js = dest / "scripts" / "patch-theia-build.js"
         if patch_src.is_file():
@@ -366,11 +374,16 @@ class IrisIdeRuntimeManager:
                 "iris.ide.showStartScreen",
                 "iris.ide.runFile",
                 "IRIS_EXIT:",
+                "iris.pdf",
+                "iris-pdf",
             )
             if marker not in text
         ]
         if missing:
             return False, "번들에 IDE 확장 미포함 — rebundle 실패: " + ", ".join(missing)
+        pdfjs = runtime_install_dir() / "lib" / "frontend" / "pdfjs" / "pdf.mjs"
+        if not pdfjs.is_file():
+            return False, "설치본 lib/frontend/pdfjs/pdf.mjs 없음"
         return True, "workspace build synced to install"
 
     def _sync_prebuilt_frontend(self) -> None:
@@ -484,7 +497,7 @@ class IrisIdeRuntimeManager:
             bridge_js.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_bridge, bridge_js)
         if not theia_cli.is_file():
-            return False, "theia CLI missing — repair/install 필요"
+            return False, "IRIS IDE CLI missing — repair/install 필요"
         if not bridge_js.is_file():
             return False, "bridge script missing"
         install_root = runtime_install_dir()
@@ -563,7 +576,7 @@ class IrisIdeRuntimeManager:
         while time.monotonic() < deadline:
             if self._proc is not None and self._proc.poll() is not None:
                 code = self._proc.returncode
-                return False, f"Theia process exited early (code={code})"
+                return False, f"IRIS IDE process exited early (code={code})"
             if self._bridge_proc is not None and self._bridge_proc.poll() is not None:
                 code = self._bridge_proc.returncode
                 return False, f"bridge process exited early (code={code})"
@@ -571,9 +584,9 @@ class IrisIdeRuntimeManager:
                 st = self._read_state()
                 if int(st.get("bridge_port") or 0):
                     self._bridge_port = int(st["bridge_port"])
-                return True, "Theia ready"
+                return True, "IRIS IDE ready"
             time.sleep(0.35)
-        return False, "Theia health timeout"
+        return False, "IRIS IDE health timeout"
 
     def base_url(self) -> str:
         port = self._theia_port or int(self._read_state().get("port") or 0)
@@ -841,6 +854,7 @@ _MANAGER: IrisIdeRuntimeManager | None = None
 
 
 def shared_iris_ide_runtime() -> IrisIdeRuntimeManager:
+    """IDE는 Iris API(Companion / 이 싱글톤)로만 연다 — 사용자 theia CLI 불필요."""
     global _MANAGER
     if _MANAGER is None:
         _MANAGER = IrisIdeRuntimeManager()

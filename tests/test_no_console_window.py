@@ -188,6 +188,24 @@ class AttachmentConsoleGuardTests(TestCase):
         self.assertIn("def _hide_tesseract_console", body)
         self.assertIn("no_window_kwargs()", body)
 
+    def test_ide_bridge_git_uses_windows_hide(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        standalone = (
+            root / "integrations" / "iris-ide" / "bridge" / "standalone-bridge.js"
+        ).read_text(encoding="utf-8")
+        server = (
+            root
+            / "integrations"
+            / "iris-ide"
+            / "src"
+            / "node"
+            / "iris-ide-bridge-server.ts"
+        ).read_text(encoding="utf-8")
+        self.assertIn("windowsHide: true", standalone)
+        self.assertIn("windowsHide: true", server)
+        self.assertIn("git status --porcelain", standalone)
+        self.assertIn("git status --porcelain", server)
+
 
 class VoiceRuntimeGuardTests(TestCase):
     def test_voice_runtime_manager_resolves_cross_platform_venv(self) -> None:

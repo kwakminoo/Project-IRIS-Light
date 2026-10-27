@@ -82,6 +82,14 @@ def register_chat_actions(window: ChatHost, reg: ActionRegistry) -> None:
         _log(window, "chat.stop", True)
         return ok_result("chat.stop", {})
 
+    def chat_send(args: dict[str, Any]) -> dict[str, Any]:
+        text = str(args.get("text") or args.get("message") or "").strip()
+        if not text:
+            return err_result("chat.send", "text required")
+        window._on_user_text(text)
+        _log(window, "chat.send", True)
+        return ok_result("chat.send", {"queued": True, "chars": len(text)})
+
     def voice_toggle_mic(_a: dict[str, Any]) -> dict[str, Any]:
         window._on_chat_mic_clicked()
         mic = getattr(window, "_mic", None)
@@ -147,7 +155,7 @@ def register_chat_actions(window: ChatHost, reg: ActionRegistry) -> None:
     reg.register(
         "chat.set_model",
         chat_set_model,
-        summary="Select chat/Ollama model and sync Hermes",
+        summary="Select chat/Ollama model and sync Iris Agent",
         risk="medium",
     )
 
@@ -185,6 +193,13 @@ def register_chat_actions(window: ChatHost, reg: ActionRegistry) -> None:
         chat_stop,
         summary="Stop current chat turn (same as Stop button)",
         risk="low",
+    )
+
+    reg.register(
+        "chat.send",
+        chat_send,
+        summary="Submit composer text as a user turn (same as Send)",
+        risk="medium",
     )
 
     reg.register(

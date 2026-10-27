@@ -43,7 +43,7 @@ _HERMES_PYTHON_MAX_EXCLUSIVE = (3, 14)
 _PY_LAUNCHER_FLAGS = ("-3.11", "-3.12", "-3.13")
 _PIP_FALLBACK_LIMIT = (
     "pip 폴백은 uv.lock pin을 재현하지 않습니다. "
-    "extras homeassistant,mcp 만 설치하며 requirements.txt 는 사용하지 않습니다."
+    "extras mcp,messaging 만 설치하며 requirements.txt 는 사용하지 않습니다."
 )
 _ERROR_LINE = re.compile(
     r"(?i)\b(error|exception|traceback|failed|winerror|timeout|permissionerror)\b"
@@ -730,15 +730,23 @@ def _finish_staged_install(
     lock = staging / "uv.lock"
     installed = False
     if uv and lock.is_file():
-        emit("uv sync --frozen (homeassistant, mcp)…")
+        # Pin dropped `homeassistant`. mcp = control tools; messaging pulls aiohttp.
+        # UV_PROJECT_ENVIRONMENT must be staging/venv — bare uv sync creates .venv and
+        # probe (venv/Scripts/python) then fails with ModuleNotFoundError: hermes_cli.
+        emit("uv sync --frozen (mcp, messaging)…")
+        env = os.environ.copy()
+        env["VIRTUAL_ENV"] = str(venv_dir)
+        env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
         cmd = [
-            uv, "sync", "--frozen", "--no-dev",
-            "--extra", "homeassistant", "--extra", "mcp",
+            uv, "sync", "--frozen", "--no-dev", "--active",
+            "--extra", "mcp", "--extra", "messaging",
             "--python", str(venv_py),
         ]
         started = time.monotonic()
         try:
-            proc = _run_dep(cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0)
+            proc = _run_pkg_install(
+                cmd, cwd=str(staging), run_streamed=run_streamed, env=env
+            )
         except subprocess.TimeoutExpired as exc:
             log.append(str(exc))
             _discard_tree(staging)
@@ -755,8 +763,8 @@ def _finish_staged_install(
         emit(_PIP_FALLBACK_LIMIT)
 
     if not installed:
-        emit("pip install -e .[homeassistant,mcp]…")
-        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", ".[homeassistant,mcp]"]
+        emit("pip install -e .[mcp,messaging]…")
+        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", ".[mcp,messaging]"]
         started = time.monotonic()
         try:
             pip = _run_dep(pip_cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0)
@@ -947,9 +955,9 @@ def _try_uv_sync(
         "--python",
         str(venv_py),
         "--extra",
-        "homeassistant",
-        "--extra",
         "mcp",
+        "--extra",
+        "messaging",
     ]
     try:
         return _run_pkg_install(cmd, cwd=str(agent), run_streamed=run_streamed, env=env)

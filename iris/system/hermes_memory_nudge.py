@@ -7,14 +7,16 @@ import re
 from iris.browser.observation import browser_teaching_block
 from iris.system.hermes_iris_control_sync import hermes_home
 
-_MARKER = "<!-- iris-control-nudge-v28 -->"
+# Bump when nudge text changes. Lower runtime markers must not skip as "already present".
+_NUDGE_VERSION = 31
+_MARKER = f"<!-- iris-control-nudge-v{_NUDGE_VERSION} -->"
 
-_BLOCK = """<!-- iris-control-nudge-v28 -->
+_BLOCK = """<!-- iris-control-nudge-v31 -->
 ## Iris Light UI control
 
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
 
-1. Prefer product **native** seed tools first (no MCP Control HTTP): `iris.session.get_state` (alias `get_state`), `iris.tools.catalog`, `iris.wiki.list_notes` / `iris.wiki.search`, `iris.mail.list_accounts` (alias `email.list_accounts`), `iris.calendar.list_events` (alias `calendar.list_events`), `iris.ide.open_folder`, `iris.project.open_similar`. For other Control actions still use MCP names: `mcp__iris_control__iris_invoke` (skills: iris-work-start, iris-work-end, iris-session-status, iris-vibe-code, iris-calendar, iris-wiki, iris-email). Never invent bare `iris_invoke` without the mcp__iris_control__ prefix for non-seed actions. If a model still emits MCP `iris_invoke` for a seed action, Iris redirects it to the same native handler.
+1. Prefer product **native** seed tools first (no MCP Control HTTP): `iris.session.get_state` (alias `get_state`), `iris.tools.catalog`, `iris.wiki.list_notes` / `iris.wiki.search`, `iris.mail.list_accounts` (alias `email.list_accounts`), `iris.calendar.list_events` (alias `calendar.list_events`), `iris.ide.open_folder`, `iris.project.open_similar`. For other Control actions still use MCP names: `mcp__iris_control__iris_invoke` (skills: iris-work-start, iris-work-end, iris-session-status, iris-vibe-code, iris-calendar, iris-wiki, iris-email). Never invent bare `iris_invoke` without the mcp__iris_control__ prefix for non-seed actions. If a model still emits MCP `iris_invoke` for a seed action, Iris redirects it to the same native handler. If the chat work_root and the bound IDE folder differ, Iris aligns the IDE folder before write/run; on failure the tool error names the needed folder — do not silently skip.
 
 2. "ide 켜줘" / open IDE only: `mcp__iris_control__iris_invoke` → action=`ide.enter_companion`.
 
@@ -22,13 +24,15 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 4. Do NOT claim Iris has no IDE GUI — Iris launches the preferred IDE via control surface.
 
-5. Do NOT use Hermes built-in `terminal` tool for project commands — it is disabled for Iris. ALWAYS `mcp__iris_control__iris_invoke` → action=`project.run` so output appears in the **bound IDE integrated terminal**.
+5. Do NOT use Iris Agent built-in `terminal` tool for project commands — it is disabled for Iris. ALWAYS `mcp__iris_control__iris_invoke` → action=`project.run` so output appears in the **bound IDE integrated terminal**.
 
-6. Do NOT treat Hermes terminal cwd as Iris project_root.
+6. Do NOT treat Iris Agent terminal cwd as Iris project_root.
 
 7. Named project (e.g. AI guitar tab / 자료구조 / 동양미래대학교): native `iris.project.open_similar` args=`{query}` (or alias `project.open_similar`).
 
 8. Absolute path: native `iris.ide.open_folder` args=`{path}` (or alias `ide.open_folder`).
+
+8b. New folder / Desktop folder / 바탕화면에 폴더 만들어 / create project folder: `mcp__iris_control__iris_invoke` → action=`project.create_scaffold` with `name`, `parent` (Desktop / 바탕화면 when the user said so; else first project parent), `template` (`empty`|`python-hello`|`gugudan`), `open=true`. This creates a real disk folder and opens IDE Companion (skill iris-work-start). Do NOT refuse as "physical folders unavailable". Do NOT invent a filesystem limit. Prefer this over terminal mkdir.
 
 9. "아이리스 라이트 작업" with no other project name: `project.open_similar` query `iris light`.
 
@@ -39,15 +43,15 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 12. After creating/writing code: `mcp__iris_control__iris_invoke` → action=`project.write_file` with `open=true` (default live write: empty tab → wait visible → stream chunks into the file). `rel_path` is the filename the user asked for. If they did not name a file, ask before writing. Do not invent `iris_generated.py`. Use `typewriter:false` only for instant dump. Never claim 생성·작성·처리 완료 without tool ok and a disk path.
 12b. Rename: `project.rename_file` with `path` (current relative path) and `new_path`. Find `path` with `project.list_files` or the open editor. If either path is unknown, ask. Do not claim the name changed unless ok.
 
-13. On run/npm/pip/python/node/shell requests: **only** `project.run` — full output in IDE terminal; chat summary only. Keyword auto-run is off while Hermes is on.
+13. On run/npm/pip/python/node/shell requests: **only** `project.run` — full output in IDE terminal; chat summary only. Keyword auto-run is off while Iris Agent is on.
 
 14. Calendar / 일정: `workspace.open_calendar`, then `calendar.add_event` / native `iris.calendar.list_events` / `calendar.select_day` / `calendar.delete_event` (skill iris-calendar).
 
-15. Wiki / 위키에 저장: no keyword shortcut while Hermes is on. PDF·URL·파일 한 건 → `wiki.import_content` (`source`, `mode=raw|summarize`). 여러 PDF·파일은 `wiki.import_pages` (`sources` 에 실제 경로) 한 번. 첨부가 있으면 `wiki.write_user_note` 로 그 본문을 쓰지 말 것. 저장됐는지만 물으면 native `iris.wiki.search` (alias `wiki.search`). 직전 답변 → `wiki.write_user_note`; never claim saved without ok (skill iris-wiki). 여러 페이지·사이트 전체는 `wiki.import_pages` (`source` 또는 `sources`, `discover=true`). 페이지마다 `import_content` 를 반복하지 말 것. 저장 성공은 반환의 saved 건수로만 말한다. rel_path 를 비우면 사용자·학습자료·인사이트·projects·research 로 분류된다. inbox 를 기본 경로로 넣지 말 것. 저장된 노트는 `iris.wiki.search`. 이미 있는 노트를 폴더로 옮기거나 분류하면 `wiki.move_notes` (`sources`, `dest_folder`). 같은 바이트를 복사한 뒤 원본을 지운다. `wiki.write_user_note` 로 본문을 다시 쓰지 말 것. `iris.wiki.list_notes` (alias `wiki.list_notes`) 의 total 이 전체다. truncated 이면 그 페이지만 정리해도 완료가 아니다.
-15b. PDF for a submission or a combined note/code (not a wiki save): `note.export_pdf` with `content` and/or `sources` (file paths) and optional `path`. This tool is the save path while Hermes is on. Relative path is under the open project. Do not run pdf_create.py, reportlab, or PyMuPDF yourself — that can kill the Iris process. Do not claim saved unless ok and the file exists. Do not write .pdf via project.write_file.
-15c. GitHub MCP/Skill URL: `extension.install_github` (`url`, `kind=auto|mcp|skill`, `scope=project|iris`). In IRIS IDE, scope=project writes the open project only. scope=iris (Hermes) only from the main Iris screen, not from IDE. If status is needs_input, ask for the missing key or directory. Do not invent secrets. Do not claim installed without a URL and ok. Do not say an Open VSX extension and a Hermes MCP were installed together.
+15. Wiki / 위키에 저장: no keyword shortcut while Iris Agent is on. PDF·URL·파일 한 건 → `wiki.import_content` (`source`, `mode=raw|summarize`). 여러 PDF·파일은 `wiki.import_pages` (`sources` 에 실제 경로) 한 번. 첨부가 있으면 `wiki.write_user_note` 로 그 본문을 쓰지 말 것. 저장됐는지만 물으면 native `iris.wiki.search` (alias `wiki.search`). 직전 답변 → `wiki.write_user_note`; never claim saved without ok (skill iris-wiki). 여러 페이지·사이트 전체는 `wiki.import_pages` (`source` 또는 `sources`, `discover=true`). 페이지마다 `import_content` 를 반복하지 말 것. 저장 성공은 반환의 saved 건수로만 말한다. rel_path 를 비우면 사용자·학습자료·인사이트·projects·research 로 분류된다. inbox 를 기본 경로로 넣지 말 것. 저장된 노트는 `iris.wiki.search`. 이미 있는 노트를 폴더로 옮기거나 분류하면 `wiki.move_notes` (`sources`, `dest_folder`). 같은 바이트를 복사한 뒤 원본을 지운다. `wiki.write_user_note` 로 본문을 다시 쓰지 말 것. `iris.wiki.list_notes` (alias `wiki.list_notes`) 의 total 이 전체다. truncated 이면 그 페이지만 정리해도 완료가 아니다.
+15b. PDF for a submission or a combined note/code (not a wiki save): `note.export_pdf` with `content` and/or `sources` (file paths) and optional `path`. This tool is the save path while Iris Agent is on. Relative path is under the open project. Do not run pdf_create.py, reportlab, or PyMuPDF yourself — that can kill the Iris process. Do not claim saved unless ok and the file exists. Do not write .pdf via project.write_file.
+15c. GitHub MCP/Skill URL: `extension.install_github` (`url`, `kind=auto|mcp|skill`, `scope=project|iris`). In IRIS IDE, scope=project writes the open project only. scope=iris (Iris Agent) only from the main Iris screen, not from IDE. If status is needs_input, ask for the missing key or directory. Do not invent secrets. Do not claim installed without a URL and ok. Do not say an Open VSX extension and an Iris Agent MCP were installed together.
 15f. Open VSX for the project open in IRIS IDE: `ide.marketplace_search` (`query`) then `ide.marketplace_install` (`id` as publisher.name). Install downloads the VSIX into the IDE deployedPlugins folder. Do not claim installed unless ok and result.package exists. Do not say a PDF tab is already open. If reload is reloaded, say the IDE is restarting to load the extension. If reload is not_running, say it loads the next time IRIS IDE starts. plugin.loaded true is the only signal the plugin host has the extension. Do not say a viewer opened when loaded is false. Name-only requests are not installed. Project plan/progress: `ide.project_log` (`plan`, `decision`, `issue`, `progress`).
-15g. Read and change the open IRIS IDE like an editor, not from an empty success: `ide.diagnostics` (reported false is not "no problems"), `ide.symbols`, `ide.references`, `ide.definition`, `ide.edit` (via=editor is the buffer; via=disk applied=append is not a selection replace), `ide.save`, `ide.task`, `ide.debug` (start needs a launch name; no session is not success). Do not claim a fix, a save, or a debug session without ok.
+15g. Read and change the open IRIS IDE like an editor, not from an empty success: `ide.diagnostics` (reported false is not "no problems"; empty list is clean only when reported true), `ide.symbols`/`ide.references`/`ide.definition` (ok needs queried true; empty items then means none), `ide.edit` (ok only via=editor; disk append is not a selection replace and fails), `ide.save` (ok only for editor buffer flush; disk-only is failure), `ide.task`, `ide.debug` (start needs a launch name; no session is not success). Do not claim a fix, a save, or a debug session without ok.
 15d. Image attachment → code file: `project.write_image_code` (`image` path, `rel_path`). If the target file is unknown, ask. Never claim the file was written without ok.
 15e. If the user message contains `[자료 본문]`, answer from that excerpt (PDF, folder, file, or link). Do not ask for page screenshots first. Do not say you cannot read PDF. HWP is unsupported. Saving a chat as a PDF file stays 15b (`note.export_pdf` only).
 
@@ -57,7 +61,7 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 18. Mic off/on: `voice.mic_off` / `voice.mic_on` (status: `voice.mic_status`). Do not claim mic tools are missing.
 
-19. If `mcp__iris_control__*` tools are missing from your tool list: tell the user Iris Control MCP is offline (Iris app must be running; restart Hermes gateway), do not invent tool calls.
+19. If `mcp__iris_control__*` tools are missing from your tool list: tell the user Iris Control MCP is offline (Iris app must be running; restart Iris Agent gateway), do not invent tool calls.
 
 20. Open a file only with `ide.open_file` after `iris_get_state` and `project.list_files`. Relative `path` is the bound workspace, not the shell cwd. The folder action is `ide.open_folder` (there is no project.open_folder). If the file is missing, say so. Do not create another file or say it opened.
 
@@ -95,6 +99,7 @@ CORRECT: trust STRUCTURED BINARY GRID only for `image` / `kernel` (or say the at
 
 
 def _nudge_block() -> str:
+    assert _MARKER in _BLOCK, "nudge marker/version drift inside _BLOCK"
     return _BLOCK.strip() + "\n" + browser_teaching_block() + "\n"
 
 
@@ -108,19 +113,26 @@ def _strip_old_nudge(text: str) -> str:
     ).rstrip() + ("\n" if text.strip() else "")
 
 
+def _memory_nudge_version(text: str) -> int:
+    found = [int(m) for m in re.findall(r"iris-control-nudge-v(\d+)", text)]
+    return max(found) if found else 0
+
+
 def ensure_memory_nudge() -> str:
     mem_dir = hermes_home() / "memories"
     mem_dir.mkdir(parents=True, exist_ok=True)
     path = mem_dir / "MEMORY.md"
     existing = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    # Lower marker versions are stale even when older checklist strings still match.
     if (
-        _MARKER in existing
+        _memory_nudge_version(existing) >= _NUDGE_VERSION
+        and _MARKER in existing
         and "mcp__iris_control__iris_invoke" in existing
         and "voice.mic_off" in existing
         and "workspace.open_assistant" in existing
         and "stream chunks" in existing
         and "integrated terminal" in existing
-        and "Hermes built-in" in existing
+        and "Iris Agent built-in" in existing
         and "iris-vibe-code" in existing
         and "iris-calendar" in existing
         and "wiki.import_pages" in existing
@@ -154,12 +166,16 @@ def ensure_memory_nudge() -> str:
         and "action=`project.write_file`" in existing
         and "Never claim 생성" in existing
         and "requires_iris_ui" in existing
+        and "aligns the IDE folder before write/run" in existing
+        and "project.create_scaffold" in existing
+        and "physical folders unavailable" in existing
+        and "Desktop" in existing
     ):
         return "memory nudge already present"
     cleaned = _strip_old_nudge(existing) if "iris-control-nudge" in existing else existing
     text = cleaned.rstrip() + ("\n\n" if cleaned.strip() else "") + _nudge_block()
     path.write_text(text, encoding="utf-8")
-    return "memory nudge updated (v28)"
+    return f"memory nudge updated (v{_NUDGE_VERSION})"
 
 
 

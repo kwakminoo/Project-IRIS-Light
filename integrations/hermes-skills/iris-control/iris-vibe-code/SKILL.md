@@ -13,6 +13,7 @@ description: >
 
 1. `iris_get_state` — need `project_root` and preferably `ui_mode=ide_companion`.
    If no project / not companion: follow **iris-work-start** first (`project.open_similar` / `ide.open_folder` / `project.create_scaffold`).
+   If `work_root` and the bound IDE folder differ, Iris aligns via `ide.open_folder` before write/run; on failure the tool error names the needed folder — do not silently skip.
 2. **Write + reveal live:**
    `mcp__iris_control__iris_invoke` → action=`project.write_file` with
    `args`: `{ project_root?, rel_path, content, open: true }`
@@ -35,16 +36,16 @@ description: >
    `ide.diagnostics`. `reported: false` means markers were not pushed — do not say there are no problems.
    An empty `diagnostics` list is clean only when `reported` is true.
    Symbols, references, and definition: `ide.symbols`, `ide.references`, `ide.definition`.
-   Do not invent locations when `ok` is false.
+   ok only when `queried` is true; empty `items` then means none found. Do not invent locations when `ok` is false.
 7. **Change the open buffer:** `ide.edit` (`op=insert|replace_selection|replace_range|apply`, `text`, optional `path`).
-   `via=editor` is the buffer. `via=disk` with `applied=append` is not a selection replace — say so.
-   Then `ide.save` (`path`, or `all=true`). `via=editor` flushed the buffer.
+   ok only when `via=editor`. Disk append is not a selection replace and fails the action — do not claim the buffer changed.
+   Then `ide.save` (`path`, or `all=true`). ok only when the editor buffer flushed (`via=editor`). No open editor is failure — do not claim saved from disk alone.
 8. **Task / debug:** `ide.task` needs `name` from tasks.json. `ide.debug` `op=start` needs `name` (launch configuration); `op=stop` or `continue`.
    No session or no task is not success.
 
 ## Do not
 
-- Do not use Hermes `terminal` alone for project runs (skips IDE terminal reveal).
+- Do not use Iris Agent `terminal` alone for project runs (skips IDE terminal reveal).
 - Do not use `cursor`/`code` CLI alone to write or run.
 - Do not open run logs as files in the editor — terminal only.
 - Do not double-run the same command.

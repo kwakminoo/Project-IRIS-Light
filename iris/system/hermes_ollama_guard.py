@@ -66,7 +66,7 @@ def ollama_options_guard_present(agent_root: Path) -> bool:
 def apply_ollama_options_guard(agent_root: Path) -> bool:
     """``options`` 주입을 Ollama URL 로만 제한.
 
-    **install/update baseline 전용.** gateway 기동에서는 호출하지 않는다.
+    install/update overlay 와 gateway ensure(부재 시)에서 호출한다.
     True 는 이번에 파일 내용이 바뀐 경우만. 이미 가드가 있거나 패턴이 없으면 False.
     패턴이 없으면 원문을 유지하고 경고만 남긴다.
     """

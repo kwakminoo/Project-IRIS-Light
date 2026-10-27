@@ -8,7 +8,18 @@ from iris.system.control_surface import (
 from iris.ui.control_actions.hosts import ProjectHost
 
 def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
-    from iris.ui.control_bindings import Path, _bound_session, _bridge_call_pumping, _log, _qt_pump, err_result, load_user_profile, ok_result
+    from iris.ui.control_bindings import (
+        Path,
+        _bound_session,
+        _bridge_call_pumping,
+        _log,
+        _qt_pump,
+        ensure_iris_ide_workspace,
+        err_result,
+        iris_ide_editor_opened,
+        load_user_profile,
+        ok_result,
+    )
     from iris.automation.ide_input import (
         open_file_in_workspace,
         typewriter_into_ide,
@@ -53,20 +64,18 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
     session, session_err = _bound_session(window, require_workspace=do_open)
     if do_open and session_err:
         return err_result("project.write_file", session_err)
+    if session is not None:
+        align_err = ensure_iris_ide_workspace(window, root, action="project.write_file")
+        if align_err is not None:
+            return align_err
+        session, session_err = _bound_session(window, require_workspace=do_open)
+        if do_open and session_err:
+            return err_result("project.write_file", session_err)
     if session is not None and session.ide_id == "iris_ide":
         try:
             client = window._iris_ide_bridge_client()
             _root, abs_path, norm_rel = resolve_under_root(root, rel)
             text = str(content)
-            if str(_root) != str(Path(session.workspace_root).resolve()):
-                return err_result(
-                    "project.write_file",
-                    "requested project_root does not match bound IDE workspace",
-                    {
-                        "project_root": str(_root),
-                        "bound_workspace_root": session.workspace_root,
-                    },
-                )
             path_s = str(abs_path)
             if not do_open:
                 written = write_project_file(root, rel, text)
@@ -75,12 +84,43 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
                 return _logged(written)
             abs_path.parent.mkdir(parents=True, exist_ok=True)
             end = max(len(text) + 1, 999999)
+
             if abs_path.is_file():
-                _bridge_call_pumping(lambda: client.open_file(norm_rel))
+                open_out = _bridge_call_pumping(lambda: client.open_file(norm_rel))
+                visible, open_err = iris_ide_editor_opened(open_out)
+                if not visible:
+                    return err_result(
+                        "project.write_file",
+                        open_err,
+                        {
+                            "path": path_s,
+                            "rel_path": norm_rel,
+                            "on_disk": True,
+                            "opened": False,
+                            "visible": False,
+                            "via": (open_out or {}).get("via") if isinstance(open_out, dict) else None,
+                            "bridge": open_out,
+                        },
+                    )
                 _bridge_call_pumping(lambda: client.replace_range(text, path=norm_rel, start=0, end=end))
             else:
                 _bridge_call_pumping(lambda: client.create_file(norm_rel, text))
-                _bridge_call_pumping(lambda: client.open_file(norm_rel))
+                open_out = _bridge_call_pumping(lambda: client.open_file(norm_rel))
+                visible, open_err = iris_ide_editor_opened(open_out)
+                if not visible:
+                    return err_result(
+                        "project.write_file",
+                        open_err,
+                        {
+                            "path": path_s,
+                            "rel_path": norm_rel,
+                            "on_disk": True,
+                            "opened": False,
+                            "visible": False,
+                            "via": (open_out or {}).get("via") if isinstance(open_out, dict) else None,
+                            "bridge": open_out,
+                        },
+                    )
             written = {
                 "path": path_s,
                 "rel_path": norm_rel,
@@ -105,16 +145,6 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
     text = str(content)
     try:
         _root, abs_path, norm_rel = resolve_under_root(root, rel)
-        if do_open and session is not None:
-            if str(_root) != str(Path(session.workspace_root).resolve()):
-                return err_result(
-                    "project.write_file",
-                    "requested project_root does not match bound IDE workspace",
-                    {
-                        "project_root": str(_root),
-                        "bound_workspace_root": session.workspace_root,
-                    },
-                )
         path_s = str(abs_path)
         if not do_open:
             written = write_project_file(root, rel, text)
@@ -226,7 +256,18 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
     return _logged(written)
 
 def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
-    from iris.ui.control_bindings import Path, _append_activity, _bound_session, _bridge_call_pumping, _log, _qt_pump, err_result, load_user_profile, ok_result
+    from iris.ui.control_bindings import (
+        Path,
+        _append_activity,
+        _bound_session,
+        _bridge_call_pumping,
+        _log,
+        _qt_pump,
+        ensure_iris_ide_workspace,
+        err_result,
+        load_user_profile,
+        ok_result,
+    )
     import time
 
     from iris.automation.ide_input import run_command_in_ide_terminal, trigger_default_build_task
@@ -261,12 +302,12 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
     session, session_err = _bound_session(window, require_workspace=True)
     if session_err:
         return err_result("project.run", session_err)
-    if str(Path(session.workspace_root).resolve()) != root_s:
-        return err_result(
-            "project.run",
-            "requested project_root does not match bound IDE workspace",
-            {"project_root": root_s, "bound_workspace_root": session.workspace_root},
-        )
+    align_err = ensure_iris_ide_workspace(window, root_s, action="project.run")
+    if align_err is not None:
+        return align_err
+    session, session_err = _bound_session(window, require_workspace=True)
+    if session_err:
+        return err_result("project.run", session_err)
 
     file_arg = str(args.get("file") or args.get("rel_path") or "").strip()
     open_browser = bool(args.get("open_browser", True))
@@ -337,7 +378,7 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
             if via == "bridge_fallback":
                 return err_result(
                     "project.run",
-                    "IDE integrated terminal unavailable (bridge ran command outside Theia — blocked)",
+                    "IDE integrated terminal unavailable (bridge ran command outside IRIS IDE — blocked)",
                     {"via": via, "command": shell_cmd},
                 )
             if not queued and via != "theia_terminal":

@@ -2297,7 +2297,7 @@ class SettingsDialog(QDialog):
         iris_btn.setText("IRIS IDE")
         iris_btn.setCheckable(True)
         iris_btn.setMinimumSize(110, 78)
-        iris_btn.setToolTip("IRIS에 내장된 Eclipse Theia 기반 IDE")
+        iris_btn.setToolTip("IRIS에 내장된 IDE")
         iris_btn.clicked.connect(lambda: self._on_ide_picked("iris_ide"))
         self._ide_buttons["iris_ide"] = iris_btn
         grid.addWidget(iris_btn, idx // cols, idx % cols)

@@ -8,7 +8,7 @@ from iris.system.control_surface import (
 from iris.ui.control_actions.hosts import IdeHost
 
 def _reload_ide_if_running(window: IdeHost, workspace: str) -> str:
-    """켜진 Theia만 재기동한다. 플러그인 스캔은 프로세스 시작 때 한 번이다."""
+    """켜진 IRIS IDE만 재기동한다. 플러그인 스캔은 프로세스 시작 때 한 번이다."""
     from iris.system.iris_ide_runtime import shared_iris_ide_runtime
 
     mgr = shared_iris_ide_runtime()
@@ -43,6 +43,9 @@ def register_ide_actions(window: IdeHost, reg: ActionRegistry) -> None:
         _ide_open_file_path,
         _log,
         err_result,
+        iris_ide_edit_ok,
+        iris_ide_query_ok,
+        iris_ide_save_ok,
         load_user_profile,
         ok_result,
         save_user_profile,
@@ -469,27 +472,43 @@ def register_ide_actions(window: IdeHost, reg: ActionRegistry) -> None:
     def ide_symbols(args: dict[str, Any]) -> dict[str, Any]:
         symbol = str(args.get("symbol") or args.get("query") or "")
         path = str(args.get("path") or "")
-        return _bridge("ide.symbols", lambda client: client.goto_symbol(symbol, path=path))
+
+        def _symbols(client: Any) -> dict[str, Any]:
+            out = client.goto_symbol(symbol, path=path)
+            ok_q, q_err = iris_ide_query_ok(out)
+            if not ok_q:
+                raise ValueError(q_err)
+            return out
+
+        return _bridge("ide.symbols", _symbols)
 
     def ide_references(args: dict[str, Any]) -> dict[str, Any]:
-        return _bridge(
-            "ide.references",
-            lambda client: client.find_references(
+        def _refs(client: Any) -> dict[str, Any]:
+            out = client.find_references(
                 str(args.get("path") or ""),
                 line=int(args.get("line") or 0),
                 column=int(args.get("column") or 0),
-            ),
-        )
+            )
+            ok_q, q_err = iris_ide_query_ok(out)
+            if not ok_q:
+                raise ValueError(q_err)
+            return out
+
+        return _bridge("ide.references", _refs)
 
     def ide_definition(args: dict[str, Any]) -> dict[str, Any]:
-        return _bridge(
-            "ide.definition",
-            lambda client: client.goto_definition(
+        def _def(client: Any) -> dict[str, Any]:
+            out = client.goto_definition(
                 str(args.get("path") or ""),
                 line=int(args.get("line") or 0),
                 column=int(args.get("column") or 0),
-            ),
-        )
+            )
+            ok_q, q_err = iris_ide_query_ok(out)
+            if not ok_q:
+                raise ValueError(q_err)
+            return out
+
+        return _bridge("ide.definition", _def)
 
     def ide_edit(args: dict[str, Any]) -> dict[str, Any]:
         op = str(args.get("op") or "insert").strip()
@@ -502,27 +521,41 @@ def register_ide_actions(window: IdeHost, reg: ActionRegistry) -> None:
 
         def _edit(client: Any) -> dict[str, Any]:
             if op in ("replace_selection", "selection"):
-                return client.replace_selection(str(text), path=path)
-            if op in ("replace_range", "range"):
+                out = client.replace_selection(str(text), path=path)
+            elif op in ("replace_range", "range"):
                 end = args.get("end")
-                return client.replace_range(
+                out = client.replace_range(
                     str(text),
                     path=path,
                     start=int(args.get("start") or 0),
                     end=None if end is None else int(end),
                 )
-            if op in ("apply", "document"):
-                return client.apply_text_edit(str(text), path=path)
-            if op not in ("insert", "insert_text"):
+            elif op in ("apply", "document"):
+                out = client.apply_text_edit(str(text), path=path)
+            elif op in ("insert", "insert_text"):
+                out = client.insert_text(str(text), path=path)
+            else:
                 raise ValueError(f"unknown edit op: {op}")
-            return client.insert_text(str(text), path=path)
+            ok_edit, edit_err = iris_ide_edit_ok(out)
+            if not ok_edit:
+                raise ValueError(edit_err)
+            return out
 
         return _bridge("ide.edit", _edit)
 
     def ide_save(args: dict[str, Any]) -> dict[str, Any]:
-        if bool(args.get("all")):
-            return _bridge("ide.save", lambda client: client.save_all())
-        return _bridge("ide.save", lambda client: client.save_file(str(args.get("path") or "")))
+        def _save(client: Any) -> dict[str, Any]:
+            out = (
+                client.save_all()
+                if bool(args.get("all"))
+                else client.save_file(str(args.get("path") or ""))
+            )
+            ok_save, save_err = iris_ide_save_ok(out)
+            if not ok_save:
+                raise ValueError(save_err)
+            return out
+
+        return _bridge("ide.save", _save)
 
     def ide_task(args: dict[str, Any]) -> dict[str, Any]:
         name = str(args.get("name") or args.get("label") or "").strip()
@@ -559,31 +592,31 @@ def register_ide_actions(window: IdeHost, reg: ActionRegistry) -> None:
     reg.register(
         "ide.symbols",
         ide_symbols,
-        summary="Document symbols from the open IRIS IDE editor. Optional symbol filter and path. items come from the language service. Do not invent symbols when ok is false.",
+        summary="Document symbols from the open IRIS IDE editor. Optional symbol filter and path. ok only when queried is true. Empty items means none found, not a failed query. Timeout/unsupported is failure — do not invent symbols.",
         risk="low",
     )
     reg.register(
         "ide.references",
         ide_references,
-        summary="References at the cursor or at path+line+column in the open IRIS IDE editor. items come from the language service.",
+        summary="References at the cursor or at path+line+column in the open IRIS IDE editor. ok only when queried is true. Empty items means none found.",
         risk="low",
     )
     reg.register(
         "ide.definition",
         ide_definition,
-        summary="Definition at the cursor or at path+line+column in the open IRIS IDE editor.",
+        summary="Definition at the cursor or at path+line+column in the open IRIS IDE editor. ok only when queried is true. Empty items means none found.",
         risk="low",
     )
     reg.register(
         "ide.edit",
         ide_edit,
-        summary="Edit the open IRIS IDE buffer. op=insert|replace_selection|replace_range|apply, text required, optional path. via=editor changes the buffer. via=disk with applied=append is not a selection replace. Do not claim the buffer changed unless via=editor.",
+        summary="Edit the open IRIS IDE buffer. op=insert|replace_selection|replace_range|apply, text required, optional path. ok only when via=editor. Disk append is not a selection replace and fails the action.",
         risk="medium",
     )
     reg.register(
         "ide.save",
         ide_save,
-        summary="Save the open IRIS IDE editor. Optional path, or all=true. via=editor flushes the buffer. via=disk means no open editor and the file was already on disk.",
+        summary="Save the open IRIS IDE editor buffer. Optional path, or all=true. ok only when via=editor (buffer flush). No open editor is a failure — do not claim saved from disk alone.",
         risk="medium",
     )
     reg.register(

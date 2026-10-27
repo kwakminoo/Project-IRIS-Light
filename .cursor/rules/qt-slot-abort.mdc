@@ -21,6 +21,13 @@ alwaysApply: true
 - 키워드 전용 인자에는 기본값을 둔다. (`open_followup` 누락이 2026-09-30 15:34 위키 저장 직후 종료)
 - 고친 뒤 `python -m iris.ui._check_turn_followup`을 실행한다.
 
+## 캘린더 알림 타이머 (2026-10-27)
+
+60초 `_calendar_remind_timer` → `_check_calendar_reminders`에서 `datetime.now()`(naive)와 `start_at`의 `+09:00`(aware)를 비교하면 `TypeError` → 같은 `0xC0000409`다. 채팅 행과 무관하고, `launcher.log`에 `_check_calendar_reminders` 스택이 남는다.
+
+- 비교는 `parse_event_instant` / `reminder_clock_now`만 쓴다. naive `datetime.now()`와 `fromisoformat` 직비교 금지.
+- 고친 뒤 `python -m iris.ui._check_calendar`를 실행한다.
+
 ## IDE에서 폴더를 열 때 (2026-10-03)
 
 폴더 기록(`ide-recent-folders.json`) 직후 같은 오프셋이면 채팅 슬롯이 아니다. `_open_iris_ide_folder` 안이다.

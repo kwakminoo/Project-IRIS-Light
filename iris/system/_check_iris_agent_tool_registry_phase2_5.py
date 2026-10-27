@@ -204,7 +204,8 @@ def _main() -> None:
     assert "iris.mail.list_accounts" in nudge_src
     assert "iris.calendar.list_events" in nudge_src
     assert "iris.session.get_state" in nudge_src
-    assert "iris-control-nudge-v28" in nudge_src
+    assert "iris-control-nudge-v" in nudge_src
+    assert "project.create_scaffold" in nudge_src
 
     # archive-finished-reports: closed Phase 2.5 / path docs live under completed/.
     completed = root / "docs" / "code-review" / "completed"
