@@ -805,6 +805,7 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
         project_create_scaffold,
         summary="Create project folder + template (gugudan|python-hello|empty), optionally open in IDE",
         risk="medium",
+        confirm_required=True,
     )
 
     reg.register(
@@ -823,6 +824,7 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
             "open=true reveals the tab then streams chunks."
         ),
         risk="medium",
+        confirm_required=True,
     )
 
     reg.register(
@@ -835,6 +837,7 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
             "If either path is unknown, ask. Do not invent a filename."
         ),
         risk="medium",
+        confirm_required=True,
     )
 
     reg.register(
@@ -860,7 +863,11 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
         lambda args: project_run(window, args),
         summary="Run only in the bound IDE integrated terminal via Iris: Run task",
         risk="medium",
+        confirm_required=True,
     )
     from iris.runtime.chat_worktree import register_worktree_status
 
     register_worktree_status(reg, window)
+    from iris.engine.types import assert_dangerous_actions_confirm
+
+    assert_dangerous_actions_confirm(reg)

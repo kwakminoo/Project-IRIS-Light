@@ -246,3 +246,29 @@ DANGEROUS_ACTIONS = frozenset(
         "project.create_scaffold",
     }
 )
+
+
+def assert_iris_engine_tools_catalog(tools: tuple[str, ...] | None = None) -> None:
+    """Boot check. Engine-facing tool names stay one unique list."""
+    names = IRIS_ENGINE_TOOLS if tools is None else tools
+    if len(names) != len(set(names)):
+        raise AssertionError("IRIS_ENGINE_TOOLS has duplicate names")
+
+
+def assert_dangerous_actions_confirm(registry: object) -> None:
+    """Boot check. A registered DANGEROUS_ACTIONS name must have confirm_required."""
+    spec_of = getattr(registry, "spec", None)
+    if not callable(spec_of):
+        raise AssertionError("registry has no spec()")
+    missing: list[str] = []
+    for name in sorted(DANGEROUS_ACTIONS):
+        spec = spec_of(name)
+        if spec is None or not getattr(spec, "confirm_required", False):
+            missing.append(name)
+    if missing:
+        raise AssertionError(
+            "DANGEROUS_ACTIONS missing confirm_required: " + ", ".join(missing)
+        )
+
+
+assert_iris_engine_tools_catalog()

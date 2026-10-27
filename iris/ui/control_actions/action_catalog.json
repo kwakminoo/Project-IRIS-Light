@@ -585,7 +585,7 @@
     "name": "project.create_scaffold",
     "summary": "Create project folder + template (gugudan|python-hello|empty), optionally open in IDE",
     "risk": "medium",
-    "confirm_required": false
+    "confirm_required": true
   },
   {
     "name": "project.find_similar",
@@ -615,13 +615,13 @@
     "name": "project.rename_file",
     "summary": "Rename a file inside the open project. Required: path (current relative path), new_path (new relative path). Look up path with project.list_files or the open editor. If either path is unknown, ask. Do not invent a filename.",
     "risk": "medium",
-    "confirm_required": false
+    "confirm_required": true
   },
   {
     "name": "project.run",
     "summary": "Run only in the bound IDE integrated terminal via Iris: Run task",
     "risk": "medium",
-    "confirm_required": false
+    "confirm_required": true
   },
   {
     "name": "project.worktree_status",
@@ -633,7 +633,7 @@
     "name": "project.write_file",
     "summary": "Write file under the bound IDE workspace. rel_path and content are required and come from the user request. If the user did not name a file, ask before writing. open=true reveals the tab then streams chunks.",
     "risk": "medium",
-    "confirm_required": false
+    "confirm_required": true
   },
   {
     "name": "project.write_image_code",
