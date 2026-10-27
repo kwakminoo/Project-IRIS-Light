@@ -27,6 +27,8 @@ import json
 import logging
 from pathlib import Path
 
+_HOST_STDOUT = sys.stdout
+
 
 def _configure_logging() -> None:
     kwargs = {
@@ -51,7 +53,7 @@ def _is_gui_python() -> bool:
 
 
 def _emit(payload: dict) -> None:
-    print(json.dumps(payload, ensure_ascii=False), flush=True)
+    print(json.dumps(payload, ensure_ascii=False), file=_HOST_STDOUT, flush=True)
 
 
 def _fail(code: str, detail: str) -> None:
@@ -142,6 +144,7 @@ def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
         "load_soul_identity": True,
         "stream_delta_callback": _on_delta,
         "tool_progress_callback": _on_tool,
+        "quiet_mode": True,
     }
     model = raw.get("model")
     if isinstance(model, str) and model:
@@ -224,7 +227,9 @@ def main() -> None:
     if _is_gui_python():
         logging.warning("refusing to start under GuiPython")
         raise SystemExit(2)
-    print(json.dumps({"t": "hello", "ok": True}), flush=True)
+    _emit({"t": "hello", "ok": True})
+    if sys.stderr is not None:
+        sys.stdout = sys.stderr
     _serve()
 
 

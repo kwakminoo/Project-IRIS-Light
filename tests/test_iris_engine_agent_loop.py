@@ -167,6 +167,7 @@ class SidecarAgentLoopTests(TestCase):
             ctor = saved["ctors"][0]
             self.assertIs(ctor.get("skip_memory"), True)
             self.assertIsNone(ctor.get("session_db"))
+            self.assertIs(ctor.get("quiet_mode"), True)
             self.assertEqual(ctor.get("base_url"), "http://127.0.0.1:11434/v1")
             self.assertTrue(saved["runs"][0]["persist_disabled"])
 
