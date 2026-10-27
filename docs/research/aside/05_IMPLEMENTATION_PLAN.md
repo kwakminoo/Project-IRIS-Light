@@ -114,3 +114,9 @@ Phase 1 is done. Next useful IRIS work, if any, is Phase 3 or Phase 4. Do not st
 - Confirm workspace and install bundles still contain the IDE markers only if `iris/**` UI that the IDE loads also changed. Browser-only Python does not need an iris-ide rebundle.
 
 The 2026-10-27 Hermes multi-step review changed only this plan and `06_TEST_RESULTS.md`. No IRIS product code.
+
+## Hermes tool visibility (2026-10-27)
+
+`sync_iris_control` now writes `tools.tool_search.enabled: off` so MCP `iris_invoke` stays on the visible tool list. MEMORY v23 teaches those exact names, not `mcp__iris_control__*`. Sidecar child env forces UTF-8. Unknown chat errors keep the raw cause.
+
+Do not add a planner. Restart the running Hermes process after sync. Details: `07_BROWSER_RUNTIME_DEBUG.md`.

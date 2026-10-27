@@ -260,3 +260,53 @@ Judgment: existing Hermes tool loop plus `session.execute` already cover Observe
 - In-flight execute abort
 
 Phase 2 screenshot fallback, Phase 3 result events, Phase 4 secret fill, Phase 5 ephemeral profile, and Phase 6 site notes stay later work. They are not required for Hermes to chain `browser.*` commands.
+
+## Chat encoding + tool visibility (2026-10-27)
+
+Cause and path: `docs/research/aside/07_BROWSER_RUNTIME_DEBUG.md`.
+
+### Commands
+
+```
+.venv\Scripts\python.exe -m unittest tests.test_iris_engine_turn_pipe tests.test_hermes_iris_control_sync
+.venv\Scripts\python.exe -m iris.infrastructure.hermes_errors
+.venv\Scripts\python.exe -m unittest tests.browser.test_browser_session_unit tests.browser.test_browser_agent tests.browser.test_browser_intent tests.browser.test_browser_registry_sync
+.venv\Scripts\python.exe -m iris.browser._check_intent
+.venv\Scripts\python.exe -m iris.system._check_browser_scenarios
+.venv\Scripts\python.exe -m iris.ui.browser._check_mini_player
+.venv\Scripts\python.exe -m iris.browser._check_bridge_snapshot
+.venv\Scripts\python.exe -m iris.browser._check_bridge_frames
+```
+
+### Results
+
+| Check | Result |
+|---|---|
+| `SidecarUtf8EnvTests` | pass |
+| `tests.test_hermes_iris_control_sync` (`tool_search.enabled=off`, MEMORY `iris_invoke`) | pass |
+| Combined turn-pipe + sync | OK, 10 tests, 2.819s |
+| `hermes_errors` unknown text keeps `incomplete chunk after Sources` | pass |
+| Korean + Sources `iris_message_to_chat_html` | pass (isolated `_assert_error_and_user`) |
+| Combined browser unittest | OK, 76 tests |
+| `_check_intent` | `browser intent ok` |
+| `_check_browser_scenarios` | fixture A–C plus webengine smoke |
+| `_check_mini_player` | pass |
+| `_check_bridge_snapshot` | pass |
+| `_check_bridge_frames` | pass |
+| Isolated live WebEngine Naver open | pass, `https://www.naver.com/`, Korean PAGE TEXT |
+| Isolated live WebEngine Naver weather | pass, title `오늘 날씨 : 네이버 검색` |
+| Isolated live YouTube `아이유 노래` play | pass, `playing=true`, `ad_playing`, watch URL |
+| Isolated stale click | pass, `ok=false`, `detail=stale_ref`, phase READY |
+| `explain_chat_error("incomplete chunk after Sources")` | keeps the raw cause |
+
+### Not run / not pass
+
+| Check | Why |
+|---|---|
+| Desktop IRIS chat scenarios 1–6 through the open window | Cursor Computer Use sidecar_unavailable |
+| Live Control Surface `iris_invoke` | `GET /v1/state` on 127.0.0.1:8765 connected then timed out. Listener is Python312 `pythonw -m iris` PID 55724 |
+| Live Hermes NL (`_check_browser_hermes_play`) | Not re-run. Prior skip: 45s budget on `gemma4:e2b`. Gateway is up |
+| Naver home “로그인 버튼” in packed PAGE TEXT | Isolated snapshot had no 로그인 token in the excerpt |
+| Full `python -m iris.ui.chat._check_chat_blocks` | WorkspaceIrisPanel smoke: missing `'Python'` in `toHtml()`. Korean assert is not that failure |
+
+Evidence file: `.tmp/live-webengine-scenarios.json`. EngineHome already has `tools.tool_search.enabled: off` and MEMORY v23. Restart the running Hermes/IRIS process before treating NL chat as fixed.
