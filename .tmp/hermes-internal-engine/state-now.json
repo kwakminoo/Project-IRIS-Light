@@ -1,0 +1,71 @@
+{
+  "http": 200,
+  "ok": true,
+  "action": "get_state",
+  "status": "success",
+  "result": {
+    "booting": false,
+    "ui_mode": "normal",
+    "workspace_mode": "assistant",
+    "preferred_ide": "iris_ide",
+    "project_root": "C:\\Users\\serin\\IRIS-TEST",
+    "project_parents": [
+      "C:\\Users\\serin\\IRIS-TEST"
+    ],
+    "ide_attached": false,
+    "ide_pid": null,
+    "ide_session": {
+      "active": false,
+      "ide_id": "",
+      "hwnd": null,
+      "pid": null,
+      "workspace_root": "",
+      "mode": "welcome",
+      "source": "",
+      "last_seen_at": 0.0
+    },
+    "hermes_online": true,
+    "hermes_enabled": true,
+    "model": "nemotron-3-ultra:cloud",
+    "email_accounts": [
+      {
+        "id": "65f5658c1fd6",
+        "address": "dlfksmfqwr@gmail.com",
+        "label": "개인 gmail"
+      }
+    ],
+    "selected_email_account_id": "",
+    "calendar": {
+      "year": 2026,
+      "month": 10,
+      "selected_day": "2026-10-27",
+      "holiday_api_key": false
+    },
+    "mic": {
+      "state": "off",
+      "listening": false,
+      "stt_enabled": true,
+      "preferred": false
+    },
+    "emulator_running": false,
+    "emulator_serial": null,
+    "emulator_serials": [],
+    "emulator_headless": false,
+    "emulator_avd": "IrisLight_Pixel",
+    "emulator_phase": "stopped",
+    "emulator_adb_ready": false,
+    "emulator_boot_completed": false,
+    "emulator_keyboard_hint": "한글은 에뮬 화면 키보드(IME) 사용. PC 키보드는 영문·특수키(hw.keyboard)용.",
+    "browser_open": true,
+    "browser_url": "https://www.youtube.com/",
+    "browser_title": "YouTube",
+    "browser_phase": "ready",
+    "mini_player": true,
+    "browser_playing": true,
+    "browser_media_block": "",
+    "browser_target": "tab:0",
+    "browser_tab_index": 0,
+    "browser_tab_count": 1
+  },
+  "error": null
+}
