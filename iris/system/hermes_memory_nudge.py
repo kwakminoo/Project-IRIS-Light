@@ -16,29 +16,29 @@ from iris.system.hermes_iris_control_sync import hermes_home
 
 
 
-_MARKER = "<!-- iris-control-nudge-v22 -->"
+_MARKER = "<!-- iris-control-nudge-v23 -->"
 
-_BLOCK = """<!-- iris-control-nudge-v22 -->
+_BLOCK = """<!-- iris-control-nudge-v23 -->
 
 ## Iris Light UI control
 
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
 
-1. Prefer MCP tools with EXACT names: `mcp__iris_control__iris_get_state`, `mcp__iris_control__iris_get_catalog`, `mcp__iris_control__iris_invoke` (skills: iris-work-start, iris-work-end, iris-session-status, iris-vibe-code, iris-calendar, iris-wiki, iris-email). Never invent bare `iris_invoke` without the mcp__iris_control__ prefix.
+1. Prefer MCP tools with EXACT names: `iris_get_state`, `iris_get_catalog`, `iris_invoke` (skills: iris-work-start, iris-work-end, iris-session-status, iris-vibe-code, iris-calendar, iris-wiki, iris-email). Hermes lists them as those three names. Do not wait for `mcp__iris_control__` prefixes.
 
-2. "ide 켜줘" / open IDE only: `mcp__iris_control__iris_invoke` → action=`ide.enter_companion`.
+2. "ide 켜줘" / open IDE only: `iris_invoke` → action=`ide.enter_companion`.
 
 3. Do NOT use terminal `cursor`/`code` alone — that skips Iris Companion tiling.
 
 4. Do NOT claim Iris has no IDE GUI — Iris launches the preferred IDE via control surface.
 
-5. Do NOT use Hermes built-in `terminal` tool for project commands — it is disabled for Iris. ALWAYS `mcp__iris_control__iris_invoke` → action=`project.run` so output appears in the **bound IDE integrated terminal**.
+5. Do NOT use Hermes built-in `terminal` tool for project commands — it is disabled for Iris. ALWAYS `iris_invoke` → action=`project.run` so output appears in the **bound IDE integrated terminal**.
 
 6. Do NOT treat Hermes terminal cwd as Iris project_root.
 
-7. Named project (e.g. AI guitar tab / 자료구조 / 동양미래대학교): `mcp__iris_control__iris_invoke` → action=`project.open_similar` args=`{query}`.
+7. Named project (e.g. AI guitar tab / 자료구조 / 동양미래대학교): `iris_invoke` → action=`project.open_similar` args=`{query}`.
 
-8. Absolute path: `mcp__iris_control__iris_invoke` → action=`ide.open_folder` args=`{path}`.
+8. Absolute path: `iris_invoke` → action=`ide.open_folder` args=`{path}`.
 
 9. "아이리스 라이트 작업" with no other project name: `project.open_similar` query `iris light`.
 
@@ -67,7 +67,7 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 18. Mic off/on: `voice.mic_off` / `voice.mic_on` (status: `voice.mic_status`). Do not claim mic tools are missing.
 
-19. If `mcp__iris_control__*` tools are missing from your tool list: tell the user Iris Control MCP is offline (Iris app must be running; restart Hermes gateway), do not invent tool calls.
+19. If `iris_invoke` is missing from your tool list: tell the user Iris Control MCP is offline (Iris app must be running; restart Hermes gateway), do not invent tool calls.
 
 20. Open a file only with `ide.open_file` after `iris_get_state` and `project.list_files`. Relative `path` is the bound workspace, not the shell cwd. The folder action is `ide.open_folder` (there is no project.open_folder). If the file is missing, say so. Do not create another file or say it opened.
 
@@ -115,7 +115,8 @@ def ensure_memory_nudge(home: Path | None = None) -> str:
 
         _MARKER in existing
 
-        and "mcp__iris_control__iris_invoke" in existing
+        and "iris_invoke" in existing
+        and "mcp__iris_control__iris_invoke" not in existing
 
         and "voice.mic_off" in existing
 
@@ -175,7 +176,7 @@ def ensure_memory_nudge(home: Path | None = None) -> str:
 
     path.write_text(text, encoding="utf-8")
 
-    return "memory nudge updated (v22)"
+    return "memory nudge updated (v23)"
 
 
 

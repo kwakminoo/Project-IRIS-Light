@@ -78,6 +78,8 @@ def _sidecar_env(home: EngineHome, python: Path) -> dict[str, str]:
         env.pop(key, None)
     env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     env["IRIS_ENGINE_GUI_PYTHON"] = sys.executable
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     log_path = Path(home) / "logs" / "host.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env["IRIS_ENGINE_LOG"] = str(log_path)

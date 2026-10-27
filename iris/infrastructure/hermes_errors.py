@@ -145,7 +145,7 @@ def explain_chat_error(err: str) -> str:
         return "모델 서버가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도하세요."
     if raw in ("모델 응답 실패", "(빈 응답)"):
         return "모델이 답을 만들지 못했습니다. 다시 시도하세요."
-    return "요청을 처리하지 못했습니다. 잠시 후 다시 시도하세요."
+    return f"요청을 처리하지 못했습니다. ({raw[:240]})"
 
 
 def is_cloud_auth_user_message(err: str) -> bool:
@@ -218,6 +218,8 @@ if __name__ == "__main__":
     assert "연결하지 못했습니다" in explain_chat_error("Hermes 연결 실패: refused")
     assert "한도" in explain_chat_error("Ollama HTTP 429: rate limit")
     assert "답을 만들지 못했습니다" in explain_chat_error("모델 응답 실패")
+    unknown = explain_chat_error("Hermes: incomplete chunk after Sources")
+    assert "incomplete chunk after Sources" in unknown
     from unittest.mock import patch
 
     with patch(

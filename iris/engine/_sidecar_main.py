@@ -222,7 +222,15 @@ def _serve() -> None:
             return
 
 
+def _stdio_utf8() -> None:
+    for stream in (sys.stdin, _HOST_STDOUT, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> None:
+    _stdio_utf8()
     _configure_logging()
     if _is_gui_python():
         logging.warning("refusing to start under GuiPython")

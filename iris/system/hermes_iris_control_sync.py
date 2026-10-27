@@ -524,6 +524,60 @@ def ensure_hermes_disabled_terminal(*, home: Path | None = None) -> tuple[bool, 
     return True, "hermes disabled_toolsets: terminal, browser (IDE terminal via project.run; Iris QWebEngine for pages)"
 
 
+def ensure_hermes_iris_tools_eager(*, home: Path | None = None) -> tuple[bool, str]:
+    """Keep iris_invoke on the model-visible list. Hermes defers every MCP tool.
+
+    tools.tool_search.enabled=off is the shipped knob that leaves all tools eager.
+    """
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return False, "PyYAML missing — cannot set tools.tool_search"
+
+    path = hermes_config_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+        except Exception as exc:  # noqa: BLE001
+            return False, f"config.yaml parse error: {exc}"
+        if not isinstance(data, dict):
+            data = {}
+    else:
+        data = {}
+
+    tools = data.get("tools")
+    if not isinstance(tools, dict):
+        tools = {}
+    search = tools.get("tool_search")
+    if not isinstance(search, dict):
+        search = {}
+    if str(search.get("enabled") or "").strip() == "off":
+        return False, "hermes tool_search already off (iris_invoke stays visible)"
+    search["enabled"] = "off"
+    tools["tool_search"] = search
+    data["tools"] = tools
+
+    bak = path.with_name("config.yaml.bak-iris-tool-search")
+    if path.is_file() and not bak.is_file():
+        try:
+            shutil.copy2(path, bak)
+        except OSError:
+            pass
+    try:
+        path.write_text(
+            yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return False, f"config.yaml write failed: {exc}"
+    written = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    written_search = ((written.get("tools") or {}).get("tool_search") or {})
+    if str(written_search.get("enabled") or "").strip() != "off":
+        return False, "hermes tool_search enabled write missing"
+    return True, "hermes tool_search.enabled=off (iris_invoke stays on the visible tool list)"
+
+
 def ensure_skills_installed(
     repo: Path | None = None, *, home: Path | None = None
 ) -> tuple[list[str], list[str], list[str]]:
@@ -802,6 +856,14 @@ def sync_iris_control(
             report.needs_gateway_reload = True
     except Exception as exc:  # noqa: BLE001
         report.messages.append(f"terminal policy skip: {exc}")
+
+    try:
+        eager_changed, eager_msg = ensure_hermes_iris_tools_eager(home=target)
+        report.messages.append(eager_msg)
+        if eager_changed:
+            report.needs_gateway_reload = True
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"tool_search policy skip: {exc}")
 
     try:
         dead_patch = ensure_hermes_stdio_dead_check_patch(home=target)
