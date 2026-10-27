@@ -2,8 +2,8 @@
 
 Agent-readable:
 - Owns: one child slot, one lock, and the process singleton.
-- Does not: install, spawn a sidecar, or import Hermes.
-- Talks to: iris.engine.types.
+- Does not: spawn a sidecar or import Hermes.
+- Talks to: iris.engine.types and iris.engine._home probe.
 - Extend via: Engine.ensure_ready / run_turn / shutdown.
 """
 
@@ -14,6 +14,7 @@ from threading import Lock
 from types import SimpleNamespace
 from typing import Iterator
 
+from iris.engine._home import probe_engine_python
 from iris.engine.types import (
     EngineEnsureResult,
     EngineError,
@@ -22,6 +23,7 @@ from iris.engine.types import (
     EngineReady,
     EngineSource,
     ExternalGateway,
+    InternalSidecar,
     StatelessTurn,
     TurnCancelled,
     TurnEvent,
@@ -59,6 +61,16 @@ class Engine:
                         EngineError(
                             EngineErrorCode.UNKNOWN,
                             "external Hermes gateway is not wired",
+                        )
+                    )
+                if isinstance(self._source, InternalSidecar):
+                    probe = probe_engine_python(self._source.home)
+                    if probe is not None:
+                        return EngineFailed(probe)
+                    return EngineFailed(
+                        EngineError(
+                            EngineErrorCode.SPAWN_FAILED,
+                            "sidecar spawn is not wired",
                         )
                     )
                 return EngineFailed(
