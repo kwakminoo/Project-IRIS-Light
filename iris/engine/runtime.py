@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from threading import Lock
 from types import SimpleNamespace
@@ -36,6 +37,7 @@ from iris.engine.types import (
     EngineSource,
     ExternalGateway,
     InternalSidecar,
+    CancelToken,
     StatelessTurn,
     TurnCancelled,
     TurnEvent,
@@ -47,7 +49,8 @@ from iris.system.win_subprocess import no_window_kwargs
 
 _SIDECAR_MAIN = Path(__file__).resolve().parent / "_sidecar_main.py"
 _HELLO_TIMEOUT_SEC = 5.0
-_TURN_TIMEOUT_SEC = 10.0
+_TURN_IDLE_SEC = 180.0
+_CANCEL_POLL_SEC = 0.2
 _STOP_TIMEOUT_SEC = 5.0
 _GATEWAY_ENV_KEYS = (
     "API_SERVER_PORT",
@@ -89,7 +92,11 @@ def _hello_ok(line: str) -> bool:
     return isinstance(raw, dict) and raw.get("t") == "hello" and bool(raw.get("ok"))
 
 
-def _readline_timeout(stream: object, timeout: float) -> str:
+def _readline_timeout(
+    stream: object,
+    timeout: float,
+    cancel: CancelToken | None = None,
+) -> str:
     if stream is None:
         return ""
     box: list[str] = []
@@ -102,7 +109,14 @@ def _readline_timeout(stream: object, timeout: float) -> str:
 
     worker = threading.Thread(target=_read, daemon=True)
     worker.start()
-    worker.join(timeout)
+    deadline = time.monotonic() + max(0.0, timeout)
+    while worker.is_alive():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if cancel is not None and cancel.cancelled():
+            return ""
+        worker.join(min(_CANCEL_POLL_SEC, remaining))
     if not box:
         return ""
     return box[0]
@@ -272,10 +286,22 @@ class Engine:
         )
         child.stdin.flush()
 
-    def _read_turn_events(self, child: subprocess.Popen[str]) -> Iterator[TurnEvent]:
+    def _read_turn_events(
+        self,
+        child: subprocess.Popen[str],
+        cancel: CancelToken,
+    ) -> Iterator[TurnEvent]:
         while True:
-            line = _readline_timeout(child.stdout, _TURN_TIMEOUT_SEC)
+            if cancel.cancelled():
+                self._forget_child()
+                yield TurnCancelled()
+                return
+            line = _readline_timeout(child.stdout, _TURN_IDLE_SEC, cancel=cancel)
             if not line:
+                if cancel.cancelled():
+                    self._forget_child()
+                    yield TurnCancelled()
+                    return
                 if child.poll() is None:
                     yield TurnFailed(
                         EngineError(EngineErrorCode.PROTOCOL, "sidecar event timed out")
@@ -329,7 +355,7 @@ class Engine:
                         )
                     )
                     return
-                yield from self._read_turn_events(child)
+                yield from self._read_turn_events(child, turn.cancel)
         except Exception as exc:
             yield TurnFailed(EngineError(EngineErrorCode.UNKNOWN, str(exc)))
 

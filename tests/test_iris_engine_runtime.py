@@ -14,6 +14,7 @@ from iris.engine import (
     EngineErrorCode,
     EngineFailed,
     EngineHome,
+    EngineReady,
     ExternalGateway,
     InternalSidecar,
     StatelessTurn,
@@ -97,6 +98,38 @@ class EngineReadyStubTests(TestCase):
         engine = Engine(self._internal())
         events = list(engine.run_turn(_turn(cancelled=True)))
         self.assertEqual(events, [TurnCancelled()])
+
+    def test_mid_turn_cancel_kills_child_and_yields_cancelled(self) -> None:
+        from unittest.mock import MagicMock
+
+        engine = Engine(self._internal())
+        fake = MagicMock()
+        fake.poll.return_value = None
+        engine._child = fake
+        token = CancelToken()
+        turn = StatelessTurn(
+            transcript=ChatTranscript.parse([{"role": "user", "content": "hi"}]),
+            model=HermesInferenceTarget(model="llama3.2", provider="custom"),
+            cancel=token,
+        )
+
+        def read(*_a, **_k):
+            token.cancel()
+            return ""
+
+        with (
+            patch.object(
+                engine,
+                "ensure_ready",
+                return_value=EngineReady(self._internal(), "ready"),
+            ),
+            patch.object(engine, "_write_turn"),
+            patch("iris.engine.runtime._readline_timeout", side_effect=read),
+            patch.object(engine, "_forget_child") as forget,
+        ):
+            events = list(engine.run_turn(turn))
+        self.assertEqual(events, [TurnCancelled()])
+        forget.assert_called()
 
 
 class ParseEngineSourceTests(TestCase):
