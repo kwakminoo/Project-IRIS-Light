@@ -28,9 +28,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
+from iris.infrastructure.agent_runtime import (
+    apply_iris_agent_baseline_overlays,
+    ensure_iris_agent_home,
+    load_pinned_sha,
+    load_upstream_url,
+)
 from iris.system import hermes_gateway as gw
 
-HERMES_REPO_HTTPS = "https://github.com/NousResearch/hermes-agent.git"
+HERMES_REPO_HTTPS = load_upstream_url()
 StreamFn = Callable[[str], None]
 _HERMES_PYTHON_MIN = (3, 11)
 _HERMES_PYTHON_MAX_EXCLUSIVE = (3, 14)
@@ -411,8 +417,8 @@ def _user_path_prepend(scripts: Path) -> None:
     path = os.environ.get("PATH", "")
     if s.lower() not in path.lower():
         os.environ["PATH"] = s + os.pathsep + path
-    # 실제 사용자 Hermes 홈만 레지스트리에 남긴다. Temp 등 테스트 홈은 이 프로세스만.
-    real = Path(os.environ.get("LOCALAPPDATA") or "") / "hermes"
+    # 제품 홈(또는 IRIS_AGENT_HOME) 아래 Scripts 만 레지스트리에 남긴다.
+    real = gw.hermes_home()
     try:
         scripts.resolve().relative_to(real.resolve())
     except (ValueError, OSError):
@@ -460,8 +466,10 @@ def _redact(text: str) -> str:
     return redact_secrets(text or "")
 
 
-def write_install_log(body: str, *, prefix: str = "iris-install") -> Path:
-    log_dir = gw.hermes_home() / "logs"
+def write_install_log(
+    body: str, *, prefix: str = "iris-install", home: Path | None = None
+) -> Path:
+    log_dir = (home if home is not None else gw.hermes_home()) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     path = log_dir / f"{prefix}-{stamp}.log"
@@ -602,7 +610,14 @@ def _retarget_moved_tree(root: Path, old: Path, new: Path) -> int:
     return changed
 
 
-def _activate_staged(home: Path, staging: Path, stamp: str, command: str) -> tuple[bool, str]:
+def _activate_staged(
+    home: Path,
+    staging: Path,
+    stamp: str,
+    command: str,
+    *,
+    probe_gateway: bool = True,
+) -> tuple[bool, str]:
     """교체하고 경로를 고친 뒤, 최종 위치에서만 실행 probe 한다."""
     old = Path(staging)
     swapped, note = _swap_in_staging(home, staging, stamp)
@@ -610,7 +625,13 @@ def _activate_staged(home: Path, staging: Path, stamp: str, command: str) -> tup
         return False, note
     live = home / "hermes-agent"
     _retarget_moved_tree(live, old, live)
-    ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
+    if probe_gateway:
+        ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
+    else:
+        venv_py = live / (
+            "venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python"
+        )
+        ok, detail = _probe_venv(venv_py)
     if not ok:
         _restore_backup(home, stamp)
         return False, detail
@@ -688,6 +709,7 @@ def _finish_staged_install(
     fail: Callable[..., InstallResult],
     run_streamed: Callable[..., subprocess.CompletedProcess[str]] | None,
     should_abort: Callable[[], bool] | None,
+    probe_gateway: bool = True,
 ) -> InstallResult:
     venv_dir = staging / "venv"
     emit("venv 생성…")
@@ -795,7 +817,9 @@ def _finish_staged_install(
         _discard_tree(staging)
         return fail("probe", "실행 검증 실패", "\n".join(log))
 
-    runtime_ok, runtime_detail = _activate_staged(home, staging, stamp, command)
+    runtime_ok, runtime_detail = _activate_staged(
+        home, staging, stamp, command, probe_gateway=probe_gateway
+    )
     if not runtime_ok:
         log.append(runtime_detail)
         return fail("probe", "최종 경로 실행 검증 실패", "\n".join(log))
@@ -934,13 +958,45 @@ def _try_uv_sync(
 
 
 def _guard_installed_agent(agent: Path) -> None:
-    """우회 설치로 hermes-agent 트리가 생긴 직후 options 가드 1회. 실패해도 설치는 성공."""
+    """우회 설치 직후 Iris Agent baseline overlay 1회. 실패해도 설치는 성공."""
     try:
-        from iris.system.hermes_ollama_guard import apply_ollama_options_guard
-
-        apply_ollama_options_guard(agent)
+        apply_iris_agent_baseline_overlays(agent)
     except Exception:
         return
+
+
+def _checkout_pinned_sha(git: str, staging: Path, pin: str) -> subprocess.CompletedProcess[str]:
+    """shallow clone 대신 init+fetch+checkout 으로 pin 만 받는다."""
+    init = _run([git, "-c", "core.longpaths=true", "init", str(staging)], timeout=60.0)
+    if init.returncode != 0:
+        return init
+    remote = _run(
+        [git, "-C", str(staging), "remote", "add", "origin", HERMES_REPO_HTTPS],
+        timeout=30.0,
+    )
+    if remote.returncode != 0:
+        return remote
+    fetch = _run(
+        [
+            git,
+            "-c",
+            "core.longpaths=true",
+            "-C",
+            str(staging),
+            "fetch",
+            "--depth",
+            "1",
+            "origin",
+            pin,
+        ],
+        timeout=600.0,
+    )
+    if fetch.returncode != 0:
+        return fetch
+    return _run(
+        [git, "-C", str(staging), "checkout", "--force", "FETCH_HEAD"],
+        timeout=120.0,
+    )
 
 
 def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | None:
@@ -966,15 +1022,27 @@ def install_hermes_with_system_python(
     on_stream: StreamFn | None = None,
     run_streamed: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     should_abort: Callable[[], bool] | None = None,
+    home: Path | None = None,
+    sha: str | None = None,
 ) -> InstallResult:
-    """staging 에 설치하고 import probe 통과 후에만 live 와 교체."""
+    """staging 에 설치하고 import probe 통과 후에만 live 와 교체.
+
+    home 기본은 제품 Iris Agent 홈. Engine 경로면 EngineHome Path 를 넘긴다.
+    """
 
     def _emit(msg: str) -> None:
         if on_stream:
             on_stream(msg)
 
+    explicit_home = home is not None
+    home = Path(home) if explicit_home else ensure_iris_agent_home()
+    # EngineHome install must not require :8642 gateway probe.
+    probe_gateway = not explicit_home
+
     def _fail(kind: str, prefix: str, body: str, log_path: Path | None = None) -> InstallResult:
-        path = log_path or write_install_log(body or prefix, prefix="iris-install")
+        path = log_path or write_install_log(
+            body or prefix, prefix="iris-install", home=home
+        )
         msg = format_install_failure(prefix, body, path, kind)
         _emit(msg)
         return InstallResult(False, msg, kind, str(path))
@@ -982,12 +1050,18 @@ def install_hermes_with_system_python(
     if should_abort and should_abort():
         return InstallResult(False, "사용자가 중단함", "cancel")
 
-    home = gw.hermes_home()
     try:
         with hermes_install_lock(home):
-            already, already_detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
-            if already:
-                return InstallResult(True, f"이미 사용 가능 ({already_detail})", "ok")
+            # probe_hermes_runtime reads the default gateway home. Explicit
+            # EngineHome is a different tree; caller already probed that one.
+            if not explicit_home:
+                already, already_detail = gw.probe_hermes_runtime(
+                    command=command, timeout_sec=30.0
+                )
+                if already:
+                    return InstallResult(
+                        True, f"이미 사용 가능 ({already_detail})", "ok"
+                    )
             py = ensure_system_python_winget(run_streamed=run_streamed, on_stream=on_stream)
             if py is None:
                 return _fail("python", "베이스 Python 없음", "py -3.11..3.13 / winget 3.11 실패")
@@ -1001,18 +1075,32 @@ def install_hermes_with_system_python(
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
             staging = home / f"hermes-agent.staging-{stamp}"
             _discard_tree(staging)
-            _emit("Hermes 저장소 HTTPS clone (staging)…")
+            pin = (sha or "").strip() or load_pinned_sha()
+            _emit(f"Iris Agent 런타임 pin checkout ({pin[:7]})…")
             started = time.monotonic()
-            clone = _run(
-                [git, "-c", "core.longpaths=true", "clone", "--depth", "1", HERMES_REPO_HTTPS, str(staging)],
-                timeout=600.0,
+            staging.mkdir(parents=True, exist_ok=True)
+            clone = _checkout_pinned_sha(git, staging, pin)
+            log.append(
+                f"pin={pin} checkout rc={clone.returncode} "
+                f"elapsed={time.monotonic() - started:.1f}s"
             )
-            log.append(f"clone rc={clone.returncode} elapsed={time.monotonic() - started:.1f}s")
             log.append(clone.stdout or "")
             log.append(clone.stderr or "")
-            if clone.returncode != 0 or not staging.is_dir():
+            if clone.returncode != 0 or not (staging / "hermes_cli").is_dir():
                 _discard_tree(staging)
-                return _fail("clone", "git clone 실패", "\n".join(log))
+                return _fail("clone", "git pin checkout 실패", "\n".join(log))
+            head = _run(
+                [git, "-C", str(staging), "rev-parse", "HEAD"], timeout=30.0
+            )
+            got = (head.stdout or "").strip()
+            log.append(f"rev-parse={got}")
+            if got.lower() != pin.lower():
+                _discard_tree(staging)
+                return _fail(
+                    "clone",
+                    "pin SHA 불일치",
+                    f"want={pin} got={got}\n" + "\n".join(log),
+                )
             want = hermes_python_range(staging)
             have = python_version(py)
             log.append(f"repo python range={want} chosen={have}")
@@ -1036,6 +1124,7 @@ def install_hermes_with_system_python(
                 fail=_fail,
                 run_streamed=run_streamed,
                 should_abort=should_abort,
+                probe_gateway=probe_gateway,
             )
     except InstallBusy as exc:
         return _fail("lock", "설치 잠금", str(exc))

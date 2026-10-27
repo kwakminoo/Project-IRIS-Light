@@ -23,10 +23,10 @@ from typing import Any, Callable
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from iris.infrastructure.agent_runtime import ensure_iris_agent_runtime
 from iris.infrastructure.hermes_credentials import is_weak_hermes_api_key
 from iris.system.hermes_gateway import (
     CODE_PROCESS_CRASH,
-    ensure_hermes_gateway_running,
     ensure_hermes_provider_config,
     hermes_executable,
     hermes_home,
@@ -436,7 +436,7 @@ def _warm_core_services(
     if ollama_executable():
         ensure_ollama_running(ollama_base_url, wait_sec=half)
     if hermes_executable(hermes_command):
-        ensure_hermes_gateway_running(
+        ensure_iris_agent_runtime(
             hermes_base_url,
             api_key=resolve_hermes_api_key(),
             command=hermes_command,
@@ -699,11 +699,11 @@ HERMES_MIN_OLLAMA_NUM_CTX = 64000
 
 
 def _guard_fresh_hermes_tree() -> None:
-    """공식 설치가 hermes-agent 트리를 만든 직후 options 가드 1회."""
+    """공식 설치가 hermes-agent 트리를 만든 직후 Iris Agent baseline overlay 1회."""
     try:
-        from iris.system.hermes_ollama_guard import apply_ollama_options_guard
+        from iris.infrastructure.agent_runtime import apply_iris_agent_baseline_overlays
 
-        apply_ollama_options_guard(hermes_home() / "hermes-agent")
+        apply_iris_agent_baseline_overlays(hermes_home() / "hermes-agent")
     except Exception:
         return
 
@@ -1243,13 +1243,13 @@ class SetupProtocol:
                 detail = (
                     f"[READY] /health OK 이지만 gateway_ready 실패 ({ready.code}).\n"
                     f"{ready.detail}\n"
-                    f"로그: %LOCALAPPDATA%\\hermes\\logs\\iris-gateway"
+                    f"로그: ~/.iris-light/agent/logs/iris-gateway"
                 )
             else:
                 detail = (
-                    f"[HEALTH] Hermes gateway /health 실패 ({health.code})\n"
+                    f"[HEALTH] Iris Agent gateway /health 실패 ({health.code})\n"
                     "조치: 시작 프로토콜을 다시 실행하거나 "
-                    "%LOCALAPPDATA%\\hermes\\logs\\iris-gateway 로그를 확인하세요."
+                    "~/.iris-light/agent/logs/iris-gateway 로그를 확인하세요."
                 )
             self._record_last_verify("quick", False, detail)
             return False, detail
@@ -2803,7 +2803,6 @@ class SetupProtocol:
             return self._record_step("hermes_gateway", "failed", "사용자가 중단함")
         key = resolve_hermes_api_key()
         from iris.system.hermes_gateway import (
-            ensure_hermes_gateway_running,
             get_last_gateway_diagnosis,
             is_hermes_gateway_running,
             restart_hermes_gateway,
@@ -2817,6 +2816,13 @@ class SetupProtocol:
 
         def _try_start(*, prefer_restart: bool) -> bool:
             if prefer_restart:
+                # Home + provider via supervisor; restart is a lifecycle variant.
+                ensure_iris_agent_runtime(
+                    self.hermes_base_url,
+                    api_key=key,
+                    command=self.hermes_command,
+                    start_gateway=False,
+                )
                 return restart_hermes_gateway(
                     self.hermes_base_url,
                     api_key=key,
@@ -2825,14 +2831,14 @@ class SetupProtocol:
                     should_abort=_aborting,
                     on_progress=_progress,
                 )
-            return ensure_hermes_gateway_running(
+            return ensure_iris_agent_runtime(
                 self.hermes_base_url,
                 api_key=key,
                 command=self.hermes_command,
                 wait_sec=55.0,
                 should_abort=_aborting,
                 on_progress=_progress,
-            )
+            ).ok
 
         def _should_auto_repair_runtime() -> bool:
             if self._hermes_runtime_repaired or self.simulate or self.dry_run:
@@ -2975,7 +2981,7 @@ class SetupProtocol:
             return self._record_step(
                 "hermes_gateway",
                 "failed",
-                "[HEALTH] gateway /health 실패 — 로그: %LOCALAPPDATA%\\hermes\\logs\\iris-gateway",
+                "[HEALTH] gateway /health 실패 — 로그: ~/.iris-light/agent/logs/iris-gateway",
                 action_hint="다시 시도하거나 로그 폴더를 확인하세요.",
             )
         _progress("MCP iris-control 검증…")

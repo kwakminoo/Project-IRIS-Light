@@ -100,7 +100,7 @@ SOFTWARE.
 | 대상 | 관계 | 라이선스 |
 |------|------|----------|
 | Ollama | HTTP `:11434` | MIT (업스트림) |
-| Hermes Agent | HTTP `:8642` | 업스트림 조건 |
+| Hermes Agent by Nous Research (MIT) | Iris Agent 뼈대. HTTP `:8642`. 설치는 `vendor/iris-agent-runtime/PIN` 만. 전체 소스 모노레포 번들 아님 | MIT |
 | Eclipse Theia (IRIS IDE) | 선택 Node 프로세스 | EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0 |
 | Silero VAD ONNX | 실행 시 다운로드 | MIT |
 

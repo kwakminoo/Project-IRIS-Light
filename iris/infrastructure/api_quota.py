@@ -1,6 +1,6 @@
 """외부 API 월 할당량(검색·크레딧) 조회.
 
-Hermes `%LOCALAPPDATA%/hermes/.env` 키를 읽어 SerpApi·Firecrawl 잔량을 가져온다.
+Iris Agent 홈 ``.env`` 키를 읽어 SerpApi·Firecrawl 잔량을 가져온다.
 Exa/Naver/Gemini는 공개 잔량 API가 없어 제외.
 """
 
@@ -14,6 +14,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+from iris.infrastructure.hermes_credentials import hermes_home
 
 _SERPAPI_ACCOUNT = "https://serpapi.com/account.json"
 _FIRECRAWL_USAGE_URLS = (
@@ -39,10 +41,7 @@ class ApiQuota:
 
 
 def _hermes_env_path() -> Path:
-    local = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CONFIG_HOME") or ""
-    if local:
-        return Path(local) / "hermes" / ".env"
-    return Path.home() / ".hermes" / ".env"
+    return hermes_home() / ".env"
 
 
 def _parse_dotenv(path: Path) -> dict[str, str]:

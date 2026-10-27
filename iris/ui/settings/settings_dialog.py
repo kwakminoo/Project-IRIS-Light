@@ -1,4 +1,4 @@
-"""Iris Light 설정 — Ollama / Hermes / 이메일 / IDE."""
+"""Iris Light 설정 — Ollama / Iris Agent / 이메일 / IDE."""
 
 from __future__ import annotations
 
@@ -107,6 +107,11 @@ from iris.ui.settings.history_failover_box import (
     save_history_failover,
 )
 from iris.ui.settings.routines_box import build_routines_box
+from iris.system.hermes_login_warm import sync as sync_hermes_login_warm
+from iris.ui.settings.hermes_login_warm_box import (
+    HermesLoginWarmBox,
+    save_hermes_login_warm_box,
+)
 from iris.ui.settings.update_notify_box import UpdateNotifyBox, save_update_notify_box
 from iris.ui.settings.voice_runtime_status import VoiceRuntimeStatusWidget
 from iris.ui.shared.theme_tokens import TOKENS
@@ -310,7 +315,7 @@ class SettingsDialog(QDialog):
         root.addWidget(make_title("SETTINGS"))
         root.addWidget(
             make_hint(
-                "Ollama · Hermes · API(검색·캘린더·LLM) · 음성 · 이메일 · IDE Companion을 설정합니다. "
+                "Ollama · Iris Agent · API(검색·캘린더·LLM) · 음성 · 이메일 · IDE Companion을 설정합니다. "
                 "창을 늘리거나 스크롤하면 모든 항목을 가리지 않고 볼 수 있습니다."
             )
         )
@@ -347,6 +352,7 @@ class SettingsDialog(QDialog):
         q.append(self._section_typography)
         q.append(self._section_connection)
         q.append(self._section_update_notify)
+        q.append(self._section_hermes_login_warm)
         q.append(self._section_api)
         if self._db is None:
             return
@@ -368,49 +374,44 @@ class SettingsDialog(QDialog):
         self._content_lay.addWidget(build_typography_box(self._db))
 
     def _section_connection(self) -> None:
+        from iris.infrastructure.agent_runtime import load_pinned_sha
+
         settings = self._settings
-        conn_box = QGroupBox("연결 (Ollama / Hermes)")
+        conn_box = QGroupBox("연결 (Ollama)")
         conn_lay = QVBoxLayout(conn_box)
         conn_lay.setSpacing(TOKENS.spacing_sm)
         conn_lay.addWidget(
             make_hint(
-                "채팅은 항상 Hermes API로 전달되며, 선택한 모델이 Hermes에도 동기화됩니다. "
-                "Hermes는 도구 호출의 필수 경로이므로 끌 수 없습니다."
+                "채팅은 Iris Agent로 전달되며, 선택한 모델이 에이전트에도 동기화됩니다. "
+                "에이전트는 도구 호출의 필수 경로이므로 끌 수 없습니다. "
+                "에이전트 URL·키·명령은 런타임 홈이 소유하며 여기에서는 편집하지 않습니다."
             )
         )
         form = QFormLayout()
         configure_form(form)
         self._ollama_url = QLineEdit(settings.ollama_base_url)
         self._ollama_model = QLineEdit(settings.ollama_model)
-        self._hermes_cmd = QLineEdit(settings.hermes_command)
-        self._hermes_url = QLineEdit(settings.hermes_base_url)
-        try:
-            from iris.infrastructure.hermes_credentials import resolve_hermes_api_key
-
-            hermes_key_default = resolve_hermes_api_key(settings.hermes_api_key)
-        except Exception:
-            hermes_key_default = settings.hermes_api_key
-        self._hermes_key = QLineEdit(hermes_key_default)
-        self._hermes_key.setEchoMode(QLineEdit.EchoMode.Password)
-        for edit in (
-            self._ollama_url,
-            self._ollama_model,
-            self._hermes_url,
-            self._hermes_key,
-            self._hermes_cmd,
-        ):
+        for edit in (self._ollama_url, self._ollama_model):
             edit.setMinimumHeight(32)
+        pin = load_pinned_sha()
+        self._agent_version = QLabel(pin)
+        self._agent_version.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._agent_version.setToolTip("vendor/iris-agent-runtime PIN")
         form.addRow(make_form_label("Ollama Base URL"), self._ollama_url)
         form.addRow(make_form_label("Ollama Model"), self._ollama_model)
-        form.addRow(make_form_label("Hermes API URL"), self._hermes_url)
-        form.addRow(make_form_label("Hermes API Key"), self._hermes_key)
-        form.addRow(make_form_label("Hermes 명령"), self._hermes_cmd)
+        form.addRow(make_form_label("에이전트 버전"), self._agent_version)
         conn_lay.addLayout(form)
         self._content_lay.addWidget(make_collapsible(conn_box))
 
     def _section_update_notify(self) -> None:
         self._update_notify_box = UpdateNotifyBox(self._db)
         self._content_lay.addWidget(make_collapsible(self._update_notify_box))
+
+    def _section_hermes_login_warm(self) -> None:
+        self._hermes_login_warm_box = HermesLoginWarmBox(self._db)
+        self._content_lay.addWidget(make_collapsible(self._hermes_login_warm_box))
 
     def _section_api(self) -> None:
         self._content_lay.addWidget(make_collapsible(self._build_api_box()))
@@ -2416,12 +2417,12 @@ class SettingsDialog(QDialog):
             self._parents_list.addItem(QListWidgetItem(path))
 
     def _build_hermes_control_box(self) -> QGroupBox:
-        box = QGroupBox("Iris ↔ Hermes Control")
+        box = QGroupBox("Iris Agent Control")
         lay = QVBoxLayout(box)
         lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
             make_hint(
-                "MCP(iris_get_state / iris_invoke)와 iris-work-start 스킬을 Hermes에 동기화합니다. "
+                "MCP(iris_get_state / iris_invoke)와 iris-work-start 스킬을 Iris Agent에 동기화합니다. "
                 "도구가 안 보이면 동기화 후 새 채팅을 시작하세요."
             )
         )
@@ -2441,7 +2442,7 @@ class SettingsDialog(QDialog):
         lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
             make_hint(
-                "Ollama · Hermes · iris-control MCP 등 Core 환경과 IRIS IDE(선택)를 설치하거나 상태를 검사합니다. "
+                "Ollama · Iris Agent · iris-control MCP 등 Core 환경과 IRIS IDE(선택)를 설치하거나 상태를 검사합니다. "
                 "검사는 서비스 기동·연결을 시도한 뒤, 부족하면 자동 설치/복구까지 진행합니다. "
                 "미설치면 「시작 프로토콜 가동」, 이미 준비됐으면 「검사」가 표시됩니다."
             )
@@ -2676,7 +2677,7 @@ class SettingsDialog(QDialog):
             f"Ollama {'OK' if snap.get('ollama_exe') else '없음'}"
             + self._setup_running_suffix(snap.get("ollama_running")),
             f"로컬 모델 {int(snap.get('local_model_count') or 0)}개",
-            f"Hermes {'OK' if snap.get('hermes_exe') else '없음'}"
+            f"에이전트 {'OK' if snap.get('hermes_exe') else '없음'}"
             + self._setup_running_suffix(snap.get("hermes_running")),
             f"venv {'OK' if snap.get('venv_ok') else '없음'}",
             f"API 키 {'설정됨' if snap.get('api_key_set') else '없음'}",
@@ -2700,11 +2701,8 @@ class SettingsDialog(QDialog):
         return SetupProtocol(
             ollama_base_url=self._ollama_url.text().strip()
             or self._settings.ollama_base_url,
-            hermes_base_url=self._hermes_url.text().strip()
-            or self._settings.hermes_base_url,
-            hermes_command=self._hermes_cmd.text().strip()
-            or self._settings.hermes_command
-            or "hermes",
+            hermes_base_url=self._settings.hermes_base_url,
+            hermes_command=self._settings.hermes_command or "hermes",
             min_model=self._ollama_model.text().strip() or self._settings.ollama_model,
         )
 
@@ -2866,13 +2864,17 @@ class SettingsDialog(QDialog):
         return settings_service.load_hermes_sync_status_text()
 
     def _run_hermes_control_sync(self) -> None:
+        from iris.infrastructure.hermes_credentials import resolve_hermes_api_key
         from iris.ui.workers.hermes_workers import HermesControlSyncWorker
 
         if self._sync_worker is not None and self._sync_worker.isRunning():
             return
-        base = self._hermes_url.text().strip() or "http://127.0.0.1:8642/v1"
-        key = self._hermes_key.text().strip()
-        cmd = self._hermes_cmd.text().strip() or "hermes"
+        base = (self._settings.hermes_base_url or "").strip() or "http://127.0.0.1:8642/v1"
+        try:
+            key = resolve_hermes_api_key(self._settings.hermes_api_key)
+        except Exception:
+            key = self._settings.hermes_api_key or ""
+        cmd = (self._settings.hermes_command or "").strip() or "hermes"
         self._sync_btn.setEnabled(False)
         self._sync_status.setText("상태: 동기화 중…")
         worker = HermesControlSyncWorker(
@@ -2892,7 +2894,7 @@ class SettingsDialog(QDialog):
             QMessageBox.information(
                 self,
                 "Iris Control 동기화",
-                "동기화 완료.\nHermes gateway를 재기동했고 MCP 도구가 연결됐습니다.\n"
+                "동기화 완료.\nIris Agent를 재기동했고 MCP 도구가 연결됐습니다.\n"
                 "Iris에서 새 채팅을 열어 테스트하세요.",
             )
         else:
@@ -3057,18 +3059,41 @@ class SettingsDialog(QDialog):
             notify = getattr(self, "_update_notify_box", None)
             if notify is not None:
                 save_update_notify_box(self._db, notify)
+            warm_box = getattr(self, "_hermes_login_warm_box", None)
+            if warm_box is not None:
+                save_hermes_login_warm_box(self._db, warm_box)
+                try:
+                    warm_status = sync_hermes_login_warm(warm_box.prefs().enabled)
+                except Exception as exc:  # noqa: BLE001
+                    warm_status = None
+                    QMessageBox.warning(
+                        self,
+                        "Iris Agent 미리 기동",
+                        f"작업 스케줄 동기화 실패: {exc}",
+                    )
+                if (
+                    warm_status is not None
+                    and warm_box.prefs().enabled
+                    and not warm_status.registered
+                ):
+                    QMessageBox.warning(
+                        self,
+                        "Iris Agent 미리 기동",
+                        f"등록 실패: {warm_status.detail}",
+                    )
         self._persist_search_calendar_api_keys()
         try:
             from iris.infrastructure.hermes_credentials import resolve_hermes_api_key
 
-            hermes_api_key = resolve_hermes_api_key(self._hermes_key.text().strip())
+            hermes_api_key = resolve_hermes_api_key(self._settings.hermes_api_key)
         except Exception:
-            hermes_api_key = self._hermes_key.text().strip()
+            hermes_api_key = self._settings.hermes_api_key or ""
         self._result = LightSettingsSelection(
             ollama_base_url=self._ollama_url.text().strip() or "http://127.0.0.1:11434/v1",
             ollama_model=self._ollama_model.text().strip(),
-            hermes_command=self._hermes_cmd.text().strip() or "hermes",
-            hermes_base_url=self._hermes_url.text().strip() or "http://127.0.0.1:8642/v1",
+            hermes_command=self._settings.hermes_command or "hermes",
+            hermes_base_url=self._settings.hermes_base_url
+            or "http://127.0.0.1:8642/v1",
             hermes_api_key=hermes_api_key,
             voice_prefs=voice_prefs,
             learning_prefs=learning_prefs,

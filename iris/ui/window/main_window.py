@@ -684,6 +684,7 @@ class MainWindow(QMainWindow):
         self._routine_in_flight = None
         self._iris_state_cache: dict[str, str] = {}
         self._routine_wake_wanted = None
+        self._hermes_login_warm_wanted = None
         self._obsidian_page.set_wiki(self._iris_wiki)
         self._left_sidebar.obsidian_detail.set_wiki(self._iris_wiki)
         self._left_sidebar.obsidian_detail.note_selected.connect(self._obsidian_page.show_note)
@@ -725,6 +726,7 @@ class MainWindow(QMainWindow):
             # 토스트 클릭용 URI 스킴 — 앱이 꺼진 뒤에 눌러도 동작하려면
             # 켜져 있는 동안 미리 걸어 둬야 한다.
             QTimer.singleShot(15_000, self._register_toast_click)
+            QTimer.singleShot(16_000, self._sync_hermes_login_warm)
 
         left_lay = self._assistant_page.center_layout
         right_lay = self._assistant_page.right_layout
@@ -1172,7 +1174,7 @@ class MainWindow(QMainWindow):
         mark_control_ready(self)
         if not hide_ready:
             if self._boot_ready_pending:
-                self._chat.append_message_instant("Iris", "Hermes 연결 준비를 확인하고 있습니다…")
+                self._chat.append_message_instant("Iris", "Iris Agent 연결 준비를 확인하고 있습니다…")
             else:
                 self._chat.append_message("Iris", self._ready_status_message())
         if sys.platform == "win32":
@@ -1199,7 +1201,7 @@ class MainWindow(QMainWindow):
             target_id=0,
             category="NORMAL",
             title=APP_DISPLAY_NAME,
-            message="Ollama 모델 목록이 연결되었습니다. Hermes gateway는 자동으로 기동됩니다.",
+            message="Ollama 모델 목록이 연결되었습니다. Iris Agent는 자동으로 기동됩니다.",
             focus_hint="",
             event_id=0,
         )
@@ -1532,7 +1534,7 @@ class MainWindow(QMainWindow):
 
                 diagnosis = get_last_gateway_diagnosis()
                 self._chat.append_error_message(
-                    "Hermes 연결 준비가 완료되지 않았습니다.",
+                    "Iris Agent 연결 준비가 완료되지 않았습니다.",
                     diagnosis.detailed_message() if diagnosis else "Gateway 준비 확인에 실패했습니다.",
                 )
 
@@ -1544,7 +1546,7 @@ class MainWindow(QMainWindow):
         )
         self._hermes_health_worker = None
         if getattr(self, "_boot_ready_pending", False):
-            self._chat.append_error_message("Hermes 연결 준비를 확인하지 못했습니다.", _err)
+            self._chat.append_error_message("Iris Agent 연결 준비를 확인하지 못했습니다.", _err)
         self._boot_ready_pending = False
 
     def _sync_hermes_model(self, model: str) -> None:
@@ -1552,6 +1554,19 @@ class MainWindow(QMainWindow):
             return
         model = (model or "").strip()
         if not model:
+            return
+        try:
+            from iris.engine import ExternalGateway, shared_engine
+
+            if not isinstance(shared_engine().source, ExternalGateway):
+                return
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self._live_activity.append_instant_line(
+                    f"Hermes model sync skip: {str(exc)[:120]}"
+                )
+            except Exception:
+                pass
             return
         from iris.infrastructure.hermes_errors import cloud_model_blocked_without_login
 
@@ -2390,6 +2405,32 @@ class MainWindow(QMainWindow):
         elif wanted:
             self._live_activity.append_instant_line(
                 f"아이리스가 꺼져 있어도 루틴이 돕니다 ({status.detail})."
+            )
+
+    def _sync_hermes_login_warm(self) -> None:
+        """로그인 시 Hermes 미리 기동 작업을 prefs에 맞춘다. 원하는 값이 같을 때는 생략."""
+        from iris.storage.hermes_login_warm_prefs import load_hermes_login_warm
+        from iris.system.hermes_login_warm import is_supported, sync
+
+        if not is_supported() or self._db is None:
+            return
+        try:
+            wanted = bool(load_hermes_login_warm(self._db).enabled)
+        except Exception:  # noqa: BLE001
+            return
+        if getattr(self, "_hermes_login_warm_wanted", None) == wanted:
+            return
+        self._hermes_login_warm_wanted = wanted
+        try:
+            status = sync(wanted)
+        except Exception as exc:  # noqa: BLE001
+            self._live_activity.append_instant_line(
+                f"Hermes 미리 기동 동기화 실패 — {str(exc)[:100]}"
+            )
+            return
+        if wanted and not status.registered:
+            self._live_activity.append_instant_line(
+                f"Hermes 미리 기동 등록 실패 — {status.detail[:100]}"
             )
 
     def _tick_routines(self) -> None:
@@ -3899,7 +3940,18 @@ class MainWindow(QMainWindow):
         self._obsidian_page._graph.focus(rel)
 
     def _gate_chat_completion(self, text: str) -> str:
-        return text or ""
+        from iris.ui.chat.file_write_claim import settle_completion_claim, turn_write_evidence
+
+        state = self._live_vibe or {}
+        evidence = turn_write_evidence(
+            verified_path=str(getattr(self, "_turn_write_path", "") or ""),
+            tool_written=bool(state.get("tool_written")),
+        )
+        return settle_completion_claim(
+            text or "",
+            verified_path=evidence.verified_path,
+            wrote=evidence.wrote,
+        ).display
 
     def _write_fenced_once(self, code: str, lang: str) -> dict | None:
         surface = getattr(self, "_control_surface", None)
@@ -4655,7 +4707,7 @@ class MainWindow(QMainWindow):
                 return
         if self._use_hermes_backend() and not self._hermes_online:
             self._live_activity.append_instant_line(
-                "Hermes gateway Offline — 기동 후 연결을 시도합니다…"
+                "Iris Agent Offline — 기동 후 연결을 시도합니다…"
             )
             self._refresh_hermes_health()
 
@@ -5341,9 +5393,15 @@ class MainWindow(QMainWindow):
             return
         if self._turn_dispatcher.is_session_busy(cid) or self._turn_dispatcher.pending_count_for(cid):
             return
-        from iris.runtime.turn_followthrough import FOLLOWTHROUGH_UTTERANCE
+        from iris.runtime.turn_followthrough import (
+            FILE_FOLLOWTHROUGH_UTTERANCE,
+            FOLLOWTHROUGH_UTTERANCE,
+        )
+        from iris.ui.chat.file_write_claim import file_create_goal
 
         utterance = FOLLOWTHROUGH_UTTERANCE
+        if file_create_goal(slot.followthrough_goal or "").matched:
+            utterance = FILE_FOLLOWTHROUGH_UTTERANCE
         if getattr(self, "_followthrough_wiki_rerun", False) and slot.followthrough_goal:
             utterance = slot.followthrough_goal
         self._followthrough_wiki_rerun = False
@@ -5553,6 +5611,10 @@ class MainWindow(QMainWindow):
 
             note_wiki_tool(self, text)
             self._live_activity.append_instant_line(f"[Hermes tool] {text}")
+            # 도구 왕복 중에도 생성 중 표시를 유지한다.
+            if not self._busy:
+                self._busy = True
+            self._chat.set_generating(True)
 
     def _on_chat_connecting(self, model: str, host: str) -> None:
         if self._ignore_chat_result:
@@ -5653,6 +5715,61 @@ class MainWindow(QMainWindow):
             self._append_tts_chunks(pump.flush())
         self._maybe_end_pcm_session()
 
+    def _maybe_local_file_create_write(self, assistant: str) -> str:
+        """파일 목표 + 펜스 + 명확한 rel_path 일 때만 project.write_file. iris_generated 금지."""
+        from iris.ui.chat.file_write_claim import plan_local_file_writes, turn_write_evidence
+
+        evidence = turn_write_evidence(
+            verified_path=str(getattr(self, "_turn_write_path", "") or ""),
+            tool_written=bool((self._live_vibe or {}).get("tool_written")),
+        )
+        if evidence.wrote:
+            return ""
+        goal = str(getattr(self, "_followthrough_goal", "") or "")
+        plan = plan_local_file_writes(goal, assistant or "")
+        if plan.kind == "skip":
+            return ""
+        if plan.kind == "ask":
+            return plan.ask_message
+        surface = getattr(self, "_control_surface", None)
+        if surface is None:
+            return ""
+        profile = load_user_profile(self._db)
+        root = (profile.project_root or "").strip()
+        if not root:
+            self._live_activity.append_instant_line("project_root missing")
+            return "프로젝트 폴더가 없어 파일을 쓰지 않았다."
+        errors: list[str] = []
+        for rel, code in plan.pairs:
+            written = surface.registry.invoke(
+                "project.write_file",
+                {
+                    "project_root": root,
+                    "rel_path": rel,
+                    "content": code,
+                    "open": True,
+                },
+            )
+            if not isinstance(written, dict) or not written.get("ok"):
+                err = ""
+                if isinstance(written, dict):
+                    err = str(written.get("error") or written.get("message") or "")
+                errors.append(err or f"{rel} write failed")
+                self._live_activity.append_instant_line(
+                    f"project.write_file err: {errors[-1][:160]}"
+                )
+                continue
+            self._tool_ok_count += 1
+            self._live_activity.append_instant_line(
+                f"[Iris local] project.write_file ok {rel}"
+            )
+        if errors and not turn_write_evidence(
+            verified_path=str(getattr(self, "_turn_write_path", "") or ""),
+            tool_written=bool((self._live_vibe or {}).get("tool_written")),
+        ).wrote:
+            return errors[0]
+        return ""
+
     def _on_chat_finished(self, content: str) -> None:
         from iris.runtime.attachment_context import trace
         trace("response", turn_id=self._turn_gate.active_id, chars=len(content or ""))
@@ -5663,7 +5780,12 @@ class MainWindow(QMainWindow):
             self._finish_current_turn(open_followup=False)
             return
         text = (content or "").strip()
+        if self._use_hermes_backend() and not self._turn_tool_lines:
+            self._live_activity.append_instant_line("도구 호출 없음")
+        ask_or_err = self._maybe_local_file_create_write(text)
         shown = self._gate_chat_completion(text)
+        if ask_or_err:
+            shown = (shown.rstrip() + "\n\n" + ask_or_err) if shown else ask_or_err
         if getattr(self._chat, "_stream_active", False):
             self._chat.end_stream_message(shown or None)
         elif shown:
@@ -7474,6 +7596,20 @@ class MainWindow(QMainWindow):
         site: DockedSite = "ide_internal" if self._ui_mode == "ide_companion" else "dedicated"
         return site
 
+    def _clear_leftover_dedicated_host(self) -> None:
+        """Companion owns the left pane — drop stale dedicated site so Open cannot yank the shell."""
+        if self._ui_mode != "ide_companion":
+            return
+        from iris.browser.session import get_browser_session
+        from iris.browser.types import MiniHost, PanelHost, is_mini
+
+        session = get_browser_session()
+        host = session.view_host()
+        if is_mini(host) and host.resume == "dedicated":
+            session.note_view_host(MiniHost(resume="ide_internal"))
+        elif isinstance(host, PanelHost) and host.site == "dedicated":
+            session.note_view_host(PanelHost(site="ide_internal"))
+
     def apply_browser_view_host(self, host: ViewHost | str) -> None:
         from iris.browser.session import get_browser_session
         from iris.browser.types import MiniHost, PanelHost, is_mini, parse_view_host
@@ -7733,15 +7869,21 @@ class MainWindow(QMainWindow):
         return notes
 
     def _check_calendar_reminders(self) -> None:
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
-        from iris.storage.calendar_events import list_events, mark_reminded
+        from iris.storage.calendar_events import (
+            list_events,
+            mark_reminded,
+            parse_event_instant,
+            reminder_clock_now,
+        )
 
-        now = datetime.now()
+        # 2026-10-27: naive datetime.now() vs start_at '+09:00' → TypeError → Qt qFatal.
+        now = reminder_clock_now()
         soon_until = now + timedelta(hours=24)
         for ev in list_events(self._db):
             try:
-                start = datetime.fromisoformat(ev.start_at)
+                start = parse_event_instant(ev.start_at)
             except ValueError:
                 continue
             if not ev.reminded_overdue and start < now:
@@ -9371,6 +9513,7 @@ class MainWindow(QMainWindow):
 
             self._ui_mode = "ide_companion"
             self._iris_ide_unified = True
+            self._clear_leftover_dedicated_host()
             self._drag.set_ide_companion_active(True)
             self._set_workspace_icon_active("ide")
             self._viz.request_sync_orb_anchor("ide_companion_enter")
@@ -10010,6 +10153,7 @@ class MainWindow(QMainWindow):
 
         session = get_browser_session()
         if is_mini(session.view_host()):
+            # Leaving companion → normal home; mini expand should resume dedicated, not a dead companion cover.
             session.note_view_host(MiniHost(resume="dedicated"))
         if self._ui_mode == "ide_hero" or self._hero_enter_pending:
             self._exit_iris_ide_hero()
@@ -10295,6 +10439,7 @@ class MainWindow(QMainWindow):
 
             self._ui_mode = "ide_companion"
             self._iris_ide_unified = False
+            self._clear_leftover_dedicated_host()
             self._drag.set_ide_companion_active(True)
             self._set_workspace_icon_active("ide")
             self._viz.request_sync_orb_anchor("ide_companion_enter")
@@ -10629,6 +10774,12 @@ class MainWindow(QMainWindow):
             wiz.abort_and_close()
         try:
             stop_control_surface(self)
+            try:
+                from iris.engine import shared_engine
+
+                shared_engine().shutdown()
+            except Exception:
+                pass
             self._pinned_monitor.stop()
             try:
                 self._call_monitor.stop()

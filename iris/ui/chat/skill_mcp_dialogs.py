@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from iris.infrastructure.hermes_credentials import hermes_home
 from iris.ui.settings.hud_dialog import (
     configure_hud_dialog,
     make_hint,
@@ -34,12 +34,7 @@ _KNOWN_MCP_DESC = {
 
 
 def hermes_root() -> Path:
-    local = os.environ.get("LOCALAPPDATA", "").strip()
-    if local:
-        p = Path(local) / "hermes"
-        if p.is_dir():
-            return p
-    return Path.home() / ".hermes"
+    return hermes_home()
 
 
 def _parse_skill_description(text: str) -> str:

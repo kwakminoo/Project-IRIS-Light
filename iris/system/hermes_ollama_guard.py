@@ -39,26 +39,45 @@ def looks_like_ollama_endpoint(base_url: str | None) -> bool:
     )
 
 
-def apply_ollama_options_guard(agent_root: Path) -> bool:
-    """``options`` 주입을 Ollama URL 로만 제한.
+def _custom_provider_path(agent_root: Path) -> Path:
+    return Path(agent_root) / "plugins" / "model-providers" / "custom" / "__init__.py"
 
-    True 는 이번에 파일 내용이 바뀐 경우만. 이미 가드가 있거나 패턴이 없으면 False.
-    패턴이 없으면 원문을 유지하고 경고만 남긴다.
-    """
-    path = Path(agent_root) / "plugins" / "model-providers" / "custom" / "__init__.py"
+
+def ollama_options_guard_present(agent_root: Path) -> bool:
+    """기준선에 Ollama URL 가드가 이미 있으면 True. 디스크를 쓰지 않는다."""
+    path = _custom_provider_path(agent_root)
     if not path.is_file():
-        log.warning("ollama options guard: custom provider file missing")
         return False
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines(keepends=True)
-    for line in lines:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
         stripped = line.strip()
         if (
             stripped.startswith("if ")
             and "ollama_num_ctx" in stripped
             and "_looks_like_ollama_endpoint" in stripped
         ):
-            return False
+            return True
+    return False
+
+
+def apply_ollama_options_guard(agent_root: Path) -> bool:
+    """``options`` 주입을 Ollama URL 로만 제한.
+
+    **install/update baseline 전용.** gateway 기동에서는 호출하지 않는다.
+    True 는 이번에 파일 내용이 바뀐 경우만. 이미 가드가 있거나 패턴이 없으면 False.
+    패턴이 없으면 원문을 유지하고 경고만 남긴다.
+    """
+    path = _custom_provider_path(agent_root)
+    if not path.is_file():
+        log.warning("ollama options guard: custom provider file missing")
+        return False
+    if ollama_options_guard_present(agent_root):
+        return False
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
     target: int | None = None
     for i, line in enumerate(lines):
         if _IF_OLLAMA_CTX.match(line.rstrip("\r\n")) is None:

@@ -22,6 +22,7 @@ from iris.infrastructure.hermes_client import (
     HermesClient,
     HealthProbeResult,
 )
+from iris.infrastructure.agent_runtime import ensure_iris_agent_home
 from iris.infrastructure.hermes_credentials import (
     hermes_home,
     load_hermes_dotenv,
@@ -1432,13 +1433,18 @@ def _wait_until_healthy(
 
 
 def _apply_ollama_options_guard_now() -> bool:
-    """설치본 options 가드. True 면 이번에 디스크가 바뀌었다."""
+    """기준선 verify만. gateway는 소스를 치환하지 않는다. 항상 False(변경 없음)."""
     try:
-        from iris.system.hermes_ollama_guard import apply_ollama_options_guard
+        from iris.system.hermes_ollama_guard import ollama_options_guard_present
 
-        return bool(apply_ollama_options_guard(_hermes_agent_dir()))
+        if not ollama_options_guard_present(_hermes_agent_dir()):
+            _log.warning(
+                "ollama options guard missing from Iris Agent baseline — "
+                "reinstall/update runtime (no runtime string-replace)"
+            )
     except Exception:
         return False
+    return False
 
 
 @_serialized_lifecycle
@@ -1452,6 +1458,7 @@ def ensure_hermes_gateway_running(
     on_progress: Callable[[str], None] | None = None,
 ) -> bool:
     """켜져 있으면 즉시 True. 아니면 기동 후 /health·/v1/models 준비까지 대기."""
+    ensure_iris_agent_home()
     key = resolve_hermes_api_key(api_key)
     guard_changed = _apply_ollama_options_guard_now()
 

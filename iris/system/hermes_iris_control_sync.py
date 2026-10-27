@@ -15,6 +15,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from iris.infrastructure.hermes_credentials import hermes_home as _product_hermes_home
+
 
 SKILL_NAMES = (
     "iris-work-start",
@@ -102,10 +104,8 @@ def project_root() -> Path:
 
 
 def hermes_home() -> Path:
-    local = (os.environ.get("LOCALAPPDATA") or "").strip()
-    if local:
-        return Path(local) / "hermes"
-    return Path.home() / ".hermes"
+    """제품 런타임 홈. credentials / agent_runtime 과 동일 경로."""
+    return _product_hermes_home()
 
 
 def hermes_config_path() -> Path:
@@ -284,47 +284,83 @@ def _hermes_mcp_tool_path() -> Path | None:
     return None
 
 
-def ensure_hermes_stdio_dead_check_patch() -> str:
-    """Hermes 0.20.x _stdio_children_dead 반전 버그 패치.
+_DEAD_CHECK_BROKEN = (
+    "if not psutil.pid_exists(pid):\n"
+    "                continue  # this one is dead\n"
+    "            return True  # alive (signal permission irrelevant for liveness)\n"
+    "            return False  # at least one child alive"
+)
+_DEAD_CHECK_FIXED = (
+    "if psutil.pid_exists(pid):\n"
+    "                return False  # at least one child alive"
+)
+
+
+def _mcp_tool_path_for_agent(agent_root: Path | None) -> Path | None:
+    if agent_root is None:
+        return _hermes_mcp_tool_path()
+    root = Path(agent_root)
+    candidates = [
+        root / "tools" / "mcp_tool.py",
+        root / "hermes_cli" / "tools" / "mcp_tool.py",
+    ]
+    site = root / "venv" / "Lib" / "site-packages"
+    if site.is_dir():
+        candidates.extend(p for p in site.glob("*/mcp_tool.py") if p.is_file())
+        candidates.extend(p for p in site.glob("*/tools/mcp_tool.py") if p.is_file())
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def verify_hermes_stdio_dead_check(*, agent_root: Path | None = None) -> str:
+    """dead-check 상태만 보고한다. 디스크를 쓰지 않는다."""
+    path = _mcp_tool_path_for_agent(agent_root)
+    if path is None:
+        return "hermes dead-check: mcp_tool.py missing"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"hermes dead-check read fail: {exc}"
+    if _DEAD_CHECK_BROKEN in text:
+        return "hermes dead-check: broken pattern present"
+    if (
+        _DEAD_CHECK_FIXED in text
+        or "return False  # at least one child alive" in text
+    ):
+        return "hermes dead-check: ok (fixed/upstream)"
+    return "hermes dead-check: pattern unknown — ok at pin (upstream polarity fix)"
+
+
+def ensure_hermes_stdio_dead_check_patch(
+    *, agent_root: Path | None = None, mutate: bool = False
+) -> str:
+    """stdio dead-check. 기본은 verify. ``mutate=True`` 는 install baseline 만.
 
     자식 PID가 살아 있는데 True(dead)를 반환해 iris-control 도구가
     'has exited' TimeoutError로 즉시 실패하던 회귀를 고친다.
+    pin 업스트림이 이미 고쳤으면 쓰기를 하지 않는다.
     """
-    path = _hermes_mcp_tool_path()
+    status = verify_hermes_stdio_dead_check(agent_root=agent_root)
+    if not mutate:
+        return status
+    if "broken pattern" not in status:
+        return status
+    path = _mcp_tool_path_for_agent(agent_root)
     if path is None:
-        agent = hermes_home() / "hermes-agent"
-        checked = "\n".join(f"  - {p}" for p in _hermes_mcp_tool_candidates())
-        if not agent.is_dir():
-            return (
-                "hermes mcp_tool.py missing — "
-                f"설치 디렉터리 없음: {agent}\n확인한 경로:\n{checked}"
-            )
-        return f"hermes mcp_tool.py missing\n확인한 경로:\n{checked}"
+        return status
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         return f"hermes dead-check patch read fail: {exc}"
-
-    broken = (
-        "if not psutil.pid_exists(pid):\n"
-        "                continue  # this one is dead\n"
-        "            return True  # alive (signal permission irrelevant for liveness)\n"
-        "            return False  # at least one child alive"
-    )
-    fixed = (
-        "if psutil.pid_exists(pid):\n"
-        "                return False  # at least one child alive"
-    )
-    if broken not in text:
-        if fixed in text or "return False  # at least one child alive" in text:
-            return "hermes dead-check already patched"
-        return "hermes dead-check pattern unknown — skip"
-
+    if _DEAD_CHECK_BROKEN not in text:
+        return verify_hermes_stdio_dead_check(agent_root=agent_root)
     bak = path.with_suffix(path.suffix + ".bak-iris-deadcheck")
     try:
         if not bak.is_file():
             bak.write_text(text, encoding="utf-8")
-        path.write_text(text.replace(broken, fixed, 1), encoding="utf-8")
+        path.write_text(text.replace(_DEAD_CHECK_BROKEN, _DEAD_CHECK_FIXED, 1), encoding="utf-8")
     except OSError as exc:
         return f"hermes dead-check patch write fail: {exc}"
     return "hermes dead-check patched (stdio has-exited false positive)"
@@ -940,9 +976,10 @@ def _self_check() -> None:
     if sys.platform == "win32" and (root / ".venv" / "Scripts" / "pythonw.exe").is_file():
         assert str(block["command"]).lower().endswith("pythonw.exe"), block["command"]
     assert _mcp_equivalent(block, block)
-    # ponytail: Hermes dead-check 패치는 idempotent (이미 고쳤으면 already/unknown)
+    # ponytail: dead-check 는 verify-only (install baseline 에서만 mutate)
     patch_msg = ensure_hermes_stdio_dead_check_patch()
     assert "fail" not in patch_msg.lower() or "missing" in patch_msg, patch_msg
+    assert "patched (" not in patch_msg, patch_msg
     mobile = desired_mobile_mcp_block()
     assert mobile["command"] == "npx"
     assert mobile["args"] == ["-y", "@mobilenext/mobile-mcp@latest"]

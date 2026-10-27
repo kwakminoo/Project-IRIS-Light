@@ -136,6 +136,7 @@ IRIS는 "구독료 없이 누구나 쓰는 로컬 우선 AI 에이전트"를 지
 | 경로 | 출처 | 라이선스 |
 |------|------|----------|
 | `integrations/showui-aloha/` | [showlab/ShowUI-Aloha](https://github.com/showlab/ShowUI-Aloha) | **Apache-2.0** (원문 `integrations/showui-aloha/LICENSE` 동봉, `UPSTREAM.md`에 출처 명시) |
+| `vendor/iris-agent-runtime/` | Iris Agent 기준선 계약 (pin SHA·CVE 절차·MIT 고지). **Hermes 전체 소스 번들 아님** | pin이 가리키는 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 는 **MIT** (Nous Research). 상세: `vendor/iris-agent-runtime/README.md`, `docs/code-review/Iris-Agent-runtime-기준선-Phase1.md` |
 
 Apache-2.0 → GPLv3는 **일방향 호환**입니다. Apache-2.0 코드를 GPLv3 저작물에
 포함하는 것은 허용되며, 그 결과물 전체는 GPLv3로 배포됩니다. Apache-2.0의
@@ -146,15 +147,20 @@ Apache-2.0 → GPLv3는 **일방향 호환**입니다. Apache-2.0 코드를 GPLv
 같은 프로세스에 import하지 않고 `AlohaBridge`로 **별도 프로세스에서 실행**하므로
 Qt 바인딩 충돌과 라이선스 결합 범위가 함께 분리됩니다.
 
-### 3.4 런타임에 연동하되 번들하지 않는 것
+Hermes Agent(MIT) 전체 트리는 Phase 1에서 모노레포에 넣지 않습니다. Iris는
+`vendor/iris-agent-runtime/PIN` 이 가리키는 커밋만 설치·업데이트하고, Iris soft-patch는
+그 checkout에 install-time overlay로 흡수합니다. MIT 저작권·고지 의무는
+`THIRD_PARTY_NOTICES.md`의 “Hermes Agent by Nous Research (MIT)”로 지킵니다.
 
-이들은 IRIS가 **설치·기동·HTTP 호출**만 하고 소스를 포함하지 않으므로, 각자의
-라이선스가 IRIS 코드에 전파되지 않습니다.
+### 3.4 런타임에 연동하되 전체 소스를 번들하지 않는 것
+
+이들은 IRIS가 **pin 설치·기동·HTTP 호출**을 하고, 업스트림 전체 트리를 저장소에
+넣지 않습니다. 각자의 라이선스는 고지로 분리됩니다.
 
 | 대상 | 관계 | 라이선스 |
 |------|------|----------|
 | [Ollama](https://ollama.com/) | 별도 프로세스, `:11434` HTTP | MIT |
-| [Hermes Agent](https://hermes-agent.nousresearch.com/) | 별도 프로세스, `:8642` gateway API | 업스트림 조건 |
+| [Hermes Agent](https://hermes-agent.nousresearch.com/) (Iris Agent 뼈대) | 별도 프로세스, `:8642`. 설치는 **제품 pin SHA만** (Nous `main` floating 추격 금지). soft-patch는 `vendor/iris-agent-runtime` 계약 | **MIT** (Nous Research) |
 | Silero VAD (`silero_vad.onnx` v5.1.2) | 최초 실행 시 `~/.iris-light/models/`로 **다운로드** — 저장소에 미포함 | MIT |
 | Android 에뮬레이터 / mobile-mcp / Node.js | 선택 설치 | 각 업스트림 |
 | 클라우드 모델 API (OpenAI, Anthropic 등) | 네트워크 호출 | 각 서비스 약관 |
