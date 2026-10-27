@@ -258,7 +258,7 @@ class HermesControlSyncWorker(QThread):
 
 
 class HermesModelSyncWorker(QThread):
-    """Iris 모델 선택 → Hermes config 동기화 (Ollama + 커스텀 API)."""
+    """Iris model sync. ExternalGateway keeps HTTP. InternalSidecar skips :8642."""
 
     finished_ok = pyqtSignal()
     failed = pyqtSignal(str)
@@ -282,6 +282,9 @@ class HermesModelSyncWorker(QThread):
 
     def run(self) -> None:
         try:
+            if not isinstance(_engine_source(), ExternalGateway):
+                self.finished_ok.emit()
+                return
             client = HermesClient(
                 self._base_url,
                 api_key=self._api_key,

@@ -5,8 +5,9 @@ from __future__ import annotations
 import inspect
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from PyQt6.QtWidgets import QApplication
 
@@ -19,6 +20,7 @@ from iris.engine import (  # noqa: E402
     EngineFailed,
     EngineHome,
     EngineReady,
+    ExternalGateway,
     InternalSidecar,
     ToolProgress,
     TurnCancelled,
@@ -28,6 +30,7 @@ from iris.infrastructure.hermes_client import HermesInferenceTarget  # noqa: E40
 from iris.ui.workers.hermes_workers import (  # noqa: E402
     HermesChatWorker,
     HermesHealthWorker,
+    HermesModelSyncWorker,
 )
 
 
@@ -178,3 +181,69 @@ class CloseEventShutdownTests(TestCase):
         src = inspect.getsource(mw.MainWindow.closeEvent)
         self.assertIn("shared_engine().shutdown", src)
         self.assertIn("app.quit()", src)
+
+
+class InternalModelSyncTests(TestCase):
+    def test_internal_source_does_not_construct_client_or_start_gateway(self) -> None:
+        engine = _StubEngine()
+        worker = HermesModelSyncWorker("http://127.0.0.1:8642/v1", "llama")
+        ok: list[object] = []
+        failed: list[str] = []
+        worker.finished_ok.connect(lambda: ok.append(True))
+        worker.failed.connect(failed.append)
+        with (
+            patch("iris.ui.workers.hermes_workers.shared_engine", return_value=engine),
+            patch("iris.ui.workers.hermes_workers.HermesClient") as client_cls,
+            patch(
+                "iris.ui.workers.hermes_workers.ensure_hermes_gateway_running"
+            ) as start_gateway,
+        ):
+            worker.run()
+        self.assertEqual(ok, [True])
+        self.assertEqual(failed, [])
+        client_cls.assert_not_called()
+        start_gateway.assert_not_called()
+
+    def test_external_source_still_constructs_hermes_client(self) -> None:
+        engine = _StubEngine()
+        engine.source = ExternalGateway(
+            base_url="http://127.0.0.1:8642/v1",
+            api_key="",
+        )
+        client = MagicMock()
+        worker = HermesModelSyncWorker("http://127.0.0.1:8642/v1", "llama")
+        ok: list[object] = []
+        failed: list[str] = []
+        worker.finished_ok.connect(lambda: ok.append(True))
+        worker.failed.connect(failed.append)
+        with (
+            patch("iris.ui.workers.hermes_workers.shared_engine", return_value=engine),
+            patch(
+                "iris.ui.workers.hermes_workers.HermesClient",
+                return_value=client,
+            ) as client_cls,
+            patch(
+                "iris.ui.workers.hermes_workers.ensure_hermes_gateway_running"
+            ) as start_gateway,
+        ):
+            worker.run()
+        self.assertEqual(ok, [True])
+        self.assertEqual(failed, [])
+        client_cls.assert_called_once()
+        client.set_inference_model.assert_called_once_with("llama")
+        start_gateway.assert_not_called()
+
+    def test_sync_hermes_model_skips_worker_for_internal(self) -> None:
+        from iris.ui.window.main_window import MainWindow
+
+        host = SimpleNamespace(
+            _settings=SimpleNamespace(hermes_enabled=True),
+            _hermes_model_worker=None,
+        )
+        engine = _StubEngine()
+        with (
+            patch("iris.engine.shared_engine", return_value=engine),
+            patch("iris.ui.window.main_window.HermesModelSyncWorker") as worker_cls,
+        ):
+            MainWindow._sync_hermes_model(host, "llama")
+        worker_cls.assert_not_called()

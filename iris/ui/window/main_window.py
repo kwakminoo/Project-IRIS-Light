@@ -1506,7 +1506,15 @@ class MainWindow(QMainWindow):
                 or self._settings.ollama_model
             ).strip()
             if model:
-                self._sync_hermes_model(model)
+                try:
+                    self._sync_hermes_model(model)
+                except Exception as exc:  # noqa: BLE001
+                    try:
+                        self._live_activity.append_instant_line(
+                            f"Hermes model sync skip: {str(exc)[:120]}"
+                        )
+                    except Exception:
+                        pass
         self._hermes_health_worker = None
         if getattr(self, "_boot_ready_pending", False):
             self._boot_ready_pending = False
@@ -1538,6 +1546,19 @@ class MainWindow(QMainWindow):
         model = (model or "").strip()
         if not model:
             return
+        try:
+            from iris.engine import ExternalGateway, shared_engine
+
+            if not isinstance(shared_engine().source, ExternalGateway):
+                return
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self._live_activity.append_instant_line(
+                    f"Hermes model sync skip: {str(exc)[:120]}"
+                )
+            except Exception:
+                pass
+            return
         from iris.infrastructure.hermes_errors import cloud_model_blocked_without_login
 
         if not getattr(self, "_ollama_login_applying", False) and cloud_model_blocked_without_login(
@@ -1565,23 +1586,23 @@ class MainWindow(QMainWindow):
                 db=self._db,
                 ollama_base_url=self._settings.ollama_base_url,
             )
+            worker = HermesModelSyncWorker(
+                self._settings.hermes_base_url,
+                target.model,
+                api_key=self._settings.hermes_api_key,
+                command=self._settings.hermes_command,
+                target=target,
+                parent=self,
+            )
+            self._hermes_model_worker = worker
+            worker.finished_ok.connect(self._on_hermes_model_synced)
+            worker.failed.connect(self._on_hermes_model_sync_failed)
+            worker.start()
         except Exception as exc:  # noqa: BLE001
+            self._hermes_model_worker = None
             self._live_activity.append_instant_line(
                 f"Hermes model sync skip: {str(exc)[:120]}"
             )
-            return
-        worker = HermesModelSyncWorker(
-            self._settings.hermes_base_url,
-            target.model,
-            api_key=self._settings.hermes_api_key,
-            command=self._settings.hermes_command,
-            target=target,
-            parent=self,
-        )
-        self._hermes_model_worker = worker
-        worker.finished_ok.connect(self._on_hermes_model_synced)
-        worker.failed.connect(self._on_hermes_model_sync_failed)
-        worker.start()
 
     def _on_hermes_model_synced(self) -> None:
         model = self._chat.current_model() or self._settings.ollama_model
