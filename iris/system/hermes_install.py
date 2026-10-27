@@ -460,8 +460,8 @@ def _redact(text: str) -> str:
     return redact_secrets(text or "")
 
 
-def write_install_log(body: str, *, prefix: str = "iris-install") -> Path:
-    log_dir = gw.hermes_home() / "logs"
+def write_install_log(body: str, *, prefix: str = "iris-install", home: Path | None = None) -> Path:
+    log_dir = (home if home is not None else gw.hermes_home()) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     path = log_dir / f"{prefix}-{stamp}.log"
@@ -602,7 +602,14 @@ def _retarget_moved_tree(root: Path, old: Path, new: Path) -> int:
     return changed
 
 
-def _activate_staged(home: Path, staging: Path, stamp: str, command: str) -> tuple[bool, str]:
+def _activate_staged(
+    home: Path,
+    staging: Path,
+    stamp: str,
+    command: str,
+    *,
+    probe_gateway: bool = True,
+) -> tuple[bool, str]:
     """교체하고 경로를 고친 뒤, 최종 위치에서만 실행 probe 한다."""
     old = Path(staging)
     swapped, note = _swap_in_staging(home, staging, stamp)
@@ -610,7 +617,11 @@ def _activate_staged(home: Path, staging: Path, stamp: str, command: str) -> tup
         return False, note
     live = home / "hermes-agent"
     _retarget_moved_tree(live, old, live)
-    ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
+    if probe_gateway:
+        ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
+    else:
+        venv_py = live / ("venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python")
+        ok, detail = _probe_venv(venv_py)
     if not ok:
         _restore_backup(home, stamp)
         return False, detail
@@ -688,6 +699,7 @@ def _finish_staged_install(
     fail: Callable[..., InstallResult],
     run_streamed: Callable[..., subprocess.CompletedProcess[str]] | None,
     should_abort: Callable[[], bool] | None,
+    probe_gateway: bool = True,
 ) -> InstallResult:
     venv_dir = staging / "venv"
     emit("venv 생성…")
@@ -795,7 +807,9 @@ def _finish_staged_install(
         _discard_tree(staging)
         return fail("probe", "실행 검증 실패", "\n".join(log))
 
-    runtime_ok, runtime_detail = _activate_staged(home, staging, stamp, command)
+    runtime_ok, runtime_detail = _activate_staged(
+        home, staging, stamp, command, probe_gateway=probe_gateway
+    )
     if not runtime_ok:
         log.append(runtime_detail)
         return fail("probe", "최종 경로 실행 검증 실패", "\n".join(log))
@@ -960,21 +974,42 @@ def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | No
     return None
 
 
+def _checkout_pin(git: str, staging: Path, sha: str) -> subprocess.CompletedProcess[str]:
+    fetch = _run(
+        [git, "-c", "core.longpaths=true", "-C", str(staging), "fetch", "--depth", "1", "origin", sha],
+        timeout=600.0,
+    )
+    if fetch.returncode != 0:
+        return fetch
+    return _run(
+        [git, "-c", "core.longpaths=true", "-C", str(staging), "checkout", "--detach", sha],
+        timeout=120.0,
+    )
+
+
 def install_hermes_with_system_python(
     *,
     command: str = "hermes",
     on_stream: StreamFn | None = None,
     run_streamed: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     should_abort: Callable[[], bool] | None = None,
+    home: Path | None = None,
+    sha: str | None = None,
 ) -> InstallResult:
-    """staging 에 설치하고 import probe 통과 후에만 live 와 교체."""
+    """staging 에 설치하고 import probe 통과 후에만 live 와 교체.
+
+    home 기본값은 HermesHome. Engine 은 EngineHome Path 를 넘긴다.
+    """
 
     def _emit(msg: str) -> None:
         if on_stream:
             on_stream(msg)
 
+    explicit_home = home is not None
+    home = Path(home) if explicit_home else gw.hermes_home()
+
     def _fail(kind: str, prefix: str, body: str, log_path: Path | None = None) -> InstallResult:
-        path = log_path or write_install_log(body or prefix, prefix="iris-install")
+        path = log_path or write_install_log(body or prefix, prefix="iris-install", home=home)
         msg = format_install_failure(prefix, body, path, kind)
         _emit(msg)
         return InstallResult(False, msg, kind, str(path))
@@ -982,12 +1017,14 @@ def install_hermes_with_system_python(
     if should_abort and should_abort():
         return InstallResult(False, "사용자가 중단함", "cancel")
 
-    home = gw.hermes_home()
     try:
         with hermes_install_lock(home):
-            already, already_detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
-            if already:
-                return InstallResult(True, f"이미 사용 가능 ({already_detail})", "ok")
+            # probe_hermes_runtime reads HermesHome. An explicit home is a
+            # different tree (EngineHome); the caller already probed that one.
+            if not explicit_home:
+                already, already_detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
+                if already:
+                    return InstallResult(True, f"이미 사용 가능 ({already_detail})", "ok")
             py = ensure_system_python_winget(run_streamed=run_streamed, on_stream=on_stream)
             if py is None:
                 return _fail("python", "베이스 Python 없음", "py -3.11..3.13 / winget 3.11 실패")
@@ -1013,6 +1050,15 @@ def install_hermes_with_system_python(
             if clone.returncode != 0 or not staging.is_dir():
                 _discard_tree(staging)
                 return _fail("clone", "git clone 실패", "\n".join(log))
+            if sha:
+                _emit(f"Hermes pin checkout {sha[:12]}…")
+                pin = _checkout_pin(git, staging, sha)
+                log.append(f"checkout {sha} rc={pin.returncode}")
+                log.append(pin.stdout or "")
+                log.append(pin.stderr or "")
+                if pin.returncode != 0:
+                    _discard_tree(staging)
+                    return _fail("clone", "git checkout 실패", "\n".join(log))
             want = hermes_python_range(staging)
             have = python_version(py)
             log.append(f"repo python range={want} chosen={have}")
@@ -1036,6 +1082,7 @@ def install_hermes_with_system_python(
                 fail=_fail,
                 run_streamed=run_streamed,
                 should_abort=should_abort,
+                probe_gateway=not explicit_home,
             )
     except InstallBusy as exc:
         return _fail("lock", "설치 잠금", str(exc))

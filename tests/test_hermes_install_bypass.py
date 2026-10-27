@@ -529,5 +529,73 @@ class HermesPythonRangeTests(unittest.TestCase):
             self.assertEqual(finish.call_args.kwargs["py"], Path("py314"))
 
 
+class HermesInstallHomeArgTests(unittest.TestCase):
+    def test_explicit_home_does_not_read_gateway_hermes_home(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            engine_home = Path(td) / "engine"
+            engine_home.mkdir()
+            finish = MagicMock(return_value=hi.InstallResult(True, "ok", "ok"))
+
+            def run(cmd, **kwargs):
+                if "clone" in cmd:
+                    dest = Path(cmd[-1])
+                    dest.mkdir(parents=True)
+                    (dest / "pyproject.toml").write_text(
+                        '[project]\nrequires-python = ">=3.11,<3.15"\n',
+                        encoding="utf-8",
+                    )
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with (
+                patch.object(hi.gw, "hermes_home", side_effect=AssertionError("HermesHome")),
+                patch.object(
+                    hi.gw, "probe_hermes_runtime", side_effect=AssertionError("probe HermesHome")
+                ),
+                patch.object(hi, "ensure_system_python_winget", return_value=Path("python")),
+                patch.object(hi, "python_version", return_value=(3, 11)),
+                patch.object(hi.shutil, "which", side_effect=lambda n: "git" if n == "git" else None),
+                patch.object(hi, "_run", side_effect=run),
+                patch.object(hi, "_finish_staged_install", finish),
+            ):
+                result = hi.install_hermes_with_system_python(home=engine_home)
+            self.assertTrue(result.ok)
+            self.assertEqual(finish.call_args.kwargs["home"], engine_home)
+            self.assertFalse(finish.call_args.kwargs["probe_gateway"])
+            self.assertEqual(Path(finish.call_args.kwargs["staging"]).parent, engine_home)
+
+    def test_sha_checkouts_after_clone(self) -> None:
+        pin = "4787e4d56fc8d9265d4c7d3c0fe5accee86b4078"
+        with tempfile.TemporaryDirectory() as td:
+            engine_home = Path(td) / "engine"
+            engine_home.mkdir()
+            cmds: list[list[str]] = []
+            finish = MagicMock(return_value=hi.InstallResult(True, "ok", "ok"))
+
+            def run(cmd, **kwargs):
+                cmds.append(list(cmd))
+                if "clone" in cmd:
+                    dest = Path(cmd[-1])
+                    dest.mkdir(parents=True)
+                    (dest / "pyproject.toml").write_text(
+                        '[project]\nrequires-python = ">=3.11,<3.15"\n',
+                        encoding="utf-8",
+                    )
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with (
+                patch.object(hi, "ensure_system_python_winget", return_value=Path("python")),
+                patch.object(hi, "python_version", return_value=(3, 11)),
+                patch.object(hi.shutil, "which", side_effect=lambda n: "git" if n == "git" else None),
+                patch.object(hi, "_run", side_effect=run),
+                patch.object(hi, "_finish_staged_install", finish),
+            ):
+                result = hi.install_hermes_with_system_python(home=engine_home, sha=pin)
+            self.assertTrue(result.ok)
+            joined = [" ".join(c) for c in cmds]
+            self.assertTrue(any("clone" in j for j in joined))
+            self.assertTrue(any("fetch" in j and pin in j for j in joined))
+            self.assertTrue(any("checkout" in j and "--detach" in j and pin in j for j in joined))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,8 @@ Agent-readable:
 - Owns: ENGINE_HERMES_SHA, locating EnginePython, import probe.
 - Does not: spawn a sidecar, bind :8642, or import run_agent.
 - Talks to: iris.engine.types, a short -c import in the engine interpreter.
-- Extend via: install_into(runner=...) when clone is injected. Default does not hit the network.
+- Extend via: install_into(runner=...) when tests inject clone. Default calls
+  hermes_install with home=EngineHome (never HermesHome).
 """
 
 from __future__ import annotations
@@ -121,6 +122,12 @@ def install_into(
     clone: object | None = None,
     runner: Callable[..., object] | None = None,
 ) -> None:
-    if runner is None:
+    if probe_engine_python(home) is None:
         return
-    runner(Path(home) / "hermes-agent", sha=ENGINE_HERMES_SHA, clone=clone)
+    dest = Path(home) / "hermes-agent"
+    if runner is not None:
+        runner(dest, sha=ENGINE_HERMES_SHA, clone=clone)
+        return
+    from iris.system.hermes_install import install_hermes_with_system_python
+
+    install_hermes_with_system_python(home=Path(home), sha=ENGINE_HERMES_SHA)
