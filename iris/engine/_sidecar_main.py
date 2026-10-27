@@ -1,10 +1,10 @@
 """Hermes-interpreter sidecar entry.
 
 Agent-readable:
-- Owns: logging reservation, the GuiPython refuse check, and the stdin loop.
-- Does not: import run_agent, hermes_cli, iris, or PyQt6.
+- Owns: logging reservation, the GuiPython refuse check, the stdin loop, and one AIAgent turn.
+- Does not: import iris, PyQt6, or run_agent before logging. Does not bind :8642.
 - Talks to: the host through NDJSON on stdout. Inbound commands are turn and stop.
-- Extend via: later units replace the turn fail with the AIAgent loop.
+- Extend via: cancel interrupt and tool callbacks. Persist stays off.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ sys.path = [
     if os.path.normcase(os.path.abspath(part or ".")) != os.path.normcase(_SCRIPT_DIR)
 ]
 
+import importlib
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -56,8 +58,119 @@ def _fail(code: str, detail: str) -> None:
     _emit({"t": "fail", "code": code, "detail": detail})
 
 
-def _handle_turn(_raw: dict) -> bool:
-    _fail("unknown", "agent loop is not wired")
+_AGENT_CLS: type | None = None
+_AGENT_MISSING = False
+
+
+def _import_agent_class() -> type:
+    name = os.environ.get("IRIS_ENGINE_AGENT_MODULE", "").strip() or "run_agent"
+    module = importlib.import_module(name)
+    cls = getattr(module, "AIAgent", None)
+    if cls is None:
+        raise ImportError("AIAgent is missing")
+    return cls
+
+
+def _agent_class() -> type | None:
+    global _AGENT_CLS, _AGENT_MISSING
+    if _AGENT_MISSING:
+        return None
+    if _AGENT_CLS is not None:
+        return _AGENT_CLS
+    try:
+        _AGENT_CLS = _import_agent_class()
+        return _AGENT_CLS
+    except ImportError:
+        _AGENT_MISSING = True
+        return None
+
+
+def _init_kwargs(cls: type, wanted: dict) -> dict:
+    try:
+        params = inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return wanted
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return wanted
+    return {key: value for key, value in wanted.items() if key in params}
+
+
+def _split_for_agent(raw: object) -> tuple[list, str] | None:
+    if not isinstance(raw, list) or not raw:
+        _fail("no_user_utterance", "last message must be a user utterance")
+        return None
+    last = raw[-1]
+    if not isinstance(last, dict) or last.get("role") != "user":
+        _fail("no_user_utterance", "last message must be a user utterance")
+        return None
+    content = last.get("content")
+    user = "" if content is None else str(content)
+    history = [row for row in raw[:-1] if isinstance(row, dict)]
+    return history, user
+
+
+def _on_delta(text: object) -> None:
+    if text is None:
+        return
+    chunk = str(text)
+    if not chunk:
+        return
+    _emit({"t": "delta", "text": chunk})
+
+
+def _on_tool(label: object = None, *args: object, **kwargs: object) -> None:
+    text = label
+    if text is None and args:
+        text = args[0]
+    if text is None:
+        text = kwargs.get("label", "")
+    _emit({"t": "tool", "label": "" if text is None else str(text)})
+
+
+def _done_text(result: object) -> str:
+    if isinstance(result, dict):
+        return str(result.get("final_response") or "")
+    if result is None:
+        return ""
+    return str(result)
+
+
+def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
+    wanted = {
+        "skip_memory": True,
+        "session_db": None,
+        "load_soul_identity": True,
+        "stream_delta_callback": _on_delta,
+        "tool_progress_callback": _on_tool,
+    }
+    model = raw.get("model")
+    if isinstance(model, str) and model:
+        wanted["model"] = model
+    provider = raw.get("provider")
+    if isinstance(provider, str) and provider:
+        wanted["provider"] = provider
+    agent = cls(**_init_kwargs(cls, wanted))
+    agent._persist_disabled = True
+    result = agent.run_conversation(
+        user_message=user,
+        conversation_history=history,
+    )
+    _emit({"t": "done", "text": _done_text(result)})
+
+
+def _handle_turn(raw: dict) -> bool:
+    cls = _agent_class()
+    if cls is None:
+        _fail("unknown", "agent loop is not wired")
+        return True
+    split = _split_for_agent(raw.get("messages"))
+    if split is None:
+        return True
+    history, user = split
+    try:
+        _run_agent_turn(cls, history, user, raw)
+    except Exception as exc:
+        _fail("unknown", str(exc) or "agent loop failed")
     return True
 
 
