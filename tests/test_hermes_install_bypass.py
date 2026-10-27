@@ -640,9 +640,11 @@ class HermesInstallDeclaredExtrasTests(unittest.TestCase):
                 (staging / "venv" / "bin").mkdir(parents=True)
                 (staging / "venv" / "bin" / "python").write_text("", encoding="utf-8")
             seen: list[list[str]] = []
+            seen_env: list[object] = []
 
-            def run_dep(cmd, **_kwargs):
+            def run_dep(cmd, **kwargs):
                 seen.append(list(cmd))
+                seen_env.append(kwargs.get("env"))
                 return subprocess.CompletedProcess(cmd, 0, "", "")
 
             def run(cmd, **_kwargs):
@@ -672,7 +674,14 @@ class HermesInstallDeclaredExtrasTests(unittest.TestCase):
             self.assertTrue(result.ok)
             joined = " ".join(" ".join(c) for c in seen)
             self.assertIn("--extra mcp", joined)
+            self.assertIn("--active", joined)
             self.assertNotIn("homeassistant", joined)
+            self.assertTrue(seen_env)
+            env = seen_env[0]
+            self.assertIsInstance(env, dict)
+            assert isinstance(env, dict)
+            self.assertEqual(env.get("UV_PROJECT_ENVIRONMENT"), str(staging / "venv"))
+            self.assertEqual(env.get("VIRTUAL_ENV"), str(staging / "venv"))
 
     def test_pip_extras_success_boosts_when_probe_misses_aiohttp(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -691,10 +700,13 @@ class HermesInstallDeclaredExtrasTests(unittest.TestCase):
                 (staging / "venv" / "bin" / "python").write_text("", encoding="utf-8")
             probes = iter([(False, "No module named 'aiohttp'"), (True, "ok")])
             boosts: list[list[str]] = []
+            edits: list[list[str]] = []
 
             def run(cmd, **_kwargs):
                 if any("aiohttp==" in str(part) for part in cmd):
                     boosts.append(list(cmd))
+                if "-e" in cmd and cmd[-1] == ".":
+                    edits.append(list(cmd))
                 return subprocess.CompletedProcess(cmd, 0, "", "")
 
             def run_dep(cmd, **_kwargs):
@@ -724,6 +736,7 @@ class HermesInstallDeclaredExtrasTests(unittest.TestCase):
             self.assertTrue(result.ok)
             self.assertEqual(len(boosts), 1)
             self.assertTrue(any("aiohttp==3.14.3" in part for part in boosts[0]))
+            self.assertEqual(len(edits), 1)
 
 
 if __name__ == "__main__":

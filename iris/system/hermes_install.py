@@ -704,11 +704,14 @@ def _run_dep(
     cwd: str,
     run_streamed: Callable[..., subprocess.CompletedProcess[str]] | None,
     hard: float,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """pip/uv 는 무출력만으로 죽이지 않는다. 전체 시간 제한과 취소는 유지."""
     if run_streamed is not None:
-        return run_streamed(cmd, cwd=cwd, timeout=None, hard_timeout=hard, hidden=True)
-    return _run(cmd, cwd=cwd, timeout=hard)
+        return run_streamed(
+            cmd, cwd=cwd, timeout=None, hard_timeout=hard, hidden=True, env=env
+        )
+    return _run(cmd, cwd=cwd, timeout=hard, env=env)
 
 
 def _pip_unmarked_core_deps(venv_py: Path, agent: Path) -> subprocess.CompletedProcess[str]:
@@ -771,14 +774,19 @@ def _finish_staged_install(
     if uv and lock.is_file():
         extra_note = ",".join(extras) if extras else "no extras"
         emit(f"uv sync --frozen ({extra_note})…")
+        env = os.environ.copy()
+        env["VIRTUAL_ENV"] = str(venv_dir)
+        env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
         cmd = [
-            uv, "sync", "--frozen", "--no-dev",
+            uv, "sync", "--frozen", "--no-dev", "--active",
             *_uv_extra_args(extras),
             "--python", str(venv_py),
         ]
         started = time.monotonic()
         try:
-            proc = _run_dep(cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0)
+            proc = _run_dep(
+                cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0, env=env
+            )
         except subprocess.TimeoutExpired as exc:
             log.append(str(exc))
             _discard_tree(staging)
@@ -855,6 +863,17 @@ def _finish_staged_install(
         if boost.returncode != 0:
             _discard_tree(staging)
             return fail("exit", "gateway/mcp 의존성 보강 실패", "\n".join(log))
+        emit("probe pin 후 editable 재설치…")
+        edit = _run(
+            [str(venv_py), "-m", "pip", "install", "-e", "."],
+            cwd=str(staging),
+            timeout=300.0,
+        )
+        log.append(edit.stdout or "")
+        log.append(edit.stderr or "")
+        if edit.returncode != 0:
+            _discard_tree(staging)
+            return fail("exit", "editable 재설치 실패", "\n".join(log))
         ok, detail = _probe_venv(venv_py)
     log.append(f"probe={ok} {detail}")
     if not ok:
