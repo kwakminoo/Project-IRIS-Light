@@ -16,6 +16,7 @@ from iris.browser.types import (
     Navigate,
     Open,
     PanelHost,
+    Reload,
     Scroll,
     Search,
     as_docked,
@@ -297,6 +298,110 @@ class RegistrySyncTests(unittest.TestCase):
             ),
         )
         self.assertEqual(len(command_specs()), len(names))
+
+
+class SessionWaitAndCrashTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.driver = youtube_like_fixture_driver()
+        self.session = BrowserSession(driver=self.driver)
+
+    def test_reload_ok_ready(self) -> None:
+        r = self.session.execute(Reload())
+        self.assertTrue(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
+
+    def test_reload_timeout_faults(self) -> None:
+        self.driver.queue_wait("timeout")
+        r = self.session.execute(Reload())
+        self.assertFalse(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.FAULTED)
+        self.assertIn("timeout", r.detail)
+        self.assertEqual(self.session.snapshot().phase, BrowserPhase.FAULTED)
+
+    def test_navigate_timeout_faults(self) -> None:
+        self.driver.queue_wait("timeout")
+        r = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertFalse(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.FAULTED)
+
+    def test_navigate_ok_saw_busy(self) -> None:
+        self.driver.queue_wait("ok")
+        r = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertTrue(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
+        self.assertIn(BrowserPhase.BUSY, self.driver.phases_seen)
+
+    def test_search_play_timeout_faults(self) -> None:
+        self.driver.queue_wait("ok")
+        self.driver.queue_wait("timeout")
+        r = self.session.execute(Search(query="IU night letter", engine="youtube", play=True))
+        self.assertFalse(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.FAULTED)
+        self.assertIn("timeout", (r.detail or "").lower())
+        self.assertEqual(self.driver.try_play_calls, 0)
+
+    def test_search_play_still_succeeds(self) -> None:
+        r = self.session.execute(Search(query="IU night letter", engine="youtube", play=True))
+        self.assertTrue(r.ok)
+        self.assertTrue(r.snapshot.media and r.snapshot.media.playing)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
+
+    def test_crash_faults_snapshot(self) -> None:
+        self.session.execute(Navigate(url="https://react.dev"))
+        seen: list = []
+        self.session.add_listener(seen.append)
+        self.driver.crash()
+        snap = self.session.snapshot()
+        self.assertEqual(snap.phase, BrowserPhase.FAULTED)
+        self.assertIn("reload", (snap.last_error or "").lower())
+        self.assertTrue(seen)
+        self.assertEqual(seen[-1].phase, BrowserPhase.FAULTED)
+
+    def test_reload_crash_during_wait(self) -> None:
+        self.driver.queue_wait("crash")
+        r = self.session.execute(Reload())
+        self.assertFalse(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.FAULTED)
+        self.assertIn("crashed", (r.detail or "").lower())
+
+    def test_normal_termination_is_not_a_fault(self) -> None:
+        self.session.execute(Navigate(url="https://react.dev"))
+        self.driver.crash(status="normal")
+        self.assertEqual(self.session.snapshot().phase, BrowserPhase.READY)
+
+    def test_faulted_same_url_navigate_not_idempotent(self) -> None:
+        self.session.execute(Navigate(url="https://react.dev"))
+        self.driver.crash()
+        r = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertNotEqual(r.detail, "idempotent")
+        self.assertTrue(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
+
+    def test_play_budget_miss_after_watch_stays_ready(self) -> None:
+        from unittest.mock import patch
+
+        clock = {"now": 0.0, "navs": 0}
+        orig = self.driver.navigate
+
+        def navigate(url: str, *, deadline: float | None = None) -> None:
+            orig(url, deadline=deadline)
+            clock["navs"] += 1
+            if clock["navs"] >= 2:
+                clock["now"] = 90.0
+
+        def mono() -> float:
+            return clock["now"]
+
+        with (
+            patch.object(self.driver, "navigate", navigate),
+            patch("iris.browser.session.time.monotonic", mono),
+            patch("iris.browser._driver.time.monotonic", mono),
+        ):
+            r = self.session.execute(Search(query="IU night letter", engine="youtube", play=True))
+        self.assertFalse(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
+        self.assertIn("timed out", (r.detail or "").lower())
+        self.assertEqual(self.driver.try_play_calls, 0)
 
 
 if __name__ == "__main__":

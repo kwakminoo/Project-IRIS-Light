@@ -217,9 +217,15 @@ class TopStatusHeader:
         playing = bool(getattr(getattr(snap, "media", None), "playing", False))
         if phase == "faulted":
             self.set_browser_status("FAULTED", dot_kind="error")
-        elif playing:
-            self.set_browser_status("PLAYING", dot_kind="ready")
-        elif phase in ("ready", "busy", "opening"):
-            self.set_browser_status(phase.upper(), dot_kind="connected" if phase == "ready" else "processing")
+            err = str(getattr(snap, "last_error", None) or "").strip()
+            self._browser_chip.setToolTip(err or "Browser faulted. Reload the page.")
         else:
-            self.set_browser_status("CLOSED", dot_kind="unavailable")
+            if playing:
+                self.set_browser_status("PLAYING", dot_kind="ready")
+            elif phase in ("ready", "busy", "opening"):
+                self.set_browser_status(phase.upper(), dot_kind="connected" if phase == "ready" else "processing")
+            else:
+                self.set_browser_status("CLOSED", dot_kind="unavailable")
+            self._browser_chip.setToolTip(
+                "Iris 내장 브라우저 제어 상태 (Hermes AGENT와 별개)"
+            )

@@ -29,7 +29,39 @@ from iris.browser.types import (
 
 log = logging.getLogger("iris.browser")
 
+NAV_WAIT_SEC = 45.0
+RELOAD_WAIT_SEC = 30.0
+
+_RECOVERY = {
+    "navigate": "navigate timeout. Reload or try again.",
+    "reload": "reload timeout. Try again.",
+    "blank": "page failed to load. Reload or try a different URL.",
+    "crash": "renderer crashed. Reload the page.",
+    "play": "play timed out. Try search again.",
+}
+
 _BRIDGE_JS = (Path(__file__).resolve().parent / "_bridge.js").read_text(encoding="utf-8")
+
+
+def recovery_text(kind: str) -> str:
+    return _RECOVERY[kind]
+
+
+def remaining_wait(deadline: float | None, default: float) -> float:
+    if deadline is None:
+        return max(0.0, float(default))
+    return max(0.0, min(float(default), deadline - time.monotonic()))
+
+
+def _is_normal_termination(status: Any) -> bool:
+    name = getattr(status, "name", None)
+    text = str(name if name is not None else status).split(".")[-1].lower().replace(" ", "")
+    if text in {"normal", "normaltermination", "normalterminationstatus"}:
+        return True
+    try:
+        return int(status) == 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _bbox4(raw: object) -> tuple[int, int, int, int] | None:
@@ -43,8 +75,8 @@ def _bbox4(raw: object) -> tuple[int, int, int, int] | None:
 
 class PageDriver(Protocol):
     def read_snapshot(self) -> BrowserSnapshot: ...
-    def navigate(self, url: str) -> None: ...
-    def reload(self) -> None: ...
+    def navigate(self, url: str, *, deadline: float | None = None) -> None: ...
+    def reload(self, *, deadline: float | None = None) -> None: ...
     def history_step(self, delta: int) -> None: ...
     def click(self, target: Locator) -> None: ...
     def type_text(self, target: Locator, text: str, *, clear: bool) -> None: ...
@@ -101,7 +133,45 @@ class FakePageDriver:
         self._phase = BrowserPhase.READY
         self._last_error: str | None = None
         self._playing = False
+        self._wait_queue: list[str] = []
+        self.phases_seen: list[BrowserPhase] = []
+        self.try_play_calls = 0
         self._ensure_blank()
+
+    def queue_wait(self, result: str) -> None:
+        self._wait_queue.append(result)
+
+    def crash(self, status: str = "abnormal") -> None:
+        if _is_normal_termination(status):
+            return
+        self._set_phase(BrowserPhase.FAULTED)
+        self._last_error = recovery_text("crash")
+
+    def mark_fault(self, message: str) -> None:
+        self._set_phase(BrowserPhase.FAULTED)
+        self._last_error = message
+
+    def _set_phase(self, phase: BrowserPhase) -> None:
+        self._phase = phase
+        self.phases_seen.append(phase)
+
+    def _apply_wait(self, fail_name: str, *, deadline: float | None) -> None:
+        default = NAV_WAIT_SEC if fail_name == "navigate" else RELOAD_WAIT_SEC
+        if remaining_wait(deadline, default) <= 0:
+            self.mark_fault(recovery_text(fail_name))
+            raise TimeoutError(self._last_error)
+        outcome = self._wait_queue.pop(0) if self._wait_queue else "ok"
+        self._set_phase(BrowserPhase.BUSY)
+        self._last_error = None
+        if outcome == "timeout":
+            self.mark_fault(recovery_text(fail_name))
+            raise TimeoutError(self._last_error)
+        if outcome in ("blank", "fail"):
+            self.mark_fault(recovery_text("blank"))
+            raise RuntimeError(self._last_error)
+        if outcome == "crash":
+            self.crash("abnormal")
+            raise RuntimeError(self._last_error)
 
     def _ensure_blank(self) -> None:
         if "about:blank" not in self._pages:
@@ -163,9 +233,8 @@ class FakePageDriver:
             kind="video" if watch else "",
         )
 
-    def navigate(self, url: str) -> None:
-        self._phase = BrowserPhase.BUSY
-        self._last_error = None
+    def navigate(self, url: str, *, deadline: float | None = None) -> None:
+        self._apply_wait("navigate", deadline=deadline)
         url = self._resolve_search(url)
         if url != self._history[self._index]:
             self._history = self._history[: self._index + 1]
@@ -177,16 +246,21 @@ class FakePageDriver:
             self._playing = False
         page = self._current()
         page.scroll_y = 0
-        self._phase = BrowserPhase.READY
+        self._set_phase(BrowserPhase.READY)
 
-    def first_watch_url(self) -> str:
+    def first_watch_url(self, *, deadline: float | None = None) -> str:
+        if remaining_wait(deadline, 1.0) <= 0:
+            return ""
         page = self._current()
         for dest in page.links.values():
             if "/watch" in dest:
                 return dest
         return ""
 
-    def try_play(self) -> str:
+    def try_play(self, *, deadline: float | None = None) -> str:
+        self.try_play_calls += 1
+        if remaining_wait(deadline, 1.0) <= 0:
+            return recovery_text("play")
         url = self._history[self._index]
         if "/watch" in url:
             self._playing = True
@@ -220,9 +294,9 @@ class FakePageDriver:
             return results.url
         return url
 
-    def reload(self) -> None:
-        self._phase = BrowserPhase.BUSY
-        self._phase = BrowserPhase.READY
+    def reload(self, *, deadline: float | None = None) -> None:
+        self._apply_wait("reload", deadline=deadline)
+        self._set_phase(BrowserPhase.READY)
 
     def history_step(self, delta: int) -> None:
         nxt = self._index + int(delta)
@@ -373,11 +447,33 @@ class WebEnginePageDriver:
         self._phase = BrowserPhase.OPENING
         self._bridge_ready = False
         self._nav_pending = False
+        self._wait_gate: threading.Event | None = None
+        self._renderer_dead = False
         try:
             view.loadStarted.connect(self._on_load_started)
             view.loadFinished.connect(self._on_load_finished)
         except Exception:
             pass
+        page_attr = getattr(view, "page", None)
+        page = page_attr() if callable(page_attr) else page_attr
+        if page is not None:
+            try:
+                page.renderProcessTerminated.connect(self._on_render_terminated)
+            except Exception:
+                pass
+
+    def _on_render_terminated(self, status: Any, _code: int = 0) -> None:
+        if _is_normal_termination(status):
+            return
+        self._renderer_dead = True
+        self.mark_fault(recovery_text("crash"))
+        gate = self._wait_gate
+        if gate is not None:
+            gate.set()
+
+    def mark_fault(self, message: str) -> None:
+        self._last_error = message
+        self._phase = BrowserPhase.FAULTED
 
     def _on_load_started(self, *_a: Any) -> None:
         self._nav_pending = True
@@ -391,23 +487,31 @@ class WebEnginePageDriver:
 
     def _wait_event(self, done: threading.Event, timeout: float) -> bool:
         """Wait without deadlocking when already on the Qt UI thread."""
+        self._wait_gate = done
         try:
-            from PyQt6.QtCore import QThread
-            from PyQt6.QtWidgets import QApplication
-        except Exception:
-            return done.wait(timeout)
-        app = QApplication.instance()
-        if app is None or QThread.currentThread() is not app.thread():
-            return done.wait(timeout)
-        deadline = time.monotonic() + timeout
-        while not done.is_set():
-            if time.monotonic() >= deadline:
-                return False
-            app.processEvents()
-            time.sleep(0.01)
-        return True
+            try:
+                from PyQt6.QtCore import QThread
+                from PyQt6.QtWidgets import QApplication
+            except Exception:
+                return done.wait(timeout)
+            app = QApplication.instance()
+            if app is None or QThread.currentThread() is not app.thread():
+                return done.wait(timeout)
+            deadline = time.monotonic() + timeout
+            while not done.is_set():
+                if time.monotonic() >= deadline:
+                    return False
+                app.processEvents()
+                time.sleep(0.01)
+            return True
+        finally:
+            if self._wait_gate is done:
+                self._wait_gate = None
 
-    def _eval_js(self, code: str, *, timeout: float = 8.0) -> Any:
+    def _eval_js(self, code: str, *, timeout: float = 8.0, deadline: float | None = None) -> Any:
+        wait = remaining_wait(deadline, timeout)
+        if wait <= 0:
+            raise TimeoutError("javascript timeout")
         box: dict[str, Any] = {}
         done = threading.Event()
 
@@ -421,7 +525,10 @@ class WebEnginePageDriver:
             page.runJavaScript(code, cb)
 
         self._run_ui(start)
-        if not self._wait_event(done, timeout):
+        fired = self._wait_event(done, wait)
+        if self._renderer_dead:
+            raise RuntimeError(self._last_error or recovery_text("crash"))
+        if not fired:
             raise TimeoutError("javascript timeout")
         return box.get("v")
 
@@ -473,12 +580,8 @@ class WebEnginePageDriver:
         )
         excerpt = str(data.get("excerpt") or "")[:EXCERPT_CAP]
         phase = self._phase
-        if self._last_error:
+        if self._last_error or phase == BrowserPhase.FAULTED:
             phase = BrowserPhase.FAULTED
-        elif phase == BrowserPhase.BUSY:
-            phase = BrowserPhase.BUSY
-        elif data.get("readyState") == "complete" or url:
-            phase = BrowserPhase.READY
         return BrowserSnapshot(
             url=str(data.get("url") or url or ""),
             title=str(data.get("title") or title or ""),
@@ -549,58 +652,71 @@ class WebEnginePageDriver:
             return ""
         return str(raw.get("text") or "")[:EXTRACT_MAX]
 
-    def navigate(self, url: str) -> None:
-        from PyQt6.QtCore import QUrl
+    def _current_url(self) -> str:
+        try:
+            return str(self._view.url().toString() or "")
+        except Exception:
+            return ""
 
+    def _wait_load(self, start: Callable[[], None], *, timeout: float, fail_name: str) -> None:
+        if timeout <= 0:
+            self.mark_fault(recovery_text(fail_name))
+            raise TimeoutError(self._last_error)
         self._phase = BrowserPhase.BUSY
         self._last_error = None
+        self._renderer_dead = False
         self._bridge_ready = False
         done = threading.Event()
         ok_box: dict[str, bool] = {}
 
-        def start() -> None:
-            def finished(ok: bool) -> None:
-                ok_box["ok"] = bool(ok)
-                try:
-                    self._view.loadFinished.disconnect(finished)
-                except Exception:
-                    pass
-                done.set()
+        def finished(ok: bool) -> None:
+            ok_box["ok"] = bool(ok)
+            try:
+                self._view.loadFinished.disconnect(finished)
+            except Exception:
+                pass
+            done.set()
 
+        def arm() -> None:
             self._view.loadFinished.connect(finished)
-            self._view.load(QUrl(url))
+            start()
 
-        self._run_ui(start)
-        if not self._wait_event(done, 45.0):
-            self._last_error = "navigate timeout"
-            self._phase = BrowserPhase.FAULTED
-            log.error("navigate timeout url=%s", url)
-            raise TimeoutError("navigate timeout")
+        self._run_ui(arm)
+        fired = self._wait_event(done, timeout)
+        if self._renderer_dead:
+            raise RuntimeError(self._last_error or recovery_text("crash"))
+        if not fired:
+            self.mark_fault(recovery_text(fail_name))
+            log.error("%s timeout", fail_name)
+            raise TimeoutError(self._last_error)
         if not ok_box.get("ok", True):
-            # Redirects / aborted intermediates often fire loadFinished(False)
-            # while the final document is fine — accept if we left about:blank.
-            def current_url() -> str:
-                try:
-                    return str(self._view.url().toString() or "")
-                except Exception:
-                    return ""
-
-            landed = self._run_ui(current_url)
+            # Redirects and aborted intermediates often fire loadFinished(False)
+            # while the final document is fine. Accept if we left about:blank.
+            landed = self._run_ui(self._current_url)
             if not landed or landed in ("about:blank", "about:blank#blocked"):
-                self._last_error = "navigate failed"
-                self._phase = BrowserPhase.FAULTED
-                log.error("navigate failed url=%s", url)
-                raise RuntimeError("navigate failed")
+                self.mark_fault(recovery_text("blank"))
+                log.error("%s failed blank url=%s", fail_name, landed)
+                raise RuntimeError(self._last_error)
             log.warning("loadFinished(False) but landed url=%s", landed)
         self._phase = BrowserPhase.READY
+
+    def navigate(self, url: str, *, deadline: float | None = None) -> None:
+        from PyQt6.QtCore import QUrl
+
+        timeout = remaining_wait(deadline, NAV_WAIT_SEC)
+
+        def start() -> None:
+            self._view.load(QUrl(url))
+
+        self._wait_load(start, timeout=timeout, fail_name="navigate")
         time.sleep(0.15)
         self._ensure_bridge()
         log.info("navigated url=%s", url)
 
-    def first_watch_url(self) -> str:
+    def first_watch_url(self, *, deadline: float | None = None) -> str:
         self._ensure_bridge()
         try:
-            raw = self._eval_js("window.__irisBrowser.firstWatchUrl()")
+            raw = self._eval_js("window.__irisBrowser.firstWatchUrl()", deadline=deadline)
         except Exception as exc:
             log.warning("firstWatchUrl js failed: %s", exc)
             return ""
@@ -609,11 +725,12 @@ class WebEnginePageDriver:
             return href
         return ""
 
-    def try_play(self) -> str:
-        """Ask the page video to play. Does not bypass site/autoplay policy."""
+    def try_play(self, *, deadline: float | None = None) -> str:
+        if remaining_wait(deadline, 16.0) <= 0:
+            return recovery_text("play")
         self._ensure_bridge()
         try:
-            raw = self._eval_js("window.__irisBrowser.tryPlay()", timeout=16.0)
+            raw = self._eval_js("window.__irisBrowser.tryPlay()", timeout=16.0, deadline=deadline)
         except Exception as exc:
             log.warning("tryPlay js failed: %s", exc)
             return f"play script failed: {exc}"
@@ -622,9 +739,11 @@ class WebEnginePageDriver:
         if raw.get("ok") and raw.get("playing"):
             return ""
         if self._click_player():
-            time.sleep(0.7)
+            pause = remaining_wait(deadline, 0.7)
+            if pause > 0:
+                time.sleep(pause)
             try:
-                again = self._eval_js("window.__irisBrowser.mediaState()", timeout=4.0)
+                again = self._eval_js("window.__irisBrowser.mediaState()", timeout=4.0, deadline=deadline)
             except Exception:
                 again = None
             st = media_from_dict(again)
@@ -679,25 +798,13 @@ class WebEnginePageDriver:
             return ""
         return str(raw.get("error") or raw.get("block") or "pause failed")
 
-    def reload(self) -> None:
-        self._phase = BrowserPhase.BUSY
-        self._bridge_ready = False
-        done = threading.Event()
+    def reload(self, *, deadline: float | None = None) -> None:
+        timeout = remaining_wait(deadline, RELOAD_WAIT_SEC)
 
         def start() -> None:
-            def finished(_ok: bool) -> None:
-                try:
-                    self._view.loadFinished.disconnect(finished)
-                except Exception:
-                    pass
-                done.set()
-
-            self._view.loadFinished.connect(finished)
             self._view.reload()
 
-        self._run_ui(start)
-        self._wait_event(done, 30.0)
-        self._phase = BrowserPhase.READY
+        self._wait_load(start, timeout=timeout, fail_name="reload")
         self._ensure_bridge()
 
     def history_step(self, delta: int) -> None:
