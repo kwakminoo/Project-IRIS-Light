@@ -35,9 +35,10 @@ StreamFn = Callable[[str], None]
 _HERMES_PYTHON_MIN = (3, 11)
 _HERMES_PYTHON_MAX_EXCLUSIVE = (3, 14)
 _PY_LAUNCHER_FLAGS = ("-3.11", "-3.12", "-3.13")
+_WANTED_EXTRAS = ("homeassistant", "mcp")
 _PIP_FALLBACK_LIMIT = (
     "pip 폴백은 uv.lock pin을 재현하지 않습니다. "
-    "extras homeassistant,mcp 만 설치하며 requirements.txt 는 사용하지 않습니다."
+    "선언된 extras 만 설치하며 requirements.txt 는 사용하지 않습니다."
 )
 _ERROR_LINE = re.compile(
     r"(?i)\b(error|exception|traceback|failed|winerror|timeout|permissionerror)\b"
@@ -524,6 +525,53 @@ def _timeout_kind(exc: BaseException) -> str:
     return str(kind) if kind in ("idle", "hard") else "hard"
 
 
+def _declared_optional_extras(pyproject: Path) -> frozenset[str]:
+    if not pyproject.is_file():
+        return frozenset()
+    try:
+        import tomllib
+
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    optional = data.get("project", {}).get("optional-dependencies")
+    if not isinstance(optional, dict):
+        return frozenset()
+    return frozenset(str(name) for name in optional)
+
+
+def _wanted_extras(agent: Path) -> tuple[str, ...]:
+    declared = _declared_optional_extras(agent / "pyproject.toml")
+    return tuple(name for name in _WANTED_EXTRAS if name in declared)
+
+
+def _uv_extra_args(extras: tuple[str, ...]) -> list[str]:
+    args: list[str] = []
+    for name in extras:
+        args.extend(("--extra", name))
+    return args
+
+
+def _pip_editable_spec(extras: tuple[str, ...]) -> str:
+    if not extras:
+        return "."
+    return ".[" + ",".join(extras) + "]"
+
+
+_PROBE_PINS = (
+    "aiohttp==3.14.3",
+    "mcp==2.0.0",
+    "httpx2==2.7.0",
+    "starlette==1.3.1",
+    "python-dotenv==1.2.2",
+    "ruamel.yaml==0.18.16",
+)
+
+
+def _boost_probe_deps(venv_py: Path) -> subprocess.CompletedProcess[str]:
+    return _run([str(venv_py), "-m", "pip", "install", *_PROBE_PINS], timeout=300.0)
+
+
 def _probe_venv(venv_py: Path) -> tuple[bool, str]:
     try:
         proc = _run(
@@ -717,13 +765,15 @@ def _finish_staged_install(
         _discard_tree(staging)
         return InstallResult(False, "사용자가 중단함", "cancel")
 
+    extras = _wanted_extras(staging)
     lock = staging / "uv.lock"
     installed = False
     if uv and lock.is_file():
-        emit("uv sync --frozen (homeassistant, mcp)…")
+        extra_note = ",".join(extras) if extras else "no extras"
+        emit(f"uv sync --frozen ({extra_note})…")
         cmd = [
             uv, "sync", "--frozen", "--no-dev",
-            "--extra", "homeassistant", "--extra", "mcp",
+            *_uv_extra_args(extras),
             "--python", str(venv_py),
         ]
         started = time.monotonic()
@@ -745,8 +795,9 @@ def _finish_staged_install(
         emit(_PIP_FALLBACK_LIMIT)
 
     if not installed:
-        emit("pip install -e .[homeassistant,mcp]…")
-        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", ".[homeassistant,mcp]"]
+        spec = _pip_editable_spec(extras)
+        emit(f"pip install -e {spec}…")
+        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", spec]
         started = time.monotonic()
         try:
             pip = _run_dep(pip_cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0)
@@ -774,14 +825,7 @@ def _finish_staged_install(
             log.append(pip.stdout or "")
             log.append(pip.stderr or "")
             if pip.returncode == 0:
-                boost = _run(
-                    [
-                        str(venv_py), "-m", "pip", "install",
-                        "aiohttp==3.14.3", "mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1",
-                        "python-dotenv==1.2.2", "ruamel.yaml==0.18.16",
-                    ],
-                    timeout=300.0,
-                )
+                boost = _boost_probe_deps(venv_py)
                 log.append(boost.stdout or "")
                 log.append(boost.stderr or "")
                 if boost.returncode != 0:
@@ -802,6 +846,16 @@ def _finish_staged_install(
             return fail("exit", "pip 설치 실패", "\n".join(log))
 
     ok, detail = _probe_venv(venv_py)
+    if not ok:
+        emit("probe 실패 — aiohttp/mcp pin…")
+        log.append(detail)
+        boost = _boost_probe_deps(venv_py)
+        log.append(boost.stdout or "")
+        log.append(boost.stderr or "")
+        if boost.returncode != 0:
+            _discard_tree(staging)
+            return fail("exit", "gateway/mcp 의존성 보강 실패", "\n".join(log))
+        ok, detail = _probe_venv(venv_py)
     log.append(f"probe={ok} {detail}")
     if not ok:
         _discard_tree(staging)
@@ -929,6 +983,7 @@ def _try_uv_sync(
     env = os.environ.copy()
     env["VIRTUAL_ENV"] = str(venv_dir)
     env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
+    extras = _wanted_extras(agent)
     cmd = [
         uv,
         "sync",
@@ -936,10 +991,7 @@ def _try_uv_sync(
         "--active",
         "--python",
         str(venv_py),
-        "--extra",
-        "homeassistant",
-        "--extra",
-        "mcp",
+        *_uv_extra_args(extras),
     ]
     try:
         return _run_pkg_install(cmd, cwd=str(agent), run_streamed=run_streamed, env=env)

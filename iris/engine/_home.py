@@ -130,4 +130,6 @@ def install_into(
         return
     from iris.system.hermes_install import install_hermes_with_system_python
 
-    install_hermes_with_system_python(home=Path(home), sha=ENGINE_HERMES_SHA)
+    result = install_hermes_with_system_python(home=Path(home), sha=ENGINE_HERMES_SHA)
+    if result is not None and not getattr(result, "ok", True):
+        return

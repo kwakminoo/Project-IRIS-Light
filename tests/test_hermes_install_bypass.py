@@ -597,5 +597,134 @@ class HermesInstallHomeArgTests(unittest.TestCase):
             self.assertTrue(any("checkout" in j and "--detach" in j and pin in j for j in joined))
 
 
+class HermesInstallDeclaredExtrasTests(unittest.TestCase):
+    def test_drops_extras_the_project_does_not_declare(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            agent = Path(td)
+            (agent / "pyproject.toml").write_text(
+                "[project.optional-dependencies]\nmcp = [\"mcp\"]\n",
+                encoding="utf-8",
+            )
+            extras = hi._wanted_extras(agent)
+            self.assertEqual(extras, ("mcp",))
+            self.assertEqual(hi._pip_editable_spec(extras), ".[mcp]")
+            self.assertEqual(hi._uv_extra_args(extras), ["--extra", "mcp"])
+            self.assertNotIn("homeassistant", extras)
+
+    def test_empty_when_pyproject_has_no_optional_table(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            agent = Path(td)
+            (agent / "pyproject.toml").write_text(
+                '[project]\nname = "hermes-agent"\n',
+                encoding="utf-8",
+            )
+            extras = hi._wanted_extras(agent)
+            self.assertEqual(extras, ())
+            self.assertEqual(hi._pip_editable_spec(extras), ".")
+            self.assertEqual(hi._uv_extra_args(extras), [])
+
+    def test_finish_does_not_pass_unknown_homeassistant_extra(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "engine"
+            staging = home / "hermes-agent.staging"
+            staging.mkdir(parents=True)
+            (staging / "uv.lock").write_text("x", encoding="utf-8")
+            (staging / "pyproject.toml").write_text(
+                "[project.optional-dependencies]\nmcp = [\"mcp\"]\n",
+                encoding="utf-8",
+            )
+            if sys.platform == "win32":
+                (staging / "venv" / "Scripts").mkdir(parents=True)
+                (staging / "venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+            else:
+                (staging / "venv" / "bin").mkdir(parents=True)
+                (staging / "venv" / "bin" / "python").write_text("", encoding="utf-8")
+            seen: list[list[str]] = []
+
+            def run_dep(cmd, **_kwargs):
+                seen.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            def run(cmd, **_kwargs):
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with (
+                patch.object(hi, "_run", side_effect=run),
+                patch.object(hi, "_run_dep", side_effect=run_dep),
+                patch.object(hi, "_probe_venv", return_value=(True, "ok")),
+                patch.object(hi, "_activate_staged", return_value=(True, "live")),
+                patch.object(hi, "_user_path_prepend"),
+            ):
+                result = hi._finish_staged_install(
+                    staging=staging,
+                    home=home,
+                    stamp="t",
+                    py=Path("python"),
+                    uv="uv",
+                    command="hermes",
+                    log=[],
+                    emit=lambda _m: None,
+                    fail=lambda *a, **k: hi.InstallResult(False, "fail", "exit"),
+                    run_streamed=None,
+                    should_abort=None,
+                    probe_gateway=False,
+                )
+            self.assertTrue(result.ok)
+            joined = " ".join(" ".join(c) for c in seen)
+            self.assertIn("--extra mcp", joined)
+            self.assertNotIn("homeassistant", joined)
+
+    def test_pip_extras_success_boosts_when_probe_misses_aiohttp(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "engine"
+            staging = home / "hermes-agent.staging"
+            staging.mkdir(parents=True)
+            (staging / "pyproject.toml").write_text(
+                "[project.optional-dependencies]\nmcp = [\"mcp\"]\n",
+                encoding="utf-8",
+            )
+            if sys.platform == "win32":
+                (staging / "venv" / "Scripts").mkdir(parents=True)
+                (staging / "venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+            else:
+                (staging / "venv" / "bin").mkdir(parents=True)
+                (staging / "venv" / "bin" / "python").write_text("", encoding="utf-8")
+            probes = iter([(False, "No module named 'aiohttp'"), (True, "ok")])
+            boosts: list[list[str]] = []
+
+            def run(cmd, **_kwargs):
+                if any("aiohttp==" in str(part) for part in cmd):
+                    boosts.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            def run_dep(cmd, **_kwargs):
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with (
+                patch.object(hi, "_run", side_effect=run),
+                patch.object(hi, "_run_dep", side_effect=run_dep),
+                patch.object(hi, "_probe_venv", side_effect=lambda *_a, **_k: next(probes)),
+                patch.object(hi, "_activate_staged", return_value=(True, "live")),
+                patch.object(hi, "_user_path_prepend"),
+            ):
+                result = hi._finish_staged_install(
+                    staging=staging,
+                    home=home,
+                    stamp="t",
+                    py=Path("python"),
+                    uv=None,
+                    command="hermes",
+                    log=[],
+                    emit=lambda _m: None,
+                    fail=lambda *a, **k: hi.InstallResult(False, "fail", "exit"),
+                    run_streamed=None,
+                    should_abort=None,
+                    probe_gateway=False,
+                )
+            self.assertTrue(result.ok)
+            self.assertEqual(len(boosts), 1)
+            self.assertTrue(any("aiohttp==3.14.3" in part for part in boosts[0]))
+
+
 if __name__ == "__main__":
     unittest.main()
