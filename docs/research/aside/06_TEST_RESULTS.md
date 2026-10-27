@@ -196,3 +196,21 @@ Locked iframe lines from `_check_bridge_frames` stayed exact:
 `g3e3 button Below Fold in_view=false`
 
 `Menu` comes from `aria-label`. Duplicate Submit lines carry `ctx=`. Checkbox and disabled print only when true. `hunter2` and `SAME_ORIGIN_SECRET` are absent. Unique `Menu` has no `ctx=` even though the bridge sent a heading token. Packer keys stay `ok, command_kind, detail, trusted, page_text, url, phase, playing, gen`. Hostile titles stay out of `trusted`. `setRunsOnSubFrames(False)` is unchanged. Mini player, ViewHost, Hermes toolset disable, and MCP 120s were not touched.
+
+## Idle snapshot page identity (2026-10-27)
+
+Cause: `BrowserSession.snapshot()` overlaid live URL/title and kept the previous `gen`/`nodes`. `BrowserPanel._on_tab_changed` calls that idle path after `setPage`. Chat POST then packed the old refs against the new document.
+
+Fix: restamp when `live.url` or `tab_index` differs. Same-page idle snapshot still keeps refs. Extract/media still skip stamp. No new cache type.
+
+| Check | Result |
+|---|---|
+| Same-page idle snapshot | pass (gen and refs unchanged) |
+| Driver-only URL change then idle snapshot | pass (new gen, new nodes, old click `stale_ref` READY) |
+| Watch then back to React via idle snapshot | pass |
+| `tab_index` change, same URL | pass |
+| Combined unittest | pass, 76 tests, 2.202s |
+| `_check_intent` / `_check_browser_scenarios` | pass |
+| `_check_bridge_snapshot` / `_check_bridge_frames` | pass |
+
+Not run: two live Qt tabs in the panel (unit test uses Fake driver + `current_tab_index`). SPA same-URL DOM replace without a tab or URL change is unmeasured; `browser.snapshot` still restamps.

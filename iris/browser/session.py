@@ -159,13 +159,18 @@ class BrowserSession:
             if self._driver is not None:
                 try:
                     live = self._driver.read_snapshot()
-                    self._snap = self._overlay_host(
-                        live.evolve(
-                            gen=self._snap.gen,
-                            nodes=self._snap.nodes,
-                            excerpt=self._snap.excerpt or live.excerpt,
+                    tab_index, _tab_count = self._tab_meta()
+                    page_changed = (live.url or "") != (self._snap.url or "") or tab_index != self._snap.tab_index
+                    if page_changed:
+                        self._snap = self._overlay_host(self._stamp(live))
+                    else:
+                        self._snap = self._overlay_host(
+                            live.evolve(
+                                gen=self._snap.gen,
+                                nodes=self._snap.nodes,
+                                excerpt=self._snap.excerpt or live.excerpt,
+                            )
                         )
-                    )
                     if (
                         self._snap.phase == BrowserPhase.FAULTED
                         and self._published_fault != self._snap.last_error
