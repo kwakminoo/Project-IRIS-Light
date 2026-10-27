@@ -1,12 +1,13 @@
 """IRIS-owned Hermes engine.
 
 Agent-readable:
-- Owns: domain types for a sidecar turn.
+- Owns: domain types for a sidecar turn and the process engine handle.
 - Does not: spawn the sidecar, import Hermes, or talk to Qt.
 - Talks to: chat workers via ChatTranscript and StatelessTurn.
-- Extend via: public names in types.py. Private names stay off __all__.
+- Extend via: public names in types.py and runtime.py. Private names stay off __all__.
 """
 
+from iris.engine.runtime import Engine, shared_engine
 from iris.engine.types import (
     CancelToken,
     ChatMessage,
@@ -40,6 +41,7 @@ __all__ = [
     "ChatMessage",
     "ChatTranscript",
     "ContentDelta",
+    "Engine",
     "EngineEnsureResult",
     "EngineError",
     "EngineErrorCode",
@@ -61,4 +63,5 @@ __all__ = [
     "TurnFinished",
     "UserUtterance",
     "parse_engine_source",
+    "shared_engine",
 ]

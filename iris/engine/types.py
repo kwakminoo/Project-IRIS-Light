@@ -37,6 +37,20 @@ class EngineErrorCode(Enum):
     UNKNOWN = "unknown"
 
 
+_USER_MESSAGES = {
+    EngineErrorCode.NOT_INSTALLED: "엔진이 아직 설치되지 않았습니다.",
+    EngineErrorCode.WRONG_PYTHON: "엔진 Python이 IRIS와 다릅니다.",
+    EngineErrorCode.SPAWN_FAILED: "엔진을 시작하지 못했습니다.",
+    EngineErrorCode.SIDECAR_DIED: "엔진 프로세스가 종료되었습니다.",
+    EngineErrorCode.PROTOCOL: "엔진 응답을 읽지 못했습니다.",
+    EngineErrorCode.AUTH: "엔진 인증에 실패했습니다.",
+    EngineErrorCode.CANCELLED: "요청이 취소되었습니다.",
+    EngineErrorCode.NO_USER_UTTERANCE: "보낼 사용자 메시지가 없습니다.",
+    EngineErrorCode.TOOL_TRANSPORT: "도구 호출에 실패했습니다.",
+    EngineErrorCode.UNKNOWN: "엔진에서 알 수 없는 오류가 났습니다.",
+}
+
+
 @dataclass(frozen=True)
 class EngineError(Exception):
     code: EngineErrorCode
@@ -47,7 +61,7 @@ class EngineError(Exception):
 
     @property
     def user_message(self) -> str:
-        raise NotImplementedError
+        return _USER_MESSAGES.get(self.code, _USER_MESSAGES[EngineErrorCode.UNKNOWN])
 
 
 @dataclass(frozen=True)
@@ -179,13 +193,29 @@ class ExternalGateway:
 EngineSource = Union[InternalSidecar, ExternalGateway]
 
 
+def _default_engine_home() -> EngineHome:
+    return EngineHome(Path.home() / ".iris-light" / "engine")
+
+
+def _settings_flag(settings: object, name: str) -> bool:
+    value = getattr(settings, name, False)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no"}
+    return bool(value)
+
+
 def parse_engine_source(settings: object) -> EngineSource:
     """Settings boundary. Default InternalSidecar.
 
     ExternalGateway only when settings.hermes_external_gateway is true.
     hermes_enabled stays the 'use the engine' flag. It does not mean ':8642 is up'.
     """
-    raise NotImplementedError
+    if _settings_flag(settings, "hermes_external_gateway"):
+        return ExternalGateway(
+            base_url=str(getattr(settings, "hermes_base_url", "") or ""),
+            api_key=str(getattr(settings, "hermes_api_key", "") or ""),
+        )
+    return InternalSidecar(home=_default_engine_home())
 
 
 @dataclass(frozen=True)
