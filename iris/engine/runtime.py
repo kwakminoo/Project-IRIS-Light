@@ -2,8 +2,8 @@
 
 Agent-readable:
 - Owns: one child slot, one lock, and the process singleton.
-- Does not: import Hermes, bind :8642, or stream a turn.
-- Talks to: iris.engine.types, the EnginePython probe, and _sidecar_main.py stdout.
+- Does not: import Hermes or bind :8642.
+- Talks to: iris.engine.types, the EnginePython probe, and _sidecar_main.py stdin/stdout.
 - Extend via: Engine.ensure_ready / run_turn / shutdown.
 """
 
@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from typing import Iterator
 
 from iris.engine._home import _stripped_probe_env, engine_python, probe_engine_python
+from iris.engine._sidecar import encode_host_command, parse_turn_event
 from iris.engine.types import (
     EngineEnsureResult,
     EngineError,
@@ -34,12 +35,14 @@ from iris.engine.types import (
     TurnCancelled,
     TurnEvent,
     TurnFailed,
+    TurnFinished,
     parse_engine_source,
 )
 from iris.system.win_subprocess import no_window_kwargs
 
 _SIDECAR_MAIN = Path(__file__).resolve().parent / "_sidecar_main.py"
 _HELLO_TIMEOUT_SEC = 5.0
+_TURN_TIMEOUT_SEC = 10.0
 _STOP_TIMEOUT_SEC = 5.0
 _GATEWAY_ENV_KEYS = (
     "API_SERVER_PORT",
@@ -108,6 +111,16 @@ def _close_pipes(proc: subprocess.Popen[str]) -> None:
             stream.close()
         except OSError:
             continue
+
+
+def _send_stop(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None or proc.stdin is None:
+        return
+    try:
+        proc.stdin.write(encode_host_command("stop"))
+        proc.stdin.flush()
+    except OSError:
+        return
 
 
 def _terminate_child(proc: subprocess.Popen[str]) -> None:
@@ -216,6 +229,61 @@ class Engine:
         except Exception as exc:
             return EngineFailed(EngineError(EngineErrorCode.UNKNOWN, str(exc)))
 
+    def _forget_child(self) -> None:
+        child = self._child
+        self._child = None
+        if child is None:
+            return
+        if child.poll() is None:
+            _terminate_child(child)
+            return
+        _close_pipes(child)
+
+    def _write_turn(self, child: subprocess.Popen[str], turn: StatelessTurn) -> None:
+        if child.stdin is None:
+            raise OSError("sidecar stdin is missing")
+        child.stdin.write(
+            encode_host_command(
+                "turn",
+                messages=[
+                    {"role": message.role.value, "content": message.content}
+                    for message in turn.transcript.messages
+                ],
+                model=turn.model.model,
+                provider=turn.model.provider,
+            )
+        )
+        child.stdin.flush()
+
+    def _read_turn_events(self, child: subprocess.Popen[str]) -> Iterator[TurnEvent]:
+        while True:
+            line = _readline_timeout(child.stdout, _TURN_TIMEOUT_SEC)
+            if not line:
+                if child.poll() is None:
+                    yield TurnFailed(
+                        EngineError(EngineErrorCode.PROTOCOL, "sidecar event timed out")
+                    )
+                    return
+                self._forget_child()
+                yield TurnFailed(
+                    EngineError(EngineErrorCode.SPAWN_FAILED, "sidecar exited during turn")
+                )
+                return
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                yield TurnFailed(
+                    EngineError(
+                        EngineErrorCode.PROTOCOL,
+                        f"sidecar event was not valid JSON: {line.strip()[:200]}",
+                    )
+                )
+                return
+            event = parse_turn_event(raw)
+            yield event
+            if isinstance(event, (TurnFinished, TurnFailed, TurnCancelled)):
+                return
+
     def run_turn(self, turn: StatelessTurn) -> Iterator[TurnEvent]:
         try:
             if turn.cancel.cancelled():
@@ -225,9 +293,26 @@ class Engine:
             if isinstance(ready, EngineFailed):
                 yield TurnFailed(ready.error)
                 return
-            yield TurnFailed(
-                EngineError(EngineErrorCode.UNKNOWN, "turn stream is not wired")
-            )
+            with self._lock:
+                child = self._child
+                if child is None or child.poll() is not None:
+                    self._forget_child()
+                    yield TurnFailed(
+                        EngineError(EngineErrorCode.SPAWN_FAILED, "sidecar child is missing")
+                    )
+                    return
+                try:
+                    self._write_turn(child, turn)
+                except (OSError, ValueError) as exc:
+                    self._forget_child()
+                    yield TurnFailed(
+                        EngineError(
+                            EngineErrorCode.SPAWN_FAILED,
+                            f"sidecar stdin closed: {exc}",
+                        )
+                    )
+                    return
+                yield from self._read_turn_events(child)
         except Exception as exc:
             yield TurnFailed(EngineError(EngineErrorCode.UNKNOWN, str(exc)))
 
@@ -237,6 +322,7 @@ class Engine:
                 child = self._child
                 self._child = None
                 if child is not None:
+                    _send_stop(child)
                     _terminate_child(child)
         except Exception:
             return

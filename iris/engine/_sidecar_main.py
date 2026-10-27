@@ -1,10 +1,10 @@
 """Hermes-interpreter sidecar entry.
 
 Agent-readable:
-- Owns: logging reservation and the GuiPython refuse check.
+- Owns: logging reservation, the GuiPython refuse check, and the stdin loop.
 - Does not: import run_agent, hermes_cli, iris, or PyQt6.
-- Talks to: the host through one NDJSON hello on stdout.
-- Extend via: later units add the AIAgent loop after this hello.
+- Talks to: the host through NDJSON on stdout. Inbound commands are turn and stop.
+- Extend via: later units replace the turn fail with the AIAgent loop.
 """
 
 from __future__ import annotations
@@ -48,12 +48,65 @@ def _is_gui_python() -> bool:
     return Path(sys.executable).resolve() == Path(marked).resolve()
 
 
+def _emit(payload: dict) -> None:
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+def _fail(code: str, detail: str) -> None:
+    _emit({"t": "fail", "code": code, "detail": detail})
+
+
+def _handle_turn(_raw: dict) -> bool:
+    _fail("unknown", "agent loop is not wired")
+    return True
+
+
+def _handle_stop(_raw: dict) -> bool:
+    return False
+
+
+_COMMANDS = {
+    "turn": _handle_turn,
+    "stop": _handle_stop,
+}
+
+
+def _handle_line(line: str) -> bool:
+    text = line.strip()
+    if not text:
+        return True
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        _fail("protocol", "command must be JSON")
+        return True
+    if not isinstance(raw, dict):
+        _fail("protocol", "command must be a dict")
+        return True
+    kind = raw.get("t")
+    handler = _COMMANDS.get(kind) if isinstance(kind, str) else None
+    if handler is None:
+        _fail("protocol", f"unknown command: {kind!r}")
+        return True
+    return handler(raw)
+
+
+def _serve() -> None:
+    while True:
+        line = sys.stdin.readline()
+        if line == "":
+            return
+        if not _handle_line(line):
+            return
+
+
 def main() -> None:
     _configure_logging()
     if _is_gui_python():
         logging.warning("refusing to start under GuiPython")
         raise SystemExit(2)
     print(json.dumps({"t": "hello", "ok": True}), flush=True)
+    _serve()
 
 
 if __name__ == "__main__":

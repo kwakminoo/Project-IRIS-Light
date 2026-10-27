@@ -1,7 +1,7 @@
 """Qt-side sidecar protocol parse.
 
 Agent-readable:
-- Owns: host-line dicts into TurnEvent.
+- Owns: host-line dicts into TurnEvent, and host command lines out.
 - Does not: spawn a child or import Hermes.
 - Talks to: iris.engine.types.
 - Extend via: add a parser in _PARSERS. Keep unknown names as PROTOCOL.
@@ -9,6 +9,7 @@ Agent-readable:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 from iris.engine.types import (
@@ -69,6 +70,12 @@ _PARSERS: dict[str, Callable[[dict], TurnEvent]] = {
     "fail": _parse_fail,
     "cancel": _parse_cancel,
 }
+
+
+def encode_host_command(kind: str, **fields: object) -> str:
+    """One NDJSON line for the child stdin."""
+    payload = {"t": kind, **fields}
+    return json.dumps(payload, ensure_ascii=False) + "\n"
 
 
 def parse_turn_event(raw: dict) -> TurnEvent:

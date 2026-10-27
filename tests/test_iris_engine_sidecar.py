@@ -37,6 +37,7 @@ def _run_sidecar_main(env: dict[str, str], *extra: str) -> subprocess.CompletedP
         [sys.executable, str(_SIDECAR_MAIN), *extra],
         capture_output=True,
         text=True,
+        input="",
         env=env,
         cwd=str(_ROOT),
         timeout=10,
