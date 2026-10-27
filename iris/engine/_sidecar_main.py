@@ -149,6 +149,12 @@ def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
     provider = raw.get("provider")
     if isinstance(provider, str) and provider:
         wanted["provider"] = provider
+    base_url = raw.get("base_url")
+    if isinstance(base_url, str) and base_url:
+        wanted["base_url"] = base_url
+    api_key = raw.get("api_key")
+    if isinstance(api_key, str) and api_key:
+        wanted["api_key"] = api_key
     agent = cls(**_init_kwargs(cls, wanted))
     agent._persist_disabled = True
     result = agent.run_conversation(

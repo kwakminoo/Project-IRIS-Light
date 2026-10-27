@@ -70,6 +70,7 @@ def _system_user_turn() -> str:
         ],
         model="llama3.2",
         provider="custom",
+        base_url="http://127.0.0.1:11434/v1",
     )
 
 
@@ -166,6 +167,7 @@ class SidecarAgentLoopTests(TestCase):
             ctor = saved["ctors"][0]
             self.assertIs(ctor.get("skip_memory"), True)
             self.assertIsNone(ctor.get("session_db"))
+            self.assertEqual(ctor.get("base_url"), "http://127.0.0.1:11434/v1")
             self.assertTrue(saved["runs"][0]["persist_disabled"])
 
     def test_last_message_not_user_fails_without_run_conversation(self) -> None:

@@ -273,17 +273,19 @@ class Engine:
     def _write_turn(self, child: subprocess.Popen[str], turn: StatelessTurn) -> None:
         if child.stdin is None:
             raise OSError("sidecar stdin is missing")
-        child.stdin.write(
-            encode_host_command(
-                "turn",
-                messages=[
-                    {"role": message.role.value, "content": message.content}
-                    for message in turn.transcript.messages
-                ],
-                model=turn.model.model,
-                provider=turn.model.provider,
-            )
-        )
+        fields: dict[str, object] = {
+            "messages": [
+                {"role": message.role.value, "content": message.content}
+                for message in turn.transcript.messages
+            ],
+            "model": turn.model.model,
+            "provider": turn.model.provider,
+        }
+        if turn.model.base_url:
+            fields["base_url"] = turn.model.base_url
+        if turn.model.api_key:
+            fields["api_key"] = turn.model.api_key
+        child.stdin.write(encode_host_command("turn", **fields))
         child.stdin.flush()
 
     def _read_turn_events(
