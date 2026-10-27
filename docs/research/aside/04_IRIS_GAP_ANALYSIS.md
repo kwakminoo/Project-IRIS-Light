@@ -14,10 +14,12 @@ ChatPanel send
       → Hermes POST
           teaching: iris/browser/observation.py::browser_teaching_block
           state:    pack_browser_observation(get_browser_session())
-      → model emits iris_invoke {action: browser.*}
-          → iris/mcp/iris_control_stdio.py
+      → Hermes MCP tools (only three names)
+          iris_get_state | iris_get_catalog | iris_invoke
+      → iris_invoke {action: browser.*}   # Control Surface name, not an MCP tool
+          → iris/mcp/iris_control_stdio.py   # execution errors keep isError=false
           → POST /v1/invoke
-          → ActionRegistry.invoke
+          → ActionRegistry.invoke            # browser.* runs off the Qt UI thread
           → iris/ui/control_actions/browser.py::_handle
               parse_command (iris/browser/registry.py)
               looks_sensitive_browser_act  (optional HUD ask_human)
@@ -48,10 +50,12 @@ Hermes built-in `browser` and `terminal` toolsets are disabled so the model cann
 | `pack_browser_observation` | Trusted Iris-owned block plus untrusted `BEGIN PAGE TEXT`. | Correct trust boundary for page text. No episodic memory, no site-path memory, no local embedding index. |
 | `shared_browser_profile` in `iris/ui/browser/webengine_setup.py` | One named Qt profile under `~/.iris-light/browser-profile`. Chrome-like UA (QtWebEngine token stripped). Injected bridge in MainWorld. | Persistent cookies exist. There is no agent password vault, no Windows Hello gate, no incognito task mode on this session object. |
 | `register_browser_actions` | Wires session to MainWindow. `browser.invoke` plus every `control_name`. | This is the integration that must stay. Adding Aside-like REPL here would bypass it. |
+| MCP in `iris/mcp/iris_control_stdio.py` | Hermes lists `iris_get_state`, `iris_get_catalog`, `iris_invoke` only. `browser.*` is the `action` string inside `iris_invoke`. Execution failures keep MCP `isError` false so Hermes does not trip its breaker. | Aside's `aside mcp` is a different process. Same idea. Different names. |
+| `BrowserPanel` tabs | Extra `QWebEnginePage`s on one view. Human chrome only. No `browser.tab_*`. `target_id` is `tab:{index}`, not a CDP target. Last tab close navigates home. | Aside Agent Tabs are agent-owned and do not steal focus. IRIS tabs are a person switching documents under the same driver. |
+| `BrowserSession.snapshot()` | Live URL/title overlay. Keeps the previous `gen` and `nodes`. | A human tab switch can leave PAGE TEXT refs pointing at the old document. Click then hits `stale_ref` or the wrong `lastEls`. Aside's agent tabs isolate that. |
+| `IrisWebEnginePage.certificateError` | `acceptCertificate()` for enterprise MITM / local HTTPS. | Broader than Aside Vault's "secrets stay invisible." It is a trust trade, not a feature gap. |
 
 Not reviewed for this gap: Theia `IrisIdeWindow._view`, ShowUI/Aloha desktop Computer Use, email/calendar workspaces. Those are other surfaces.
-
-`.tmp/browser-unify-how/EXPLANATION.md` still describes `ViewHost` as `Literal["panel", "mini"]`. Source now uses `PanelHost` / `MiniHost`. Treat that note as stale.
 
 ## Feature gap
 
@@ -61,7 +65,7 @@ Not reviewed for this gap: Theia `IrisIdeWindow._view`, ShowUI/Aloha desktop Com
 | Agent lives in the same visible page the person watches | Official | Official IRIS skill: "the user watches the same page" | already aligned |
 | Control language | Playwright-shaped REPL + bash | Named `browser.*` via `iris_invoke` | keep IRIS |
 | Snapshot | Trimmed a11y + CUA fallback | 40 `PageNode`s from injected JS | IRIS weaker |
-| Background agent tabs that do not steal focus | Blink patch, official blog | One view. Extra pages exist but focus policy is unconfirmed | IRIS weaker, Blink patch is out of scope |
+| Background agent tabs that do not steal focus | Blink patch, official blog | Extra `QWebEnginePage`s on one view. Human tab bar only. No `browser.tab_*` | IRIS weaker, Blink patch is out of scope |
 | Locked agent viewport 1440×900 | Blink patch | View follows the Qt widget | out of scope unless faked in the widget |
 | Credential autofill hidden from the model | Aside Vault | No vault on `BrowserSession` | IRIS missing |
 | Human approval at payments/posts | Product claim | Keyword `ask_human` on click/type | IRIS weaker |
@@ -86,12 +90,13 @@ Aside's blog argues that dedicated `browser.*` tools fight the model's training 
 Only empty seats on the IRIS path:
 
 1. Packed snapshot. Raise signal in `PageNode` / `_bridge.js` / `NODE_CAP`. Keep refs `g{gen}e{index}`.
-2. Screenshot fallback when the node list is empty or a canvas/video has no role.
-3. Coarse async notes in `BrowserResult.detail` (popup, download, tab closed) without a CDP client.
-4. Secret fill that never puts the password in PAGE TEXT. Reuse whatever password store Iris already has, or add a tiny OS-backed fill. Do not invent a second vault product in the first cut.
-5. Expand `looks_sensitive_browser_act` from buy/pay tokens to post/message/payment intents, still on the existing HUD confirm.
-6. Optional incognito profile for one task. Qt can make a second `QWebEngineProfile`. Wire it as a session flag, not a new command bus.
-7. On-device "this site worked" notes after `browser.extract` / failed click. Markdown under `~/.iris-light/` is enough. Do not import Moss.
+2. Stamp a new gen on human tab switch so `snapshot()` cannot keep old nodes on a new document.
+3. Screenshot fallback when the node list is empty or a canvas/video has no role.
+4. Coarse async notes in `BrowserResult.detail` (popup, download, tab closed) without a CDP client.
+5. Secret fill that never puts the password in PAGE TEXT. Reuse whatever password store Iris already has, or add a tiny OS-backed fill. Do not invent a second vault product in the first cut.
+6. Expand `looks_sensitive_browser_act` from buy/pay tokens to post/message/payment intents, still on the existing HUD confirm.
+7. Optional incognito profile for one task. Qt can make a second `QWebEngineProfile`. Wire it as a session flag, not a new command bus.
+8. On-device "this site worked" notes after `browser.extract` / failed click. Markdown under `~/.iris-light/` is enough. Do not import Moss.
 
 Do not: fork Chromium, add Asidewright, add `aside repl`, enable Hermes' built-in browser toolset, or drive Theia with `BrowserSession`.
 
@@ -115,3 +120,7 @@ Do not: fork Chromium, add Asidewright, add `aside repl`, enable Hermes' built-i
 | Add a JS REPL beside it | Model may write longer automations | Two ways to click. Skill forbids the second | Do not add |
 | Switch engine to a Chromium fork | Closer to Aside stealth and Agent Tabs | New runtime, breaks Qt panel and 80:20 | Do not |
 | Packed a11y + CUA fallback on Qt | Fewer missed clicks on dense pages | Localized to `_bridge.js` and snapshot caps | Do |
+
+`.tmp/browser-unify-how/EXPLANATION.md` still describes `ViewHost` as `Literal["panel", "mini"]`. Source is `PanelHost` / `MiniHost`. Treat that note as stale.
+
+Explorer pass after the first draft. [IRIS browser stack](ac4a82f3-993a-4d6b-9acb-1eaddac5bdf0) and [IRIS Hermes browser](414be7e4-7cbc-4c99-939c-acc34156d197) confirmed no CDP, no pixel snapshot, three MCP names, and human-only tabs. Source wins where they overlap this file.

@@ -32,6 +32,8 @@ Do not change ref format `g{gen}e{index}`. `browser.click` and `browser.type` al
 
 Check: `python -m iris.browser._check_intent` and a fixture page whose 40th control is currently dropped. The packed snapshot must still include that control's ref.
 
+On human tab switch, `BrowserSession.snapshot()` keeps the old `gen` and `nodes` while the view shows a new page (`iris/browser/session.py`). Publish a fresh stamp there, or `browser.click` will use `lastEls` from the previous document. Check: two tabs, switch, then click a ref from the new PAGE TEXT.
+
 ## Phase 2. Screenshot fallback
 
 When `snap.nodes` is empty, or `browser.click` returns `stale_ref` on a canvas/video, attach a small screenshot in the untrusted PAGE TEXT (or a trusted "image present" flag plus a bounded image the model already knows how to read). Click-by-coordinate is a new command. Add it only if Phase 1 still fails on a real YouTube or canvas page.
