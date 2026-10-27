@@ -24,7 +24,7 @@ From the REA README "What you can analyze" table and the connected tool schemas:
 | Target | Tool family | Used this session |
 | --- | --- | --- |
 | Public website | `capture_browser_scenario`, then optional `inspect_web_page` / `analyze_web_bundle` on a loopback CDP endpoint | yes, launch-mode capture of `https://aside.com/` |
-| Already-open Chrome with CDP | `list_browser_targets` then `inspect_web_page` | no. No debug endpoint was supplied |
+| Already-open Chrome with CDP | `list_browser_targets` then `inspect_web_page` | tried `http://127.0.0.1:9222`. `endpoint_unreachable` |
 | Installed JS/Electron app | `analyze_javascript_application` on an ASAR or extracted tree | no. No Aside ASAR |
 | Installed native binary | `open_binary` plus a Hopper, Ghidra, or IDA provider | no. Aside.exe not present. Native provider not invoked |
 | Archive / installer | `open_binary` + `inspect_artifact` on a local `.exe` / `.dmg` | no. Installer was not downloaded |
@@ -33,9 +33,9 @@ Downloading the Windows installer would be a new local artifact. That needs appr
 
 ## Aside install probe (read-only)
 
-PowerShell looked at PATH, `%LOCALAPPDATA%\Programs`, Start Menu, and Uninstall registry for names matching Aside. No install location, no Start Menu shortcut, no uninstall entry.
+PowerShell looked at PATH, `%LOCALAPPDATA%\Programs`, Start Menu, Uninstall registry, App Paths, `SOFTWARE\Aside`, `winget list --name Aside`, running processes, Downloads filenames, and `~\.aside`. No install location, no CLI auth path, no process.
 
-Conclusion: Aside is not installed on this Windows machine. Binary, ASAR, extension, and live-app REA routes are unavailable.
+Conclusion: Aside is not installed on this Windows machine. Binary, ASAR, extension, and live-app REA routes are unavailable. History of a past uninstall is unconfirmed.
 
 ## Capture of the official homepage
 
@@ -96,6 +96,8 @@ Label the illustration strings `rea-observed` marketing copy. Do not treat "GPT-
 
 This capture proves the public site renders those claims in a real Chromium. It does not prove the Aside application binary contains the same UI.
 
+A second launch-mode capture of the same URL, from [Aside public REA research](0cdcb973-f09d-453b-928c-a14e207d97dc), also landed on `https://aside.com/` with Chromium 155.0.8059.86. Screenshot sha256 `a98a643d1f7efbf8884f3ff75d2f819c1c2a2238644f05b293d62bfee17a44bb`. Treat that as a second marketing-page observation, not as Aside.exe.
+
 ## Skills workflow (not executed as a binary RE)
 
 The bundled skill `reverse-engineer-anything` routes:
@@ -123,3 +125,5 @@ A full native decompile of a closed commercial browser is out of scope unless yo
 - Capture blob: Cursor agent-tools `42cc84d6-95a2-4be7-8d17-fc81cd53fd0f.txt`
 - Compact summary: `.tmp/rea-aside-home-summary.json` (local, not part of the report set)
 - GitHub README fetch: [morluto/rea](https://github.com/morluto/rea)
+- REA docs: [architecture.mermaid](https://raw.githubusercontent.com/morluto/rea/main/docs/architecture.mermaid), [browser-observation.md](https://raw.githubusercontent.com/morluto/rea/main/docs/browser-observation.md)
+- Repo skills under `.agents/skills` include `reverse-engineer-anything`. Installing a skill does not register MCP. Star counts on GitHub HTML vs API disagreed. Treat popularity numbers as unconfirmed.

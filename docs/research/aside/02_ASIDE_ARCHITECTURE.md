@@ -81,7 +81,13 @@ It is not a headless Playwright job that then paints a fake browser. The blog's 
 
 It is not an IRIS-style Qt panel driven by named `browser.*` tools. Aside's public design argues against that exact shape.
 
-It is not open source. You cannot read Asidewright or the Blink patches from GitHub.
+It is not open source. You cannot read Asidewright or the Blink patches from GitHub. Public code under [at-inc](https://github.com/at-inc) is benchmarks and related repos, not the browser.
+
+The homepage says tasks, memory, and data stay on the device and nothing is shared with LLM providers. Official marketing, [home](https://aside.com/). The privacy policy, last updated 2026-06-23, says Aside is local-first and that hosted model providers receive model-visible context. That context can include prompts, instructions, tool results, selected snapshots, selected screenshots, selected files, and assistant responses. Official, [Privacy policy](https://aside.com/policy/privacy) section 4. Optional encrypted Chromium sync (bookmarks, history, cookies, device info, Nigori) and vault sync leave the device when enabled. Analytics, when on, go to PostHog. Support uses Intercom. Billing uses Stripe.
+
+Native changelog and components changelog are two release trains. Chromium version bumps live on the native train. Agent, vault, and local-service notes live on the components train.
+
+1Password docs say 1Password does not recognize Aside as a Chromium-based browser, so the native messaging host must be copied. Official troubleshooting. That is a host-manifest gap, not a denial that the engine is Chromium.
 
 ## Unconfirmed internals
 
@@ -90,3 +96,5 @@ It is not open source. You cannot read Asidewright or the Blink patches from Git
 - How local embeddings are stored (SQLite, custom files, Moss).
 - Current Chromium major on the Windows installer as of this writing. Changelog cited 154.x in one native entry. Live installer version was not downloaded.
 - Precise bot-detection patch list.
+- Electron. No official page read in this pass names it.
+- Exact `aside mcp` tool names.

@@ -21,19 +21,27 @@ Sources used:
 - [CLI, MCP, and REPL](https://docs.aside.com/help/developers)
 - [Components changelog](https://docs.aside.com/changelog/components)
 - [Native changelog](https://docs.aside.com/changelog/native)
+- [Privacy policy](https://aside.com/policy/privacy)
+- [Subscription](https://docs.aside.com/help/subscription)
+- [Routines](https://docs.aside.com/help/automation)
+- [at-inc/aside-benchmarks](https://github.com/at-inc/aside-benchmarks)
 - REA `capture_browser_scenario` of `https://aside.com/` on 2026-10-27, evidence id `ev_9a43ad2fca6d337d79cd5ab01dd615d4b08ddb5ed294cd8de5a7fd148c03f5dd`
 
 This machine does not have Aside installed. Features below are product claims and help-center behavior, not a live walkthrough of the binary.
 
 ## Product identity
 
+Legal name is Aside Computer Inc., 45 Lansing St, San Francisco, CA 94105. Official, [Privacy policy](https://aside.com/policy/privacy).
+
 Aside is a standalone AI browser for macOS and Windows. The help center states there is no separate minimum browser version because Aside is the browser. Official, [Get started](https://docs.aside.com/help/get-started).
 
 The download page states macOS uses a `.dmg` and Windows uses an executable installer. Official, [Download](https://aside.com/download).
 
-macOS 15.0 or later is the documented floor. Official, [Get started](https://docs.aside.com/help/get-started). Windows 10 appears as a supported surface in the native changelog (translucent backgrounds). Changelog, [Native changelog](https://docs.aside.com/changelog/native). A Windows ARM64 build is official in that same changelog.
+macOS 15.0 or later is the documented floor on Get started. That same page does not name Windows. Download, native changelog, and the homepage a11y `Download for Windows` do. Treat Get started as incomplete on Windows, not as a denial. Windows 10 appears as a supported surface in the native changelog (translucent backgrounds). A Windows ARM64 build is official in that changelog.
 
 Y Combinator backing is linked from the public homepage. `rea-observed` on the marketing accessibility tree (`link "Backed by Y Combinator"` → `https://www.ycombinator.com/companies/aside`).
+
+Public GitHub org is [at-inc](https://github.com/at-inc). Browser source is not there. [aside-benchmarks](https://github.com/at-inc/aside-benchmarks) is public. Official. Linux desktop is unconfirmed.
 
 ## Daily browser
 
@@ -97,9 +105,9 @@ Exact MCP tool names exported by `aside mcp` are unconfirmed. This session did n
 
 ## Pricing claims
 
-Home and pricing pages list Free and Pro. Pro is marketed at $20 per month with 3x Free usage, Ultrabrowse, unlimited routines, Channels, and cloud handoff. Official, [Pricing](https://aside.com/pricing). Seat, team vault, and shared-profile bullets appear on the same page. Metering numbers are unconfirmed.
+Help center lists three plans. Free is 500 credits per month and up to 3 routines, plus vault and memory. Pro is 3x Free usage, Ultrabrowse, unlimited routines, and priority models. Max is 30x Free usage and early access. Official, [Subscription](https://docs.aside.com/help/subscription). The marketing pricing page also lists Pro at $20 per month, Channels, and cloud handoff. Official, [Pricing](https://aside.com/pricing). Max dollar price was not clearly captured. unconfirmed.
 
-Benchmark claims on the home and browser-agent pages are Aside's own published scores (Online-Mind2Web, BU-Bench-V1, Odysseys). Official marketing. This investigation did not rerun those benches.
+Benchmark claims are Aside's own published scores. The SOTA blog and [aside-benchmarks](https://github.com/at-inc/aside-benchmarks) report Online-Mind2Web 297/300 (99.0% with GPT 5.5), Odysseys 151/200 perfect / 88.8% rubric, BU-Bench-V1 93/100. Official self-report. This investigation did not rerun those benches.
 
 ## Not confirmed in this pass
 
@@ -109,3 +117,6 @@ Benchmark claims on the home and browser-agent pages are Aside's own published s
 - Whether Cloud handoff runs the agent off-device.
 - Bot-detection modifications as they exist in the current Windows build.
 - Any IRIS-relevant private API that is not on the public site.
+- Linux desktop build.
+- Exact tool catalog from `aside mcp`.
+- Max plan dollar price.
