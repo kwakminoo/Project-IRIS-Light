@@ -165,6 +165,27 @@ class BrowserPackerTests(unittest.TestCase):
         self.assertIn("playing=true", trusted)
         self.assertNotIn("title=", trusted)
 
+    def test_page_text_marks_frame_and_offscreen(self) -> None:
+        from iris.browser.types import FrameInfo
+
+        session = BrowserSession()
+        session._snap = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            url="https://fixture.local/frames",
+            nodes=(
+                PageNode(ref="g1e0", role="button", name="Inner Submit", interactive=True, frame="f0"),
+                PageNode(ref="g1e1", role="button", name="Below Fold", interactive=True, in_view=False),
+            ),
+            frames=(
+                FrameInfo(id="f0", origin="https://fixture.local", reachable=True, reason=""),
+                FrameInfo(id="f1", origin="https://example.com", reachable=False, reason="cross_origin"),
+            ),
+        )
+        trusted, page_text = pack_browser_observation(session)
+        self.assertIn("g1e0 button Inner Submit frame=f0", page_text)
+        self.assertIn("g1e1 button Below Fold in_view=false", page_text)
+        self.assertIn("frames=f0:https://fixture.local:ok,f1:https://example.com:cross_origin", trusted)
+        self.assertNotIn("Example Domain", page_text)
+
 
 class ConfirmHudTests(unittest.TestCase):
     def test_wire_confirm_cannot_self_pass(self) -> None:

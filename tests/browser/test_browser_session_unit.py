@@ -46,6 +46,19 @@ class ParseBoundaryTests(unittest.TestCase):
         self.assertIsInstance(click.target, ByRef)
         self.assertEqual(click.target.ref, "g1e0")
 
+    def test_parse_scroll_with_ref(self) -> None:
+        cmd = parse_command({"command": "scroll", "ref": "g2e3"})
+        self.assertIsInstance(cmd, Scroll)
+        assert isinstance(cmd, Scroll)
+        self.assertEqual(cmd.ref, "g2e3")
+        via_action = parse_command({"action": "browser.scroll", "ref": "g1e0"})
+        assert isinstance(via_action, Scroll)
+        self.assertEqual(via_action.ref, "g1e0")
+        bare = parse_command({"command": "scroll", "dy": 800})
+        assert isinstance(bare, Scroll)
+        self.assertIsNone(bare.ref)
+        self.assertEqual(bare.delta_y, 800)
+
     def test_parse_google_and_youtube_play(self) -> None:
         g = parse_command({"command": "search", "query": "React 공식 문서", "engine": "google"})
         self.assertIsInstance(g, Search)
@@ -180,6 +193,49 @@ class SessionFakeDriverTests(unittest.TestCase):
         r = self.session.execute(Scroll(delta_y=800))
         self.assertTrue(r.ok)
         self.assertGreater(r.snapshot.scroll_y, before)
+
+    def test_scroll_to_ref_on_fixture(self) -> None:
+        r = self.session.execute(Navigate(url="https://react.dev/learn"))
+        self.assertTrue(r.ok)
+        node = next(n for n in r.snapshot.nodes if n.name == "Below fold")
+        self.assertFalse(node.in_view)
+        moved = self.session.execute(Scroll(ref=node.ref))
+        self.assertTrue(moved.ok, moved.detail)
+        after = next(n for n in moved.snapshot.nodes if n.name == "Below fold")
+        self.assertTrue(after.in_view)
+        self.assertGreater(moved.snapshot.scroll_y, 0)
+
+    def test_stale_ref_after_snapshot_and_reload(self) -> None:
+        first = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertTrue(first.ok)
+        old = first.snapshot.nodes[0].ref
+        snapped = self.session.execute(parse_command({"command": "snapshot"}))
+        self.assertTrue(snapped.ok)
+        self.assertNotEqual(snapped.snapshot.gen, first.snapshot.gen)
+        miss = self.session.execute(Click(target=ByRef(ref=old)))
+        self.assertFalse(miss.ok)
+        self.assertEqual(miss.detail, "stale_ref")
+        self.assertEqual(miss.snapshot.phase, BrowserPhase.READY)
+        newer = snapped.snapshot.nodes[0].ref
+        reloaded = self.session.execute(Reload())
+        self.assertTrue(reloaded.ok)
+        again = self.session.execute(Click(target=ByRef(ref=newer)))
+        self.assertFalse(again.ok)
+        self.assertEqual(again.detail, "stale_ref")
+        self.assertEqual(again.snapshot.phase, BrowserPhase.READY)
+
+    def test_disconnected_element_is_stale_ref(self) -> None:
+        r = self.session.execute(Navigate(url="https://react.dev"))
+        ref = r.snapshot.nodes[0].ref
+        self.driver.mark_disconnected(0)
+        miss = self.session.execute(Click(target=ByRef(ref=ref)))
+        self.assertFalse(miss.ok)
+        self.assertEqual(miss.detail, "stale_ref")
+        self.assertEqual(miss.snapshot.phase, BrowserPhase.READY)
+        scroll_miss = self.session.execute(Scroll(ref=ref))
+        self.assertFalse(scroll_miss.ok)
+        self.assertEqual(scroll_miss.detail, "stale_ref")
+        self.assertEqual(scroll_miss.snapshot.phase, BrowserPhase.READY)
 
     def test_idempotent_navigate(self) -> None:
         self.session.execute(Navigate(url="https://react.dev"))

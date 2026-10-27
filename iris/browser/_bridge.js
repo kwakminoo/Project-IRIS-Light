@@ -13,11 +13,71 @@
 
   let lastEls = [];
 
-  function inViewport(el) {
+  function topRect(el) {
     const r = el.getBoundingClientRect();
+    let top = r.top;
+    let left = r.left;
+    let win = el.ownerDocument && el.ownerDocument.defaultView;
+    while (win && win !== window) {
+      const frame = win.frameElement;
+      if (!frame) break;
+      const fr = frame.getBoundingClientRect();
+      top += fr.top;
+      left += fr.left;
+      win = frame.ownerDocument && frame.ownerDocument.defaultView;
+    }
+    return { top, left, bottom: top + r.height, right: left + r.width, width: r.width, height: r.height };
+  }
+
+  function inViewport(el) {
+    const r = topRect(el);
     const vh = window.innerHeight || 0;
     const vw = window.innerWidth || 0;
     return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+  }
+
+  function frameDoc(iframe) {
+    try {
+      return iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document) || null;
+    } catch (err) {
+      // SecurityError on contentDocument is why cross-origin frames stay unreachable.
+      return null;
+    }
+  }
+
+  function frameOrigin(iframe) {
+    try {
+      const loc = iframe.contentWindow && iframe.contentWindow.location;
+      if (loc && loc.origin) return String(loc.origin);
+    } catch (err) {}
+    const src = String((iframe.getAttribute && iframe.getAttribute("src")) || iframe.src || "");
+    if (!src) return "";
+    try {
+      return new URL(src, location.href).origin;
+    } catch (err2) {
+      return "";
+    }
+  }
+
+  function describeFrame(iframe, id) {
+    const doc = frameDoc(iframe);
+    const origin = frameOrigin(iframe);
+    if (doc) {
+      return { id, origin: origin || String(location.origin || ""), reachable: true, reason: "" };
+    }
+    if (origin && origin !== String(location.origin || "")) {
+      return { id, origin, reachable: false, reason: "cross_origin" };
+    }
+    return { id, origin: origin || "", reachable: false, reason: origin ? "cross_origin" : "opaque" };
+  }
+
+  function collectFrames() {
+    const frames = [];
+    const iframes = Array.from(document.querySelectorAll("iframe"));
+    iframes.forEach((iframe, i) => {
+      frames.push(describeFrame(iframe, "f" + i));
+    });
+    return frames;
   }
 
   function inArticle(el) {
@@ -29,7 +89,9 @@
     if (target.kind === "ref") {
       const index = Number(target.index);
       if (!Number.isInteger(index) || index < 0) return null;
-      return lastEls[index] || null;
+      const el = lastEls[index] || null;
+      if (!el || !el.isConnected) return null;
+      return el;
     }
     const nth = Math.max(0, Number(target.nth) || 0);
     if (target.kind === "css") {
@@ -61,23 +123,35 @@
     return null;
   }
 
-  function collectNodes() {
-    const raw = Array.from(
-      document.querySelectorAll("a[href], button, [role='button'], h1, h2, input, textarea, [role='link']")
+  function namedControls(doc) {
+    return Array.from(
+      doc.querySelectorAll("a[href], button, [role='button'], h1, h2, input, textarea, [role='link']")
     );
-    raw.sort((a, b) => {
-      const av = inViewport(a) ? 0 : 1;
-      const bv = inViewport(b) ? 0 : 1;
+  }
+
+  function collectNodes() {
+    const items = namedControls(document).map((el) => ({ el, frame: "" }));
+    const iframes = Array.from(document.querySelectorAll("iframe"));
+    iframes.forEach((iframe, i) => {
+      const doc = frameDoc(iframe);
+      if (!doc) return;
+      const frame = "f" + i;
+      namedControls(doc).forEach((el) => items.push({ el, frame }));
+    });
+    items.sort((a, b) => {
+      const av = inViewport(a.el) ? 0 : 1;
+      const bv = inViewport(b.el) ? 0 : 1;
       if (av !== bv) return av - bv;
-      const aa = inArticle(a) ? 0 : 1;
-      const ba = inArticle(b) ? 0 : 1;
+      const aa = inArticle(a.el) ? 0 : 1;
+      const ba = inArticle(b.el) ? 0 : 1;
       if (aa !== ba) return aa - ba;
       return 0;
     });
     const out = [];
     lastEls = [];
-    for (const el of raw) {
+    for (const item of items) {
       if (out.length >= 40) break;
+      const el = item.el;
       const name = textOf(el) || el.getAttribute("placeholder") || el.getAttribute("name") || "";
       if (!name) continue;
       const heading = el.tagName === "H1" || el.tagName === "H2";
@@ -94,6 +168,8 @@
         name: String(name).slice(0, 80),
         interactive: !heading,
         index: out.length,
+        frame: item.frame,
+        in_view: inViewport(el),
       });
       lastEls.push(el);
     }
@@ -215,13 +291,19 @@
     resolve,
     click(target) {
       const el = resolve(target);
-      if (!el) return { ok: false, error: "element not found" };
+      if (!el) {
+        const miss = target && target.kind === "ref" ? "stale_ref" : "element not found";
+        return { ok: false, error: miss };
+      }
       el.click();
       return { ok: true };
     },
     type(target, text, clear) {
       const el = resolve(target);
-      if (!el) return { ok: false, error: "element not found" };
+      if (!el) {
+        const miss = target && target.kind === "ref" ? "stale_ref" : "element not found";
+        return { ok: false, error: miss };
+      }
       el.focus();
       if (clear) {
         if ("value" in el) el.value = "";
@@ -244,6 +326,12 @@
         scrollY: Math.round(window.scrollY || 0),
       };
     },
+    scrollTo(target) {
+      const el = resolve(target);
+      if (!el) return { ok: false, error: "stale_ref" };
+      el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      return { ok: true, in_view: inViewport(el) };
+    },
     snapshot() {
       const media = mediaState();
       return {
@@ -253,6 +341,7 @@
         scrollY: Math.round(window.scrollY || 0),
         readyState: String(document.readyState || ""),
         nodes: collectNodes(),
+        frames: collectFrames(),
         excerpt: excerptText(),
         media,
       };

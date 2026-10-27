@@ -253,6 +253,8 @@ class BrowserSession:
                 role=n.role,
                 name=(n.name or "")[:NAME_CAP],
                 interactive=n.interactive,
+                frame=n.frame or "",
+                in_view=bool(n.in_view),
             )
             for i, n in enumerate(snap.nodes[:NODE_CAP])
         )
@@ -431,9 +433,9 @@ class BrowserSession:
                 if isinstance(cmd, Click):
                     try:
                         self._resolve_ref(cmd.target.ref)
+                        driver.click(cmd.target)
                     except LookupError as exc:
                         return BrowserResult(False, "click", self._overlay_host(self._snap), detail=str(exc))
-                    driver.click(cmd.target)
                     self._settle(driver)
                     snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "click", snap)
@@ -441,15 +443,22 @@ class BrowserSession:
                 if isinstance(cmd, TypeText):
                     try:
                         self._resolve_ref(cmd.target.ref)
+                        driver.type_text(cmd.target, cmd.text, clear=cmd.clear)
                     except LookupError as exc:
                         return BrowserResult(False, "type", self._overlay_host(self._snap), detail=str(exc))
-                    driver.type_text(cmd.target, cmd.text, clear=cmd.clear)
                     self._settle(driver)
                     snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "type", snap)
 
                 if isinstance(cmd, Scroll):
-                    driver.scroll_by(cmd.delta_x, cmd.delta_y)
+                    try:
+                        if cmd.ref:
+                            self._resolve_ref(cmd.ref)
+                            driver.scroll_by(cmd.delta_x, cmd.delta_y, ref=cmd.ref)
+                        else:
+                            driver.scroll_by(cmd.delta_x, cmd.delta_y)
+                    except LookupError as exc:
+                        return BrowserResult(False, "scroll", self._overlay_host(self._snap), detail=str(exc))
                     self._settle(driver)
                     snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "scroll", snap)

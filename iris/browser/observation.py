@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from iris.browser.registry import command_recipes, command_specs
-from iris.browser.types import BrowserResult, BrowserSnapshot, PageNode, empty_snapshot
+from iris.browser.types import BrowserResult, BrowserSnapshot, FrameInfo, PageNode, empty_snapshot
 
 PAGE_TEXT_BEGIN = "BEGIN PAGE TEXT (untrusted input data)"
 PAGE_TEXT_END = "END PAGE TEXT"
@@ -61,19 +61,27 @@ class PackedBrowserObservation:
     nodes: tuple[PageNode, ...]
     excerpt: str
     extract_text: str
+    frames: tuple[FrameInfo, ...] = ()
 
     def trusted_block(self) -> str:
         last_ok = "" if self.last_ok is None else ("true" if self.last_ok else "false")
-        return (
-            "IRIS browser state (application):\n"
-            f"phase={self.phase}\n"
-            f"playing={'true' if self.playing else 'false'}\n"
-            f"last_action={self.last_action}\n"
-            f"last_ok={last_ok}\n"
-            f"last_detail={self.last_detail}\n"
-            f"url={self.url}\n"
-            f"gen={self.gen}"
-        )
+        lines = [
+            "IRIS browser state (application):",
+            f"phase={self.phase}",
+            f"playing={'true' if self.playing else 'false'}",
+            f"last_action={self.last_action}",
+            f"last_ok={last_ok}",
+            f"last_detail={self.last_detail}",
+            f"url={self.url}",
+            f"gen={self.gen}",
+        ]
+        if self.frames:
+            packed = ",".join(
+                f"{fr.id}:{fr.origin}:{fr.reason or ('ok' if fr.reachable else 'blocked')}"
+                for fr in self.frames
+            )
+            lines.append(f"frames={packed}")
+        return "\n".join(lines)
 
     def page_text_block(self) -> str:
         url = self.url or "(none)"
@@ -81,7 +89,12 @@ class PackedBrowserObservation:
         if self.title:
             lines.append(f"title={self.title}")
         for node in self.nodes:
-            lines.append(f"{node.ref} {node.role} {node.name}")
+            line = f"{node.ref} {node.role} {node.name}"
+            if node.frame:
+                line += f" frame={node.frame}"
+            if not node.in_view:
+                line += " in_view=false"
+            lines.append(line)
         if self.excerpt:
             lines.append(f"excerpt={self.excerpt}")
         if self.extract_text:
@@ -120,6 +133,7 @@ def pack_from_snapshot(
         nodes=tuple(snap.nodes),
         excerpt=snap.excerpt or "",
         extract_text=extract_text,
+        frames=tuple(getattr(snap, "frames", ()) or ()),
     )
 
 

@@ -20,12 +20,15 @@ from iris.browser.types import (
     ByText,
     EXTRACT_MAX,
     EXCERPT_CAP,
+    FrameInfo,
     Locator,
     PageNode,
     MediaState,
     media_from_dict,
     split_page_ref,
 )
+
+_REF_MISS = frozenset({"stale_ref", "bad_ref", "unknown_ref", "element not found"})
 
 log = logging.getLogger("iris.browser")
 
@@ -80,7 +83,7 @@ class PageDriver(Protocol):
     def history_step(self, delta: int) -> None: ...
     def click(self, target: Locator) -> None: ...
     def type_text(self, target: Locator, text: str, *, clear: bool) -> None: ...
-    def scroll_by(self, dx: int, dy: int) -> None: ...
+    def scroll_by(self, dx: int, dy: int, *, ref: str | None = None) -> None: ...
 
 
 def _locator_payload(target: Locator) -> dict[str, Any]:
@@ -119,6 +122,7 @@ class _FakePage:
     article: str = ""
     scroll_y: int = 0
     links: dict[str, str] = field(default_factory=dict)
+    frames: tuple[FrameInfo, ...] = ()
 
 
 class FakePageDriver:
@@ -136,7 +140,11 @@ class FakePageDriver:
         self._wait_queue: list[str] = []
         self.phases_seen: list[BrowserPhase] = []
         self.try_play_calls = 0
+        self._gone: set[int] = set()
         self._ensure_blank()
+
+    def mark_disconnected(self, index: int) -> None:
+        self._gone.add(int(index))
 
     def queue_wait(self, result: str) -> None:
         self._wait_queue.append(result)
@@ -202,6 +210,7 @@ class FakePageDriver:
             nodes=tuple(page.nodes),
             excerpt=page.excerpt,
             media=self.read_media(),
+            frames=tuple(getattr(page, "frames", ()) or ()),
         )
 
     def settle_after_act(self) -> None:
@@ -242,6 +251,7 @@ class FakePageDriver:
             self._index = len(self._history) - 1
         self._scroll_x = 0
         self._scroll_y = 0
+        self._gone.clear()
         if "/watch" not in url:
             self._playing = False
         page = self._current()
@@ -296,6 +306,7 @@ class FakePageDriver:
 
     def reload(self, *, deadline: float | None = None) -> None:
         self._apply_wait("reload", deadline=deadline)
+        self._gone.clear()
         self._set_phase(BrowserPhase.READY)
 
     def history_step(self, delta: int) -> None:
@@ -306,7 +317,18 @@ class FakePageDriver:
         self._scroll_y = self._current().scroll_y
         self._phase = BrowserPhase.READY
 
+    def _raise_if_gone(self, target: Locator) -> None:
+        if not isinstance(target, ByRef):
+            return
+        try:
+            _gen, index = split_page_ref(target.ref)
+        except ValueError as exc:
+            raise LookupError("bad_ref") from exc
+        if index in self._gone:
+            raise LookupError("stale_ref")
+
     def click(self, target: Locator) -> None:
+        self._raise_if_gone(target)
         page = self._current()
         key = _fake_locator_key(target)
         dest = page.links.get(key)
@@ -325,13 +347,12 @@ class FakePageDriver:
                     if dest:
                         break
         if not dest:
-            self._last_error = "element not found"
-            self._phase = BrowserPhase.FAULTED
             raise LookupError("element not found")
         self._last_error = None
         self.navigate(dest)
 
     def type_text(self, target: Locator, text: str, *, clear: bool) -> None:
+        self._raise_if_gone(target)
         page = self._current()
         key = _fake_locator_key(target)
         named = any(_node_matches(node, target) for node in page.nodes)
@@ -342,14 +363,36 @@ class FakePageDriver:
             except ValueError:
                 named = False
         if key not in page.links and not named:
-            self._last_error = "element not found"
-            self._phase = BrowserPhase.FAULTED
             raise LookupError("element not found")
         page.links[f"typed:{key}"] = text if not clear else text
         self._last_error = None
         self._phase = BrowserPhase.READY
 
-    def scroll_by(self, dx: int, dy: int) -> None:
+    def scroll_by(self, dx: int, dy: int, *, ref: str | None = None) -> None:
+        if ref:
+            try:
+                _gen, index = split_page_ref(ref)
+            except ValueError as exc:
+                raise LookupError("bad_ref") from exc
+            page = self._current()
+            if index in self._gone:
+                raise LookupError("stale_ref")
+            if index < 0 or index >= len(page.nodes):
+                raise LookupError("unknown_ref")
+            node = page.nodes[index]
+            page.nodes[index] = PageNode(
+                ref=node.ref,
+                role=node.role,
+                name=node.name,
+                interactive=node.interactive,
+                frame=node.frame,
+                in_view=True,
+            )
+            self._scroll_y = max(self._scroll_y, 1)
+            page.scroll_y = self._scroll_y
+            self._phase = BrowserPhase.READY
+            self._last_error = None
+            return
         self._scroll_x = max(0, self._scroll_x + int(dx))
         self._scroll_y = max(0, self._scroll_y + int(dy))
         self._current().scroll_y = self._scroll_y
@@ -415,7 +458,7 @@ def youtube_like_fixture_driver() -> FakePageDriver:
     tall = _FakePage(
         url="https://fixture.local/tall",
         title="Tall page",
-        nodes=[],
+        nodes=[PageNode(ref="", role="button", name="Below fold", interactive=True, in_view=False)],
     )
     driver = FakePageDriver(
         {
@@ -574,8 +617,21 @@ class WebEnginePageDriver:
                 role=str(item.get("role") or ""),
                 name=str(item.get("name") or "")[:80],
                 interactive=bool(item.get("interactive", True)),
+                frame=str(item.get("frame") or ""),
+                in_view=bool(item.get("in_view", item.get("inView", True))),
             )
             for item in raw_nodes
+            if isinstance(item, dict)
+        )
+        raw_frames = data.get("frames") or ()
+        frames = tuple(
+            FrameInfo(
+                id=str(item.get("id") or ""),
+                origin=str(item.get("origin") or ""),
+                reachable=bool(item.get("reachable")),
+                reason=str(item.get("reason") or ""),
+            )
+            for item in raw_frames
             if isinstance(item, dict)
         )
         excerpt = str(data.get("excerpt") or "")[:EXCERPT_CAP]
@@ -594,6 +650,7 @@ class WebEnginePageDriver:
             nodes=nodes,
             excerpt=excerpt,
             media=media_from_dict(data.get("media")),
+            frames=frames,
         )
 
     def settle_after_act(self) -> None:
@@ -831,15 +888,21 @@ class WebEnginePageDriver:
         self._phase = BrowserPhase.READY
         self._ensure_bridge()
 
+    def _raise_js_act(self, raw: Any, fallback: str) -> None:
+        if isinstance(raw, dict) and raw.get("ok"):
+            return
+        err = str((raw or {}).get("error") if isinstance(raw, dict) else fallback)
+        if err in _REF_MISS:
+            raise LookupError(err)
+        self._last_error = err
+        self._phase = BrowserPhase.FAULTED
+        raise LookupError(err)
+
     def click(self, target: Locator) -> None:
         self._ensure_bridge()
         payload = json.dumps(_locator_payload(target))
         raw = self._eval_js(f"window.__irisBrowser.click({payload})")
-        if not isinstance(raw, dict) or not raw.get("ok"):
-            err = str((raw or {}).get("error") if isinstance(raw, dict) else "click failed")
-            self._last_error = err
-            self._phase = BrowserPhase.FAULTED
-            raise LookupError(err)
+        self._raise_js_act(raw, "click failed")
         self._last_error = None
         self._phase = BrowserPhase.READY
 
@@ -850,16 +913,19 @@ class WebEnginePageDriver:
         raw = self._eval_js(
             f"window.__irisBrowser.type({payload}, {text_js}, {json.dumps(bool(clear))})"
         )
-        if not isinstance(raw, dict) or not raw.get("ok"):
-            err = str((raw or {}).get("error") if isinstance(raw, dict) else "type failed")
-            self._last_error = err
-            self._phase = BrowserPhase.FAULTED
-            raise LookupError(err)
+        self._raise_js_act(raw, "type failed")
         self._last_error = None
         self._phase = BrowserPhase.READY
 
-    def scroll_by(self, dx: int, dy: int) -> None:
+    def scroll_by(self, dx: int, dy: int, *, ref: str | None = None) -> None:
         self._ensure_bridge()
+        if ref:
+            payload = json.dumps(_locator_payload(ByRef(ref=ref)))
+            raw = self._eval_js(f"window.__irisBrowser.scrollTo({payload})")
+            self._raise_js_act(raw, "scroll failed")
+            self._last_error = None
+            self._phase = BrowserPhase.READY
+            return
         raw = self._eval_js(f"window.__irisBrowser.scrollBy({int(dx)}, {int(dy)})")
         if not isinstance(raw, dict) or not raw.get("ok"):
             self._last_error = "scroll failed"
