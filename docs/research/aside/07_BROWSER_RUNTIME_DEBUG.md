@@ -12,7 +12,7 @@ Three shipped knobs were wrong or silent:
 2. Hermes `tool_search` deferred every `mcp-*` tool, so `iris_invoke` was not on the model-visible list. MEMORY also taught the wrong `mcp__iris_control__*` names.
 3. `explain_chat_error` swallowed unknown stream/UI errors.
 
-Oct 26 chat rows in `iris_light.db` store Korean correctly. The WebEngine packer also emits Korean PAGE TEXT correctly. The garble is a sidecar/locale path, not Markdown render and not the model inventing `ȭ`.
+Oct 26 chat rows in `iris_light.db` store Korean correctly. The WebEngine packer also emits Korean PAGE TEXT correctly. SSE `readline` + `utf-8` replace yields U+FFFD, not `ȭ`/`ϸ`/`ڽ`. Those BMP letters fit a locale/8-bit decode or a mid-stream `&#557;` unescape, not a split codepoint. Agent.log on this incident had U+FFFD. Oct 26 SQLite Korean is intact.
 
 Live `session.execute` on an isolated Qt WebEngine reached Naver, Naver weather search, and a YouTube IU watch URL with `playing=true`. The running app's Control Surface `GET /v1/state` hung, so a live `iris_invoke` against that GUI was not a pass.
 
@@ -46,7 +46,7 @@ user chat
   -> _on_chat_failed -> explain_chat_error [C: cause stripped]
 ```
 
-This incident forks at **B** (tool choice) and dies at **C** (error text). **A** is the encoding fork for Korean on the sidecar pipe. WebEngine itself is not on the 14:26 path.
+This incident forks at **B** (tool choice) and dies at **C** (error text). **A** is the encoding fork for Korean on the sidecar pipe. A second steal sits before Hermes: `classify_turn` maps `날씨` to `today` even when the user named 네이버, so `PastChatsWorker` injects SerpAPI evidence and teaching says weather is not a browser action. WebEngine itself is not on the 14:26 path.
 
 ## Code review
 
@@ -61,6 +61,7 @@ This incident forks at **B** (tool choice) and dies at **C** (error text). **A**
 | `iris/ui/control_actions/browser.py` `_handle` | `parse_command` → `session.execute` → `pack_hermes_result` | Not reached on the 14:26 turn. Isolated execute later proved the path. |
 | `ChatPanel` `[재생]` | TTS link on assistant HTML | Not YouTube play. |
 | `explain_chat_error` | Mapped known statuses | Unknown text became a generic sentence. |
+| `classify_turn` | `날씨` → `today` → SerpAPI | `"네이버에서 오늘 날씨 검색해줘"` never reached Hermes as a page job. |
 | `hermes_client.py` SSE | UTF-8 decode | Oct 26 DB Korean is valid. Not the 14:26 garble source. |
 
 Not touched: BrowserSession play budget (90s), mini-player, IDE browser, Hermes planner, a second agent loop, timeout bumps.
@@ -74,6 +75,7 @@ Not touched: BrowserSession play budget (90s), mini-player, IDE browser, Hermes 
 | `iris/system/hermes_iris_control_sync.py` | `ensure_hermes_iris_tools_eager()` writes `tools.tool_search.enabled=off` |
 | `iris/system/hermes_memory_nudge.py` | v23 teaches `iris_invoke` / `iris_get_state` / `iris_get_catalog` |
 | `iris/infrastructure/hermes_errors.py` | unknown errors keep `raw[:240]` |
+| `iris/knowledge/answer_grounding.py` | site-named weather (`네이버`/`유튜브`/…) stays `other`, not SerpAPI `today` |
 | tests + `_check_chat_blocks` | lock the four contracts |
 
 ## Improvement

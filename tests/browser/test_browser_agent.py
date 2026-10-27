@@ -40,6 +40,10 @@ class ClassifyBrowseTests(unittest.TestCase):
         self.assertEqual(classify_turn("오늘 날씨 알려줘"), TurnKind.TODAY)
         self.assertEqual(classify_turn("주가 알려줘"), TurnKind.TODAY)
 
+    def test_site_weather_search_is_not_today(self) -> None:
+        self.assertEqual(classify_turn("네이버에서 오늘 날씨 검색해줘"), TurnKind.OTHER)
+        self.assertEqual(classify_turn("네이버에서 날씨 검색해줘"), TurnKind.OTHER)
+
     def test_browse_does_not_set_search_today(self) -> None:
         self.assertFalse(classify_turn("최신 뉴스 보여줘") == TurnKind.TODAY)
         self.assertTrue(classify_turn("오늘 날씨 알려줘") == TurnKind.TODAY)

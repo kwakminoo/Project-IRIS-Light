@@ -23,6 +23,7 @@ _TODAY = re.compile(
     r"날씨|기온|미세먼지|환율|주가|시세|코스피|코스닥|비트코인|경기\s*결과|스코어"
 )
 _NOT_TODAY = re.compile(r"계산|코드|의견|소설|번역|설계")
+_SITE_DRIVE = re.compile(r"네이버|유튜브|youtube|google\.|브라우저", re.IGNORECASE)
 _STORED = re.compile(r"위키|노트|inbox|첨부|저장(?:해\s*둔|된\s*자료|한\s*자료)")
 _SAVE_ACT = re.compile(r"저장해|넣어\s*줘|기록해|옮겨|삭제해|보내\s*줘|실행해|만들어")
 _CODE_WORK = re.compile(r"고쳐|구현|코드|리팩터|짜\s*줘|작성")
@@ -38,6 +39,8 @@ def classify_turn(text: str) -> str:
     if _BROWSE.search(raw) and not _NOT_TODAY.search(raw):
         return TurnKind.BROWSE
     if _TODAY.search(raw) and not _NOT_TODAY.search(raw):
+        if _SITE_DRIVE.search(raw):
+            return TurnKind.OTHER
         return TurnKind.TODAY
     if _STORED.search(raw) and not _SAVE_ACT.search(raw):
         return TurnKind.STORED
@@ -145,6 +148,7 @@ def settle_grounded_answer(
 def _check() -> None:
     assert classify_turn("오늘 날씨 알려줘") == "today"
     assert classify_turn("주가 알려줘") == "today"
+    assert classify_turn("네이버에서 오늘 날씨 검색해줘") == "other"
     assert classify_turn("오늘 뉴스 3개") == "browse"
     assert classify_turn("최신 뉴스 보여줘") == "browse"
     assert classify_turn("환율 계산해줘") == "other"
