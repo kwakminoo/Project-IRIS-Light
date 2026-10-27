@@ -248,6 +248,54 @@ class SessionFakeDriverTests(unittest.TestCase):
         self.assertEqual(idle.gen, gen)
         self.assertEqual([node.ref for node in idle.nodes], refs)
 
+    def test_idle_snapshot_restamps_when_url_changes(self) -> None:
+        first = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertTrue(first.ok)
+        old_ref = first.snapshot.nodes[0].ref
+        self.driver.navigate("https://fixture.local/watch?v=fixture-iu")
+        idle = self.session.snapshot()
+        self.assertIn("/watch", idle.url)
+        self.assertNotEqual(idle.gen, first.snapshot.gen)
+        self.assertTrue(any("밤편지" in (node.name or "") for node in idle.nodes))
+        self.assertFalse(any(node.ref == old_ref for node in idle.nodes))
+        miss = self.session.execute(Click(target=ByRef(ref=old_ref)))
+        self.assertFalse(miss.ok)
+        self.assertEqual(miss.detail, "stale_ref")
+        self.assertEqual(miss.snapshot.phase, BrowserPhase.READY)
+
+    def test_idle_snapshot_restamps_on_tab_return(self) -> None:
+        first = self.session.execute(Navigate(url="https://react.dev"))
+        self.driver.navigate("https://fixture.local/watch?v=fixture-iu")
+        away = self.session.snapshot()
+        self.driver.navigate("https://react.dev")
+        back = self.session.snapshot()
+        self.assertIn("react", back.url)
+        self.assertNotEqual(back.gen, away.gen)
+        self.assertTrue(any(node.name == "React" for node in back.nodes))
+
+    def test_idle_snapshot_restamps_when_tab_index_changes(self) -> None:
+        first = self.session.execute(Navigate(url="https://react.dev"))
+
+        class _Tabs:
+            def __init__(self) -> None:
+                self.idx = 0
+
+            def tab_count(self) -> int:
+                return 2
+
+            def current_tab_index(self) -> int:
+                return self.idx
+
+        tabs = _Tabs()
+        self.session._panel_ref = tabs
+        same = self.session.snapshot()
+        self.assertEqual(same.gen, first.snapshot.gen)
+        tabs.idx = 1
+        switched = self.session.snapshot()
+        self.assertEqual(switched.tab_index, 1)
+        self.assertNotEqual(switched.gen, first.snapshot.gen)
+        self.assertTrue(any(node.name == "React" for node in switched.nodes))
+
     def test_stamp_copies_flags_and_clips_context(self) -> None:
         page = _FakePage(
             url="https://fixture.local/flags",
