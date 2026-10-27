@@ -6,7 +6,15 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-from iris.engine import Engine, EngineError, EngineErrorCode, EngineFailed, EngineHome, InternalSidecar
+from iris.engine import (
+    Engine,
+    EngineError,
+    EngineErrorCode,
+    EngineFailed,
+    EngineHome,
+    EngineReady,
+    InternalSidecar,
+)
 from iris.engine._home import (
     ENGINE_HERMES_SHA,
     _probe_imports,
@@ -120,18 +128,45 @@ class EnsureReadyInstallTests(TestCase):
     def test_empty_home_does_not_spawn(self) -> None:
         engine = Engine(InternalSidecar(home=self.home))
         before = _child_pids()
-        result = engine.ensure_ready()
+        with patch("iris.engine.runtime.install_into") as inst:
+            result = engine.ensure_ready()
+        inst.assert_called_once_with(self.home)
         self.assertEqual(_child_pids(), before)
         self.assertIsInstance(result, EngineFailed)
         assert isinstance(result, EngineFailed)
         self.assertEqual(result.error.code, EngineErrorCode.NOT_INSTALLED)
         self.assertIsNone(engine._child)
 
+    def test_empty_home_installs_then_is_ready(self) -> None:
+        from tests.test_iris_engine_spawn import _hello_waiter_python
+
+        def fake_install(home: EngineHome, **_kwargs: object) -> None:
+            _hello_waiter_python(Path(home))
+
+        engine = Engine(InternalSidecar(home=self.home))
+        self.addCleanup(engine.shutdown)
+        before = _child_pids()
+        with (
+            patch("iris.engine.runtime.install_into", side_effect=fake_install) as inst,
+            patch("iris.engine._home._probe_imports", return_value=None),
+        ):
+            result = engine.ensure_ready()
+        inst.assert_called_once_with(self.home)
+        self.assertIsInstance(result, EngineReady)
+        self.assertIsNotNone(engine._child)
+        assert engine._child is not None
+        self.assertIsNone(engine._child.poll())
+        engine.shutdown()
+        self.assertIsNone(engine._child)
+        self.assertEqual(_child_pids(), before)
+
     def test_wrong_python_does_not_spawn(self) -> None:
         _write_fake_python(Path(self.home), ok=False)
         engine = Engine(InternalSidecar(home=self.home))
         before = _child_pids()
-        result = engine.ensure_ready()
+        with patch("iris.engine.runtime.install_into") as inst:
+            result = engine.ensure_ready()
+        inst.assert_not_called()
         self.assertEqual(_child_pids(), before)
         self.assertIsInstance(result, EngineFailed)
         assert isinstance(result, EngineFailed)
@@ -142,7 +177,9 @@ class EnsureReadyInstallTests(TestCase):
         _write_fake_python(Path(self.home), ok=True)
         engine = Engine(InternalSidecar(home=self.home))
         before = _child_pids()
-        result = engine.ensure_ready()
+        with patch("iris.engine.runtime.install_into") as inst:
+            result = engine.ensure_ready()
+        inst.assert_not_called()
         self.assertEqual(_child_pids(), before)
         self.assertIsInstance(result, EngineFailed)
         assert isinstance(result, EngineFailed)

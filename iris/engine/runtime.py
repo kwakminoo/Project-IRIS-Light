@@ -19,7 +19,12 @@ from threading import Lock
 from types import SimpleNamespace
 from typing import Iterator
 
-from iris.engine._home import _stripped_probe_env, engine_python, probe_engine_python
+from iris.engine._home import (
+    _stripped_probe_env,
+    engine_python,
+    install_into,
+    probe_engine_python,
+)
 from iris.engine._sidecar import encode_host_command, parse_turn_event
 from iris.engine.types import (
     EngineEnsureResult,
@@ -212,10 +217,17 @@ class Engine:
                         )
                     )
                 if isinstance(self._source, InternalSidecar):
-                    probe = probe_engine_python(self._source.home)
+                    home = self._source.home
+                    probe = probe_engine_python(home)
+                    if probe is not None and (
+                        probe.code == EngineErrorCode.NOT_INSTALLED
+                        or engine_python(home) is None
+                    ):
+                        install_into(home)
+                        probe = probe_engine_python(home)
                     if probe is not None:
                         return EngineFailed(probe)
-                    spawned = _spawn_sidecar(self._source.home)
+                    spawned = _spawn_sidecar(home)
                     if isinstance(spawned, EngineFailed):
                         return spawned
                     self._child = spawned

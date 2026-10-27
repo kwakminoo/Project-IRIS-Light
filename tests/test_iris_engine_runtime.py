@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import TestCase
+from unittest.mock import patch
 
 from iris.engine import (
     CancelToken,
@@ -35,10 +37,6 @@ def _turn(*, cancelled: bool = False) -> StatelessTurn:
     )
 
 
-def _internal() -> InternalSidecar:
-    return InternalSidecar(home=EngineHome(Path.home() / ".iris-light" / "engine"))
-
-
 class SharedEngineTests(TestCase):
     def setUp(self) -> None:
         reset_shared_engine()
@@ -67,15 +65,28 @@ class SharedEngineTests(TestCase):
 
 
 class EngineReadyStubTests(TestCase):
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.home = EngineHome(Path(self._tmp.name))
+        self._install = patch("iris.engine.runtime.install_into")
+        self._install.start()
+        self.addCleanup(self._install.stop)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _internal(self) -> InternalSidecar:
+        return InternalSidecar(home=self.home)
+
     def test_ensure_ready_on_fresh_sidecar_is_not_installed(self) -> None:
-        engine = Engine(_internal())
+        engine = Engine(self._internal())
         result = engine.ensure_ready()
         self.assertIsInstance(result, EngineFailed)
         self.assertEqual(result.error.code, EngineErrorCode.NOT_INSTALLED)
         self.assertTrue(result.user_message)
 
     def test_run_turn_yields_one_turn_failed(self) -> None:
-        engine = Engine(_internal())
+        engine = Engine(self._internal())
         events = list(engine.run_turn(_turn()))
         self.assertEqual(len(events), 1)
         self.assertIsInstance(events[0], TurnFailed)
@@ -83,7 +94,7 @@ class EngineReadyStubTests(TestCase):
         self.assertEqual(events[0].error.code, EngineErrorCode.NOT_INSTALLED)
 
     def test_cancelled_turn_yields_turn_cancelled(self) -> None:
-        engine = Engine(_internal())
+        engine = Engine(self._internal())
         events = list(engine.run_turn(_turn(cancelled=True)))
         self.assertEqual(events, [TurnCancelled()])
 
