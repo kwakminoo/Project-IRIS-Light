@@ -214,3 +214,49 @@ Fix: restamp when `live.url` or `tab_index` differs. Same-page idle snapshot sti
 | `_check_bridge_snapshot` / `_check_bridge_frames` | pass |
 
 Not run: two live Qt tabs in the panel (unit test uses Fake driver + `current_tab_index`). SPA same-URL DOM replace without a tab or URL change is unmeasured; `browser.snapshot` still restamps.
+
+## Hermes multi-step (2026-10-27)
+
+Judgment: existing Hermes tool loop plus `session.execute` already cover Observe → Act → Verify. No product code was added.
+
+### Path (read, not reimplemented)
+
+| Step | Owner | File |
+|---|---|---|
+| Tool loop, iteration budget | Hermes | `%LOCALAPPDATA%\hermes\...\workspace\agent\turn_tool_round.py`, `turn_finalizer.py` |
+| Disable Hermes `browser`/`terminal` | IRIS | `iris/system/hermes_iris_control_sync.py` |
+| MCP tools | IRIS | `iris/mcp/iris_control_stdio.py` (`urlopen` 120s) |
+| Sensitive HUD | IRIS | `looks_sensitive_browser_act` → `ask_human` → `session.execute` |
+| Packed result | IRIS | `pack_hermes_result` |
+| Recipes / stale_ref teaching | IRIS | `command_recipes()`, `browser_teaching_block()` |
+| Chat cancel | IRIS | `HermesChatWorker.request_cancel` stops SSE only |
+
+### Case matrix
+
+| Case | Result | Evidence |
+|---|---|---|
+| Search → result → click | pass | `test_search_then_click` |
+| Page change → snapshot restamp → click | pass | idle snapshot tests after `ee68fce` |
+| `stale_ref` then re-query | pass | `test_stale_ref_after_snapshot_and_reload`, disconnected-ref tests |
+| Duplicate buttons | pass | PAGE TEXT `ctx=` in `test_browser_intent` and `_check_bridge_snapshot` |
+| iframe click / scroll | pass | `_check_bridge_frames` |
+| Per-command timeout | pass | `SessionWaitAndCrashTests` (navigate 45s, reload 30s, play 90s) |
+| Hermes iteration cap | existing, not IRIS | `max_iterations` default `sys.maxsize`; `IterationBudget` in Hermes |
+| User cancel of the chat stream | existing | `request_cancel` sets the cancel token and stops SSE |
+| In-flight `session.execute` abort | not implemented | cancel does not interrupt an open navigate/play |
+| Sensitive act HUD | pass | `test_looks_sensitive_browser_act` |
+| Combined unittest | pass, 76 tests, 2.057s | 2026-10-27 rerun, no code change |
+| Live Hermes play | skip | `_check_browser_hermes_play`: gateway streamed, then 45s budget on `gemma4:e2b` |
+| Two live Qt tabs in the panel | not-run | Fake driver covers tab_index |
+| SPA same-URL DOM replace | unmeasured | `browser.snapshot` still restamps |
+
+### Not added
+
+- IRIS planner / Observe-Act-Verify class
+- Second agent framework
+- Extra browser engine
+- Per-turn IRIS command counter
+- Arbitrary JavaScript execute
+- In-flight execute abort
+
+Phase 2 screenshot fallback, Phase 3 result events, Phase 4 secret fill, Phase 5 ephemeral profile, and Phase 6 site notes stay later work. They are not required for Hermes to chain `browser.*` commands.

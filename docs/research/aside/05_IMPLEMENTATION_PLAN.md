@@ -24,15 +24,37 @@ If you want install-directory inventory:
 
 Skip this phase to start IRIS work now.
 
-## Phase 1. Packed snapshot
+## Phase 1. Packed snapshot (shipped)
 
-Change `_bridge.js` and the `PageNode` fields so the model sees fewer wrapper nodes and more of: role, name, focused, clickable, iframe id. Raise or replace `NODE_CAP = 40` in `iris/browser/types.py` with a byte budget, not a hard 40.
+Shipped in `ef4cbc3` (PAGE TEXT) and `ee68fce` (idle snapshot restamp).
 
-Do not change ref format `g{gen}e{index}`. `browser.click` and `browser.type` already consume that.
+`PageNode` now carries role, acc name, true-only flags, `ctx=` on colliding `(role, name)`, and iframe id. The packer uses `PAGE_TEXT_BUDGET = 4000` and never drops a stamped ref. Ref format stays `g{gen}e{index}`.
 
-Check: `python -m iris.browser._check_intent` and a fixture page whose 40th control is currently dropped. The packed snapshot must still include that control's ref.
+`BrowserSession.snapshot()` restamps when `live.url` or `tab_index` changes. Same-page idle snapshot keeps refs. Extract and media still skip stamp.
 
-On human tab switch, `BrowserSession.snapshot()` keeps the old `gen` and `nodes` while the view shows a new page (`iris/browser/session.py`). Publish a fresh stamp there, or `browser.click` will use `lastEls` from the previous document. Check: two tabs, switch, then click a ref from the new PAGE TEXT.
+Check: `python -m iris.browser._check_intent`, `_check_bridge_snapshot`, and the idle-snapshot tests in `tests/browser/test_browser_session_unit.py`.
+
+## Hermes multi-step (do not implement)
+
+Hermes already plans, runs, and checks a chain of `iris_invoke` → `browser.*` calls. IRIS must not add a second planner, loop, or agent framework.
+
+The path is:
+
+1. Hermes `AIAgent` tool loop (`turn_tool_round.py`) posts each tool result back into the conversation and starts the next iteration.
+2. The only page-driving tools are MCP `iris_get_state`, `iris_get_catalog`, and `iris_invoke`. Hermes built-in `browser` and `terminal` toolsets stay disabled (`hermes_iris_control_sync.py`).
+3. `iris_invoke` POSTs to Control Surface `/v1/invoke`. `_handle` in `iris/ui/control_actions/browser.py` parses, optionally asks the human, then calls `session.execute`.
+4. `pack_hermes_result` returns `ok, command_kind, detail, trusted, page_text, url, phase, playing, gen`. PAGE TEXT is untrusted input.
+5. Teaching and recipes already say search then click then extract, copy `{ref}` from the last PAGE TEXT, and snapshot on `stale_ref`.
+
+Loop caps and cancel live in Hermes:
+
+- Main-agent `max_iterations` defaults to `sys.maxsize`. `IterationBudget` stops the turn when that budget is spent.
+- `HermesChatWorker.request_cancel` stops the SSE stream. It does not abort an in-flight `session.execute`.
+- IRIS already times out navigate (45s), reload (30s), play (90s), and MCP `urlopen` (120s).
+
+Do not add an IRIS Observe-Act-Verify class, a per-turn browser command counter, or a second cancel path. Those would reimplement Hermes.
+
+If a later brief needs abort of an in-flight execute, add one cancel flag on `BrowserSession.execute`, not a planner.
 
 ## Phase 2. Screenshot fallback
 
@@ -83,7 +105,7 @@ Check: two turns on the same origin. The second POST contains the note. The note
 
 1 → 3 can ship independently. 2 depends on a Phase 1 miss. 4 is the trust boundary. 5 and 6 are product extras.
 
-If only one phase happens, do Phase 1. The 40-node cap is the cheapest miss on dense pages, and it stays inside the current Hermes tool contract.
+Phase 1 is done. Next useful IRIS work, if any, is Phase 3 or Phase 4. Do not start a Hermes planner.
 
 ## Verification after any phase
 
@@ -91,4 +113,4 @@ If only one phase happens, do Phase 1. The 40-node cap is the cheapest miss on d
 - `python -m iris.ui.browser._check_mini_player` if `ViewHost` code moved
 - Confirm workspace and install bundles still contain the IDE markers only if `iris/**` UI that the IDE loads also changed. Browser-only Python does not need an iris-ide rebundle.
 
-No IRIS feature code was changed in the session that wrote this plan.
+The 2026-10-27 Hermes multi-step review changed only this plan and `06_TEST_RESULTS.md`. No IRIS product code.
