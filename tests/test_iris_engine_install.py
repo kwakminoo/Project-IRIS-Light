@@ -137,7 +137,7 @@ class EnsureReadyInstallTests(TestCase):
         self.assertEqual(result.error.code, EngineErrorCode.WRONG_PYTHON)
         self.assertIsNone(engine._child)
 
-    def test_probe_ok_does_not_spawn(self) -> None:
+    def test_probe_ok_echo_python_fails_hello(self) -> None:
         _write_fake_python(Path(self.home), ok=True)
         engine = Engine(InternalSidecar(home=self.home))
         before = _child_pids()
@@ -146,7 +146,6 @@ class EnsureReadyInstallTests(TestCase):
         self.assertIsInstance(result, EngineFailed)
         assert isinstance(result, EngineFailed)
         self.assertEqual(result.error.code, EngineErrorCode.SPAWN_FAILED)
-        self.assertEqual(result.error.detail, "sidecar spawn is not wired")
         self.assertIsNone(engine._child)
 
     def test_install_into_without_runner_does_not_clone(self) -> None:

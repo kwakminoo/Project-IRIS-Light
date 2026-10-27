@@ -2,7 +2,7 @@
 
 Agent-readable:
 - Owns: domain types for a sidecar turn and the process engine handle.
-- Does not: spawn the sidecar, import Hermes, or talk to Qt.
+- Does not: import Hermes, bind :8642, or talk to Qt.
 - Talks to: chat workers via ChatTranscript and StatelessTurn.
 - Extend via: public names in types.py and runtime.py. Private names stay off __all__.
 """
