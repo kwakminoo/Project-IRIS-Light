@@ -114,7 +114,14 @@ def explain_chat_error(err: str) -> str:
             "모델 서버에 연결하지 못했습니다. "
             "Iris Agent 또는 Ollama가 켜져 있는지 확인한 뒤 다시 시도하세요."
         )
-    if any(h in low for h in ("timed out", "timeout", "시간 초과")) or status == 408:
+    if (
+        any(
+            h in low
+            for h in ("timed out", "timeout", "시간 초과", "시간이 초과")
+        )
+        or status == 408
+        or "엔진 응답을 읽지 못했습니다" in raw
+    ):
         return "응답 대기 시간이 초과됐습니다. 잠시 후 다시 시도하세요."
     if looks_like_no_tools_error(raw):
         return "이 모델은 도구 호출을 지원하지 않습니다. 도구를 지원하는 모델을 선택하세요."
@@ -239,6 +246,12 @@ if __name__ == "__main__":
     assert "Iris" in scrub_upstream_hermes_cli_hints("run hermes doctor now")
     assert "한도" in explain_chat_error("Ollama HTTP 429: rate limit")
     assert "답을 만들지 못했습니다" in explain_chat_error("모델 응답 실패")
+    _timeout_ui = "응답 대기 시간이 초과됐습니다. 잠시 후 다시 시도하세요."
+    assert explain_chat_error("엔진 응답을 읽지 못했습니다.") == _timeout_ui
+    assert explain_chat_error(_timeout_ui) == _timeout_ui
+    from iris.engine.types import EngineError, EngineErrorCode
+
+    assert EngineError(EngineErrorCode.TURN_IDLE, "sidecar event timed out").user_message == _timeout_ui
     from unittest.mock import patch
 
     with patch(

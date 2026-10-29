@@ -30,6 +30,7 @@ class EngineErrorCode(Enum):
     SPAWN_FAILED = "spawn_failed"
     SIDECAR_DIED = "sidecar_died"
     PROTOCOL = "protocol"
+    TURN_IDLE = "turn_idle"
     AUTH = "auth"
     CANCELLED = "cancelled"
     NO_USER_UTTERANCE = "no_user_utterance"
@@ -43,6 +44,7 @@ _USER_MESSAGES = {
     EngineErrorCode.SPAWN_FAILED: "엔진을 시작하지 못했습니다.",
     EngineErrorCode.SIDECAR_DIED: "엔진 프로세스가 종료되었습니다.",
     EngineErrorCode.PROTOCOL: "엔진 응답을 읽지 못했습니다.",
+    EngineErrorCode.TURN_IDLE: "응답 대기 시간이 초과됐습니다. 잠시 후 다시 시도하세요.",
     EngineErrorCode.AUTH: "엔진 인증에 실패했습니다.",
     EngineErrorCode.CANCELLED: "요청이 취소되었습니다.",
     EngineErrorCode.NO_USER_UTTERANCE: "보낼 사용자 메시지가 없습니다.",
