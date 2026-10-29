@@ -43,6 +43,7 @@ from iris.core.activity_sink import push_activity_line, register_activity_sink
 from iris.core.state_machine import AppState, StateMachine
 from iris.infrastructure.ollama_client import OllamaModelInfo, apply_ollama_cleanup
 from iris.knowledge.iris_wiki import IrisWiki
+from iris.runtime.agent_log_activity import AGENT_LOG_POLL_MS, AgentLogTailer
 from iris.runtime.model_failover import RouteTarget
 from iris.runtime.context_handoff import (
     build_successor_messages,
@@ -324,6 +325,8 @@ class MainWindow(QMainWindow):
         # 대화 id → 실행 슬롯. 첫 전송에서 속성을 만들면 슬롯 예외로 창이 죽는다.
         self._runs = ChatRunMap()
         self._bound_slot: ChatRunSlot | None = None
+        # turn_id → conversation_id. owning이 비어도 finished_ok를 DB에 남긴다.
+        self._turn_worker_meta: dict[str, int] = {}
         self._runs.slot(self._conversation_id)
         self._sending_followthrough = False
         self._turn_is_followthrough = False
@@ -756,6 +759,10 @@ class MainWindow(QMainWindow):
         self._live_activity = LiveActivityPanel(self)
         self._activity_relay.line.connect(self._live_activity.enqueue_typed_line)
         register_activity_sink(self._activity_relay.push)
+        self._agent_log_tailer = AgentLogTailer()
+        self._agent_log_timer = QTimer(self)
+        self._agent_log_timer.setInterval(AGENT_LOG_POLL_MS)
+        self._agent_log_timer.timeout.connect(self._poll_agent_log_activity)
         left_lay.addWidget(self._live_activity, 0)
         # Hermes health/MCP sync는 control surface 기동 이후에 (아래 start 이후)
 
@@ -5244,6 +5251,9 @@ class MainWindow(QMainWindow):
 
     def _start_chat_worker(self, worker: QThread, turn_id: str) -> None:
         self._chat_worker = worker
+        tid = (turn_id or "").strip()
+        if tid:
+            self._turn_worker_meta[tid] = int(self._slot_now().conversation_id)
         for sig in (
             getattr(worker, "connecting", None),
             getattr(worker, "tool_progress", None),
@@ -5275,14 +5285,43 @@ class MainWindow(QMainWindow):
         worker.content_chunk.connect(lambda chunk, tid=turn_id: self._on_content_chunk_for_turn(chunk, tid))
         worker.finished_ok.connect(lambda content, tid=turn_id: self._on_chat_finished_for_turn(content, tid))
         worker.failed.connect(lambda err, tid=turn_id: self._on_chat_failed_for_turn(err, tid))
+        if isinstance(worker, HermesChatWorker):
+            self._start_agent_log_activity()
         worker.start()
+
+    def _start_agent_log_activity(self) -> None:
+        """Hermes 턴 동안 agent.log allowlist 줄을 Live Activity에 붙인다."""
+        tailer = getattr(self, "_agent_log_tailer", None)
+        timer = getattr(self, "_agent_log_timer", None)
+        if tailer is None or timer is None:
+            return
+        tailer.reset_to_eof()
+        if not timer.isActive():
+            timer.start()
+
+    def _stop_agent_log_activity(self) -> None:
+        timer = getattr(self, "_agent_log_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+        self._poll_agent_log_activity()
+
+    def _poll_agent_log_activity(self) -> None:
+        tailer = getattr(self, "_agent_log_tailer", None)
+        panel = getattr(self, "_live_activity", None)
+        if tailer is None or panel is None:
+            return
+        for item in tailer.poll():
+            panel.append_instant_line(item.text)
 
     def _is_current_turn(self, turn_id: str) -> bool:
         return self._runs.owning(turn_id) is not None
 
     def _finish_current_turn(self, turn_id: str | None = None, *, open_followup: bool = False) -> None:
         # 기본 False. 슬롯에서 키워드 누락 → TypeError → PyQt 6 qFatal(0xC0000409)로 IRIS가 죽는다.
+        self._stop_agent_log_activity()
         current_id = self._turn_gate.finish(turn_id)
+        if current_id:
+            self._turn_worker_meta.pop(current_id, None)
         showing = self._showing_bound()
         # 인수인계문은 전환 직후 한 턴만 얹는다. 그 뒤로는 새 모델이 스스로 쌓은
         # 대화가 맥락이 되므로, 계속 붙여두면 토큰만 먹는다.
@@ -5299,11 +5338,13 @@ class MainWindow(QMainWindow):
             self._sync_chat_stop_for_presentation()
             if open_followup:
                 self._open_voice_followup_window()
+        # promote를 같은 스택에서 돌리면 다음 턴 begin이 이번 finish 핸들러 안에
+        # 끼어 owning이 비는 레이스가 난다. 한 틱 뒤에 올린다.
         finish_id = current_id or ""
+        if not finish_id and showing and self._turn_dispatcher.active_turn is not None:
+            finish_id = self._turn_dispatcher.active_turn.id
         if finish_id:
-            self._turn_dispatcher.finish_active_turn(finish_id)
-        elif showing and self._turn_dispatcher.active_turn is not None:
-            self._turn_dispatcher.finish_active_turn(self._turn_dispatcher.active_turn.id)
+            QTimer.singleShot(0, lambda fid=finish_id: self._turn_dispatcher.finish_active_turn(fid))
         if showing:
             self._sync_voice_conversation_state()
 
@@ -5515,13 +5556,39 @@ class MainWindow(QMainWindow):
             return
         self._relay_foreground_turn(turn_id, lambda: self._on_content_chunk(chunk))
 
+    def _persist_orphan_finished(self, turn_id: str, content: str) -> None:
+        """owning이 비었는데 워커 완료가 온 같은 대화 orphan. DB(+표시 중이면 UI)에 남긴다."""
+        self._stop_agent_log_activity()
+        text = (content or "").strip()
+        cid = self._turn_worker_meta.pop(turn_id, None)
+        if not text or cid is None:
+            return
+        from iris.storage.conversations import append_message
+
+        try:
+            append_message(self._db, int(cid), "assistant", text)
+        except Exception:
+            return
+        self._live_activity.append_instant_line(
+            f"TURN orphan_persist turn={turn_id[:8]} cid={cid} chars={len(text)}"
+        )
+        if int(self._conversation_id) != int(cid):
+            return
+        if getattr(self._chat, "_stream_active", False):
+            self._chat.end_stream_message(text)
+        else:
+            self._chat.append_message("Iris", text)
+
     def _on_chat_finished_for_turn(self, content: str, turn_id: str) -> None:
         slot = self._runs.owning(turn_id)
         if slot is None:
+            self._persist_orphan_finished(turn_id, content)
             return
         if slot.conversation_id != int(self._conversation_id):
+            self._turn_worker_meta.pop(turn_id, None)
             self._finish_slot_away(slot, content)
             return
+        self._turn_worker_meta.pop(turn_id, None)
         self._relay_foreground_turn(turn_id, lambda: self._on_chat_finished(content))
 
     def _on_chat_failed_for_turn(self, err: str, turn_id: str) -> None:
@@ -5536,6 +5603,7 @@ class MainWindow(QMainWindow):
     def _finish_slot_away(self, slot: ChatRunSlot, content: str) -> None:
         from iris.storage.conversations import append_message
 
+        self._stop_agent_log_activity()
         text = (content or slot.pending_partial or "").strip()
         slot.pending_partial = ""
         if text:
@@ -5558,6 +5626,7 @@ class MainWindow(QMainWindow):
     def _fail_slot_away(self, slot: ChatRunSlot) -> None:
         from iris.storage.conversations import pop_last_user_message
 
+        self._stop_agent_log_activity()
         self._bound_slot = slot
         try:
             self._drop_followthrough()

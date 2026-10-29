@@ -849,31 +849,56 @@ def _format_tool_progress(obj: dict[str, Any]) -> str:
     return "tool running"
 
 
+def _json_is_tool_shaped(obj: Any) -> bool:
+    """tool 인자 dict 또는 name/parameters 호출 객체. list/[[...]] 래퍼도 재귀."""
+    if isinstance(obj, dict) and obj:
+        keys = {str(k) for k in obj.keys()}
+        if "name" in keys and "parameters" in keys:
+            return True
+        toolish = {
+            "file_glob",
+            "pattern",
+            "path",
+            "target",
+            "command",
+            "query",
+            "glob",
+            "cwd",
+            "limit",
+            "tool",
+            "tool_name",
+        }
+        return bool(toolish & keys)
+    if isinstance(obj, list) and obj:
+        return all(_json_is_tool_shaped(item) for item in obj)
+    return False
+
+
+def _parse_tool_json_blob(text: str) -> Any | None:
+    """Parse tool JSON; peel extra leading '[' when Hermes emits [[obj] (one ']')."""
+    s = (text or "").strip()
+    if not s:
+        return None
+    if not (s.startswith("{") or s.startswith("[")):
+        return None
+    if not (s.endswith("}") or s.endswith("]")):
+        return None
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    # Measured id=895: '[[\\n{...}\\n]' — one extra '[' / missing ']'.
+    if s.startswith("[") and len(s) > 1:
+        return _parse_tool_json_blob(s[1:])
+    return None
+
+
 def _looks_like_tool_args_json(text: str) -> bool:
     """Hermes가 tool 인자 dict를 assistant content로 흘리는 경우 채팅에서 숨긴다."""
-    s = (text or "").strip()
-    if not s.startswith("{") or not s.endswith("}"):
+    obj = _parse_tool_json_blob(text)
+    if obj is None:
         return False
-    try:
-        obj = json.loads(s)
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(obj, dict) or not obj:
-        return False
-    toolish = {
-        "file_glob",
-        "pattern",
-        "path",
-        "target",
-        "command",
-        "query",
-        "glob",
-        "cwd",
-        "limit",
-        "tool",
-        "tool_name",
-    }
-    return bool(toolish & {str(k) for k in obj.keys()})
+    return _json_is_tool_shaped(obj)
 
 
 def _delta_has_tool_calls(delta: dict[str, Any]) -> bool:
@@ -922,6 +947,15 @@ if __name__ == "__main__":
         '{"file_glob":"**/node_modules/typescript","path":"C:/Users/kwakm","target":"files"}'
     )
     assert not _looks_like_tool_args_json('{"answer":"yes"}')
+    assert _looks_like_tool_args_json(
+        '{"name": "read_file", "parameters": {"path": "tetris_game.py"}}'
+    )
+    assert _looks_like_tool_args_json(
+        '[[\n{"name": "read_file", "parameters": {"path": "tetris_game.py"}}\n]'
+    )
+    assert _looks_like_tool_args_json(
+        '[[\n{"name": "read_file", "parameters": {"path": "tetris_game.py"}}\n]]'
+    )
     assert (
         _format_tool_progress({"status": "completed", "tool": "wiki.write_user_note"})
         == "wiki.write_user_note completed"
@@ -931,6 +965,10 @@ if __name__ == "__main__":
     assert not _should_emit_assistant_content(
         '{"file_glob":"x"}',
         {"delta": {"content": '{"file_glob":"x"}'}},
+    )
+    assert not _should_emit_assistant_content(
+        '[[\n{"name": "read_file", "parameters": {"path": "tetris_game.py"}}\n]',
+        {"delta": {}, "finish_reason": "stop"},
     )
     resolved = resolve_hermes_api_key("")
     client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
