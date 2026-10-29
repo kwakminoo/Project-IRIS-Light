@@ -50,7 +50,8 @@ from iris.system.win_subprocess import no_window_kwargs
 
 _SIDECAR_MAIN = Path(__file__).resolve().parent / "_sidecar_main.py"
 _HELLO_TIMEOUT_SEC = 5.0
-_TURN_IDLE_SEC = 180.0
+# ponytail: coding turns can stay silent >3m while the model writes tool args (2026-10-30 tetris: 194s). Ceiling: still no sidecar heartbeat; raise again if real gaps exceed this.
+_TURN_IDLE_SEC = 600.0
 _CANCEL_POLL_SEC = 0.2
 _STOP_TIMEOUT_SEC = 5.0
 _GATEWAY_ENV_KEYS = (
@@ -322,7 +323,7 @@ class Engine:
                     return
                 if child.poll() is None:
                     yield TurnFailed(
-                        EngineError(EngineErrorCode.PROTOCOL, "sidecar event timed out")
+                        EngineError(EngineErrorCode.TURN_IDLE, "sidecar event timed out")
                     )
                     return
                 self._forget_child()
