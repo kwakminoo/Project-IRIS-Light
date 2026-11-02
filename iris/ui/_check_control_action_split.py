@@ -1,6 +1,6 @@
 """연번 12 — 액션 이름·계약은 같고 등록만 기능별로 나뉘었는지.
 
-카탈로그 스냅샷은 register() 와 같다. 147건.
+카탈로그 스냅샷은 register() 와 같다. 151건.
 """
 
 from __future__ import annotations
@@ -90,7 +90,8 @@ def check_threads() -> None:
     assert runs_off_ui_thread("note.export_pdf") is True
     assert runs_off_ui_thread("extension.install_github") is True
     assert runs_off_ui_thread("project.write_image_code") is True
-    assert runs_off_ui_thread("project.write_file") is False
+    assert runs_off_ui_thread("project.write_file") is True
+    assert runs_off_ui_thread("project.delete") is True
     assert runs_off_ui_thread("emulator.tap") is True
     assert runs_off_ui_thread("email.list_messages") is True
     assert runs_off_ui_thread("ide.open_file") is False
@@ -102,7 +103,9 @@ def check_threads() -> None:
 def check_summary_and_modules() -> None:
     raw = "요약을 남긴다.\n```python\nprint(1)\n```\nC:\\Users\\secret\\proj\\main.py"
     visible = assistant_visible_text(raw, streaming=False)
-    assert "print" not in visible
+    # 화면 계약: 코드 펜스는 유지, 절대경로의 민감 조각만 정리
+    assert "print(1)" in visible
+    assert "```python" in visible
     assert "secret" not in visible
     assert "요약을 남긴다." in visible
     assert "main.py" in visible
@@ -118,8 +121,10 @@ def main() -> None:
     before = json.loads(_CATALOG.read_text(encoding="utf-8"))
     assert got == before, "action catalog drifted"
     names = [a["name"] for a in got]
-    assert len(names) == len(set(names)) == 147
+    assert len(names) == len(set(names)) == 151
+    assert "project.delete" in names
     assert runs_off_ui_thread("browser.click") is True
+    assert runs_off_ui_thread("project.delete") is True
     check_invalid_and_write(reg, window)
     check_threads()
     check_summary_and_modules()

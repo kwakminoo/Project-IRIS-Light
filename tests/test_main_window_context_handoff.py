@@ -281,11 +281,33 @@ class ContextHandoffWiringTests(TestCase):
         self.assertEqual(route.backend, "hermes")
         self.assertEqual(route.target.model, "upstream")
 
+    def test_summary_route_api_model_skips_hermes(self) -> None:
+        """Hermes 켜져 있어도 Iris API runtime 제목/요약은 제공자 직행."""
+        from iris.storage.api_providers import ApiProvider
+
+        self.win._use_hermes_backend = lambda: True
+        provider = ApiProvider(
+            id="nv1",
+            name="NVIDIA",
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key="sk",
+            models=["nvidia/nemotron-mini"],
+        )
+        with patch(
+            "iris.ui.window.main_window.get_api_provider", return_value=provider
+        ):
+            route = MainWindow._summary_route_for(
+                self.win, "api:nv1:nvidia/nemotron-mini"
+            )
+        self.assertIsNotNone(route)
+        self.assertEqual(route.backend, "api")
+        self.assertEqual(route.model, "nvidia/nemotron-mini")
+
     def test_summary_route_is_none_when_it_cannot_resolve(self) -> None:
         self.win._use_hermes_backend = lambda: True
         with patch(
-            "iris.infrastructure.hermes_client.resolve_hermes_inference",
-            side_effect=ValueError("삭제된 API"),
+            "iris.ui.window.main_window.get_api_provider",
+            return_value=None,
         ):
             self.assertIsNone(MainWindow._summary_route_for(self.win, "api:gone:x"))
         self.assertIsNone(MainWindow._summary_route_for(self.win, "   "))

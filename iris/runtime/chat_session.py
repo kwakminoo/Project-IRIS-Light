@@ -68,10 +68,12 @@ class ChatSession:
         clear_conversation_messages(self.db, self.conversation_id)
         self.history = []
 
-    def start_new(self, project_id: int = 0) -> int:
+    def start_new(self, project_id: int = 0, *, force: bool = False) -> int:
         from .attachment_store import AttachmentStore
         self.attachments = AttachmentStore()
-        return start_new_conversation(self.db, project_id=int(project_id or 0))
+        return start_new_conversation(
+            self.db, project_id=int(project_id or 0), force=bool(force)
+        )
 
     def list_projects(self):
         from iris.storage.chat_projects import list_projects

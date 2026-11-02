@@ -25,6 +25,12 @@ def main() -> None:
     widget = (IDE / "src/browser/iris-pdf-widget.ts").read_text(encoding="utf-8")
     assert "getDocument" in widget
     assert "pdfjs/pdf.mjs" in widget
+    assert "this.scroll.focus()" in widget
+    assert "this.scroll.tabIndex = 0" in widget
+
+    css = (IDE / "src/browser/style/iris-pdf.css").read_text(encoding="utf-8")
+    assert "min-height: 0" in css
+    assert "height: 100%" in css
 
     handler = (IDE / "src/browser/iris-pdf-open-handler.ts").read_text(encoding="utf-8")
     assert ".pdf" in handler
@@ -53,6 +59,13 @@ def main() -> None:
             assert marker in text, f"{label} bundle missing {marker}"
         pdfjs = bundle.parent / "pdfjs" / "pdf.mjs"
         assert pdfjs.is_file(), f"{label} pdfjs missing: {pdfjs}"
+        css = bundle.parent / "bundle.css"
+        if css.is_file():
+            css_text = css.read_text(encoding="utf-8", errors="ignore")
+            assert "iris-pdf-scroll" in css_text, f"{label} bundle.css missing iris-pdf-scroll"
+            assert "min-height: 0" in css_text or "min-height:0" in css_text, (
+                f"{label} bundle.css missing PDF scroll min-height"
+            )
         print(f"ok bundle+pdfjs {label}")
 
     print("ok iris pdf viewer wiring")

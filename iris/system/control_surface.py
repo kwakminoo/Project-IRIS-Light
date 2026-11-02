@@ -45,6 +45,10 @@ _OFF_UI_ACTIONS = frozenset(
         "ide.debug",
         "ide.plugin_status",
         "project.write_image_code",
+        # 디스크 쓰기·브리지 왕복. Qt 메인에서 스트림하면 Windows "응답 없음"
+        "project.write_file",
+        # rmtree·IDE unlock. Qt 메인에서 돌리면 Windows "응답 없음"
+        "project.delete",
         # 요약·문단 번역 모델 호출. Qt 메인에서 돌리면 창이 멈춘다.
         "wiki.reprocess_note",
         # 전체 요약·쪽 이미지 순차 읽기. Qt 메인에서 돌리면 창이 멈춘다.
@@ -578,7 +582,8 @@ def _self_check() -> None:
     assert runs_off_ui_thread("note.export_pdf")
     assert runs_off_ui_thread("extension.install_github")
     assert runs_off_ui_thread("project.write_image_code")
-    assert not runs_off_ui_thread("project.write_file")
+    assert runs_off_ui_thread("project.write_file")
+    assert runs_off_ui_thread("project.delete")
     empty, empty_err = parse_invoke_body(b"")
     assert empty == {} and empty_err is None
     bad, bad_err = parse_invoke_body(b"[1]")

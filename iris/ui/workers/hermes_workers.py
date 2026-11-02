@@ -547,7 +547,23 @@ class HermesChatWorker(QThread):
                 nxt.model, nxt.reason_hint or step.reason, bool(content_parts)
             )
         if not self._cancel_token.cancelled():
+            self._emit_tool_choice_demotion(last_error)
             self.failed.emit(last_error or "모델 응답 실패")
+
+    def _emit_tool_choice_demotion(self, error: str, *, base_url: str = "") -> None:
+        """Provider tool_choice 400 → that backend stays auto; one activity line; chat lives."""
+        try:
+            from iris.system.hermes_tool_choice import note_tool_choice_400
+
+            line = note_tool_choice_400(
+                error or "",
+                provider=str(self._final_model or ""),
+                base_url=base_url,
+            )
+            if line:
+                self.tool_progress.emit(line)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _run_external(self, source: ExternalGateway) -> None:
         gateway_error = self._ensure_gateway(source)
@@ -576,8 +592,12 @@ class HermesChatWorker(QThread):
                 else:
                     stream_model = attempt.model
                     provider = ""
-                stream_kwargs = {"provider": provider} if provider else {}
-                for ev in client.stream_chat(stream_model, attempt.messages, **stream_kwargs):
+                stream_kwargs: dict[str, Any] = {"cancel": self._cancel_token}
+                if provider:
+                    stream_kwargs["provider"] = provider
+                for ev in client.stream_chat(
+                    stream_model, attempt.messages, **stream_kwargs
+                ):
                     if self._cancel:
                         break
                     tool = ev.get("tool_progress")
@@ -589,6 +609,8 @@ class HermesChatWorker(QThread):
                         self.content_chunk.emit(chunk)
                     if ev.get("done"):
                         break
+                if self._cancel:
+                    return
                 self.finished_ok.emit("".join(content_parts))
                 return
             except Exception as e:  # noqa: BLE001
@@ -609,6 +631,9 @@ class HermesChatWorker(QThread):
             )
 
         if not self._cancel:
+            self._emit_tool_choice_demotion(
+                last_error, base_url=str(getattr(source, "base_url", "") or "")
+            )
             self.failed.emit(last_error or "모델 응답 실패")
 
 class IrisAgentLoopStandinWorker(QThread):

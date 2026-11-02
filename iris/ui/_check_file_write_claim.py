@@ -10,7 +10,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from iris.system.project_ops import code_fence_body_start, extract_first_code_block
+from iris.system.project_ops import (
+    code_fence_body_start,
+    extract_first_code_block,
+    utf8_content_matches,
+    write_project_file,
+)
 from iris.ui.chat.at_path_refs import extract_at_path_refs, normalize_at_path, resolve_at_kind
 from iris.ui.chat.file_write_claim import (
     CHAT_ONLY,
@@ -19,6 +24,7 @@ from iris.ui.chat.file_write_claim import (
     plan_local_file_writes,
     reveal_line,
     settle_completion_claim,
+    turn_write_evidence,
     verified_write_path,
 )
 
@@ -115,6 +121,15 @@ class CompletionGateTests(unittest.TestCase):
         self.assertTrue(gate.display.startswith(said))
         self.assertTrue(gate.suppress_followup_write)
 
+    def test_soft_claim_without_tool_is_chat_only(self) -> None:
+        said = "코드는 작성을 완료했습니다. 파일 이름은 tetris_king.py 입니다."
+        gate = settle_completion_claim(said, verified_path="", try_write=None)
+        self.assertIn(CHAT_ONLY, gate.display)
+        self.assertTrue(gate.display.startswith(said))
+        for phrase in ("코드를 짰습니다", "작성을 마쳤습니다", "코드는 작성했습니다"):
+            soft = settle_completion_claim(phrase, verified_path="")
+            self.assertIn(CHAT_ONLY, soft.display, phrase)
+
     def test_claim_with_fence_writes_once(self) -> None:
         with tempfile.TemporaryDirectory(prefix="iris-gate-") as td:
             root = Path(td)
@@ -156,6 +171,88 @@ class CompletionGateTests(unittest.TestCase):
             "```python\nprint(1)\n```",
         )
         self.assertEqual(ambiguous.kind, "ask")
+        from_assistant = plan_local_file_writes(
+            "테트리스킹 코드 작성한 다음에 실행해줘",
+            "파일 이름은 tetris_king.py 입니다.\n```python\nprint(1)\n```",
+        )
+        self.assertEqual(from_assistant.kind, "write")
+        self.assertEqual(from_assistant.pairs[0][0], "tetris_king.py")
+        self.assertEqual(from_assistant.pairs[0][1], "print(1)")
+
+    def test_content_match_readback_gates_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="iris-match-") as td:
+            root = Path(td)
+            written = write_project_file(root, "kept.py", "print(1)\n")
+            self.assertTrue(written["content_match"])
+            ok_result = {"ok": True, "result": written}
+            self.assertEqual(
+                verified_write_path(ok_result),
+                str(Path(written["path"]).resolve()),
+            )
+            self.assertTrue(
+                turn_write_evidence(
+                    verified_path=written["path"],
+                    content_match=True,
+                ).wrote
+            )
+            Path(written["path"]).write_text("mutated\n", encoding="utf-8")
+            self.assertFalse(utf8_content_matches(Path(written["path"]), "print(1)\n"))
+            bad = {
+                "ok": True,
+                "result": {**written, "content_match": False, "error": "UTF-8 content readback mismatch"},
+            }
+            self.assertEqual(verified_write_path(bad), "")
+            self.assertFalse(
+                turn_write_evidence(
+                    verified_path=written["path"],
+                    tool_written=True,
+                    content_match=False,
+                ).wrote
+            )
+            gate = settle_completion_claim(
+                "작성했습니다",
+                verified_path=written["path"],
+                wrote=True,
+                content_match=False,
+            )
+            self.assertIn(CHAT_ONLY, gate.display)
+
+    def test_open_fail_on_disk_is_not_chat_only_missing(self) -> None:
+        """Policy A: open/tab err with on_disk still counts as wrote path evidence."""
+        with tempfile.TemporaryDirectory(prefix="iris-ondisk-") as td:
+            path = Path(td) / "kept.py"
+            path.write_text("print(1)\n", encoding="utf-8")
+            err = {
+                "ok": False,
+                "error": "frontend command timeout",
+                "result": {
+                    "path": str(path),
+                    "rel_path": "kept.py",
+                    "on_disk": True,
+                    "content_match": True,
+                    "opened": False,
+                    "visible": False,
+                },
+            }
+            self.assertEqual(verified_write_path(err), str(path.resolve()))
+            gate = settle_completion_claim(
+                "작성했습니다",
+                verified_path=verified_write_path(err),
+                wrote=True,
+                content_match=True,
+            )
+            self.assertNotIn(CHAT_ONLY, gate.display)
+            missing = {
+                "ok": False,
+                "error": "frontend command timeout",
+                "result": {
+                    "path": str(Path(td) / "ghost.py"),
+                    "on_disk": False,
+                    "opened": False,
+                    "visible": False,
+                },
+            }
+            self.assertEqual(verified_write_path(missing), "")
 
 
 class ImagePipeTests(unittest.TestCase):

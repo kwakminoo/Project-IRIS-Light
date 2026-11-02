@@ -22,6 +22,7 @@ class ChatRunSlot:
     followthrough_gen: int = 0
     followthrough_token: int = 0
     tool_ok_count: int = 0
+    exit_tool_seen: bool = False
     sending_followthrough: bool = False
     turn_is_followthrough: bool = False
     pending_partial: str = ""

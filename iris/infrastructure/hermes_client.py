@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -11,6 +12,9 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+# When cancel is set, poll via socket timeout instead of sitting on timeout_sec.
+_STREAM_CANCEL_POLL_SEC = 0.2
 
 from iris.infrastructure.hermes_credentials import (
     is_weak_hermes_api_key,
@@ -212,6 +216,101 @@ def _sse_error_message(obj: dict[str, Any]) -> str:
             continue
         return "Hermes stream finished with error"
     return ""
+
+
+def _cancel_requested(cancel: object | None) -> bool:
+    if cancel is None:
+        return False
+    check = getattr(cancel, "cancelled", None)
+    if callable(check):
+        return bool(check())
+    return bool(cancel)
+
+
+def _response_socket(resp: object) -> socket.socket | None:
+    """Best-effort underlying socket for timeout / shutdown (urllib HTTPResponse)."""
+    fp = getattr(resp, "fp", None)
+    raw = getattr(fp, "raw", None) if fp is not None else None
+    sock = getattr(raw, "_sock", None) if raw is not None else None
+    if isinstance(sock, socket.socket):
+        return sock
+    return None
+
+
+def _arm_cancel_poll_timeout(resp: object) -> object | None:
+    """Short socket timeout so readline wakes and cancel can be checked. Returns prior timeout."""
+    sock = _response_socket(resp)
+    if sock is None:
+        return None
+    try:
+        prior = sock.gettimeout()
+        sock.settimeout(_STREAM_CANCEL_POLL_SEC)
+        return prior
+    except OSError:
+        return None
+
+
+def _restore_socket_timeout(resp: object, prior: object | None) -> None:
+    sock = _response_socket(resp)
+    if sock is None:
+        return
+    try:
+        sock.settimeout(prior)  # type: ignore[arg-type]
+    except OSError:
+        pass
+
+
+def _force_close_response(resp: object) -> None:
+    """Unblock a stuck readline on Windows by shutting the socket down."""
+    sock = _response_socket(resp)
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    try:
+        close = getattr(resp, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        pass
+
+
+def _iter_response_raw_lines(
+    resp: object,
+    *,
+    cancel: object | None = None,
+) -> Iterator[bytes]:
+    """Yield SSE body lines. With cancel, poll via socket timeout (Windows-safe)."""
+    if cancel is None:
+        yield from resp  # type: ignore[misc]
+        return
+    readline = getattr(resp, "readline", None)
+    if not callable(readline):
+        for raw in resp:  # type: ignore[misc]
+            if _cancel_requested(cancel):
+                return
+            yield raw
+        return
+    prior = _arm_cancel_poll_timeout(resp)
+    try:
+        while not _cancel_requested(cancel):
+            try:
+                raw = readline()
+            except TimeoutError:
+                continue
+            except socket.timeout:
+                continue
+            except Exception:
+                return
+            if not raw:
+                return
+            yield raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode("utf-8")
+    finally:
+        if _cancel_requested(cancel):
+            _force_close_response(resp)
+        else:
+            _restore_socket_timeout(resp, prior)
 
 
 class HermesClient:
@@ -701,12 +800,14 @@ class HermesClient:
         messages: list[dict[str, str]],
         *,
         provider: str = "",
+        cancel: object | None = None,
     ) -> Iterator[dict[str, Any]]:
         """
         /v1/chat/completions SSE.
         yield: {"content": str|None, "tool_progress": str|None, "done": bool}
 
         provider가 있으면 그 요청의 model을 유지한다. 광고 이름 하나로 바꾸지 않는다.
+        cancel이 cancelled()면 다음 SSE 줄을 300s 기다리지 않고 종료한다.
         """
         provider_name = (provider or "").strip()
         if provider_name:
@@ -738,7 +839,9 @@ class HermesClient:
         try:
             with urlopen(req, timeout=self.timeout_sec) as resp:
                 event_name = ""
-                for raw in resp:
+                for raw in _iter_response_raw_lines(resp, cancel=cancel):
+                    if _cancel_requested(cancel):
+                        break
                     line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                     if not line:
                         event_name = ""

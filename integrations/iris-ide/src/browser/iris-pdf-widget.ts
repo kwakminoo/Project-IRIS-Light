@@ -64,7 +64,8 @@ export class IrisPdfWidget extends BaseWidget implements Navigatable {
         this.title.label = this.labelProvider.getName(this.resourceUri) || this.resourceUri.path.base;
         this.title.caption = this.resourceUri.toString();
         this.addClass('iris-pdf-widget');
-        this.node.tabIndex = 0;
+        // Focus lives on the scrollport so Arrow/Page keys scroll natively.
+        this.node.tabIndex = -1;
     }
 
     @postConstruct()
@@ -76,6 +77,7 @@ export class IrisPdfWidget extends BaseWidget implements Navigatable {
 
         this.scroll = document.createElement('div');
         this.scroll.className = 'iris-pdf-scroll';
+        this.scroll.tabIndex = 0;
         this.node.appendChild(this.scroll);
 
         this.toDispose.push(Disposable.create(() => {
@@ -96,7 +98,7 @@ export class IrisPdfWidget extends BaseWidget implements Navigatable {
 
     protected onActivateRequest(msg: Message): void {
         super.onActivateRequest(msg);
-        this.node.focus();
+        this.scroll.focus();
     }
 
     protected async loadAndRender(): Promise<void> {

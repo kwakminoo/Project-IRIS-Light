@@ -29,8 +29,35 @@ def main() -> None:
     assert "currentTerminal" in poller and "lastUsedTerminal" in poller, "터미널 재사용 경로 소실"
     assert "via: 'theia_terminal'" in poller or 'via: "theia_terminal"' in poller
     assert "bridge_fallback" not in poller, "via=bridge_fallback 터미널 성공 재도입 금지"
+    assert "revealTerminal" in poller, "run 시 터미널 패널 reveal 강화 소실"
+    assert "bottomPanel.show" in poller or "bottomPanel" in poller
+    assert "activateWidget" in poller
     assert "withTimeout" in poller
     assert "pollBusy" in poller
+    assert "revealed: true" in poller or 'revealed: true' in poller, "runInTerminal must report revealed"
+
+    from iris.ui.chat import run_visibility as rv
+
+    card = rv.shell_card_from_project_run(
+        {
+            "ok": True,
+            "result": {
+                "argv": ["python", "x.py"],
+                "summary": "exit 0",
+                "exit_code": 0,
+                "via": "theia_terminal",
+                "stdout": "DUMP" * 2000,
+            },
+        }
+    )
+    assert card is not None
+    assert card.command == "python x.py"
+    assert "via=theia_terminal" in card.output and "exit=0" in card.output
+    assert "DUMPDUMP" not in card.output
+    assert rv.write_card_from_project_write(
+        {"ok": True, "result": {"rel_path": "a.py", "opened": True, "on_disk": True}}
+    ) is not None
+    assert rv.card_from_control_result("wiki.search", {"ok": True, "result": {}}) is None
 
     bridge = (runtime_source_dir() / "bridge/standalone-bridge.js").read_text(encoding="utf-8")
     assert "lastFrontendPollAt" in bridge

@@ -24,6 +24,18 @@ def main() -> None:
     assert "buffer edit requires via=editor" in src
     assert "is IRIS IDE Theia loaded?" not in src
     assert "is IRIS IDE loaded?" in src
+    # OpenFileBudget: openFile/gotoFile frontend wait is 15s (not the old 3.5s cut).
+    import re
+
+    open_ms = re.search(
+        r"case 'openFile':\s*case 'gotoFile':\s*\{.*?enqueueFrontend\((?:[^;]|\n)*?,\s*(\d+)\)",
+        src,
+        re.S,
+    )
+    assert open_ms is not None and int(open_ms.group(1)) == 15000, open_ms
+    block = open_ms.group(0)
+    assert "via: 'bridge_fallback'" not in block and 'via: "bridge_fallback"' not in block
+    assert "opened: true" not in block and "opened:true" not in block
 
     node = node_executable()
     assert node, "node not found"

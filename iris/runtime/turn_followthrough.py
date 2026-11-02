@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import re
 
-from iris.ui.chat.file_write_claim import file_create_goal
-
 CAP = 8
 
 NOTE_CONTINUE = "남은 작업이 있어 이어서 진행합니다."
@@ -52,6 +50,10 @@ _DONE = (
     "생성하겠",
     "작성했",
     "작성하겠",
+    "작성을 완료",
+    "작성을 마쳤",
+    "코드를 짰",
+    "코드는 작성",
     "처리 완료",
     "만들었",
     "만들겠",
@@ -61,10 +63,20 @@ _BATCH_SAVED = re.compile(r"\d+\s*건\s*저장")
 
 
 def counts_as_tool_ok(message: str) -> bool:
-    """도구 성공 진행 줄만 센다. completed / running 은 성공이 아니다."""
+    """도구 성공 진행 줄만 센다. completed / running / respond·chat_only 는 성공이 아니다."""
     text = (message or "").strip()
     low = text.lower()
     if "completed" in low or "running" in low:
+        return False
+    # Exit tools satisfy "≥1 tool" on the wire but are not side-effect evidence.
+    if low.startswith("respond ") or low == "respond ok" or "respond ok" in low:
+        return False
+    if "chat_only" in low.replace("-", "_"):
+        return False
+    # Hermes 내장 terminal/shell/bash 는 Iris에서 비활성 — IDE project.run 증거로 세지 않는다.
+    first = low.split(":", 1)[0].strip()
+    head = first.split()[0] if first else ""
+    if head in {"terminal", "shell", "bash", "run_terminal_cmd", "execute"}:
         return False
     return text.endswith(" ok") or " ok " in text
 
@@ -98,13 +110,9 @@ def decide_followthrough(
         return "continue"
     if tool_ok_count == 0 and _wiki_save_goal(goal_s) and _claims_done(text):
         return "continue"
-    if tool_ok_count == 0 and _file_create_goal(goal_s) and _claims_done(text):
-        return "continue"
+    # 파일 생성 + 도구 0 허위완료는 예전 continue(FILE_FOLLOWTHROUGH)였다.
+    # VerifyTurn failover/명시실패가 맡기므로 여기선 stop.
     return "stop"
-
-
-def _file_create_goal(goal: str) -> bool:
-    return file_create_goal(goal).matched
 
 
 def _asks_choice(text: str) -> bool:
@@ -187,6 +195,9 @@ def _check() -> None:
     assert not counts_as_tool_ok("wiki.reprocess_note completed")
     assert counts_as_tool_ok("wiki.write_user_note ok")
     assert counts_as_tool_ok("Iris control: wiki.write_user_note ok")
+    assert counts_as_tool_ok("project.run ok")
+    assert not counts_as_tool_ok("terminal ok")
+    assert not counts_as_tool_ok("shell: python main.py ok")
     assert not counts_as_tool_ok("completed")
     assert not counts_as_tool_ok("tool running")
     assert (
@@ -196,7 +207,7 @@ def _check() -> None:
             0,
             0,
         )
-        == "continue"
+        == "stop"
     )
     assert (
         decide_followthrough(
@@ -208,6 +219,33 @@ def _check() -> None:
         == "stop"
     )
     assert decide_followthrough("오늘 날씨 알려줘", "생성했습니다.", 0, 0) == "stop"
+    assert (
+        decide_followthrough(
+            "테트리스 코드 작성해줘",
+            "코드는 작성을 완료했습니다.",
+            0,
+            0,
+        )
+        == "stop"
+    )
+    assert (
+        decide_followthrough(
+            "스크립트 만들어줘",
+            "코드를 짰습니다.",
+            0,
+            0,
+        )
+        == "stop"
+    )
+    assert (
+        decide_followthrough(
+            "테트리스 코드 작성해줘",
+            "",
+            0,
+            0,
+        )
+        == "stop"
+    )
     print("turn_followthrough ok")
 
 

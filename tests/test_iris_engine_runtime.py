@@ -117,6 +117,14 @@ class EngineReadyStubTests(TestCase):
             token.cancel()
             return ""
 
+        order: list[str] = []
+
+        def on_stop(*_a, **_k):
+            order.append("stop")
+
+        def on_forget(*_a, **_k):
+            order.append("forget")
+
         with (
             patch.object(
                 engine,
@@ -125,11 +133,12 @@ class EngineReadyStubTests(TestCase):
             ),
             patch.object(engine, "_write_turn"),
             patch("iris.engine.runtime._readline_timeout", side_effect=read),
-            patch.object(engine, "_forget_child") as forget,
+            patch("iris.engine.runtime._send_stop", side_effect=on_stop),
+            patch.object(engine, "_forget_child", side_effect=on_forget),
         ):
             events = list(engine.run_turn(turn))
         self.assertEqual(events, [TurnCancelled()])
-        forget.assert_called()
+        self.assertEqual(order, ["stop", "forget"])
 
     def test_ollama_turn_sends_compat_api_key(self) -> None:
         turn = StatelessTurn(

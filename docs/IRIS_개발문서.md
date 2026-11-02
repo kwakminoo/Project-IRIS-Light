@@ -6,7 +6,7 @@
 | 대상 | Project-IRIS-Light |
 | 표시명 | IRIS |
 | 성격 | 공문서 · 표기 요약 |
-| 갱신 | 2026-09-22 |
+| 갱신 | 2026-10-28 — Iris Agent 일체화 반영 |
 
 ---
 
@@ -14,24 +14,25 @@
 
 | 구분 | 내용 |
 |------|------|
-| 한 줄 | Ollama(모델) + Hermes(도구·MCP)를 감싸는 PyQt6 데스크톱 HUD |
-| IRIS 역할 | UI · 세션 · Control Surface · Setup · 워크스페이스 |
-| IRIS 비역할 | 자체 NL 오케스트레이터 · 웹검색/셸/파일IO 재구현 |
+| 한 줄 | Ollama(모델) + Iris Agent(도구·MCP·루프)를 한 제품으로 묶은 PyQt6 데스크톱 HUD |
+| IRIS 역할 | UI · 세션 · Control Surface · Setup · 워크스페이스 · Iris Agent supervisor |
+| IRIS 비역할 | 자체 NL 오케스트레이터 · 웹검색/셸/파일IO를 UI에 재구현 |
+| 에이전트 홈 | `IRIS_AGENT_HOME` 또는 `~/.iris-light/agent` |
 | 실행 | `dist/IRIS.exe` → `.venv\Scripts\pythonw.exe -m iris` |
 
 ---
 
-## 기술 스택
+## 2. 기술 스택
 
 | 계층 | 기술 |
 |------|------|
 | UI | PyQt6 |
 | 언어 | Python 3 |
 | 로컬 모델 | Ollama `:11434` |
-| Agent | Hermes Gateway `:8642` |
-| 역제어 | Control Surface `:8765` + MCP `iris_control` |
+| Agent | Iris Agent (기본 InternalSidecar, 옵션 ExternalGateway `:8642`) |
+| 역제어 | Control Surface `:8765` + MCP `iris_control` (비시드 compat) |
 | 음성(옵션) | Voice Runtime `:18765` (`.venv-voice`) |
-| 저장 | SQLite (`~/.iris-light`) |
+| 저장 | SQLite (`~/.iris-light`) — 채팅 정본 |
 | 패키징 | thin launcher exe (풀번들 금지) |
 
 ---
@@ -41,9 +42,10 @@
 | 경로 | 역할 |
 |------|------|
 | `iris/ui/` | Frontend · MainWindow · Chat · Workspace |
+| `iris/engine/` | Iris Agent InternalSidecar / ExternalGateway |
 | `iris/runtime/` | UserTurn · 음성 규칙 인텐트 |
-| `iris/infrastructure/` | Ollama · Hermes · OpenAI-compat · SerpAPI |
-| `iris/system/` | Setup · IDE · Hermes/Ollama 기동 · Control |
+| `iris/infrastructure/` | Ollama · hermes_client(어댑터) · agent_tool_registry |
+| `iris/system/` | Setup · IDE · 에이전트/Ollama 기동 · Control |
 | `iris/mcp/` | Iris Control MCP stdio |
 | `iris/audio/` | 마이크 · VAD · STT/TTS 클라이언트 |
 | `iris/knowledge/` | Wiki · 코드 인덱스 · 추출 |
@@ -51,6 +53,7 @@
 | `iris/learning/` | Aloha 화면학습 |
 | `services/voice_runtime/` | STT/TTS 서비스 |
 | `integrations/hermes-soul/` | SOUL.md 페르소나 |
+| `vendor/iris-agent-runtime/` | pin SHA |
 | `scripts/` | 빌드 · voice setup |
 | `tests/` | 계약·단위 테스트 |
 | `docs/` | 개발·IA·음성·코드리뷰 |
@@ -62,8 +65,8 @@
 | 구성요소 | 포트/경로 | 비고 |
 |----------|-----------|------|
 | Ollama | `11434` | `/api/chat` · 로컬/클라우드 |
-| Hermes | `8642/v1` | `/chat/completions` · tools |
-| Control Surface | `8765` | Hermes → Iris UI 역제어 |
+| Iris Agent (옵션 HTTP) | `8642/v1` | ExternalGateway일 때만 |
+| Control Surface | `8765` | 에이전트 → Iris UI 역제어 (compat) |
 | Voice Runtime | `18765` | faster-whisper · Qwen3-TTS |
 | 기본 모델(설치) | `gemma4:e2b` | Setup 기본값 |
 
@@ -77,14 +80,14 @@
 | 2 | `UserTurnDispatcher` → `MainWindow._execute_user_turn` |
 | 3 | 로컬 숏컷 (IDE · Wiki · Workspace · 전화 인텐트) |
 | 4 | STT (음성) → faster-whisper `small` |
-| 5 | LLM → Hermes(권장) / Ollama 직행 / API 직행 |
+| 5 | LLM → Iris Agent(권장, InternalSidecar) / Ollama 직행 / API 직행 |
 | 6 | 스트림 UI · tool_progress |
 | 7 | TTS (옵션) → Qwen3-TTS |
 
-| Hermes | 동작 |
+| Iris Agent | 동작 |
 |--------|------|
-| ON | 선택 모델 전부 Hermes Agent (MCP 유지) |
-| OFF | Ollama 또는 OpenAI-compat 직행 (도구 없음) |
+| ON (필수) | 선택 모델 채팅은 Iris Agent (native 툴 + MCP compat) |
+| 끄기 시도 | 입구 차단 (`hermes_enabled` 게이트) |
 
 ---
 
@@ -99,7 +102,7 @@
 | 금지 | 이유 |
 |------|------|
 | 터미널로 IDE 단독 실행 | Companion 타일 우회 |
-| Hermes 내장 terminal | 비활성 · `project.run` 사용 |
+| 에이전트 내장 terminal 남용 | 비활성 · `project.run` 사용 |
 
 ---
 
@@ -108,9 +111,9 @@
 | 구분 | 모델/방식 |
 |------|-----------|
 | STT | faster-whisper · default `small` · `ko` |
-| LLM | Ollama + Hermes · 페르소나 `SOUL.md` |
+| LLM | Ollama + Iris Agent · 페르소나 `SOUL.md` |
 | TTS | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` |
-| Prompt | Hermes: SOUL identity · Ollama 직행: SOUL 주입 |
+| Prompt | Iris Agent: SOUL identity · Ollama 직행: SOUL 주입 |
 | Context | in-memory `_history` + project_root + MCP 지침 |
 | RAG | 미구현 (Wiki는 파일 저장만) |
 
@@ -133,9 +136,9 @@
 
 | Level | 형태 | IRIS |
 |-------|------|------|
-| 1 | User → LLM → Answer | Hermes OFF |
+| 1 | User → LLM → Answer | 단순 직행(도구 없음) |
 | 2 | Intent → LLM | 로컬 숏컷 · voice_intents |
-| 3 | Planner → Tools → MCP | Hermes ON (근접) |
+| 3 | Planner → Tools → MCP | Iris Agent ON |
 
 **판정:** Level 2 + 조건부 Level 3 하이브리드
 
@@ -173,7 +176,7 @@
 
 | 순위 | 항목 |
 |------|------|
-| 1 | Hermes+MCP 경로 품질 고정 · 계측 |
+| 1 | Iris Agent+MCP 경로 품질 고정 · 계측 |
 | 2 | Memory (세션 요약 · 장기 기억) |
 | 3 | Wiki/코드 경량 RAG |
 | 4 | MCP 역할 분리 (Memory/File/Web/Code) |

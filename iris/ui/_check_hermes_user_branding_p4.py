@@ -19,6 +19,7 @@ HOT_PATH_FILES = (
     "iris/ui/chat/chat_panel.py",
     "iris/ui/chat/skill_mcp_dialogs.py",
     "iris/ui/settings/update_notify_box.py",
+    "iris/ui/settings/settings_dialog.py",
     "iris/audio/text_normalizer.py",
     "iris/infrastructure/hermes_errors.py",
     "iris/system/hermes_memory_nudge.py",
@@ -46,6 +47,11 @@ BANNED = (
     "Hermes model sync failed:",
     "Hermes 업데이트를 적용하는 중",
     'return "Hermes" if',
+    "Hermes 웹검색",
+    "Hermes에 연결되는",
+    "· Hermes",
+    "Hermes→Ollama",
+    "Hermes가 '비슷한",
 )
 
 

@@ -1,8 +1,9 @@
 # Iris Light — API 명세서
 
-> Generated-at: 2026-07-22 · Updated-at: 2026-08-25  
-> Scope: Iris Light가 **직접 호출**하거나 **Hermes 경유**로 사용하는 외부·내부 HTTP API  
-> Secrets: 키 값은 이 문서에 적지 않음. 위치만 명시.
+> Generated-at: 2026-07-22 · Updated-at: 2026-10-28  
+> Scope: Iris Light가 **직접 호출**하거나 **Iris Agent 경유**로 사용하는 외부·내부 HTTP API  
+> Secrets: 키 값은 이 문서에 적지 않음. 위치만 명시.  
+> 제품 홈: `IRIS_AGENT_HOME` 또는 `~/.iris-light/agent` (구 `~/.iris-light/agent`는 활성 홈 아님)
 
 ---
 
@@ -13,8 +14,8 @@
 - 사용 중인 API / 서비스 목록
 - **스타트포인트**(누가 언제 호출을 시작하는지)와 **엔드포인트**(실제 URL·경로)
 - 인증·역할·연결 관계
-- 환경 변수 위치 (Iris vs Hermes)
-- Hermes 스킬 매핑
+- 환경 변수 위치 (Iris UI vs Iris Agent 홈)
+- Iris Agent 스킬 매핑
 - 에러·쿼터·운영 메모
 
 ---
@@ -27,16 +28,16 @@
 │  .env → IRIS_* (연결·옵션)   │
 │  Control :8765 · Voice:18765 │
 └───────────┬──────────────────┘
-            │ OpenAI-compat chat
-            │ Authorization: Bearer IRIS_HERMES_API_KEY
+            │ 기본: InternalSidecar (iris/engine)
+            │ 옵션: ExternalGateway OpenAI-compat
             ▼
 ┌──────────────────────────────┐
-│  Hermes API Server           │
-│  http://127.0.0.1:8642       │
-│  %LOCALAPPDATA%\hermes\.env  │
+│  Iris Agent Runtime          │
+│  홈 ~/.iris-light/agent      │
+│  (옵션 HTTP :8642)           │
 └───────┬──────────┬───────────┘
         │          │
-        │ LLM      │ Tools / Skills / MCP iris-control
+        │ LLM      │ Tools / Skills / native registry
         ▼          ▼
    ┌─────────┐  ┌─────────────────────────────────────┐
    │ Ollama  │  │ Exa / Firecrawl / Naver / (Gemini)  │
@@ -46,11 +47,12 @@
 
 | 구간 | 스타트포인트 | 엔드포인트 |
 |------|--------------|------------|
-| 사용자 채팅 | Iris `ChatPanel` → `main_window` worker | Hermes `POST /v1/chat/completions` |
-| 모델 추론(기본) | Hermes agent | Ollama `POST /v1/chat/completions` (`:11434`) |
-| 웹검색(기본) | Hermes `web_search` / `web_extract` | Firecrawl 또는 Exa (키·config에 따라) |
-| 네이버 검색 | Hermes 스킬 `naver-search` | `https://openapi.naver.com/v1/search/*` |
-| Gemini(옵션) | Hermes `provider: gemini` | Google Generative Language API |
+| 사용자 채팅 | Iris `ChatPanel` → 채팅 워커 | Iris Agent InternalSidecar (기본) |
+| 모델 추론(기본) | Iris Agent | Ollama `POST /v1/chat/completions` (`:11434`) |
+| 웹검색(기본) | 에이전트 `web_search` / `web_extract` | Firecrawl 또는 Exa (키·config에 따라) |
+| 네이버 검색 | 에이전트 스킬 `naver-search` | `https://openapi.naver.com/v1/search/*` |
+| Gemini(옵션) | 에이전트 `provider: gemini` | Google Generative Language API |
+| ExternalGateway(옵션) | env 플래그 시에만 | `POST http://127.0.0.1:8642/v1/chat/completions` |
 
 ---
 
@@ -58,9 +60,9 @@
 
 | 파일 | 역할 |
 |------|------|
-| 저장소 루트 `.env` | Iris UI ↔ Hermes/Ollama 연결 + Control/Setup/캘린더 등 **옵션** |
-| `%LOCALAPPDATA%\hermes\.env` | 도구·프로바이더 **API 키** (Exa, Firecrawl, Google, Naver, API_SERVER_KEY …) |
-| `%LOCALAPPDATA%\hermes\config.yaml` | Hermes model provider, `web.search_backend` 등 |
+| 저장소 루트 `.env` | Iris UI ↔ Ollama/에이전트 연결 + Control/Setup/캘린더 등 **옵션** |
+| `~/.iris-light/agent/.env` | 도구·프로바이더 **API 키** (Exa, Firecrawl, Google, Naver, API_SERVER_KEY …) |
+| `~/.iris-light/agent/config.yaml` | model provider, `web.search_backend` 등 |
 
 ### Iris `.env` (연결·옵션)
 
@@ -68,41 +70,41 @@
 |------|------|------|
 | `IRIS_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama base (`/v1` 유무 모두 허용, 클라이언트 정규화) |
 | `IRIS_OLLAMA_MODEL` | (비움) | 기본 모델 — 비우면 앱에서 선택 |
-| `IRIS_HERMES_ENABLED` | `1` | Hermes 백엔드 사용 |
-| `IRIS_HERMES_BASE_URL` | `http://127.0.0.1:8642` | Hermes API base |
-| `IRIS_HERMES_API_KEY` | (위저드 생성) | Hermes `API_SERVER_KEY`와 동일 |
-| `IRIS_HERMES_COMMAND` | (위저드) | CLI 명령 |
-| `IRIS_CONTROL_ENABLED` / `HOST` / `PORT` / `TOKEN` | `8765` | Control Surface |
+| `IRIS_HERMES_ENABLED` | `1` | Iris Agent 필수 게이트(레거시 키명). 끄기 입구 차단 |
+| `IRIS_AGENT_HOME` | (비움) | 비우면 `~/.iris-light/agent` |
+| `IRIS_HERMES_BASE_URL` | `http://127.0.0.1:8642` | ExternalGateway 옵션 base |
+| `IRIS_HERMES_API_KEY` | (위저드 생성) | 게이트웨이 `API_SERVER_KEY`와 동일(옵션 경로) |
+| `IRIS_CONTROL_ENABLED` / `HOST` / `PORT` / `TOKEN` | `8765` | Control Surface (compat) |
 | `IRIS_DATA_GO_KR_SERVICE_KEY` | — | 공휴일(캘린더) |
 | `IRIS_SETUP_DEMO` / `DRY_RUN` | — | 시작 프로토콜 데모/드라이런 |
 | `VOICE_RUNTIME_MOCK` | `0`/`1` | 음성 런타임 mock (앱 prefs와 함께 봄) |
 
-### Hermes `.env` (키)
+### Iris Agent 홈 `.env` (키)
 
 | 변수 | 서비스 |
 |------|--------|
-| `API_SERVER_ENABLED` / `API_SERVER_KEY` | Hermes API Server |
+| `API_SERVER_ENABLED` / `API_SERVER_KEY` | ExternalGateway API Server(옵션) |
 | `EXA_API_KEY` | Exa |
 | `FIRECRAWL_API_KEY` | Firecrawl |
 | `GOOGLE_API_KEY` | Google AI Studio (Gemini LLM) |
 | `NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` | 네이버 검색 Open API |
 
-키 변경 후 **`hermes gateway` 재시작** 필요.
+키 변경 후 **Iris Agent / gateway 재시작** 필요.
 
 ---
 
 ## 4. API 카탈로그
 
-### 4.1 Hermes API Server (Iris ↔ Hermes)
+### 4.1 Iris Agent 런타임 (채팅·도구)
 
 | 항목 | 내용 |
 |------|------|
-| **역할** | Iris 채팅·도구 실행의 런타임 게이트웨이 (OpenAI 호환) |
-| **연결** | `iris/infrastructure/hermes_client.py` ← `IRIS_HERMES_*` |
-| **Base URL** | `http://127.0.0.1:8642` (Iris는 `/v1` suffix 사용) |
-| **인증** | `Authorization: Bearer <API_SERVER_KEY>` |
+| **역할** | Iris 채팅·도구 실행의 제품 런타임 (기본 InternalSidecar, 옵션 OpenAI 호환 HTTP) |
+| **연결** | 기본 `iris/engine` InternalSidecar. 옵션 시 `hermes_client.py` ← `IRIS_HERMES_*` |
+| **Base URL (옵션)** | `http://127.0.0.1:8642` (Iris는 `/v1` suffix 사용) |
+| **인증 (옵션 HTTP)** | `Authorization: Bearer <API_SERVER_KEY>` |
 | **스타트포인트** | 사용자 메시지 전송, 모델 동기화, health 체크 |
-| **Hermes 스킬** | (서버 자체; 스킬은 서버 *안*에서 로드) |
+| **스킬** | 제품 홈 skills / 저장소 `integrations/hermes-skills` |
 
 #### 엔드포인트
 
@@ -129,8 +131,8 @@
 
 | 항목 | 내용 |
 |------|------|
-| **역할** | LLM 추론 (Hermes `provider: custom`의 기본 백엔드). Iris 모델 목록·설명 UI |
-| **연결** | Hermes → `http://127.0.0.1:11434/v1`; Iris 직접 목록은 `iris/infrastructure/ollama_client.py` |
+| **역할** | LLM 추론 (Iris Agent `provider: custom`의 기본 백엔드). Iris 모델 목록·설명 UI |
+| **연결** | Iris Agent → `http://127.0.0.1:11434/v1`; Iris 직접 목록은 `iris/infrastructure/ollama_client.py` |
 | **Base URL** | `http://127.0.0.1:11434` |
 | **인증** | 로컬 기본 없음. Ollama Cloud 사용 시 `OLLAMA_API_KEY` (Hermes) |
 | **스타트포인트** | 채팅 완료 요청, `/api/tags`, `/api/show` (모델 메타·tools 필터) |
@@ -162,7 +164,7 @@
 | **Base URL** | `https://api.exa.ai` |
 | **인증** | Header `x-api-key: $EXA_API_KEY` |
 | **스타트포인트** | 사용자가 웹조사/검색을 요청하고 백엔드가 Exa일 때 |
-| **Hermes 스킬** | `%LOCALAPPDATA%\hermes\skills\iris-apis\exa\SKILL.md` (`name: exa`) |
+| **Hermes 스킬** | `~/.iris-light/agent\skills\iris-apis\exa\SKILL.md` (`name: exa`) |
 
 #### 엔드포인트
 
@@ -178,7 +180,7 @@
 - Firecrawl 키가 같이 있으면 Hermes 자동선택은 **Firecrawl 우선** → Exa 고정 시:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.iris-light/agent/config.yaml
 web:
   search_backend: "exa"
   extract_backend: "exa"
@@ -225,7 +227,7 @@ web:
 | **스타트포인트** | Iris 채팅 → Hermes tool-call `web_search` 또는 스킬 스크립트 |
 | **엔진 전환** | **동일 엔드포인트** + `engine=<이름>` (엔진마다 URL을 따로 연결할 필요 없음) |
 | **Hermes 플러그인** | `plugins/web/serpapi` (소스: `integrations/hermes-plugins/web/serpapi/`) |
-| **Hermes 스킬** | `%LOCALAPPDATA%\hermes\skills\iris-apis\serpapi\` |
+| **Hermes 스킬** | `~/.iris-light/agent\skills\iris-apis\serpapi\` |
 | **Iris 참고 클라이언트** | `iris/infrastructure/serpapi_client.py` |
 
 #### 엔드포인트
@@ -241,7 +243,7 @@ web:
 #### 설정
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.iris-light/agent/config.yaml
 web:
   search_backend: "serpapi"
   extract_backend: "firecrawl"   # SerpApi는 extract 미지원
@@ -317,7 +319,7 @@ SERPAPI_DEFAULT_ENGINE=google
 #### 스크립트
 
 ```text
-%LOCALAPPDATA%\hermes\skills\iris-apis\naver-search\scripts\naver_search.py
+~/.iris-light/agent\skills\iris-apis\naver-search\scripts\naver_search.py
   <kind> <query> [display]
 ```
 
@@ -337,7 +339,7 @@ SERPAPI_DEFAULT_ENGINE=google
 | `google-gemini` | `skills/iris-apis/google-gemini/` | Google AI Studio |
 | `naver-search` | `skills/iris-apis/naver-search/` | Naver Search |
 
-루트: `%LOCALAPPDATA%\hermes\skills\iris-apis\`
+루트: `~/.iris-light/agent\skills\iris-apis\`
 
 스킬은 게이트웨이 재시작(또는 Hermes 스킬 리로드) 후 `skills_list` / 자연어 트리거로 로드된다.  
 Exa·Firecrawl은 **빌트인 `web_search`가 1차**, 스킬은 백엔드 고정·직접 REST·운영 가이드용.
@@ -396,7 +398,7 @@ MCP 도구: `iris_get_state`, `iris_get_catalog`, `iris_invoke`
 | 웹검색 안 됨 | 키 없음 / tools 미지원 모델 | Hermes `.env` + tools 모델 |
 | 네이버 401/403 | 키·권한 | 개발자센터 앱·검색 API ON |
 | Exa/Firecrawl 402 | 크레딧 소진 | 대시보드, auto-upgrade/recharge OFF |
-| 키가 Iris에만 있음 | Hermes가 안 읽음 | `%LOCALAPPDATA%\hermes\.env`로 이동 |
+| 키가 Iris에만 있음 | Hermes가 안 읽음 | `~/.iris-light/agent\.env`로 이동 |
 
 ---
 

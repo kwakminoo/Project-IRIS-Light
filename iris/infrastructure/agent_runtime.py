@@ -598,6 +598,9 @@ def apply_iris_agent_baseline_overlays(agent_root: Path) -> list[str]:
     messages.append(
         ensure_hermes_stdio_dead_check_patch(agent_root=root, mutate=True)
     )
+    from iris.system.hermes_tool_choice import apply_hermes_tool_choice_overlay
+
+    messages.extend(apply_hermes_tool_choice_overlay(root))
     stamp = root / ".iris-agent-baseline"
     try:
         stamp.write_text(f"{load_pinned_sha()}\n", encoding="utf-8")

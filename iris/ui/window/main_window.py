@@ -11,7 +11,14 @@ from pathlib import Path
 import time
 
 from PyQt6.QtCore import QEvent, QPoint, QRect, Qt, QThread, QTimer
-from PyQt6.QtGui import QAction, QCloseEvent, QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QDragEnterEvent,
+    QDropEvent,
+    QKeySequence,
+    QShortcut,
+)
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (
     QApplication,
@@ -61,6 +68,7 @@ from iris.storage.api_providers import (
 )
 from iris.runtime.chat_session import ChatSession, should_open_fresh_work_chat
 from iris.runtime.chat_run_slot import ChatRunMap, ChatRunSlot, SlotAttr
+from iris.ui.monitor.chat_activity import ChatActivityMap
 from iris.storage.email_accounts import EmailAccount, find_account, load_email_accounts
 from iris.monitoring.notification_policy import NotificationPolicy
 from iris.audio.alert_speech import (
@@ -274,6 +282,7 @@ class MainWindow(QMainWindow):
     _followthrough_gen = SlotAttr("followthrough_gen")
     _followthrough_token = SlotAttr("followthrough_token")
     _tool_ok_count = SlotAttr("tool_ok_count")
+    _exit_tool_seen = SlotAttr("exit_tool_seen")
     _sending_followthrough = SlotAttr("sending_followthrough")
     _turn_is_followthrough = SlotAttr("turn_is_followthrough")
     _wiki_turn_moved = SlotAttr("wiki_turn_moved")
@@ -328,6 +337,8 @@ class MainWindow(QMainWindow):
         # turn_id → conversation_id. owning이 비어도 finished_ok를 DB에 남긴다.
         self._turn_worker_meta: dict[str, int] = {}
         self._runs.slot(self._conversation_id)
+        self._chat_activity = ChatActivityMap()
+        self._new_chat_shortcut = None
         self._sending_followthrough = False
         self._turn_is_followthrough = False
         self._followthrough_goal = ""
@@ -335,6 +346,7 @@ class MainWindow(QMainWindow):
         self._followthrough_gen = 0
         self._followthrough_token = 0
         self._tool_ok_count = 0
+        self._exit_tool_seen = False
         self._wiki_last_rel = ""
         self._wiki_turn_wrote = False
         self._wiki_turn_opened = False
@@ -344,10 +356,13 @@ class MainWindow(QMainWindow):
         self._wiki_list_truncated = False
         self._wiki_list_total = 0
         self._followthrough_wiki_rerun = False
+        self._file_verify_failover_used = False
+        self._file_verify_failover_resubmit = False
         self._last_assistant_text = ""
         self._pending_local_vibe_prompt = ""
         self._live_vibe: dict | None = None
         self._turn_write_path = ""
+        self._turn_content_match: bool | None = None
         self._suppress_reveal_write = False
         self._image_extract_worker = None
         self._chat_worker: QThread | None = None
@@ -803,6 +818,11 @@ class MainWindow(QMainWindow):
             history_panel.conversation_rename_requested.connect(self._on_conversation_renamed)
             history_panel.items_delete_requested.connect(self._on_items_deleted)
             history_panel.items_rename_requested.connect(self._on_items_renamed)
+        # WindowShortcut per top-level HWND. IrisIdeWindow에도 같은 키를 건다
+        # (ApplicationShortcut을 두 창에 걸면 ambiguous로 둘 다 죽는다).
+        self._new_chat_shortcut = QShortcut(QKeySequence("Ctrl+N"), self)
+        self._new_chat_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._new_chat_shortcut.activated.connect(self._on_new_chat_requested)
         self._chat.restore_messages(self._history)
         self._refresh_chat_history_panel()
 
@@ -2629,10 +2649,25 @@ class MainWindow(QMainWindow):
         """요약을 어느 백엔드로 보낼지. 못 정하면 None(규칙 기반으로 남는다).
 
         해석은 여기 UI 스레드에서 끝낸다 — 워커는 DB를 읽지 않는다.
+        Iris API runtime(`api:…`)은 도구가 필요 없는 한 줄 요청이라 Hermes 경유 없이
+        제공자로 직행한다. Hermes 레지스트리 404(nvidia/…)를 피한다.
         """
         name = (model or "").strip()
         if not name:
             return None
+        parsed = parse_runtime_model_id(name)
+        if parsed is not None:
+            provider_id, api_model = parsed
+            provider = get_api_provider(self._db, provider_id) if self._db else None
+            if provider is None or not (provider.base_url or "").strip():
+                return None
+            return SummaryRoute(
+                backend="api",
+                model=api_model,
+                base_url=provider.base_url,
+                api_key=provider.api_key,
+                auth_style=provider.auth_style,
+            )
         if self._use_hermes_backend():
             try:
                 from iris.infrastructure.hermes_client import resolve_hermes_inference
@@ -2649,19 +2684,6 @@ class MainWindow(QMainWindow):
                 api_key=self._settings.hermes_api_key,
                 command=self._settings.hermes_command,
                 target=target,
-            )
-        parsed = parse_runtime_model_id(name)
-        if parsed is not None:
-            provider_id, api_model = parsed
-            provider = get_api_provider(self._db, provider_id) if self._db else None
-            if provider is None or not (provider.base_url or "").strip():
-                return None
-            return SummaryRoute(
-                backend="api",
-                model=api_model,
-                base_url=provider.base_url,
-                api_key=provider.api_key,
-                auth_style=provider.auth_style,
             )
         return SummaryRoute(
             backend="ollama", model=name, base_url=self._settings.ollama_base_url
@@ -3123,6 +3145,30 @@ class MainWindow(QMainWindow):
                 host.chat_history.set_conversations(
                     items, active_id=self._conversation_id, projects=projects,
                 )
+        self._push_chat_activity()
+
+    def _push_chat_activity(self) -> None:
+        snap = self._chat_activity.snapshot()
+        for panel in (
+            getattr(self._left_sidebar, "chat_history", None),
+            getattr(self._companion_page, "chat_history", None),
+            getattr(getattr(self, "_workspace_chat", None), "chat_history", None),
+        ):
+            if panel is not None:
+                panel.set_activity(snap)
+
+    def _mark_chat_working(self, conversation_id: int) -> None:
+        self._chat_activity.mark_working(int(conversation_id))
+        self._push_chat_activity()
+
+    def _on_chat_turn_finished(self, conversation_id: int) -> None:
+        viewing = int(conversation_id) == int(self._conversation_id)
+        self._chat_activity.mark_finished(int(conversation_id), viewing=viewing)
+        self._push_chat_activity()
+
+    def _on_chat_opened(self, conversation_id: int) -> None:
+        self._chat_activity.clear_done(int(conversation_id))
+        self._push_chat_activity()
 
     def _schedule_wiki_session_close(self, next_id: int | None = None, *, force: bool = False) -> None:
         """떠나기 전에 대화 묶음을 에피소드와 특성 노트로 남긴다. 창은 기다리지 않는다."""
@@ -3163,6 +3209,7 @@ class MainWindow(QMainWindow):
 
     def _load_conversation(self, conversation_id: int) -> None:
         """세션 전환 — 화면과 구체만 바꾼다. 진행 중 워커는 취소하지 않는다."""
+        self._on_chat_opened(int(conversation_id))
         self._schedule_wiki_session_close(int(conversation_id))
         leaving = int(self._conversation_id)
         if leaving != int(conversation_id):
@@ -3234,13 +3281,14 @@ class MainWindow(QMainWindow):
         self._refresh_chat_history_panel()
 
     def _open_fresh_work_chat(self, project_id: int = 0) -> None:
-        """기록은 남기고 빈 채팅만 연다. 이미 빈 채팅이면 그대로 둔다."""
-        cid = self._chat_session.start_new(project_id)
-        if cid == self._conversation_id and not self._history:
-            self._refresh_chat_history_panel()
-            return
+        """기록은 남기고 빈 채팅을 연다. Ctrl+N/+ 는 항상 새 세션(force)."""
+        cid = self._chat_session.start_new(project_id, force=True)
         self._load_conversation(cid)
         self._live_activity.append_instant_line("새 채팅 시작")
+        try:
+            self._chat._input.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        except Exception:
+            pass
         if not self._test_mode:
             self._begin_app_update_check()
             self._begin_hermes_update_check()
@@ -3895,16 +3943,10 @@ class MainWindow(QMainWindow):
         if session is None or getattr(self, "_ui_mode", "") != "ide_companion":
             return
         ws = (session.workspace_root or "").strip()
-        profile_root = ""
-        try:
-            profile = load_user_profile(self._db)
-            profile_root = (profile.project_root or "").strip()
-        except Exception:
-            pass
         opened = 0
         for ref in refs:
             path_part, line, column = parse_file_chip_location(ref)
-            abs_path = resolve_at_path(path_part, workspace_root=ws, project_root=profile_root)
+            abs_path = resolve_at_path(path_part, workspace_root=ws, project_root=ws)
             if not abs_path:
                 continue
             result = _ide_open_file_path(self, abs_path, line=line, column=column)
@@ -3942,26 +3984,83 @@ class MainWindow(QMainWindow):
         self._obsidian_page.show_note(rel)
         self._obsidian_page._graph.focus(rel)
 
-    def _gate_chat_completion(self, text: str) -> str:
-        from iris.ui.chat.file_write_claim import settle_completion_claim, turn_write_evidence
+    def _turn_evidence_for_chat(self, assistant: str):
+        from iris.runtime.turn_verify import TurnEvidence
 
-        state = self._live_vibe or {}
-        evidence = turn_write_evidence(
+        cm = getattr(self, "_turn_content_match", None)
+        return TurnEvidence(
+            tool_ok_count=int(getattr(self, "_tool_ok_count", 0) or 0),
+            tool_written=bool((self._live_vibe or {}).get("tool_written")),
             verified_path=str(getattr(self, "_turn_write_path", "") or ""),
-            tool_written=bool(state.get("tool_written")),
+            content_match=cm if cm is None else bool(cm),
+            empty_reply=not bool((assistant or "").strip()),
+            assistant=assistant or "",
+            goal=str(getattr(self, "_followthrough_goal", "") or ""),
+            exit_tool_seen=bool(getattr(self, "_exit_tool_seen", False)),
         )
-        return settle_completion_claim(
-            text or "",
-            verified_path=evidence.verified_path,
-            wrote=evidence.wrote,
+
+    def _file_create_failover_available(self) -> bool:
+        """failover_prefs 켜짐 + 현재 모델 뒤에 체인이 남았고, 이번 goal 에서 아직 안 씀."""
+        if getattr(self, "_file_verify_failover_used", False):
+            return False
+        try:
+            settings = self._model_switch.failover_settings
+        except Exception:  # noqa: BLE001
+            return False
+        if not bool(getattr(settings, "enabled", False)):
+            return False
+        model = (getattr(self, "_saved_model", None) or self._settings.ollama_model or "").strip()
+        if not model:
+            return False
+        return bool(self._fallback_targets(model))
+
+    def _fire_file_create_failover(self) -> bool:
+        """파일 검증 실패 시 다음 모델로 원 goal 을 한 턴 재제출. Hermes attempts 체인 재사용."""
+        goal = (self._followthrough_goal or "").strip()
+        if not goal:
+            return False
+        model = (self._saved_model or self._settings.ollama_model or "").strip()
+        targets = self._fallback_targets(model)
+        if not targets:
+            return False
+        nxt = targets[0]
+        self._file_verify_failover_used = True
+        self._file_verify_failover_resubmit = True
+        try:
+            self._apply_selected_model(nxt.model, persist=True)
+        except Exception:  # noqa: BLE001
+            self._file_verify_failover_used = False
+            self._file_verify_failover_resubmit = False
+            return False
+        label = nxt.label or nxt.model
+        self._live_activity.append_instant_line(
+            f"파일 생성 검증 실패 → 다음 모델 한 턴: {label}"
+        )
+        self._drop_followthrough()
+        cid = int(self._conversation_id)
+        QTimer.singleShot(
+            0,
+            lambda c=cid, g=goal: self._turn_dispatcher.submit(
+                text=g,
+                source=UserTurnSource.KEYBOARD,
+                session_id=c,
+            ),
+        )
+        return True
+
+    def _gate_chat_completion(self, text: str) -> str:
+        from iris.runtime.turn_verify import verify_file_create_turn
+
+        return verify_file_create_turn(
+            self._turn_evidence_for_chat(text or ""),
+            failover_available=self._file_create_failover_available(),
         ).display
 
     def _write_fenced_once(self, code: str, lang: str) -> dict | None:
         surface = getattr(self, "_control_surface", None)
         if surface is None or not code.strip():
             return None
-        profile = load_user_profile(self._db)
-        root = (profile.project_root or "").strip()
+        root = self._current_project_root()
         if not root:
             return None
         from iris.system.project_ops import default_generated_rel_path
@@ -4594,6 +4693,7 @@ class MainWindow(QMainWindow):
             self._turn_dispatcher.finish_active_turn(turn.id)
             return
         self._tool_ok_count = 0
+        self._exit_tool_seen = False
         self._turn_tool_lines = []
         self._turn_ask_kind = ""
         self._turn_wiki_lookup = False
@@ -4616,7 +4716,13 @@ class MainWindow(QMainWindow):
             self._turn_is_followthrough = False
             self._followthrough_goal = text
             self._followthrough_count = 0
+            if getattr(self, "_file_verify_failover_resubmit", False):
+                self._file_verify_failover_resubmit = False
+            else:
+                self._file_verify_failover_used = False
         self._turn_gate.begin(turn.id)
+        cid = int(turn.session_id) if turn.session_id is not None else int(self._conversation_id)
+        self._mark_chat_working(cid)
         self._active_turn_source = turn.source
         if turn.source == UserTurnSource.VOICE:
             self._live_activity.append_instant_line(
@@ -4959,6 +5065,7 @@ class MainWindow(QMainWindow):
             self._chat.set_generating(True)
             self._sync_voice_conversation_state()
         self._turn_write_path = ''
+        self._turn_content_match = None
         self._suppress_reveal_write = False
         if allow_image_pipe and not owns and self._handle_image_code_pipe(turn, model):
             return
@@ -5319,6 +5426,7 @@ class MainWindow(QMainWindow):
     def _finish_current_turn(self, turn_id: str | None = None, *, open_followup: bool = False) -> None:
         # 기본 False. 슬롯에서 키워드 누락 → TypeError → PyQt 6 qFatal(0xC0000409)로 IRIS가 죽는다.
         self._stop_agent_log_activity()
+        finish_cid = int(self._slot_now().conversation_id)
         current_id = self._turn_gate.finish(turn_id)
         if current_id:
             self._turn_worker_meta.pop(current_id, None)
@@ -5347,6 +5455,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda fid=finish_id: self._turn_dispatcher.finish_active_turn(fid))
         if showing:
             self._sync_voice_conversation_state()
+        self._on_chat_turn_finished(finish_cid)
 
     @staticmethod
     def _cancelled_assistant_text(partial: str, *, reason: str) -> str:
@@ -5529,9 +5638,13 @@ class MainWindow(QMainWindow):
             else:
                 text = (message or "").strip()
                 if text:
+                    from iris.runtime.tool_force import is_exit_tool_name
                     from iris.runtime.turn_followthrough import counts_as_tool_ok
                     from iris.ui.wiki_turn import note_wiki_tool
 
+                    low = text.lower()
+                    if is_exit_tool_name(low.split()[0] if low.split() else "") or "respond ok" in low:
+                        slot.exit_tool_seen = True
                     if counts_as_tool_ok(text):
                         slot.tool_ok_count += 1
                     note_wiki_tool(self, text)
@@ -5622,6 +5735,7 @@ class MainWindow(QMainWindow):
                 self._turn_dispatcher.finish_active_turn(current)
         finally:
             self._bound_slot = None
+        self._on_chat_turn_finished(int(slot.conversation_id))
 
     def _fail_slot_away(self, slot: ChatRunSlot) -> None:
         from iris.storage.conversations import pop_last_user_message
@@ -5642,6 +5756,7 @@ class MainWindow(QMainWindow):
                 self._turn_dispatcher.finish_active_turn(current)
         finally:
             self._bound_slot = None
+        self._on_chat_turn_finished(int(slot.conversation_id))
 
     def _on_turn_queued(self, turn: object, reason: str) -> None:
         if not isinstance(turn, UserTurn):
@@ -5665,8 +5780,14 @@ class MainWindow(QMainWindow):
             return
         text = (message or "").strip()
         if text:
+            from iris.runtime.tool_force import RESPOND_OK_ACTIVITY, is_exit_tool_name
             from iris.runtime.turn_followthrough import counts_as_tool_ok
 
+            low = text.lower()
+            if is_exit_tool_name(low.split()[0] if low.split() else "") or "respond ok" in low:
+                self._exit_tool_seen = True
+                if "respond" in low and "ok" in low:
+                    text = RESPOND_OK_ACTIVITY
             if counts_as_tool_ok(text):
                 self._tool_ok_count += 1
             self._turn_tool_lines.append(text)
@@ -5780,25 +5901,21 @@ class MainWindow(QMainWindow):
 
     def _maybe_local_file_create_write(self, assistant: str) -> str:
         """파일 목표 + 펜스 + 명확한 rel_path 일 때만 project.write_file. iris_generated 금지."""
-        from iris.ui.chat.file_write_claim import plan_local_file_writes, turn_write_evidence
+        from iris.runtime.turn_verify import verify_file_create_turn
+        from iris.ui.chat.file_write_claim import turn_write_evidence
 
-        evidence = turn_write_evidence(
-            verified_path=str(getattr(self, "_turn_write_path", "") or ""),
-            tool_written=bool((self._live_vibe or {}).get("tool_written")),
-        )
-        if evidence.wrote:
-            return ""
-        goal = str(getattr(self, "_followthrough_goal", "") or "")
-        plan = plan_local_file_writes(goal, assistant or "")
-        if plan.kind == "skip":
+        result = verify_file_create_turn(self._turn_evidence_for_chat(assistant or ""))
+        plan = result.local_plan
+        if plan is None:
             return ""
         if plan.kind == "ask":
             return plan.ask_message
+        if plan.kind != "write":
+            return ""
         surface = getattr(self, "_control_surface", None)
         if surface is None:
             return ""
-        profile = load_user_profile(self._db)
-        root = (profile.project_root or "").strip()
+        root = self._current_project_root()
         if not root:
             self._live_activity.append_instant_line("project_root missing")
             return "프로젝트 폴더가 없어 파일을 쓰지 않았다."
@@ -5833,6 +5950,17 @@ class MainWindow(QMainWindow):
             return errors[0]
         return ""
 
+    def _run_file_create_verify_turn(self, assistant: str):
+        """VerifyTurn 한 진입점. (display, ask_or_err, VerifyResult)."""
+        from iris.runtime.turn_verify import verify_file_create_turn
+
+        ask_or_err = self._maybe_local_file_create_write(assistant)
+        result = verify_file_create_turn(
+            self._turn_evidence_for_chat(assistant or ""),
+            failover_available=self._file_create_failover_available(),
+        )
+        return result.display, ask_or_err, result
+
     def _on_chat_finished(self, content: str) -> None:
         from iris.runtime.attachment_context import trace
         trace("response", turn_id=self._turn_gate.active_id, chars=len(content or ""))
@@ -5845,8 +5973,7 @@ class MainWindow(QMainWindow):
         text = (content or "").strip()
         if self._use_hermes_backend() and not self._turn_tool_lines:
             self._live_activity.append_instant_line("도구 호출 없음")
-        ask_or_err = self._maybe_local_file_create_write(text)
-        shown = self._gate_chat_completion(text)
+        shown, ask_or_err, verify = self._run_file_create_verify_turn(text)
         if ask_or_err:
             shown = (shown.rstrip() + "\n\n" + ask_or_err) if shown else ask_or_err
         if getattr(self._chat, "_stream_active", False):
@@ -5896,7 +6023,19 @@ class MainWindow(QMainWindow):
                 else:
                     status = "idle"
                 self._chat.set_speaker_status(self._tts_active_msg_id, status)
-        suppress_voice = self._maybe_followthrough(text)
+        if "failover" in verify.actions and self._fire_file_create_failover():
+            suppress_voice = True
+        elif verify.suppress_followthrough or "failover" in verify.actions:
+            if "failover" in verify.actions:
+                from iris.runtime.turn_verify import FILE_CREATE_EXPLICIT_FAIL
+
+                self._live_activity.append_instant_line(FILE_CREATE_EXPLICIT_FAIL)
+                if self._showing_bound():
+                    self._chat.append_note(FILE_CREATE_EXPLICIT_FAIL)
+            self._drop_followthrough()
+            suppress_voice = True
+        else:
+            suppress_voice = self._maybe_followthrough(text)
         self._finish_current_turn(open_followup=not suppress_voice)
 
     def _note_tool_file_write(self) -> None:
@@ -5969,8 +6108,7 @@ class MainWindow(QMainWindow):
         surface = getattr(self, "_control_surface", None)
         if surface is None:
             return False
-        profile = load_user_profile(self._db)
-        root = (profile.project_root or "").strip()
+        root = self._current_project_root()
         if not root:
             return False
         # ponytail(사고): 여기서 ide.open_folder를 동기 호출하면 안 됨 — 그 안의
@@ -6095,13 +6233,7 @@ class MainWindow(QMainWindow):
                 )
                 result = ran.get("result") if isinstance(ran.get("result"), dict) else {}
                 summary = result.get("summary") or ran.get("error") or "실행 요청을 보냈습니다."
-                run_ok = bool(ran.get("ok", True))
-                self._chat.insert_tool_block(
-                    title="IDE Terminal",
-                    command=f"project.run {rel}",
-                    output=str(summary),
-                    status="ok" if run_ok else "error",
-                )
+                # Shell card: registry _with_run_visibility → insert_tool_block
                 self._live_activity.append_instant_line(f"IDE run: {summary}")
                 return
 
@@ -6111,8 +6243,7 @@ class MainWindow(QMainWindow):
             block = extract_first_code_block(assistant_text)
             if not block:
                 return
-            profile = load_user_profile(self._db)
-            root = (profile.project_root or "").strip()
+            root = self._current_project_root()
             if not root:
                 self._live_activity.append_instant_line("project_root missing")
                 return
@@ -6146,13 +6277,7 @@ class MainWindow(QMainWindow):
             )
             result = ran.get("result") if isinstance(ran.get("result"), dict) else {}
             summary = result.get("summary") or ran.get("error") or "실행 요청을 보냈습니다."
-            run_ok = bool(ran.get("ok", True))
-            self._chat.insert_tool_block(
-                title="IDE Terminal",
-                command=f"project.run {rel}",
-                output=str(summary),
-                status="ok" if run_ok else "error",
-            )
+            # Shell card: registry _with_run_visibility → insert_tool_block
             self._live_activity.append_instant_line(f"IDE run: {summary}")
         except Exception as exc:  # noqa: BLE001
             self._live_activity.append_instant_line(f"IDE run failed: {exc}")
@@ -8752,9 +8877,11 @@ class MainWindow(QMainWindow):
         return (profile.preferred_ide or "cursor").strip().lower() or "cursor"
 
     def _current_project_root(self) -> str:
+        """화면에 연 bound IDE 폴더. profile.project_root sticky 는 쓰지 않는다."""
         try:
-            profile = load_user_profile(self._db)
-            root = (profile.project_root or "").strip()
+            session = self._get_bound_ide_session(refresh=False)
+            root = (session.workspace_root if session is not None else "") or ""
+            root = root.strip()
             if root and Path(root).expanduser().is_dir():
                 resolved = str(Path(root).expanduser().resolve())
                 from iris.runtime.chat_worktree import conversation_id_of, work_root_for
@@ -9167,6 +9294,7 @@ class MainWindow(QMainWindow):
             self._iris_ide_window.files_dropped.connect(self._attach_os_drop_paths)
             self._iris_ide_window.folder_opened.connect(self._on_iris_ide_welcome_folder)
             self._iris_ide_window.close_requested.connect(self._on_iris_ide_caption_close)
+            self._iris_ide_window.bind_new_chat_shortcut(self._on_new_chat_requested)
             self._install_ide_snap_redirect()
         return self._iris_ide_window
 
@@ -9708,12 +9836,7 @@ class MainWindow(QMainWindow):
         if not root.is_dir():
             return f"not a directory: {folder}"
         root_s = str(root.resolve())
-        profile = load_user_profile(self._db)
-        from iris.runtime.chat_worktree import is_chat_worktree
-
-        if not is_chat_worktree(root_s):
-            profile.project_root = root_s
-            save_user_profile(self._db, profile)
+        # sticky profile.project_root 저장 금지 — 작업 루트는 bound workspace 만.
         record_opened_folder(root)
         mgr = shared_iris_ide_runtime()
         if not mgr.is_installed():
@@ -9966,11 +10089,7 @@ class MainWindow(QMainWindow):
                 show_ide_not_installed_dialog(self, ide_id)
             return err or "IDE not found"
 
-        from iris.runtime.chat_worktree import is_chat_worktree
-
-        if not is_chat_worktree(root_s):
-            profile.project_root = root_s
-            save_user_profile(self._db, profile)
+        # sticky profile.project_root 저장 금지 — 작업 루트는 bound workspace 만.
 
         session = self._get_bound_ide_session(refresh=True)
         # 같은 workspace bound면 즉시 타일

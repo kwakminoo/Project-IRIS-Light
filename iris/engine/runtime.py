@@ -50,7 +50,8 @@ from iris.system.win_subprocess import no_window_kwargs
 
 _SIDECAR_MAIN = Path(__file__).resolve().parent / "_sidecar_main.py"
 _HELLO_TIMEOUT_SEC = 5.0
-_TURN_IDLE_SEC = 180.0
+# ponytail: coding turns can stay silent >3m while the model writes tool args (2026-10-30 tetris: 194s). Ceiling: still no sidecar heartbeat; raise again if real gaps exceed this.
+_TURN_IDLE_SEC = 600.0
 _CANCEL_POLL_SEC = 0.2
 _STOP_TIMEOUT_SEC = 5.0
 _GATEWAY_ENV_KEYS = (
@@ -229,6 +230,8 @@ class Engine:
         self._source = source
         self._lock = Lock()
         self._child: subprocess.Popen[str] | None = None
+        # True while a turn owns the child for I/O outside _lock. Shutdown ignores it.
+        self._turn_active = False
 
     @property
     def source(self) -> EngineSource:
@@ -285,6 +288,20 @@ class Engine:
             return
         _close_pipes(child)
 
+    def _stop_and_forget(self) -> None:
+        # Cooperative stdin stop first; _forget_child still taskkills if the turn is stuck.
+        # Takes _lock so shutdown can run while another thread is mid-read.
+        with self._lock:
+            child = self._child
+            if child is not None:
+                _send_stop(child)
+            self._forget_child()
+
+    def _forget_if_current(self, child: subprocess.Popen[str]) -> None:
+        with self._lock:
+            if self._child is child:
+                self._forget_child()
+
     def _write_turn(self, child: subprocess.Popen[str], turn: StatelessTurn) -> None:
         if child.stdin is None:
             raise OSError("sidecar stdin is missing")
@@ -311,21 +328,21 @@ class Engine:
     ) -> Iterator[TurnEvent]:
         while True:
             if cancel.cancelled():
-                self._forget_child()
+                self._stop_and_forget()
                 yield TurnCancelled()
                 return
             line = _readline_timeout(child.stdout, _TURN_IDLE_SEC, cancel=cancel)
             if not line:
                 if cancel.cancelled():
-                    self._forget_child()
+                    self._stop_and_forget()
                     yield TurnCancelled()
                     return
                 if child.poll() is None:
                     yield TurnFailed(
-                        EngineError(EngineErrorCode.PROTOCOL, "sidecar event timed out")
+                        EngineError(EngineErrorCode.TURN_IDLE, "sidecar event timed out")
                     )
                     return
-                self._forget_child()
+                self._forget_if_current(child)
                 yield TurnFailed(
                     EngineError(EngineErrorCode.SPAWN_FAILED, "sidecar exited during turn")
                 )
@@ -355,6 +372,11 @@ class Engine:
                 yield TurnFailed(ready.error)
                 return
             with self._lock:
+                if self._turn_active:
+                    yield TurnFailed(
+                        EngineError(EngineErrorCode.PROTOCOL, "engine turn already in progress")
+                    )
+                    return
                 child = self._child
                 if child is None or child.poll() is not None:
                     self._forget_child()
@@ -373,7 +395,13 @@ class Engine:
                         )
                     )
                     return
+                self._turn_active = True
+            # Release before event I/O so shutdown() is not stuck behind a live turn.
+            try:
                 yield from self._read_turn_events(child, turn.cancel)
+            finally:
+                with self._lock:
+                    self._turn_active = False
         except Exception as exc:
             yield TurnFailed(EngineError(EngineErrorCode.UNKNOWN, str(exc)))
 

@@ -6,6 +6,7 @@ ponytail: difflib 유사도 + 알려진 부모 디렉터리만 스캔.
 from __future__ import annotations
 
 import re
+import shutil
 import sys
 from collections.abc import Callable
 from difflib import SequenceMatcher
@@ -269,11 +270,28 @@ def resolve_under_root(project_root: str | Path, rel_path: str) -> tuple[Path, P
     return root, path, rel
 
 
+def utf8_content_matches(path: Path, content: str) -> bool:
+    try:
+        return path.read_text(encoding="utf-8") == content
+    except OSError:
+        return False
+
+
 def write_project_file(project_root: str | Path, rel_path: str, content: str) -> dict:
     _root, path, rel = resolve_under_root(project_root, rel_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return {"path": str(path), "rel_path": rel, "bytes": len(content.encode("utf-8"))}
+    text = str(content)
+    path.write_text(text, encoding="utf-8")
+    match = utf8_content_matches(path, text)
+    out: dict = {
+        "path": str(path),
+        "rel_path": rel,
+        "bytes": len(text.encode("utf-8")),
+        "content_match": match,
+    }
+    if not match:
+        out["error"] = "UTF-8 content readback mismatch"
+    return out
 
 
 def is_run_request(text: str) -> bool:
@@ -398,6 +416,136 @@ def default_generated_rel_path(prompt: str, lang: str) -> str:
     return "iris_generated" + _lang_suffix(lang)
 
 
+def iris_repo_root() -> Path:
+    """이 패키지가 속한 Iris 워크스페이스 루트 (iris/ 의 부모)."""
+    return Path(__file__).resolve().parents[2]
+
+
+def _path_contains(parent: Path, child: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def dangerous_delete_reason(target: Path) -> str | None:
+    """삭제 거절 사유. None 이면 경로 자체는 허용 후보."""
+    try:
+        t = target.expanduser().resolve()
+    except OSError as exc:
+        return f"cannot resolve path: {exc}"
+    if t.parent == t:
+        return "refusing to delete drive root"
+    home = Path.home().resolve()
+    if t == home:
+        return "refusing to delete home directory"
+    if t != home and _path_contains(t, home):
+        return "refusing to delete a home ancestor"
+    iris_data = (Path.home() / ".iris-light").resolve()
+    if t == iris_data or _path_contains(t, iris_data):
+        return "refusing to delete Iris data directory"
+    iris = iris_repo_root()
+    try:
+        iris_r = iris.resolve()
+    except OSError:
+        iris_r = iris
+    if t == iris_r or _path_contains(t, iris_r):
+        return "refusing to delete Iris repository (or its ancestor)"
+    if _path_contains(iris_r, t) and t != iris_r:
+        return "refusing to delete inside the Iris repository"
+    parts = [p.lower() for p in t.parts]
+    if "windows" in parts:
+        win_i = parts.index("windows")
+        if win_i <= 1:
+            return "refusing to delete under Windows"
+    protected_leaf = {
+        "program files",
+        "program files (x86)",
+        "programdata",
+        "system volume information",
+        "$recycle.bin",
+    }
+    if t.name.lower() in protected_leaf and len(t.parts) <= 2:
+        return f"refusing to delete protected path: {t}"
+    return None
+
+
+def resolve_delete_target(
+    project_root: str | Path,
+    rel_path: str = "",
+    *,
+    parents: list[Path] | None = None,
+) -> tuple[Path, str, str]:
+    """(abs_target, rel_or_empty, kind). kind = file|dir|root.
+
+    rel_path 비우면 project_root 전체 삭제. 알려진 project parent 아래 leaf만 허용.
+    """
+    root = Path(project_root).expanduser().resolve()
+    rel = (rel_path or "").replace("\\", "/").strip().lstrip("/")
+    if rel:
+        if ".." in rel.split("/"):
+            raise ValueError("invalid rel_path")
+        _root, target, rel_n = resolve_under_root(root, rel)
+        if not target.exists():
+            raise FileNotFoundError(str(target))
+        kind = "file" if target.is_file() or target.is_symlink() else "dir"
+    else:
+        if not root.exists():
+            raise FileNotFoundError(str(root))
+        if not root.is_dir():
+            raise NotADirectoryError(str(root))
+        allowed = parents if parents is not None else default_project_parents()
+        under = False
+        for parent in allowed:
+            try:
+                p = parent.resolve()
+            except OSError:
+                continue
+            if root == p:
+                raise ValueError(
+                    "refusing to delete a project parent itself; pass rel_path or a child folder"
+                )
+            if _path_contains(p, root):
+                under = True
+                break
+        if not under:
+            raise ValueError(
+                "whole-root delete requires project_root under a known project parent "
+                "(or pass rel_path for a path inside project_root)"
+            )
+        target = root
+        rel_n = ""
+        kind = "root"
+    reason = dangerous_delete_reason(target)
+    if reason:
+        raise ValueError(reason)
+    return target, rel_n, kind
+
+
+def delete_project_path(
+    project_root: str | Path,
+    rel_path: str = "",
+    *,
+    parents: list[Path] | None = None,
+) -> dict:
+    """디스크에서 파일·폴더·스캐폴드 루트 삭제. 안전 거절은 ValueError."""
+    target, rel_n, kind = resolve_delete_target(
+        project_root, rel_path, parents=parents
+    )
+    if target.is_file() or target.is_symlink():
+        target.unlink()
+    else:
+        shutil.rmtree(target)
+    return {
+        "deleted": True,
+        "path": str(target),
+        "rel_path": rel_n,
+        "kind": kind,
+        "project_root": str(Path(project_root).expanduser().resolve()),
+    }
+
+
 def rename_project_file(project_root: str | Path, src_rel: str, dest_rel: str) -> str:
     """작업 폴더 안에서 이름을 바꾼다. 새 상대경로. 못 바꾸면 빈 문자열."""
     _root, src, src_norm = resolve_under_root(project_root, src_rel)
@@ -447,7 +595,8 @@ def write_project_file_stream(
             time.sleep(delay * (1.8 if chunk.endswith("\n") else 1.0))
             if pump is not None:
                 pump()
-    return {
+    match = utf8_content_matches(path, text)
+    out: dict = {
         "path": str(path),
         "rel_path": rel,
         "bytes": len(text.encode("utf-8")),
@@ -455,7 +604,11 @@ def write_project_file_stream(
         "chunk_chars": size,
         "chunk_delay_ms": int(chunk_delay_ms or 0),
         "streamed": True,
+        "content_match": match,
     }
+    if not match:
+        out["error"] = "UTF-8 content readback mismatch"
+    return out
 
 
 def _smooth_text_chunks(text: str, size: int) -> list[str]:
@@ -953,7 +1106,13 @@ if __name__ == "__main__":
         assert reason == "ok" and best is not None
         r = write_project_file_stream(td, "a.txt", "abcdefghij", chunk_chars=3, chunk_delay_ms=0)
         assert Path(r["path"]).read_text(encoding="utf-8") == "abcdefghij"
+        assert r["content_match"] is True
         assert r["chunks"] == 4
+        w = write_project_file(td, "b.txt", "clean\n")
+        assert w["content_match"] is True
+        assert not w.get("error")
+        Path(w["path"]).write_text("mutated\n", encoding="utf-8")
+        assert utf8_content_matches(Path(w["path"]), "clean\n") is False
         assert _smooth_text_chunks("abc def\nghi", 8) == ["abc def\n", "ghi"]
         cmd = build_run_command(file="hello.py")
         assert cmd[0] == "python"
@@ -970,4 +1129,39 @@ if __name__ == "__main__":
         assert moved == "이미지테스트2.py"
         assert (parent / "이미지테스트2.py").read_text(encoding="utf-8") == "print(1)\n"
         assert not (parent / "iris_generated.py").exists()
+        doomed = parent / "doomed-scaffold"
+        (doomed / "nested").mkdir(parents=True)
+        (doomed / "nested" / "a.txt").write_text("x", encoding="utf-8")
+        gone = delete_project_path(doomed, parents=[parent])
+        assert gone["deleted"] is True and gone["kind"] == "root"
+        assert not doomed.exists()
+        kept = parent / "keep-root"
+        kept.mkdir()
+        (kept / "victim.txt").write_text("y", encoding="utf-8")
+        (kept / "sub").mkdir()
+        (kept / "sub" / "z.txt").write_text("z", encoding="utf-8")
+        assert delete_project_path(kept, "victim.txt")["kind"] == "file"
+        assert not (kept / "victim.txt").exists()
+        assert delete_project_path(kept, "sub")["kind"] == "dir"
+        assert not (kept / "sub").exists()
+        assert kept.exists()
+        refuse_home = dangerous_delete_reason(Path.home())
+        assert refuse_home and "home" in refuse_home
+        refuse_iris = dangerous_delete_reason(iris_repo_root())
+        assert refuse_iris and "Iris repository" in refuse_iris
+        try:
+            delete_project_path(Path.home(), parents=[Path.home().parent])
+            raise AssertionError("home delete must refuse")
+        except ValueError as exc:
+            assert "home" in str(exc).lower()
+        try:
+            delete_project_path(iris_repo_root(), parents=[iris_repo_root().parent])
+            raise AssertionError("iris repo delete must refuse")
+        except ValueError as exc:
+            assert "Iris repository" in str(exc)
+        try:
+            delete_project_path(parent)  # parent itself is the allowed parent
+            raise AssertionError("parent-itself delete must refuse")
+        except ValueError as exc:
+            assert "project parent" in str(exc) or "rel_path" in str(exc)
     print("project_ops ok", hits[0]["name"], hits[0]["score"], reason)

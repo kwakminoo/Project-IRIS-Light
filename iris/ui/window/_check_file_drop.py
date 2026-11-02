@@ -32,6 +32,38 @@ def check_chat_attach_action() -> None:
     assert reg.invoke("chat.attach", {"path": "x.py"})["ok"] is False, "채팅 패널 부재가 성공으로 보고됨"
 
 
+def check_tab_label_drag_resolve() -> None:
+    """탭 라벨(자식) pointerdown도 shell-tab id로 URI를 잡는지 — node 자검."""
+    import subprocess
+
+    from iris.system.win_subprocess import no_window_kwargs
+
+    root = Path(__file__).resolve().parents[3]
+    script = root / "integrations" / "iris-ide" / "scripts" / "test-tab-click.cjs"
+    assert script.is_file(), f"missing {script}"
+    proc = subprocess.run(
+        ["node", str(script)],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **no_window_kwargs(),
+    )
+    assert proc.returncode == 0, (
+        f"test-tab-click failed ({proc.returncode}): "
+        f"{(proc.stderr or proc.stdout or '').strip()[:800]}"
+    )
+    assert "PASS" in (proc.stdout or ""), proc.stdout
+    contrib = (
+        root / "integrations" / "iris-ide" / "src" / "browser" / "iris-ide-frontend-contribution.ts"
+    ).read_text(encoding="utf-8")
+    # Behavioral node test above is the proof; this pins the closest() call site.
+    assert "el.closest('.theia-tab, .lm-TabBar-tab, .p-TabBar-tab')" in contrib, (
+        "isEditorTabTarget must use exact tab classes (not class*= substring)"
+    )
+
+
 def main() -> None:
     import sys
 
@@ -87,6 +119,16 @@ def main() -> None:
     assert "NAVIGATOR_CONTEXT_MENU" in contrib, "탐색기 첨부 메뉴가 사라짐"
     assert "onTabPointerDown" in contrib, "탭 pointer 제스처가 사라짐"
     assert "onTabHtml5DragStart" in contrib, "탭 HTML5 copy 드래그가 사라짐"
+    assert "uriFromShellTab" in contrib, "셸 탭(PDF 등) URI 해석이 사라짐"
+    assert "getResourceUri" in contrib, "Navigatable 탭 URI 해석이 사라짐"
+    assert "setCompanionCopyCursor" in contrib, "탭 companion copy 커서가 사라짐"
+    assert "dropEffect = 'copy'" in contrib or 'dropEffect = "copy"' in contrib, (
+        "dragover copy 커서 보강이 사라짐"
+    )
+    # 탭 HTML5는 explorer와 같이 copy (copyMove면 금지 커서)
+    assert "effectAllowed = 'copy'" in contrib, "탭/탐색기 copy effectAllowed가 사라짐"
+    assert "effectAllowed = 'copyMove'" not in contrib, "탭 copyMove 회귀(금지 커서)"
+    check_tab_label_drag_resolve()
     assert "urisFromDragDataTransfer" in contrib, "Theia MIME 읽기가 사라짐"
     assert "patchDataTransferForCompanionDrag" in contrib, "Theia setData 가로채기가 사라짐"
     assert "getDraggedEditorUris" in contrib, "Theia explorer MIME 계약이 사라짐"

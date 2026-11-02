@@ -8,10 +8,10 @@ from iris.browser.observation import browser_teaching_block
 from iris.system.hermes_iris_control_sync import hermes_home
 
 # Bump when nudge text changes. Lower runtime markers must not skip as "already present".
-_NUDGE_VERSION = 31
+_NUDGE_VERSION = 32
 _MARKER = f"<!-- iris-control-nudge-v{_NUDGE_VERSION} -->"
 
-_BLOCK = """<!-- iris-control-nudge-v31 -->
+_BLOCK = """<!-- iris-control-nudge-v32 -->
 ## Iris Light UI control
 
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
@@ -26,13 +26,15 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 5. Do NOT use Iris Agent built-in `terminal` tool for project commands — it is disabled for Iris. ALWAYS `mcp__iris_control__iris_invoke` → action=`project.run` so output appears in the **bound IDE integrated terminal**.
 
-6. Do NOT treat Iris Agent terminal cwd as Iris project_root.
+6. Do NOT treat Iris Agent terminal cwd as Iris project_root. Write/run roots are the **bound IDE folder on screen** (session.workspace_root), never a sticky profile project_root.
 
 7. Named project (e.g. AI guitar tab / 자료구조 / 동양미래대학교): native `iris.project.open_similar` args=`{query}` (or alias `project.open_similar`).
 
 8. Absolute path: native `iris.ide.open_folder` args=`{path}` (or alias `ide.open_folder`).
 
 8b. New folder / Desktop folder / 바탕화면에 폴더 만들어 / create project folder: `mcp__iris_control__iris_invoke` → action=`project.create_scaffold` with `name`, `parent` (Desktop / 바탕화면 when the user said so; else first project parent), `template` (`empty`|`python-hello`|`gugudan`), `open=true`. This creates a real disk folder and opens IDE Companion (skill iris-work-start). Do NOT refuse as "physical folders unavailable". Do NOT invent a filesystem limit. Prefer this over terminal mkdir.
+
+8c. Delete a project folder / remove scaffold / 폴더 삭제: `mcp__iris_control__iris_invoke` → action=`project.delete` with `project_root` (and optional `rel_path` for a file or subfolder). Prefer this over terminal `rm` / `Remove-Item` / `rmdir` — those hit "Device or resource busy" when IRIS IDE has the folder open and then retry. `project.delete` closes Companion first when that workspace is open. Do not claim deleted without ok. It refuses home, drive roots, and the Iris repo.
 
 9. "아이리스 라이트 작업" with no other project name: `project.open_similar` query `iris light`.
 
@@ -170,6 +172,8 @@ def ensure_memory_nudge() -> str:
         and "project.create_scaffold" in existing
         and "physical folders unavailable" in existing
         and "Desktop" in existing
+        and "project.delete" in existing
+        and "Device or resource busy" in existing
     ):
         return "memory nudge already present"
     cleaned = _strip_old_nudge(existing) if "iris-control-nudge" in existing else existing
