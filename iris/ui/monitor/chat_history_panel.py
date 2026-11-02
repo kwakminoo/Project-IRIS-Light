@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Mapping
+
 from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QKeyEvent, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import (
+    QColor,
+    QKeyEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -19,6 +27,7 @@ from PyQt6.QtWidgets import (
 
 from iris.storage.chat_projects import ChatProject
 from iris.storage.conversations import ChatConversation, DEFAULT_TITLE
+from iris.ui.monitor.chat_activity import ChatActivity
 from iris.ui.monitor.chat_list_select import apply_list_click
 from iris.ui.shared.section_header import (
     SECTION_CONTENT_GAP,
@@ -126,7 +135,18 @@ class ChatHistoryPanel(QWidget):
         self._scroll_guard = False
         self._scroll_guard_busy = False
         self._scroll_guard_waits = 0
+        self._activity: dict[int, ChatActivity] = {}
         self._scroll.verticalScrollBar().rangeChanged.connect(self._guard_scroll)
+
+    def set_activity(self, activity: Mapping[int, ChatActivity] | None) -> None:
+        """행에 활동 상태 전파. None/빈 맵 = 전부 idle."""
+        self._activity = {int(k): v for k, v in dict(activity or {}).items()}
+        for index in range(self._inner_lay.count()):
+            widget = self._inner_lay.itemAt(index).widget()
+            if isinstance(widget, _ChatRow):
+                widget.set_activity(
+                    self._activity.get(int(widget._conv_id), ChatActivity.IDLE)
+                )
 
     def set_conversations(
         self,
@@ -288,7 +308,7 @@ class ChatHistoryPanel(QWidget):
     def _chat_row(self, conv: ChatConversation, *, nested: bool) -> _ChatRow:
         key = ("c", int(conv.id))
         sole = self._selected == [key]
-        return _ChatRow(
+        row = _ChatRow(
             conv,
             conv.id == self._active_id,
             selected=key in self._selected,
@@ -300,6 +320,8 @@ class ChatHistoryPanel(QWidget):
             on_edit_start=self._on_edit_start,
             on_edit_end=self._on_edit_end,
         )
+        row.set_activity(self._activity.get(int(conv.id), ChatActivity.IDLE))
+        return row
 
     def _ask_new_project(self) -> None:
         from iris.ui.settings.hud_dialog import run_hud_prompt
@@ -353,6 +375,52 @@ class ChatHistoryPanel(QWidget):
             self.set_conversations(pending[0], active_id=pending[1], projects=pending[2])
 
 
+class _ActivityBadge(QWidget):
+    """Cursor-like status: spinning ring while working, soft blue dot when done."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(12, 16)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._activity = ChatActivity.IDLE
+        self._phase = 0.0
+        self.hide()
+
+    def set_activity(self, activity: ChatActivity, phase: float = 0.0) -> None:
+        self._activity = activity if isinstance(activity, ChatActivity) else ChatActivity.IDLE
+        self._phase = float(phase)
+        self.setVisible(self._activity != ChatActivity.IDLE)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        del event
+        if self._activity == ChatActivity.IDLE:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0
+        if self._activity == ChatActivity.WORKING:
+            radius = 4.5
+            rect = QRectF(cx - radius, cy - radius, radius * 2, radius * 2)
+            pen = QPen(QColor(125, 211, 252, 230))
+            pen.setWidthF(1.7)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            span = int(100 * 16)
+            start = int((-self._phase * 360.0) * 16)
+            painter.drawArc(rect, start, span)
+            pen.setColor(QColor(125, 211, 252, 55))
+            painter.setPen(pen)
+            painter.drawArc(rect, start + span, int(260 * 16))
+        else:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(147, 197, 253, 210))
+            painter.drawEllipse(QPointF(cx, cy), 3.2, 3.2)
+        painter.end()
+
+
 class _ChatRow(QFrame):
     def __init__(
         self,
@@ -373,6 +441,12 @@ class _ChatRow(QFrame):
         # 레이아웃이 이벤트를 먼저 보내도 eventFilter 가 AttributeError 로 앱을 죽이지 않게 둔다.
         self._btn = None
         self._edit = None
+        self._badge = None
+        self._activity = ChatActivity.IDLE
+        self._anim_phase = 0.0
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(33)
+        self._anim_timer.timeout.connect(self._on_anim_tick)
         self._conv_id = conv.id
         self._title = (conv.title or DEFAULT_TITLE).strip() or DEFAULT_TITLE
         self._active = active
@@ -393,37 +467,19 @@ class _ChatRow(QFrame):
         h.setContentsMargins(16 if nested else 2, 2, 2, 2)
         h.setSpacing(2)
 
-        color = TOKENS.neon_cyan if active else (TOKENS.text_primary if selected else TOKENS.text_secondary)
-        bg = TOKENS.panel_hover if (active or selected) else "transparent"
-        border = (
-            f"1px solid {TOKENS.neon_cyan}" if selected and not active else "none"
-        )
+        self._badge = _ActivityBadge()
+        h.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
         self._btn = _ShrinkingTitleButton(self._title)
         self._btn.setToolTip(self._title)
         self._btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._btn.setMinimumWidth(0)
-        self._btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                text-align: left;
-                padding: 4px 6px;
-                background: {bg};
-                border: {border};
-                border-radius: {TOKENS.radius_sm}px;
-                color: {color};
-                font-size: {TOKENS.font_size_micro};
-            }}
-            QPushButton:hover {{
-                color: {TOKENS.neon_cyan};
-                background: {TOKENS.panel_hover};
-            }}
-            """
-        )
         self._btn.clicked.connect(self._on_title_clicked)
         h.addWidget(self._btn, 1)
         self._row_state = (active, selected, edit_on_plain_click)
+        self._refresh_btn_style()
 
         self._edit = QLineEdit(self._title)
         self._edit.setObjectName("ChatTitleEdit")
@@ -473,10 +529,40 @@ class _ChatRow(QFrame):
         self._active = active
         self._selected = selected
         self._edit_on_plain_click = edit_on_plain_click
+        self._refresh_btn_style()
+
+    def set_activity(self, activity: ChatActivity) -> None:
+        next_activity = activity if isinstance(activity, ChatActivity) else ChatActivity.IDLE
+        if next_activity == self._activity:
+            if next_activity == ChatActivity.WORKING:
+                if not self._anim_timer.isActive():
+                    self._anim_timer.start()
+            elif self._anim_timer.isActive():
+                self._anim_timer.stop()
+            if self._badge is not None:
+                self._badge.set_activity(next_activity, self._anim_phase)
+            return
+        self._activity = next_activity
+        self._anim_phase = 0.0
+        if next_activity == ChatActivity.WORKING:
+            if not self._anim_timer.isActive():
+                self._anim_timer.start()
+        elif self._anim_timer.isActive():
+            self._anim_timer.stop()
+        if self._badge is not None:
+            self._badge.set_activity(next_activity, self._anim_phase)
+        self._refresh_btn_style()
+
+    def _refresh_btn_style(self) -> None:
+        btn = self._btn
+        if btn is None:
+            return
+        active = self._active
+        selected = self._selected
         color = TOKENS.neon_cyan if active else (TOKENS.text_primary if selected else TOKENS.text_secondary)
         bg = TOKENS.panel_hover if (active or selected) else "transparent"
         border = f"1px solid {TOKENS.neon_cyan}" if selected and not active else "none"
-        self._btn.setStyleSheet(
+        btn.setStyleSheet(
             f"""
             QPushButton {{
                 text-align: left;
@@ -493,6 +579,11 @@ class _ChatRow(QFrame):
             }}
             """
         )
+
+    def _on_anim_tick(self) -> None:
+        self._anim_phase = (self._anim_phase + 0.06) % 1.0
+        if self._badge is not None:
+            self._badge.set_activity(self._activity, self._anim_phase)
 
     def _on_title_clicked(self) -> None:
         mods = QApplication.keyboardModifiers()

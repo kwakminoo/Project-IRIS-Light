@@ -448,6 +448,36 @@ def check_client_error_codes() -> None:
         _stop(srv)
 
 
+def check_open_file_budget() -> None:
+    """OpenFileBudget: openFile/gotoFile frontend wait is 15s; no bridge_fallback disguise."""
+    import re
+    from pathlib import Path
+
+    from iris.system.iris_ide_runtime import runtime_source_dir
+
+    bridge = runtime_source_dir() / "bridge" / "standalone-bridge.js"
+    assert bridge.is_file(), bridge
+    src = bridge.read_text(encoding="utf-8")
+    # openFile shares a fall-through with gotoFile; match that block's enqueue timeout.
+    match = re.search(
+        r"case 'openFile':\s*case 'gotoFile':\s*\{.*?enqueueFrontend\((?:[^;]|\n)*?,\s*(\d+)\)",
+        src,
+        re.S,
+    )
+    assert match is not None, "openFile/gotoFile enqueueFrontend timeout missing"
+    assert int(match.group(1)) == 15000, f"OpenFileBudget must be 15000ms, got {match.group(1)}"
+    block = match.group(0)
+    assert "via: 'bridge_fallback'" not in block and 'via: "bridge_fallback"' not in block
+    assert "opened: true" not in block and "opened:true" not in block
+    assert "enqueueFrontend('createTerminal'" in src or 'enqueueFrontend("createTerminal"' in src
+    # createTerminal may keep 3500; only openFile budget is asserted here.
+    pumping = (Path(__file__).resolve().parents[1] / "ui" / "control_bindings.py").read_text(
+        encoding="utf-8"
+    )
+    assert "OpenFileBudget(15s)" in pumping or "15s" in pumping
+    assert "timeout: float = 20.0" in pumping
+
+
 def check_reconnect_and_callers() -> None:
     runtime = _Runtime(9, token="a")
     link = IdeLink(runtime)
@@ -479,6 +509,7 @@ def main() -> None:
     check_failure_does_not_renotify()
     check_listener_isolation()
     check_client_error_codes()
+    check_open_file_budget()
     check_reconnect_and_callers()
     print("ide link ok")
 

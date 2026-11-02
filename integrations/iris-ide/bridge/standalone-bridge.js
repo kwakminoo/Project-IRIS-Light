@@ -265,7 +265,8 @@ async function dispatch(cmd, args) {
             const abs = resolvePath(rel);
             if (!fs.existsSync(abs)) throw new Error(`file not found: ${rel}`);
             // No bridge_fallback: timeout/miss is a hard error (HTTP 400), not a fake open.
-            return await enqueueFrontend(cmd, { path: rel, abs, line: args.line || 1, column: args.column || 1 }, 3500);
+            // OpenFileBudget: 15s tab wait (was 3.5s). createFile stays sync disk, no frontend timeout.
+            return await enqueueFrontend(cmd, { path: rel, abs, line: args.line || 1, column: args.column || 1 }, 15000);
         }
         case 'saveFile':
         case 'saveAll': {

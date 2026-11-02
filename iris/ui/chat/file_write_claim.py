@@ -20,7 +20,8 @@ _WRITE_RE = re.compile(r"작성|넣어|써|스크립트|코드")
 # 파일 생성 허위 완료만. 위키·PDF 「저장했습니다」단독은 건드리지 않는다.
 _CLAIM_RE = re.compile(
     r"처리 완료|생성하겠습니다|생성했습니다|작성했습니다|파일을 열었습니다|"
-    r"만들었습니다|만들어 드렸|스크립트를 만들|코드를 작성했|파일로 썼"
+    r"만들었습니다|만들어 드렸|스크립트를 만들|코드를 작성했|파일로 썼|"
+    r"작성을 완료|코드를 짰|코드는 작성|작성을 마쳤"
 )
 _FILE_GOAL_RE = re.compile(
     r"생성|작성|스크립트|만들어|\.py\b|\.js\b|\.ts\b|코드 파일|파일로 써|write_file|파일 만들"
@@ -76,7 +77,10 @@ def turn_write_evidence(
     *,
     verified_path: str = "",
     tool_written: bool = False,
+    content_match: bool | None = None,
 ) -> TurnWriteEvidence:
+    if content_match is False:
+        return TurnWriteEvidence(False, "")
     path = (verified_path or "").strip()
     if path and Path(path).is_file():
         return TurnWriteEvidence(True, str(Path(path).resolve()))
@@ -126,7 +130,10 @@ def extract_all_code_blocks(text: str) -> list[dict]:
 
 
 def plan_local_file_writes(goal: str, assistant: str) -> LocalWritePlan:
-    """조건이 모두 맞을 때만 write. 애매하면 ask 또는 skip."""
+    """조건이 모두 맞을 때만 write. 애매하면 ask 또는 skip.
+
+    goal 에 이름이 없고 펜스가 1개면 assistant 단일 파일명만 허용.
+    """
     if not file_create_goal(goal).matched:
         return LocalWritePlan("skip")
     names = named_rel_paths(goal)
@@ -134,6 +141,12 @@ def plan_local_file_writes(goal: str, assistant: str) -> LocalWritePlan:
     if not fences:
         return LocalWritePlan("skip")
     if not names:
+        assistant_names = named_rel_paths(assistant)
+        if len(fences) == 1 and len(assistant_names) == 1:
+            return LocalWritePlan(
+                "write",
+                pairs=((assistant_names[0], str(fences[0]["code"])),),
+            )
         return LocalWritePlan(
             "ask",
             ask_message="파일 이름을 알려 주세요. 임의로 iris_generated.py 를 만들지 않습니다.",
@@ -148,9 +161,16 @@ def plan_local_file_writes(goal: str, assistant: str) -> LocalWritePlan:
 
 
 def verified_write_path(result: dict | None) -> str:
-    if not isinstance(result, dict) or not result.get("ok"):
+    """ok write, or Policy A open-fail with on_disk, yields a real path when present."""
+    if not isinstance(result, dict):
         return ""
     inner = result.get("result") if isinstance(result.get("result"), dict) else {}
+    if result.get("content_match") is False or inner.get("content_match") is False:
+        return ""
+    # Policy A: tab/open err with on_disk must not look like "no file".
+    accepted = bool(result.get("ok")) or bool(inner.get("on_disk"))
+    if not accepted:
+        return ""
     path = str(inner.get("path") or "")
     if path and Path(path).is_file():
         return str(Path(path).resolve())
@@ -173,6 +193,7 @@ def settle_completion_claim(
     verified_path: str = "",
     try_write: Callable[[str, str], dict | None] | None = None,
     wrote: bool = False,
+    content_match: bool | None = None,
 ) -> GateResult:
     """파일 생성 완료 주장 + 이번 턴 write 증거 없으면 원문 끝에 CHAT_ONLY 한 줄.
 
@@ -180,7 +201,11 @@ def settle_completion_claim(
     """
     del try_write
     body = text or ""
-    evidence = turn_write_evidence(verified_path=verified_path, tool_written=wrote)
+    evidence = turn_write_evidence(
+        verified_path=verified_path,
+        tool_written=wrote,
+        content_match=content_match,
+    )
     if evidence.wrote:
         return GateResult(body, False)
     if not contains_completion_claim(body):

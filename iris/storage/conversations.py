@@ -644,15 +644,18 @@ def delete_conversation(db: Database, conversation_id: int) -> None:
     db._commit()
 
 
-def start_new_conversation(db: Database, *, project_id: int = 0) -> int:
-    """현재 빈 세션이 같은 폴더에 있으면 재사용, 아니면 새로 만든다."""
+def start_new_conversation(
+    db: Database, *, project_id: int = 0, force: bool = False
+) -> int:
+    """빈 세션이 같은 폴더에 있으면 재사용한다. force면 항상 새로 만든다."""
     ensure_chat_schema(db)
     folder = int(project_id or 0)
-    current = active_conversation_id(db)
-    if current is not None:
-        conv = get_conversation(db, current)
-        if conv is not None and conv.message_count <= 0 and conv.project_id == folder:
-            return current
+    if not force:
+        current = active_conversation_id(db)
+        if current is not None:
+            conv = get_conversation(db, current)
+            if conv is not None and conv.message_count <= 0 and conv.project_id == folder:
+                return current
     conv = create_conversation(db, project_id=folder)
     set_active_conversation_id(db, conv.id)
     return conv.id

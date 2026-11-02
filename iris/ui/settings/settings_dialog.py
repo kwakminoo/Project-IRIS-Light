@@ -572,8 +572,8 @@ class SettingsDialog(QDialog):
         lay.addWidget(
             make_hint(
                 "프리셋과 API Key를 채운 뒤 「추가」를 누르세요. 옆 「발급」은 그 서비스의 "
-                "키 페이지를 엽니다. 여러 개를 등록할 수 있고, Hermes 웹검색은 그중 "
-                "Hermes에 연결되는 마지막 항목을 사용합니다."
+                "키 페이지를 엽니다. 여러 개를 등록할 수 있고, Iris Agent 웹검색은 그중 "
+                "에이전트에 연결되는 마지막 항목을 사용합니다."
             )
         )
         self._search_draft = load_search_api_keys()
@@ -799,7 +799,7 @@ class SettingsDialog(QDialog):
             row.setSpacing(10)
             name = preset.label
             if preset.hermes_backend and pid == active:
-                name = f"{name} · Hermes"
+                name = f"{name} · Iris Agent"
             name_lbl = QLabel(name)
             name_lbl.setObjectName("HudMetricName")
             name_lbl.setMinimumWidth(120)
@@ -2255,7 +2255,7 @@ class SettingsDialog(QDialog):
             make_hint(
                 "사용할 IDE를 고르세요. 아이콘·이름을 누르면 선택됩니다. "
                 "설치되지 않은 IDE는 안내 창이 뜹니다. "
-                "바이브코딩은 Iris 채팅(Hermes→Ollama)으로 진행합니다."
+                "바이브코딩은 Iris 채팅(Iris Agent→Ollama)으로 진행합니다."
             )
         )
         self._ide_selected = QLabel()
@@ -2348,7 +2348,7 @@ class SettingsDialog(QDialog):
         lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
             make_hint(
-                "Hermes가 '비슷한 프로젝트 열어'라고 할 때 이 폴더들 아래의 "
+                "Iris Agent가 '비슷한 프로젝트 열어'라고 할 때 이 폴더들 아래의 "
                 "1depth 하위 폴더만 검색합니다. 비우면(기본값 복원) 내장 후보를 씁니다."
             )
         )

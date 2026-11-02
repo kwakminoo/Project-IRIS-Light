@@ -321,6 +321,33 @@ def _smoke_chat_panel(app: QApplication) -> None:
         status="ok",
         block_id="smoke-tool",
     )
+    from iris.ui.chat.run_visibility import (
+        insert_visibility_card,
+        shell_card_from_project_run,
+        write_card_from_project_write,
+    )
+
+    run_card = shell_card_from_project_run(
+        {
+            "ok": True,
+            "result": {
+                "argv": ["python", "print_calendar.py"],
+                "summary": "exit 0 · ok",
+                "exit_code": 0,
+                "via": "theia_terminal",
+            },
+        }
+    )
+    assert run_card is not None
+    insert_visibility_card(panel, run_card)
+    write_card = write_card_from_project_write(
+        {
+            "ok": True,
+            "result": {"rel_path": "print_calendar.py", "opened": True, "on_disk": True},
+        }
+    )
+    assert write_card is not None
+    insert_visibility_card(panel, write_card)
     app.processEvents()
     html_doc = panel._log.toHtml()
     # Answers retain code cards as well as prose and explicit tool cards.
@@ -331,6 +358,9 @@ def _smoke_chat_panel(app: QApplication) -> None:
         "alpha",
         "Smoke shell",
         "iris-collapse://smoke-tool",
+        "print_calendar.py",
+        "via=theia_terminal",
+        "opened=true",
         label="ChatPanel smoke",
     )
     assert "print" in html_doc and "iris-copy://" in html_doc
@@ -345,6 +375,7 @@ def _smoke_workspace_log(app: QApplication) -> None:
     log.append_user("**workspace** question")
     log.append_iris_chunk("partial…")
     log.end_iris(FENCED_SAMPLE)
+    log.chat.finish_typing()
     app.processEvents()
     html_doc = log._log.toHtml()
     _assert_html_contains(

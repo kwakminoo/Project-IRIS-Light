@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Callable
 from urllib.parse import quote
 
 from PyQt6.QtCore import QRect, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
@@ -121,6 +121,21 @@ class IrisIdeWindow(QMainWindow):
         self._load_hooked = False
         # ponytail: "embedded" = Companion에 도킹된 자식 HWND (QWidget 임베드 아님)
         self._embedded = False
+        self._new_chat_shortcut: QShortcut | None = None
+
+    def bind_new_chat_shortcut(self, callback: Callable[[], None]) -> None:
+        """Companion IDE HWND가 active일 때 Ctrl+N → Iris 새 채팅."""
+        if self._new_chat_shortcut is not None:
+            try:
+                self._new_chat_shortcut.activated.disconnect()
+            except TypeError:
+                pass
+            self._new_chat_shortcut.activated.connect(callback)
+            return
+        sc = QShortcut(QKeySequence("Ctrl+N"), self)
+        sc.setContext(Qt.ShortcutContext.WindowShortcut)
+        sc.activated.connect(callback)
+        self._new_chat_shortcut = sc
 
     def set_embedded(self, embedded: bool, *, host: QWidget | None = None) -> None:
         """Companion 도킹 — 항상 top-level HWND 유지 (Qt.Widget 임베드 금지).

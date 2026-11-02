@@ -289,6 +289,7 @@ class IrisIdeRuntimeManager:
             "lib/node/iris-ide-backend-module.js",
             "lib/node/iris-ide-bridge-server.js",
             "lib/frontend/bundle.js",
+            "lib/frontend/bundle.css",
             "bridge/standalone-bridge.js",
         ):
             s = src / rel
@@ -384,6 +385,11 @@ class IrisIdeRuntimeManager:
         pdfjs = runtime_install_dir() / "lib" / "frontend" / "pdfjs" / "pdf.mjs"
         if not pdfjs.is_file():
             return False, "설치본 lib/frontend/pdfjs/pdf.mjs 없음"
+        css = runtime_install_dir() / "lib" / "frontend" / "bundle.css"
+        if css.is_file():
+            css_text = css.read_text(encoding="utf-8", errors="ignore")
+            if "iris-pdf-scroll" in css_text and "min-height: 0" not in css_text and "min-height:0" not in css_text:
+                return False, "설치본 bundle.css에 PDF 스크롤 min-height 없음"
         return True, "workspace build synced to install"
 
     def _sync_prebuilt_frontend(self) -> None:
@@ -411,6 +417,7 @@ class IrisIdeRuntimeManager:
             "lib/browser/iris-ide-frontend-contribution.js.map",
             "lib/frontend/bundle.js",
             "lib/frontend/bundle.js.map",
+            "lib/frontend/bundle.css",
         ):
             built = src / rel
             target = dest / rel

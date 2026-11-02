@@ -57,6 +57,8 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
 
     @inject(EditorManager) protected readonly editorManager: EditorManager;
 
+    @inject(ApplicationShell) protected readonly shell: ApplicationShell;
+
     @inject(ProblemManager) protected readonly problemManager: ProblemManager;
 
     @inject(IrisIdeEditorStateService) protected readonly state: IrisIdeEditorStateService;
@@ -180,6 +182,20 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
             this.teardownTabHtml5Drag();
             void this.finishCompanionDrag();
         }, true);
+        // Keep Chromium on the copy cursor while companion paths are live
+        // (same UX as explorer theia-editor-dnd). Without this, tab HTML5 often
+        // paints the forbid cursor over Iris even though chat.drag_* attaches.
+        const allowCopyCursor = (ev: DragEvent): void => {
+            if (!this.companionDragPaths.length) {
+                return;
+            }
+            ev.preventDefault();
+            if (ev.dataTransfer) {
+                ev.dataTransfer.dropEffect = 'copy';
+            }
+        };
+        document.addEventListener('dragenter', allowCopyCursor, true);
+        document.addEventListener('dragover', allowCopyCursor, true);
         // capture: Lumino TabBar preventDefault보다 먼저 — HTML5 copy 드래그 허용
         document.addEventListener('pointerdown', (ev: PointerEvent) => this.onTabPointerDown(ev), true);
         document.addEventListener('pointermove', (ev: PointerEvent) => this.onTabPointerMove(ev), true);
@@ -274,6 +290,7 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
             return;
         }
         this.companionDragPaths = paths;
+        this.setCompanionCopyCursor(true);
         // Sync seed so Iris _pending_ide_drag exists before a fast pointerup.
         this.seedCompanionDragSync(paths);
     }
@@ -302,8 +319,64 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
     protected async finishCompanionDrag(): Promise<void> {
         const paths = this.companionDragPaths;
         this.companionDragPaths = [];
+        this.setCompanionCopyCursor(false);
         // drag_start가 아직 도착하지 않았어도 paths를 실어 보내면 Iris가 첨부할 수 있다.
         await this.askIris('chat.drag_end', paths.length ? { paths } : {});
+    }
+
+    /** Match explorer copy cursor while a companion attach gesture is armed. */
+    protected setCompanionCopyCursor(on: boolean): void {
+        const root = document.documentElement;
+        if (on) {
+            root.style.setProperty('cursor', 'copy', 'important');
+        } else {
+            root.style.removeProperty('cursor');
+        }
+    }
+
+    /** shell-tab-<widgetId> or shell-tab-<widgetId>-hidden → widget id. */
+    protected widgetIdFromShellTab(tabId: string): string | undefined {
+        const id = (tabId || '').trim();
+        if (!id.startsWith('shell-tab-')) {
+            return undefined;
+        }
+        const rest = id.slice('shell-tab-'.length);
+        if (rest.endsWith('-hidden')) {
+            return rest.slice(0, -'-hidden'.length) || undefined;
+        }
+        return rest || undefined;
+    }
+
+    /**
+     * Any navigatable shell tab (Monaco editor, Iris PDF, …) → file URI.
+     * EditorManager alone misses IrisPdfWidget and other non-editor tabs.
+     */
+    protected uriFromShellTab(tab: HTMLElement): URI | undefined {
+        const widgetId = this.widgetIdFromShellTab(tab.id);
+        if (!widgetId) {
+            return undefined;
+        }
+        const widget = this.shell.getWidgetById(widgetId) as {
+            getResourceUri?: () => URI | undefined;
+            editor?: { uri?: URI };
+        } | undefined;
+        if (widget) {
+            if (typeof widget.getResourceUri === 'function') {
+                const uri = widget.getResourceUri();
+                if (uri && uri.scheme === 'file') {
+                    return uri;
+                }
+            }
+            const editorUri = widget.editor?.uri;
+            if (editorUri && editorUri.scheme === 'file') {
+                return editorUri;
+            }
+        }
+        // Editor widgets are also in EditorManager; keep as fallback for tests.
+        const editor = this.editorManager.all.find(e =>
+            tab.id === `shell-tab-${e.id}` || tab.id === `shell-tab-${e.id}-hidden`);
+        const fromEditor = editor?.editor.uri;
+        return fromEditor && fromEditor.scheme === 'file' ? fromEditor : undefined;
     }
 
     protected isEditorTabTarget(target: EventTarget | null): HTMLElement | null {
@@ -311,9 +384,10 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         if (!el || typeof el.closest !== 'function') {
             return null;
         }
-        return el.closest(
-            '.theia-tab, .lm-TabBar-tab, .p-TabBar-tab, [class*="TabBar-tab"], [class*="tabBar-tab"]',
-        ) as HTMLElement | null;
+        // Exact tab classes only. A class*=TabBar-tab substring also matches
+        // lm-TabBar-tabLabel / tabIcon / tabCloseIcon, so closest stops on the
+        // child (no shell-tab id) and pointerdown aborts before drag arm.
+        return el.closest('.theia-tab, .lm-TabBar-tab, .p-TabBar-tab') as HTMLElement | null;
     }
 
     protected onTabPointerDown(ev: PointerEvent): void {
@@ -332,9 +406,7 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         }
         // Theia tab IDs identify widgets, not filesystem paths. Never fall back
         // to the previously focused editor while pointerdown is still capturing.
-        const widget = this.editorManager.all.find(editor =>
-            tab.id === `shell-tab-${editor.id}` || tab.id === `shell-tab-${editor.id}-hidden`);
-        const uri = widget?.editor.uri;
+        const uri = this.uriFromShellTab(tab);
         if (!uri) {
             this.tabDrag = null;
             return;
@@ -387,11 +459,11 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         try {
             const ref = this.toComposerRef(drag.uri);
             const href = drag.uri.toString();
-            dt.effectAllowed = 'copyMove';
+            // Same as explorer onTheiaExplorerDragMime — copyMove paints forbid over Iris.
+            dt.effectAllowed = 'copy';
             dt.setData('text/plain', ref || href);
             dt.setData('text/uri-list', href);
             dt.setData('text/x-iris-ref', ref || href);
-            // Chromium → OS OLE: 일부 환경에서 uri-list만으로 Copy 커서
             const ghost = this.ensureTabDragGhost(ref || href);
             dt.setDragImage(ghost, 12, 12);
         } catch {
@@ -429,6 +501,9 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
             tab.removeAttribute('draggable');
         }
         this.tabDrag = null;
+        if (!this.companionDragPaths.length) {
+            this.setCompanionCopyCursor(false);
+        }
     }
 
     /** 탭·탐색기 우클릭 → 현재 선택/파일을 IRIS 컴포저 칩으로 첨부. */

@@ -85,6 +85,27 @@ def _hermes(route, messages, stop) -> str:
     if target is not None:
         model = target.model
         provider = str(getattr(target, "provider", "") or "").strip()
+        base_url = str(getattr(target, "base_url", "") or "").strip()
+        synced = False
+        try:
+            client.set_inference_model(target.model, target=target)
+            synced = True
+        except Exception:
+            synced = False
+        # Sync 실패 + custom endpoint면 Hermes 레지스트리 404를 피하고 제공자로 직행.
+        if not synced and base_url and provider == "custom":
+            return _api(
+                BackendRoute(
+                    backend=BACKEND_API,
+                    model=model,
+                    base_url=base_url,
+                    api_key=str(getattr(target, "api_key", "") or ""),
+                    auth_style="bearer",
+                ),
+                messages,
+                DEFAULT_TIMEOUT_SEC,
+                stop,
+            )
     else:
         model = route.model
         provider = ""
@@ -127,4 +148,66 @@ if __name__ == "__main__":
     r = BackendRoute(backend="ollama", model="m")
     assert r.base_url == "" and r.target is None and r.extra == {}
     assert BackendRoute(backend="api", model="m", auth_style="x-api-key").auth_style == "x-api-key"
+
+    class _FakeTarget:
+        model = "nvidia/test-model"
+        provider = "custom"
+        base_url = "https://example.test/v1"
+        api_key = "k"
+
+    class _FakeHermes:
+        def __init__(self, *a, **k):
+            self.synced = None
+
+        def set_inference_model(self, model, *, target=None, **k):
+            self.synced = (model, target)
+
+        def stream_chat(self, model, messages, **k):
+            yield {"content": "ok", "done": True}
+
+    class _FailSyncHermes:
+        def __init__(self, *a, **k):
+            pass
+
+        def set_inference_model(self, model, *, target=None, **k):
+            raise RuntimeError("sync failed")
+
+        def stream_chat(self, model, messages, **k):
+            raise AssertionError("hermes stream must not run after sync fail + base_url")
+
+    import iris.infrastructure.hermes_client as _hc
+    import iris.infrastructure.openai_compat_client as _oc
+
+    fake = _FakeHermes()
+    _orig = _hc.HermesClient
+    _hc.HermesClient = lambda *a, **k: fake  # type: ignore[misc, assignment]
+    try:
+        out = collect_reply(
+            BackendRoute(backend=BACKEND_HERMES, model="ignored", target=_FakeTarget()),
+            [{"role": "user", "content": "hi"}],
+        )
+    finally:
+        _hc.HermesClient = _orig
+    assert out == "ok"
+    assert fake.synced is not None
+    assert fake.synced[0] == "nvidia/test-model"
+    assert fake.synced[1] is not None
+    assert fake.synced[1].model == "nvidia/test-model"
+
+    _hc.HermesClient = lambda *a, **k: _FailSyncHermes()  # type: ignore[misc, assignment]
+    _orig_stream = _oc.stream_chat
+
+    def _fake_api_stream(*a, **k):
+        yield {"content": "via-api", "done": True}
+
+    _oc.stream_chat = _fake_api_stream  # type: ignore[assignment]
+    try:
+        out2 = collect_reply(
+            BackendRoute(backend=BACKEND_HERMES, model="ignored", target=_FakeTarget()),
+            [{"role": "user", "content": "hi"}],
+        )
+    finally:
+        _hc.HermesClient = _orig
+        _oc.stream_chat = _orig_stream
+    assert out2 == "via-api"
     print("backend_call self-check ok")

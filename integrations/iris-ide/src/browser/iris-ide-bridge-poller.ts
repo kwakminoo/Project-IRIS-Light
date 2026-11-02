@@ -1,5 +1,5 @@
 import { inject, injectable } from '@theia/core/shared/inversify';
-import { FrontendApplicationContribution } from '@theia/core/lib/browser';
+import { ApplicationShell, FrontendApplicationContribution } from '@theia/core/lib/browser';
 import { OpenerService, open } from '@theia/core/lib/browser';
 import URI from '@theia/core/lib/common/uri';
 import { FileUri } from '@theia/core/lib/common/file-uri';
@@ -146,6 +146,8 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
     @inject(OpenerService) protected readonly openerService: OpenerService;
 
     @inject(TerminalService) protected readonly terminalService: TerminalService;
+
+    @inject(ApplicationShell) protected readonly shell: ApplicationShell;
 
     @inject(WorkspaceService) protected readonly workspaceService: WorkspaceService;
 
@@ -310,7 +312,7 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
         const name = String(args.name || 'IRIS');
         const terminal = await this.terminalService.newTerminal({ title: name });
         await this.withTimeout(terminal.start(), 10000, 'terminal.start');
-        this.terminalService.open(terminal);
+        this.revealTerminal(terminal);
         return { name, created: true };
     }
 
@@ -330,7 +332,16 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
             terminal.sendText(`${line}\r\n`);
             await new Promise(resolve => window.setTimeout(resolve, 150));
         }
-        return { command: body, queued: false, via: 'theia_terminal', cwd, shell, delivered: true };
+        this.revealTerminal(terminal);
+        return {
+            command: body,
+            queued: false,
+            via: 'theia_terminal',
+            cwd,
+            shell,
+            delivered: true,
+            revealed: true,
+        };
     }
 
     /** 편집기 탭 실행 버튼 — 브리지 큐와 같은 셸 맞춤 전송. */
@@ -338,12 +349,35 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
         return this.runInTerminal({ argv, cwd });
     }
 
+    /**
+     * Reuse open(reuse) — never force createTerminal on every run.
+     * Expand bottom panel + activate so a collapsed terminal still shows output.
+     * ConPTY host swap is out of scope (still unsolved).
+     */
+    protected revealTerminal(terminal: TerminalWidget): void {
+        try {
+            this.shell.bottomPanel.show();
+        } catch {
+            /* panel API may differ across Theia builds */
+        }
+        try {
+            this.terminalService.open(terminal);
+        } catch {
+            /* ignore */
+        }
+        try {
+            void this.shell.activateWidget(terminal.id);
+        } catch {
+            /* ignore */
+        }
+    }
+
     /** 기존 터미널 재사용 — newTerminal+start 가 Windows ConPTY에서 자주 멈춘다. */
     protected async ensureTerminal(cwd: string): Promise<TerminalWidget> {
         const reuse = this.terminalService.currentTerminal || this.terminalService.lastUsedTerminal;
         if (reuse) {
             try {
-                this.terminalService.open(reuse);
+                this.revealTerminal(reuse);
                 return reuse;
             } catch {
                 /* fall through — create fresh */
@@ -355,7 +389,7 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
             : { title: 'IRIS' };
         const terminal = await this.terminalService.newTerminal(options);
         await this.withTimeout(terminal.start(), 10000, 'terminal.start');
-        this.terminalService.open(terminal);
+        this.revealTerminal(terminal);
         return terminal;
     }
 

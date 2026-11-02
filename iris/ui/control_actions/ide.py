@@ -77,13 +77,10 @@ def register_ide_actions(window: IdeHost, reg: ActionRegistry) -> None:
             root = Path(path).expanduser()
             if not root.is_dir():
                 return err_result("ide.enter_companion", f"project_root not a directory: {path}")
-            from iris.runtime.chat_worktree import conversation_id_of, is_chat_worktree, work_root_for
-
-            chosen = work_root_for(conversation_id_of(window, _a), str(root))
-            if not is_chat_worktree(chosen):
-                profile = load_user_profile(window._db)
-                profile.project_root = str(Path(chosen).resolve())
-                save_user_profile(window._db, profile)
+            # sticky profile 저장 없이 폴더만 연다. 작업 루트는 bound workspace.
+            open_err = window._open_ide_folder(str(root.resolve()), new_window=False, source="chat")
+            if open_err:
+                return err_result("ide.enter_companion", str(open_err))
         before = window._ui_mode
         window._enter_ide_companion(source="chat")
         ok = window._ui_mode == "ide_companion"

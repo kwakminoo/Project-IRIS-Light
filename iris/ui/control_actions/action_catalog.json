@@ -13,8 +13,14 @@
   },
   {
     "name": "browser.click",
-    "summary": "Click locator on current page",
+    "summary": "Click ref from the last PAGE TEXT",
     "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "browser.extract",
+    "summary": "Read article or document text on the current page",
+    "risk": "low",
     "confirm_required": false
   },
   {
@@ -79,7 +85,7 @@
   },
   {
     "name": "browser.type",
-    "summary": "Type into locator on current page",
+    "summary": "Type into ref from the last PAGE TEXT",
     "risk": "medium",
     "confirm_required": false
   },
@@ -150,6 +156,12 @@
     "confirm_required": false
   },
   {
+    "name": "chat.exec_python",
+    "summary": "Run whitelisted Python (numpy/matplotlib) and return plot PNGs for chat",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
     "name": "chat.list_sessions",
     "summary": "List saved chat sessions (id, title, message_count)",
     "risk": "low",
@@ -168,8 +180,14 @@
     "confirm_required": false
   },
   {
+    "name": "chat.send",
+    "summary": "Submit composer text as a user turn (same as Send)",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
     "name": "chat.set_model",
-    "summary": "Select chat/Ollama model and sync Hermes",
+    "summary": "Select chat/Ollama model and sync Iris Agent",
     "risk": "medium",
     "confirm_required": false
   },
@@ -379,7 +397,7 @@
   },
   {
     "name": "ide.definition",
-    "summary": "Definition at the cursor or at path+line+column in the open IRIS IDE editor.",
+    "summary": "Definition at the cursor or at path+line+column in the open IRIS IDE editor. ok only when queried is true. Empty items means none found.",
     "risk": "low",
     "confirm_required": false
   },
@@ -391,7 +409,7 @@
   },
   {
     "name": "ide.edit",
-    "summary": "Edit the open IRIS IDE buffer. op=insert|replace_selection|replace_range|apply, text required, optional path. via=editor changes the buffer. via=disk with applied=append is not a selection replace. Do not claim the buffer changed unless via=editor.",
+    "summary": "Edit the open IRIS IDE buffer. op=insert|replace_selection|replace_range|apply, text required, optional path. ok only when via=editor. Disk append is not a selection replace and fails the action.",
     "risk": "medium",
     "confirm_required": false
   },
@@ -463,13 +481,13 @@
   },
   {
     "name": "ide.references",
-    "summary": "References at the cursor or at path+line+column in the open IRIS IDE editor. items come from the language service.",
+    "summary": "References at the cursor or at path+line+column in the open IRIS IDE editor. ok only when queried is true. Empty items means none found.",
     "risk": "low",
     "confirm_required": false
   },
   {
     "name": "ide.save",
-    "summary": "Save the open IRIS IDE editor. Optional path, or all=true. via=editor flushes the buffer. via=disk means no open editor and the file was already on disk.",
+    "summary": "Save the open IRIS IDE editor buffer. Optional path, or all=true. ok only when via=editor (buffer flush). No open editor is a failure — do not claim saved from disk alone.",
     "risk": "medium",
     "confirm_required": false
   },
@@ -487,7 +505,7 @@
   },
   {
     "name": "ide.symbols",
-    "summary": "Document symbols from the open IRIS IDE editor. Optional symbol filter and path. items come from the language service. Do not invent symbols when ok is false.",
+    "summary": "Document symbols from the open IRIS IDE editor. Optional symbol filter and path. ok only when queried is true. Empty items means none found, not a failed query. Timeout/unsupported is failure — do not invent symbols.",
     "risk": "low",
     "confirm_required": false
   },
@@ -588,6 +606,12 @@
     "confirm_required": false
   },
   {
+    "name": "project.delete",
+    "summary": "Delete a project folder or a path under it. Required: project_root. Optional: rel_path (omit to delete the whole project_root when it is under a known project parent). Closes IDE Companion first when that folder is the open workspace (best-effort unlock). Prefer this over terminal rm/Remove-Item. Refuses home, drive roots, and the Iris repo.",
+    "risk": "high",
+    "confirm_required": false
+  },
+  {
     "name": "project.find_similar",
     "summary": "Fuzzy-find project folders under configured parents by name (e.g. ai guitar tab → AI-Guitar-Tab-main)",
     "risk": "low",
@@ -679,19 +703,19 @@
   },
   {
     "name": "settings.get",
-    "summary": "Get Ollama/Hermes connection settings (no secret values)",
+    "summary": "Get Ollama and Iris Agent version (no secret values)",
     "risk": "low",
     "confirm_required": false
   },
   {
     "name": "settings.set",
-    "summary": "Set Ollama/Hermes settings; hermes_api_key needs confirm=true",
+    "summary": "Set Ollama settings; agent URL/key/command are not editable",
     "risk": "high",
     "confirm_required": false
   },
   {
     "name": "ui.open_mcp",
-    "summary": "Open Hermes MCP manager dialog",
+    "summary": "Open Iris Agent MCP manager dialog",
     "risk": "low",
     "confirm_required": false
   },
@@ -703,7 +727,7 @@
   },
   {
     "name": "ui.open_skills",
-    "summary": "Open Hermes Skills manager dialog",
+    "summary": "Open Iris Agent Skills manager dialog",
     "risk": "low",
     "confirm_required": false
   },

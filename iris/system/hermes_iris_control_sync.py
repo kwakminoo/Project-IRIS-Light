@@ -570,6 +570,39 @@ def ensure_hermes_disabled_terminal() -> tuple[bool, str]:
     return True, "hermes disabled_toolsets: terminal, browser (IDE terminal via project.run; Iris QWebEngine for pages)"
 
 
+def read_hermes_disabled_toolsets() -> list[str]:
+    """Product Hermes config.yaml 의 agent.disabled_toolsets (없으면 빈 목록)."""
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return []
+    path = hermes_config_path()
+    if not path.is_file():
+        return []
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    agent = data.get("agent")
+    if not isinstance(agent, dict):
+        return []
+    disabled = agent.get("disabled_toolsets")
+    if not isinstance(disabled, list):
+        return []
+    return [str(x).strip() for x in disabled if str(x).strip()]
+
+
+def verify_hermes_terminal_disabled() -> tuple[bool, str]:
+    """Ensure write 직후·기동 시 terminal+browser 가 실제로 disabled 목록에 있다."""
+    names = read_hermes_disabled_toolsets()
+    missing = [n for n in _IRIS_DISABLED_TOOLSETS if n not in names]
+    if missing:
+        return False, f"hermes disabled_toolsets missing {missing}; have={names}"
+    return True, "hermes disabled_toolsets verified: terminal, browser"
+
+
 def _skill_md_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -877,6 +910,11 @@ def sync_iris_control(
         report.messages.append(term_msg)
         if term_changed:
             report.needs_gateway_reload = True
+        ok_term, verify_msg = verify_hermes_terminal_disabled()
+        report.messages.append(verify_msg)
+        if not ok_term:
+            report.ok = False
+            report.errors.append(verify_msg)
     except Exception as exc:  # noqa: BLE001
         report.messages.append(f"terminal policy skip: {exc}")
 
@@ -887,6 +925,29 @@ def sync_iris_control(
             report.needs_gateway_reload = True
     except Exception as exc:  # noqa: BLE001
         report.messages.append(f"hermes dead-check patch skip: {exc}")
+
+    try:
+        from iris.system.hermes_tool_choice import (
+            apply_hermes_tool_choice_overlay,
+            ensure_hermes_tool_choice_required,
+            tool_choice_overlay_present,
+        )
+
+        # hermes_home() already product agent home; avoid agent_runtime import cycle.
+        agent_root = hermes_home() / "hermes-agent"
+        if agent_root.is_dir() and not tool_choice_overlay_present(agent_root):
+            for line in apply_hermes_tool_choice_overlay(agent_root):
+                report.messages.append(line)
+                if "patched" in line or "installed" in line:
+                    report.needs_gateway_reload = True
+        elif agent_root.is_dir():
+            report.messages.append("hermes tool_choice overlay present")
+        tc_changed, tc_msg = ensure_hermes_tool_choice_required()
+        report.messages.append(tc_msg)
+        if tc_changed:
+            report.needs_gateway_reload = True
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"hermes tool_choice skip: {exc}")
 
     try:
         copied, ok, missing = ensure_skills_installed(repo)

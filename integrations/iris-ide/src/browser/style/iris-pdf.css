@@ -1,4 +1,5 @@
 .iris-pdf-widget {
+    height: 100%;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -7,10 +8,13 @@
 }
 
 .iris-pdf-scroll {
-    flex: 1;
+    flex: 1 1 auto;
+    /* Flex default min-height:auto grows with pages → parent clips, wheel does nothing. */
+    min-height: 0;
     overflow: auto;
     padding: 12px;
     text-align: center;
+    outline: none;
 }
 
 .iris-pdf-scroll canvas {

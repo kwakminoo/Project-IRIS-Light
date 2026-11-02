@@ -83,17 +83,22 @@ def register_profile_actions(window: ProfileHost, reg: ActionRegistry) -> None:
         return ok_result("ide.set_preferred", {"preferred_ide": ide_id})
 
     def ide_set_project_root(args: dict[str, Any]) -> dict[str, Any]:
+        """별칭. sticky profile 저장 대신 IDE 폴더를 연다."""
         path = str(args.get("path") or args.get("project_root") or "").strip()
         if not path:
             return err_result("ide.set_project_root", "path required")
         root = Path(path).expanduser()
         if not root.is_dir():
             return err_result("ide.set_project_root", f"not a directory: {path}")
-        profile = load_user_profile(window._db)
-        profile.project_root = str(root.resolve())
-        save_user_profile(window._db, profile)
+        root_s = str(root.resolve())
+        open_err = window._open_ide_folder(root_s, new_window=False, source="chat")
+        if open_err:
+            return err_result("ide.set_project_root", str(open_err))
         _log(window, "ide.set_project_root", True)
-        return ok_result("ide.set_project_root", {"project_root": profile.project_root})
+        return ok_result(
+            "ide.set_project_root",
+            {"project_root": root_s, "via": "ide.open_folder", "sticky_profile": False},
+        )
 
     def ide_list(_a: dict[str, Any]) -> dict[str, Any]:
         profile = load_user_profile(window._db)

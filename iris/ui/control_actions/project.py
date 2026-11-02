@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
+from PyQt6.QtCore import QThread
+from PyQt6.QtWidgets import QApplication
+
 from iris.system.control_surface import (
     ActionRegistry,
 )
 from iris.ui.control_actions.hosts import ProjectHost
+
+
+def _on_qt_ui_thread() -> bool:
+    app = QApplication.instance()
+    return app is not None and QThread.currentThread() == app.thread()
+
 
 def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
     from iris.ui.control_bindings import (
@@ -19,6 +31,7 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
         iris_ide_editor_opened,
         load_user_profile,
         ok_result,
+        resolve_bound_work_root,
     )
     from iris.automation.ide_input import (
         open_file_in_workspace,
@@ -28,17 +41,14 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
     from iris.system.ide_launcher import open_file_in_ide
     from iris.system.project_ops import (
         resolve_under_root,
+        utf8_content_matches,
         write_project_file,
         write_project_file_stream,
     )
 
-    root = str(args.get("project_root") or args.get("root") or "").strip()
-    if not root:
-        profile = load_user_profile(window._db)
-        root = (profile.project_root or "").strip()
-    from iris.runtime.chat_worktree import conversation_id_of, work_root_for
-
-    root = work_root_for(conversation_id_of(window, args), root)
+    root, root_err = resolve_bound_work_root(window, args)
+    if root_err:
+        return err_result("project.write_file", root_err)
     rel = str(args.get("rel_path") or args.get("path") or "").strip()
     if Path(rel).suffix.lower() == ".pdf":
         return err_result(
@@ -61,6 +71,14 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
         return ok_result("project.write_file", payload)
 
     do_open = bool(args.get("open", True))
+    # Companion/IDE 코드 파일은 탭이 열려야 한다. open=false 로 디스크만 쓰는 우회 금지.
+    _code_ext = {
+        ".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs", ".json", ".css", ".html",
+        ".htm", ".md", ".rs", ".go", ".java", ".kt", ".cs", ".cpp", ".c", ".h", ".hpp",
+        ".vue", ".svelte", ".toml", ".yaml", ".yml", ".sh", ".bat", ".ps1",
+    }
+    if Path(rel).suffix.lower() in _code_ext:
+        do_open = True
     session, session_err = _bound_session(window, require_workspace=do_open)
     if do_open and session_err:
         return err_result("project.write_file", session_err)
@@ -72,6 +90,42 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
         if do_open and session_err:
             return err_result("project.write_file", session_err)
     if session is not None and session.ide_id == "iris_ide":
+        # Policy A: open/tab fail = err, but on_disk/content_match stay honest so
+        # Verify/CHAT_ONLY do not treat disk-ok as "file never created".
+        def _open_fail_payload(
+            path_s: str,
+            norm_rel: str,
+            text: str,
+            open_err: str,
+            open_out: object = None,
+        ) -> dict:
+            on_disk = Path(path_s).is_file()
+            match = utf8_content_matches(Path(path_s), text) if on_disk else False
+            return err_result(
+                "project.write_file",
+                open_err,
+                {
+                    "path": path_s,
+                    "rel_path": norm_rel,
+                    "on_disk": on_disk,
+                    "content_match": match,
+                    "opened": False,
+                    "visible": False,
+                    "via": (open_out or {}).get("via") if isinstance(open_out, dict) else None,
+                    "bridge": open_out,
+                },
+            )
+
+        def _open_tab(client: object, norm_rel: str) -> tuple[object | None, str]:
+            try:
+                open_out = _bridge_call_pumping(lambda: client.open_file(norm_rel))
+            except Exception as open_exc:  # noqa: BLE001
+                return None, str(open_exc)
+            visible, open_err = iris_ide_editor_opened(open_out)
+            if not visible:
+                return open_out, open_err or "IDE editor did not open"
+            return open_out, ""
+
         try:
             client = window._iris_ide_bridge_client()
             _root, abs_path, norm_rel = resolve_under_root(root, rel)
@@ -79,75 +133,84 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
             path_s = str(abs_path)
             if not do_open:
                 written = write_project_file(root, rel, text)
+                if written.get("content_match") is False:
+                    return err_result(
+                        "project.write_file",
+                        str(written.get("error") or "UTF-8 content readback mismatch"),
+                        written,
+                    )
                 written["opened"] = False
+                written["visible"] = False
+                written["on_disk"] = True
                 _log(window, "project.write_file", True)
                 return _logged(written)
             abs_path.parent.mkdir(parents=True, exist_ok=True)
             end = max(len(text) + 1, 999999)
 
             if abs_path.is_file():
-                open_out = _bridge_call_pumping(lambda: client.open_file(norm_rel))
-                visible, open_err = iris_ide_editor_opened(open_out)
-                if not visible:
-                    return err_result(
-                        "project.write_file",
-                        open_err,
-                        {
-                            "path": path_s,
-                            "rel_path": norm_rel,
-                            "on_disk": True,
-                            "opened": False,
-                            "visible": False,
-                            "via": (open_out or {}).get("via") if isinstance(open_out, dict) else None,
-                            "bridge": open_out,
-                        },
-                    )
+                open_out, open_err = _open_tab(client, norm_rel)
+                if open_err:
+                    return _open_fail_payload(path_s, norm_rel, text, open_err, open_out)
                 _bridge_call_pumping(lambda: client.replace_range(text, path=norm_rel, start=0, end=end))
             else:
                 _bridge_call_pumping(lambda: client.create_file(norm_rel, text))
-                open_out = _bridge_call_pumping(lambda: client.open_file(norm_rel))
-                visible, open_err = iris_ide_editor_opened(open_out)
-                if not visible:
-                    return err_result(
-                        "project.write_file",
-                        open_err,
-                        {
-                            "path": path_s,
-                            "rel_path": norm_rel,
-                            "on_disk": True,
-                            "opened": False,
-                            "visible": False,
-                            "via": (open_out or {}).get("via") if isinstance(open_out, dict) else None,
-                            "bridge": open_out,
-                        },
-                    )
+                open_out, open_err = _open_tab(client, norm_rel)
+                if open_err:
+                    return _open_fail_payload(path_s, norm_rel, text, open_err, open_out)
+            match = utf8_content_matches(abs_path, text)
             written = {
                 "path": path_s,
                 "rel_path": norm_rel,
                 "bytes": len(text.encode("utf-8")),
+                "on_disk": True,
+                "content_match": match,
                 "opened": True,
                 "visible": True,
                 "typed": False,
                 "streamed": False,
                 "via": "iris_ide_bridge",
             }
+            if match is False:
+                return err_result(
+                    "project.write_file",
+                    "UTF-8 content readback mismatch",
+                    written,
+                )
             _log(window, "project.write_file", True)
             return _logged(written)
         except Exception as exc:  # noqa: BLE001
+            # create succeeded but a later step raised: still report disk if present.
+            try:
+                _root, abs_path, norm_rel = resolve_under_root(root, rel)
+                path_s = str(abs_path)
+                text = str(content)
+                if abs_path.is_file():
+                    return _open_fail_payload(path_s, norm_rel, text, str(exc), None)
+            except Exception:  # noqa: BLE001
+                pass
             return err_result("project.write_file", str(exc))
     # open=true 이면 기본 live file stream. 명시 stream/typewriter=false 만 즉시 쓰기.
+    # HTTP 워커(OFF_UI)에서는 Qt pump/타이프라이터 금지 — 즉시 디스크 쓰기.
     if "typewriter" in args:
         do_type = bool(args.get("typewriter"))
     elif "stream" in args:
         do_type = bool(args.get("stream"))
     else:
         do_type = do_open
+    if not _on_qt_ui_thread():
+        do_type = False
     text = str(content)
     try:
         _root, abs_path, norm_rel = resolve_under_root(root, rel)
         path_s = str(abs_path)
         if not do_open:
             written = write_project_file(root, rel, text)
+            if written.get("content_match") is False:
+                return err_result(
+                    "project.write_file",
+                    str(written.get("error") or "UTF-8 content readback mismatch"),
+                    written,
+                )
             written["opened"] = False
             written["typed"] = False
             written["visible"] = False
@@ -197,6 +260,7 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
         streamed = False
         stream_result: dict[str, Any] = {}
         input_mode = str(args.get("input_mode") or "").strip().lower()
+        disk_write: dict[str, Any] = {}
         if do_type and hwnd and opened and input_mode == "keyboard":
             typed = typewriter_into_ide(
                 hwnd,
@@ -205,7 +269,7 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
                 pump=_qt_pump,
                 pid=pid,
             )
-            abs_path.write_text(text, encoding="utf-8")
+            disk_write = write_project_file(root, norm_rel, text)
         elif do_type and hwnd and opened:
             chunk_chars = int(
                 args.get("chunk_chars")
@@ -220,6 +284,7 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
                 chunk_delay_ms=chunk_delay_ms,
                 pump=_qt_pump,
             )
+            disk_write = stream_result
             streamed = True
         elif do_type:
             return err_result(
@@ -228,13 +293,23 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
                 {"path": path_s, "opened": bool(opened), "visible": bool(visible)},
             )
         else:
-            abs_path.write_text(text, encoding="utf-8")
+            disk_write = write_project_file(root, norm_rel, text)
             if not (hwnd and opened):
                 return err_result(
                     "project.write_file",
                     "bound IDE session could not open file",
                     {"path": path_s, "opened": bool(opened), "visible": bool(visible)},
                 )
+        if disk_write.get("content_match") is False:
+            return err_result(
+                "project.write_file",
+                str(disk_write.get("error") or "UTF-8 content readback mismatch"),
+                {
+                    **disk_write,
+                    "opened": bool(opened),
+                    "visible": bool(visible),
+                },
+            )
 
         written = {
             "path": path_s,
@@ -245,6 +320,7 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
             "visible": bool(visible),
             "typed": bool(typed),
             "streamed": bool(streamed),
+            "content_match": disk_write.get("content_match"),
             "input_mode": "keyboard" if typed else ("file_watch" if streamed else "instant"),
             "chunks": int(stream_result.get("chunks") or 0),
             "chunk_chars": int(stream_result.get("chunk_chars") or 0),
@@ -265,8 +341,8 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
         _qt_pump,
         ensure_iris_ide_workspace,
         err_result,
-        load_user_profile,
         ok_result,
+        resolve_bound_work_root,
     )
     import time
 
@@ -285,15 +361,9 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
         wait_for_run_log,
     )
 
-    root = str(args.get("project_root") or args.get("root") or args.get("cwd") or "").strip()
-    if not root:
-        profile = load_user_profile(window._db)
-        root = (profile.project_root or "").strip()
-    from iris.runtime.chat_worktree import conversation_id_of, work_root_for
-
-    root = work_root_for(conversation_id_of(window, args), root)
-    if not root:
-        return err_result("project.run", "project_root required")
+    root, root_err = resolve_bound_work_root(window, args)
+    if root_err:
+        return err_result("project.run", root_err)
     root_p = Path(root).expanduser()
     if not root_p.is_dir():
         return err_result("project.run", f"not a directory: {root}")
@@ -387,7 +457,14 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
                     "IDE integrated terminal did not accept command",
                     {"via": via, "delivered": False, "executed": False, "command": shell_cmd},
                 )
+            if term.get("revealed") is False:
+                return err_result(
+                    "project.run",
+                    "IDE integrated terminal panel was not revealed",
+                    {"via": via, "delivered": True, "revealed": False, "command": shell_cmd},
+                )
             shell_used = str(term.get("shell") or "")
+            revealed = bool(term.get("revealed", True))
             waited = wait_for_run_log(
                 log_p,
                 timeout_sec=min(timeout_sec, 12.0),
@@ -436,6 +513,7 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
                 "executed": True,
                 "via": via,
                 "shell": shell_used,
+                "revealed": revealed,
                 "ide_terminal": "ok",
                 "log_path": str(log_p),
                 "stdout_len": len(result.get("stdout") or ""),
@@ -556,6 +634,140 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
         payload,
     )
 
+def _paths_overlap(a: Path, b: Path) -> bool:
+    try:
+        ar = a.expanduser().resolve()
+        br = b.expanduser().resolve()
+    except OSError:
+        return False
+    if ar == br:
+        return True
+    try:
+        br.relative_to(ar)
+        return True
+    except ValueError:
+        pass
+    try:
+        ar.relative_to(br)
+        return True
+    except ValueError:
+        return False
+
+
+def _release_ide_for_delete(window: ProjectHost, target: Path) -> dict[str, Any]:
+    """삭제 대상이 bound workspace와 겹치면 Companion/세션을 풀어 잠금을 푼다 (best-effort)."""
+    from iris.ui.control_bindings import (
+        _bound_session,
+        _call_on_ui,
+        _call_on_ui_unbounded,
+    )
+
+    info: dict[str, Any] = {"released": False}
+    session, _err = _bound_session(window, require_workspace=False)
+    if session is None:
+        info["reason"] = "no session"
+        return info
+    ws = str(getattr(session, "workspace_root", "") or "").strip()
+    if not ws:
+        info["reason"] = "no workspace"
+        return info
+    try:
+        ws_path = Path(ws).expanduser().resolve()
+    except OSError:
+        info["reason"] = "bad workspace"
+        return info
+    if not _paths_overlap(ws_path, target):
+        info["reason"] = "workspace not overlapping"
+        return info
+    # 워크스페이스 루트·조상·자식을 지울 때는 창을 닫아 핸들을 푼다.
+    # 불완전할 수 있음: Iris가 소유하지 않은 Cursor HWND는 남을 수 있다.
+    exit_fn = getattr(window, "_exit_ide_companion", None)
+    if callable(exit_fn):
+        try:
+            _call_on_ui_unbounded(window, exit_fn)
+            info["released"] = True
+            info["via"] = "exit_companion"
+            return info
+        except Exception as exc:  # noqa: BLE001
+            info["exit_error"] = str(exc)
+    clear_fn = getattr(window, "_clear_ide_session", None)
+    if callable(clear_fn):
+        try:
+            _call_on_ui(window, lambda: clear_fn("project.delete"))
+            info["released"] = True
+            info["via"] = "clear_session"
+        except Exception as exc:  # noqa: BLE001
+            info["clear_error"] = str(exc)
+    if not info.get("released"):
+        info["note"] = (
+            "best-effort unlock incomplete; Windows may still report "
+            "Device or resource busy"
+        )
+    return info
+
+
+def project_delete(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
+    """프로젝트 폴더·파일 삭제. 터미널 rm 대신 이 경로를 쓴다."""
+    from iris.system.project_ops import (
+        delete_project_path,
+        resolve_delete_target,
+    )
+    from iris.ui.control_bindings import (
+        _bound_session,
+        _call_on_ui,
+        _log,
+        _profile_parents,
+        err_result,
+        ok_result,
+        resolve_bound_work_root,
+    )
+
+    rel = str(args.get("rel_path") or args.get("file") or "").strip()
+    explicit = str(args.get("project_root") or args.get("root") or "").strip()
+    if explicit:
+        root, root_err = explicit, ""
+    else:
+        root, root_err = resolve_bound_work_root(window, args)
+    if root_err or not root:
+        return err_result(
+            "project.delete",
+            root_err or "project_root required (or bound IDE workspace)",
+        )
+    parents = _profile_parents(window)
+    try:
+        target, _rel_n, kind = resolve_delete_target(
+            root, rel, parents=parents
+        )
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
+        return err_result("project.delete", str(exc))
+    release = _release_ide_for_delete(window, target)
+    # 단일 파일이고 IRIS IDE 가 열려 있으면 브리지 delete 를 먼저 시도 (rename 과 동일).
+    session, _session_err = _bound_session(window, require_workspace=False)
+    if (
+        kind == "file"
+        and session is not None
+        and getattr(session, "ide_id", "") == "iris_ide"
+        and not release.get("released")
+    ):
+        try:
+            client = _call_on_ui(window, window._iris_ide_bridge_client)
+            if client is not None and rel:
+                client.delete_file(rel.replace("\\", "/").lstrip("/"))
+        except Exception:
+            pass
+    try:
+        result = delete_project_path(root, rel, parents=parents)
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
+        return err_result(
+            "project.delete",
+            str(exc),
+            {"release": release, "path": str(target)},
+        )
+    result["release"] = release
+    _log(window, "project.delete", True)
+    return ok_result("project.delete", result)
+
+
 def project_rename_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
     """호출자가 넘긴 두 경로만 바꾼다. 문장에서 이름을 고르지 않는다."""
     from iris.system.project_ops import rename_project_file, resolve_under_root
@@ -563,17 +775,13 @@ def project_rename_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, 
         _bound_session,
         _log,
         err_result,
-        load_user_profile,
         ok_result,
+        resolve_bound_work_root,
     )
 
-    root = str(args.get("project_root") or args.get("root") or "").strip()
-    if not root:
-        profile = load_user_profile(window._db)
-        root = (profile.project_root or "").strip()
-    from iris.runtime.chat_worktree import conversation_id_of, work_root_for
-
-    root = work_root_for(conversation_id_of(window, args), root)
+    root, root_err = resolve_bound_work_root(window, args)
+    if root_err:
+        return err_result("project.rename_file", root_err)
     src = str(args.get("path") or args.get("from") or args.get("src") or "").strip()
     dest = str(args.get("new_path") or args.get("to") or args.get("dest") or "").strip()
     if not root or not src or not dest:
@@ -629,6 +837,7 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
         _log,
         _profile_parents,
         _qt_pump,
+        _with_run_visibility,
         err_result,
         load_user_profile,
         ok_result,
@@ -767,18 +976,14 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
 
     def project_list_files(args: dict[str, Any]) -> dict[str, Any]:
         from iris.system.project_ops import list_workspace_files
+        from iris.ui.control_bindings import resolve_bound_work_root
 
-        root = str(args.get("project_root") or args.get("root") or "").strip()
-        if not root:
-            session = window._get_bound_ide_session(refresh=False)
-            root = (session.workspace_root if session is not None else "") or (
-                load_user_profile(window._db).project_root or ""
+        root, root_err = resolve_bound_work_root(window, args)
+        if root_err or not root:
+            return err_result(
+                "project.list_files",
+                root_err or "project_root required (no bound IDE workspace)",
             )
-        from iris.runtime.chat_worktree import conversation_id_of, work_root_for
-
-        root = work_root_for(conversation_id_of(window, args), root)
-        if not root:
-            return err_result("project.list_files", "project_root required (no bound IDE workspace)")
         try:
             listed = list_workspace_files(
                 root,
@@ -849,6 +1054,19 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
     )
 
     reg.register(
+        "project.delete",
+        lambda args: project_delete(window, args),
+        summary=(
+            "Delete a project folder or a path under it. "
+            "Required: project_root. Optional: rel_path (omit to delete the whole project_root "
+            "when it is under a known project parent). "
+            "Closes IDE Companion first when that folder is the open workspace (best-effort unlock). "
+            "Prefer this over terminal rm/Remove-Item. Refuses home, drive roots, and the Iris repo."
+        ),
+        risk="high",
+    )
+
+    reg.register(
         "project.list_files",
         project_list_files,
         summary="List files in the bound IDE workspace (query = case-insensitive substring) — use this before open_file/run when the path is unknown",
@@ -856,7 +1074,11 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
 
     reg.register(
         "project.write_file",
-        _first_class_ide_trigger(window, lambda args: project_write_file(window, args)),
+        _with_run_visibility(
+            window,
+            "project.write_file",
+            _first_class_ide_trigger(window, lambda args: project_write_file(window, args)),
+        ),
         summary=(
             "Write file under the bound IDE workspace. "
             "rel_path and content are required and come from the user request. "
@@ -898,7 +1120,7 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
 
     reg.register(
         "project.run",
-        lambda args: project_run(window, args),
+        _with_run_visibility(window, "project.run", lambda args: project_run(window, args)),
         summary="Run only in the bound IDE integrated terminal via Iris: Run task",
         risk="medium",
     )

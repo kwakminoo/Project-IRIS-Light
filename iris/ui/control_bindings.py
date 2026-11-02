@@ -29,6 +29,7 @@ from iris.system.control_surface import (
 )
 from iris.system.ide_launcher import ide_catalog, is_ide_installed
 from iris.learning.permission import policy_for
+from iris.ui.chat.run_visibility import card_from_control_result, insert_visibility_card
 
 if TYPE_CHECKING:
     from iris.ui.window.main_window import MainWindow
@@ -282,6 +283,43 @@ def _bound_session(window: MainWindow, *, require_workspace: bool = False) -> tu
     return session, ""
 
 
+def resolve_bound_work_root(
+    window: MainWindow,
+    args: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """쓰기·실행·목록 루트. 기본은 화면에 연 bound workspace. profile.project_root sticky 금지.
+
+    Returns (root, err). err 비어 있으면 root 사용.
+    명시 project_root/root/cwd 가 있으면 그걸 쓰고, ensure_iris_ide_workspace 가 IDE 를 맞춘다.
+    """
+    args = args or {}
+    explicit = str(
+        args.get("project_root") or args.get("root") or args.get("cwd") or ""
+    ).strip()
+    bound = ""
+    try:
+        session = window._get_bound_ide_session(refresh=False)
+        if session is not None and str(session.workspace_root or "").strip():
+            bound = str(Path(str(session.workspace_root)).expanduser().resolve())
+    except Exception:
+        bound = ""
+    raw = explicit or bound
+    if not raw:
+        return (
+            "",
+            "bound IDE workspace required (open a folder in the IDE first)",
+        )
+    from iris.runtime.chat_worktree import conversation_id_of, work_root_for
+
+    rooted = work_root_for(conversation_id_of(window, args), raw)
+    if not rooted:
+        return "", "work root empty after worktree resolve"
+    try:
+        return str(Path(rooted).expanduser().resolve()), ""
+    except OSError:
+        return "", f"invalid work root: {rooted}"
+
+
 def ensure_iris_ide_workspace(
     window: Any,
     work_root: str | Path,
@@ -400,7 +438,8 @@ def _bridge_call_pumping(call: Callable[[], Any], *, timeout: float = 20.0) -> A
 
     IRIS IDE는 같은 프로세스의 QWebEngineView다. UI 스레드에서 응답을 기다리면
     QtWebEngine의 in-process 네트워크 서비스가 멈춰 Theia가 폴링·응답을 못 하고,
-    브리지가 3.5초 안에 응답하지 못하면 하드 오류다 (가짜 open 없음).
+    브리지 openFile이 OpenFileBudget(15s) 안에 응답하지 못하면 하드 오류다 (가짜 open 없음).
+    이 펌프 상한(기본 20s)은 15s 프론트 대기보다 길게 둔다.
     """
     box: dict[str, Any] = {}
 
@@ -481,6 +520,33 @@ def _log(window: MainWindow, action: str, ok: bool) -> None:
     _append_activity(window, f"Iris control: {action} {status}")
 
 
+def _with_run_visibility(
+    window: MainWindow,
+    action_name: str,
+    action: Callable[[dict[str, Any]], dict[str, Any]],
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """project.run / write_file 결과를 채팅 ToolShellBlock으로 남긴다 (RunVisibility)."""
+
+    def _wrapped(args: dict[str, Any]) -> dict[str, Any]:
+        result = action(args)
+        try:
+            card = card_from_control_result(action_name, result if isinstance(result, dict) else {})
+            if card is None:
+                return result
+
+            def _do() -> None:
+                chat = getattr(window, "_chat", None)
+                if chat is not None:
+                    insert_visibility_card(chat, card)
+
+            _call_on_ui(window, _do)
+        except Exception:
+            pass
+        return result
+
+    return _wrapped
+
+
 def _first_class_ide_trigger(
     window: MainWindow, action: Callable[[dict[str, Any]], dict[str, Any]]
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
@@ -491,9 +557,15 @@ def _first_class_ide_trigger(
 
     def _wrapped(args: dict[str, Any]) -> dict[str, Any]:
         result = action(args)
-        if result.get("ok"):
-            inner = result.get("result") if isinstance(result.get("result"), dict) else {}
-            path = str(inner.get("path") or "")
+        inner = result.get("result") if isinstance(result.get("result"), dict) else {}
+        if "content_match" in inner:
+            window._turn_content_match = bool(inner.get("content_match"))
+        elif result.get("content_match") is False:
+            window._turn_content_match = False
+        path = str(inner.get("path") or "")
+        # Policy A: open fail with on_disk still counts as wrote for CHAT_ONLY/Verify.
+        on_disk = bool(inner.get("on_disk")) and bool(path) and Path(path).is_file()
+        if result.get("ok") or on_disk:
             if path and Path(path).is_file():
                 window._turn_write_path = path
             window._note_tool_file_write()
