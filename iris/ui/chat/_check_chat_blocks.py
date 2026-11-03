@@ -27,6 +27,7 @@ from iris.ui.chat.chat_blocks import (
     fenced_code_to_html,
     marked_tool_shell_to_html,
     parse_copy_anchor,
+    parse_fence_info,
     parse_file_chip_location,
     parse_iris_file_anchor,
     tool_shell_to_html,
@@ -115,6 +116,43 @@ def _assert_prose() -> None:
     )
 
 
+def _assert_fence_info_parse() -> None:
+    plain = parse_fence_info("python")
+    assert plain.language == "python" and plain.path == "" and plain.start_line is None
+
+    colon = parse_fence_info("python:iris/ui/chat/chat_blocks.py")
+    assert colon.language == "python" and colon.path == "iris/ui/chat/chat_blocks.py"
+
+    spaced = parse_fence_info("python iris/ui/chat/chat_blocks.py")
+    assert spaced.language == "python" and spaced.path == "iris/ui/chat/chat_blocks.py"
+
+    ranged = parse_fence_info("12:40:iris/ui/chat/chat_blocks.py")
+    assert (
+        ranged.language == ""
+        and ranged.path == "iris/ui/chat/chat_blocks.py"
+        and ranged.start_line == 12
+        and ranged.end_line == 40
+    )
+
+    lang_range = parse_fence_info("python:12:40:iris/ui/chat/chat_blocks.py")
+    assert (
+        lang_range.language == "python"
+        and lang_range.path == "iris/ui/chat/chat_blocks.py"
+        and lang_range.start_line == 12
+        and lang_range.end_line == 40
+    )
+
+    empty = parse_fence_info("")
+    assert empty.language == "" and empty.path == ""
+
+    path_only = parse_fence_info("iris/foo.py")
+    assert path_only.language == "" and path_only.path == "iris/foo.py"
+
+    # never raises on junk
+    junk = parse_fence_info(":::not-a-thing")
+    assert junk.language or junk.path or junk.language == ""
+
+
 def _assert_fenced_code() -> None:
     t = TOKENS
     block = FencedCodeBlock("print('hi')", language="python")
@@ -135,6 +173,26 @@ def _assert_fenced_code() -> None:
     # 원본 코드(공백·줄바꿈 포함)는 강조와 무관하게 그대로 복사되어야 한다
     assert parse_copy_anchor(copy_anchor_for("print('hi')")) == "print('hi')"
 
+    meta = parse_fence_info("python:iris/ui/chat/chat_blocks.py")
+    path_html = fenced_code_to_html(
+        FencedCodeBlock(
+            "x=1",
+            language=meta.language,
+            path=meta.path,
+            start_line=meta.start_line,
+            end_line=meta.end_line,
+        )
+    )
+    _assert_html_contains(
+        path_html,
+        "chat_blocks.py",
+        "iris-file://",
+        "열기",
+        "복사",
+        "Python",
+        label="fenced_code path header",
+    )
+
     md = render_iris_message(FENCED_SAMPLE)
     _assert_html_contains(
         md,
@@ -143,6 +201,18 @@ def _assert_fenced_code() -> None:
         t.chat_block_mono_font,
         ">print<",
         label="render_iris_message fenced",
+    )
+
+    path_md = render_iris_message(
+        f"{_BACKTICK3}python:iris/ui/chat/chat_blocks.py\nx=1\n{_BACKTICK3}"
+    )
+    _assert_html_contains(
+        path_md,
+        "chat_blocks.py",
+        "iris-file://",
+        "열기",
+        "iris-copy://",
+        label="render_iris_message path fence",
     )
 
     # 지원하지 않는 언어는 강조 없이 일반 코드 블록으로 폴백해야 한다
@@ -164,13 +234,19 @@ def _assert_tool_shell() -> None:
         "&gt;_",
         collapse_anchor_for("t1"),
         "▼",
+        "성공",
+        "명령 복사",
+        "iris-copy://",
         label="tool_shell ok",
     )
+    assert parse_copy_anchor(copy_anchor_for("pytest -q")) == "pytest -q"
 
     err_shell = tool_shell_to_html(
         ToolShellBlock("Deploy", "npm run deploy", "exit 1", status="error", block_id="t2")
     )
-    _assert_html_contains(err_shell, t.error, "Deploy", label="tool_shell error")
+    _assert_html_contains(
+        err_shell, t.error, "Deploy", "실패", "명령 복사", label="tool_shell error"
+    )
 
     marked = marked_tool_shell_to_html(
         ToolShellBlock("Build", "npm run build", "done", status="ok", block_id="t3")
@@ -184,6 +260,8 @@ def _assert_tool_shell() -> None:
         f"border-radius:{t.chat_block_radius}px",
         "iris-collapse://t4",
         "&gt;_",
+        "성공",
+        "명령 복사",
         label="render_tool_shell",
     )
 
@@ -419,6 +497,7 @@ def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     _assert_tokens()
     _assert_prose()
+    _assert_fence_info_parse()
     _assert_fenced_code()
     _assert_tool_shell()
     _assert_error_and_user()
