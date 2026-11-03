@@ -2671,7 +2671,9 @@ class MainWindow(QMainWindow):
 
         대화마다 워커를 둔다. 하나를 같이 쓰면 새 채팅 제목 요청이
         이전 채팅 결과를 취소하고, 화면 밖 채팅은 제목을 못 받는다.
+        제목은 Hermes 없이 api/ollama 직행. 실패 시 휴리스틱만 쓴다.
         """
+        from iris.runtime.backend_route import resolve_title_route
         from iris.storage.chat_title import title_exchange, title_messages
         from iris.storage.conversations import (
             DEFAULT_TITLE,
@@ -2701,13 +2703,19 @@ class MainWindow(QMainWindow):
             return
         if exchange is None:
             return
-        model = ""
-        try:
-            model = self._chat.current_model() or self._settings.ollama_model
-        except Exception:  # noqa: BLE001
-            model = self._settings.ollama_model
-        route = self._summary_route_for(model)
+        model = (self._runs.slot(cid).inference_model or "").strip()
+        if not model:
+            try:
+                model = self._chat.current_model() or self._settings.ollama_model
+            except Exception:  # noqa: BLE001
+                model = self._settings.ollama_model
+        route = resolve_title_route(
+            model,
+            db=self._db,
+            ollama_base_url=self._settings.ollama_base_url,
+        )
         if route is None:
+            self._apply_chat_title_heuristic(cid)
             return
         generation = self._title_requests.begin(cid)
         self._cancel_chat_title(cid)
@@ -2721,17 +2729,32 @@ class MainWindow(QMainWindow):
             )
             worker.finished_ok.connect(self._on_chat_title_ready)
             worker.failed.connect(
-                lambda msg: self._live_activity.append_instant_line(
-                    f"채팅 제목 실패: {str(msg)[:60]}"
-                )
+                lambda _msg, c=cid, g=generation: self._on_chat_title_failed(c, g)
             )
             self._chat_title_workers[cid] = worker
             worker.start()
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             self._chat_title_workers.pop(cid, None)
-            self._live_activity.append_instant_line(
-                f"채팅 제목을 요청하지 못했습니다: {str(exc)[:60]}"
-            )
+            self._apply_chat_title_heuristic(cid)
+
+    def _apply_chat_title_heuristic(self, conversation_id: int) -> None:
+        from iris.storage.chat_title import apply_heuristic_title
+
+        try:
+            title = apply_heuristic_title(self._db, int(conversation_id))
+        except Exception:  # noqa: BLE001
+            return
+        if not title:
+            return
+        self._retitle_project_chat_note(int(conversation_id), title)
+        self._refresh_chat_history_panel()
+
+    def _on_chat_title_failed(self, conversation_id: int, generation: int) -> None:
+        cid = int(conversation_id)
+        if int(generation) != self._title_requests.current(cid):
+            return
+        self._chat_title_workers.pop(cid, None)
+        self._apply_chat_title_heuristic(cid)
 
     def _retitle_project_chat_note(self, conversation_id: int, title: str) -> None:
         shown = " ".join((title or "").split())
@@ -2758,14 +2781,17 @@ class MainWindow(QMainWindow):
         worker = self._chat_title_workers.get(cid)
         if worker is not None and int(getattr(worker, "_generation", -1)) == int(generation):
             self._chat_title_workers.pop(cid, None)
-        from iris.storage.chat_title import apply_generated_title
+        from iris.storage.chat_title import apply_generated_title, apply_heuristic_title
+        from iris.storage.conversations import DEFAULT_TITLE
 
         try:
-            title = apply_generated_title(self._db, int(conversation_id), raw)
-        except Exception as exc:  # noqa: BLE001
-            self._live_activity.append_instant_line(f"채팅 제목 저장 실패: {str(exc)[:60]}")
+            title = apply_generated_title(self._db, cid, raw)
+            if title in ("", DEFAULT_TITLE):
+                title = apply_heuristic_title(self._db, cid)
+        except Exception:  # noqa: BLE001
+            self._apply_chat_title_heuristic(cid)
             return
-        self._retitle_project_chat_note(int(conversation_id), title)
+        self._retitle_project_chat_note(cid, title)
         self._refresh_chat_history_panel()
 
     def _start_handoff_summary(self, from_model: str, context: object) -> None:

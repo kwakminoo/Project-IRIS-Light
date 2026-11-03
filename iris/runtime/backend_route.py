@@ -47,6 +47,28 @@ def resolve_backend_route(
             target=target,
         )
 
+    return resolve_title_route(
+        name,
+        db=db,
+        ollama_base_url=getattr(settings, "ollama_base_url", ""),
+    )
+
+
+def resolve_title_route(
+    model: str,
+    *,
+    db: Any,
+    ollama_base_url: str = "",
+) -> BackendRoute | None:
+    """채팅 목록 제목 전용. Hermes 를 쓰지 않는다.
+
+    도구가 필요 없는 한 줄 요청이라 `api:` 는 제공자 API, 그 외는 Ollama
+    OpenAI-compat 으로 직행한다. backend 는 api | ollama 만.
+    """
+    name = str(model or "").strip()
+    if not name:
+        return None
+
     from iris.storage.api_providers import get_api_provider, parse_runtime_model_id
 
     parsed = parse_runtime_model_id(name)
@@ -66,7 +88,7 @@ def resolve_backend_route(
     return BackendRoute(
         backend="ollama",
         model=name,
-        base_url=getattr(settings, "ollama_base_url", ""),
+        base_url=ollama_base_url or "",
     )
 
 
@@ -196,6 +218,16 @@ if __name__ == "__main__":
     assert seen["model"] == "nvidia/nemotron-3-nano"
     assert seen["api_base_url"] == "https://integrate.api.nvidia.com/v1"
     assert vision_endpoint(None, "qwen3:8b", ollama_base_url="http://127.0.0.1:11434/v1")["api_base_url"] == ""
+
+    # 제목 라우트는 Hermes 설정과 무관하게 api|ollama 만
+    title = resolve_title_route("qwen3:8b", db=None, ollama_base_url="http://127.0.0.1:11434/v1")
+    assert title is not None and title.backend == "ollama"
+    title_api = resolve_title_route(
+        "api:nid:nvidia/nemotron-3-nano",
+        db=mem,
+        ollama_base_url="http://127.0.0.1:11434/v1",
+    )
+    assert title_api is not None and title_api.backend == "api"
 
     # Hermes 가 켜져 있으면 전부 게이트웨이로
     hermes_on = SimpleNamespace(
