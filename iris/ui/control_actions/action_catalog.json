@@ -204,6 +204,12 @@
     "confirm_required": false
   },
   {
+    "name": "content.dump_lab_scripts",
+    "summary": "From a lecture PDF path, parse every practice/lab program label and write source files under the project (default labs/). Returns written paths and labels only — not PDF text. Prefer this over content.extract + project.write_file when the user wants all labs as files. Pass Attachment absolute path.",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
     "name": "diagram.render",
     "summary": "Render a typed JSON IR into an interactive diagram and show it (kind = architecture|workflow|sequence|dataflow|lifecycle). Read integrations/archify/schemas/<kind>.schema.json for the IR shape (architecture needs explicit placement: layout {mode:\"grid\",cols:n} with 0-based row/col per component, or pos/size per component); on failure the error data carries archify diagnostics[] — fix the IR and retry. Call only when the user asks for structure, flow, sequence, or architecture, or when explaining or summarizing a multi-module structural change. One call per turn. Not for a single-file edit, bugfix, or run result. Opens in the Iris chat column, not a separate window. Do not use the architecture-diagram skill or write a standalone HTML diagram",
     "risk": "low",
