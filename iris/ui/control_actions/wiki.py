@@ -365,6 +365,50 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             },
         )
 
+    def content_dump_lab_scripts(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.knowledge.lab_script_dump import dump_lab_scripts, to_hermes_summary
+
+        source = str(args.get("source") or args.get("path") or "").strip()
+        if not source:
+            return err_result(
+                "content.dump_lab_scripts",
+                "source required (Attachment absolute PDF path)",
+            )
+        root = str(args.get("project_root") or args.get("root") or "").strip()
+        if not root:
+            getter = getattr(window, "_current_project_root", None)
+            if callable(getter):
+                try:
+                    root = str(getter() or "")
+                except Exception:
+                    root = ""
+        if not root:
+            return err_result(
+                "content.dump_lab_scripts",
+                "project_root required (or open a project in Iris)",
+            )
+        out_dir = str(args.get("out_dir") or args.get("out_subdir") or "labs").strip() or "labs"
+        _sum, vision = _summary_and_vision(args)
+        _ = _sum
+        vision_bytes = None
+        if vision is not None:
+
+            def _bytes_reader(png: bytes, _v=vision) -> str:
+                return str(_v([png]) or "").strip()
+
+            vision_bytes = _bytes_reader
+        try:
+            result = dump_lab_scripts(
+                source,
+                root,
+                out_subdir=out_dir,
+                vision_reader=vision_bytes,
+            )
+        except (ValueError, OSError, RuntimeError) as exc:
+            return err_result("content.dump_lab_scripts", str(exc))
+        _log(window, "content.dump_lab_scripts", True)
+        return ok_result("content.dump_lab_scripts", to_hermes_summary(result).to_dict())
+
     def wiki_import_content(args: dict[str, Any]) -> dict[str, Any]:
         from iris.knowledge.content_extract import UnsupportedAttachmentTypeError
         from iris.knowledge.wiki_import_ops import import_to_wiki
@@ -699,6 +743,13 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         content_extract,
         summary="Extract text from PDF (scanned image pages included), Office, text, image, or http(s) URL. Chat already attaches [자료 본문] before the answer.",
         risk="low",
+    )
+
+    reg.register(
+        "content.dump_lab_scripts",
+        content_dump_lab_scripts,
+        summary="From a lecture PDF path, parse every practice/lab program label and write source files under the project (default labs/). Returns written paths and labels only — not PDF text. Prefer this over content.extract + project.write_file when the user wants all labs as files. Pass Attachment absolute path.",
+        risk="medium",
     )
 
     reg.register(

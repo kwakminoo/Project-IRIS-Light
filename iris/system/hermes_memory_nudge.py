@@ -8,10 +8,10 @@ from iris.browser.observation import browser_teaching_block
 from iris.system.hermes_iris_control_sync import hermes_home
 
 # Bump when nudge text changes. Lower runtime markers must not skip as "already present".
-_NUDGE_VERSION = 31
+_NUDGE_VERSION = 32
 _MARKER = f"<!-- iris-control-nudge-v{_NUDGE_VERSION} -->"
 
-_BLOCK = """<!-- iris-control-nudge-v31 -->
+_BLOCK = """<!-- iris-control-nudge-v32 -->
 ## Iris Light UI control
 
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
@@ -54,6 +54,7 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 15g. Read and change the open IRIS IDE like an editor, not from an empty success: `ide.diagnostics` (reported false is not "no problems"; empty list is clean only when reported true), `ide.symbols`/`ide.references`/`ide.definition` (ok needs queried true; empty items then means none), `ide.edit` (ok only via=editor; disk append is not a selection replace and fails), `ide.save` (ok only for editor buffer flush; disk-only is failure), `ide.task`, `ide.debug` (start needs a launch name; no session is not success). Do not claim a fix, a save, or a debug session without ok.
 15d. Image attachment → code file: `project.write_image_code` (`image` path, `rel_path`). If the target file is unknown, ask. Never claim the file was written without ok.
 15e. If the user message contains `[자료 본문]`, answer from that excerpt (PDF, folder, file, or link). Do not ask for page screenshots first. Do not say you cannot read PDF. HWP is unsupported. Saving a chat as a PDF file stays 15b (`note.export_pdf` only).
+15h. Lecture PDF chip + create every practice/lab script (`실습 전부 만들어`, `프로그램 N-M 파일로`, dump labs): call `content.dump_lab_scripts` with the Attachment absolute path (optional `out_dir=labs`). Do not ask the user to paste the full PDF. Do not refill via full `content.extract` for this intent. The tool returns written paths/labels only — never program bodies. List those paths in the reply.
 
 16. Email / 메일: `workspace.open_email`, then native `iris.mail.list_accounts` for accounts, then `email.list_messages` (today=true or since=YYYY-MM-DD) / `email.read_message` / `email.open_compose` / `email.send` (skill iris-email). Never invent inbox contents.
 
@@ -150,6 +151,7 @@ def ensure_memory_nudge() -> str:
         and "extension.install_github" in existing
         and "project.write_image_code" in existing
         and "[자료 본문]" in existing
+        and "content.dump_lab_scripts" in existing
         and "no keyword shortcut" in existing
         and "email.list_messages" in existing
         and "iris-email" in existing
