@@ -291,7 +291,7 @@ class IrisIdeWindow(QMainWindow):
         url = (url or "").strip()
         view = self._ensure_view()
         if not url or view is None:
-            self.show_loading("Theia URL 없음 — IRIS IDE 설치/복구 필요")
+            self.show_loading("IDE URL 없음 — IRIS IDE 설치/복구 필요")
             return
         if bridge_port and bridge_token:
             sep = "&" if "?" in url else "?"

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
+
 # UI·테스트가 안정적으로 잡는 접두 (문구 변경 시 테스트도 같이)
 CLOUD_AUTH_ERROR_PREFIX = "Ollama 클라우드 미로그인"
-GATEWAY_AUTH_ERROR_PREFIX = "Hermes 게이트웨이 API 키"
+GATEWAY_AUTH_ERROR_PREFIX = "Iris Agent 게이트웨이 API 키"
 
 CLOUD_AUTH_USER_MSG = (
     f"{CLOUD_AUTH_ERROR_PREFIX}입니다. "
@@ -73,12 +75,26 @@ def format_hermes_http_401() -> str:
     return GATEWAY_AUTH_USER_MSG
 
 
+def scrub_upstream_hermes_cli_hints(text: str) -> str:
+    """업스트림 format_error 의 `hermes doctor` 등 CLI 힌트를 Iris 안내로 가린다."""
+    out = text or ""
+    if "hermes doctor" not in out.lower() and "hermes " not in out.lower():
+        return out
+    out = re.sub(
+        r"(?i)\brun\s+[`']?hermes\s+doctor[`']?",
+        "Iris 설정·시작 프로토콜을 확인하세요",
+        out,
+    )
+    out = re.sub(r"(?i)\bhermes\s+doctor\b", "Iris Agent 진단", out)
+    return out
+
+
 def explain_chat_error(err: str) -> str:
     """채팅에 보일 안내. 원문 로그는 그대로 두고 화면만 바꾼다.
 
     할당량 전환(`status_for_error`)은 이 함수 이전의 원문을 본다.
     """
-    raw = (err or "").strip()
+    raw = scrub_upstream_hermes_cli_hints((err or "").strip())
     if not raw:
         return "모델이 응답하지 않았습니다. 다시 시도하세요."
     if CLOUD_AUTH_ERROR_PREFIX in raw or GATEWAY_AUTH_ERROR_PREFIX in raw:
@@ -96,7 +112,7 @@ def explain_chat_error(err: str) -> str:
     if any(h in low for h in ("연결 실패", "connection refused", "unreachable")):
         return (
             "모델 서버에 연결하지 못했습니다. "
-            "Hermes 또는 Ollama가 켜져 있는지 확인한 뒤 다시 시도하세요."
+            "Iris Agent 또는 Ollama가 켜져 있는지 확인한 뒤 다시 시도하세요."
         )
     if any(h in low for h in ("timed out", "timeout", "시간 초과")) or status == 408:
         return "응답 대기 시간이 초과됐습니다. 잠시 후 다시 시도하세요."
@@ -216,6 +232,11 @@ if __name__ == "__main__":
     )
     assert explain_chat_error(CLOUD_AUTH_USER_MSG) == CLOUD_AUTH_USER_MSG
     assert "연결하지 못했습니다" in explain_chat_error("Hermes 연결 실패: refused")
+    assert "Iris Agent" in explain_chat_error("Hermes 연결 실패: refused")
+    assert "hermes doctor" not in explain_chat_error(
+        "custom rejected; run `hermes doctor` for details"
+    ).lower()
+    assert "Iris" in scrub_upstream_hermes_cli_hints("run hermes doctor now")
     assert "한도" in explain_chat_error("Ollama HTTP 429: rate limit")
     assert "답을 만들지 못했습니다" in explain_chat_error("모델 응답 실패")
     from unittest.mock import patch

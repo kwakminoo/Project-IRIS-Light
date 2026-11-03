@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -18,14 +17,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from iris.infrastructure.hermes_credentials import hermes_home
+
 
 def _hermes_root() -> Path:
-    local = os.environ.get("LOCALAPPDATA", "").strip()
-    if local:
-        p = Path(local) / "hermes"
-        if p.is_dir():
-            return p
-    return Path.home() / ".hermes"
+    return hermes_home()
 
 
 def list_hermes_skill_names(*, limit: int = 80) -> list[str]:

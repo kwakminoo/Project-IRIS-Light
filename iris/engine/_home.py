@@ -19,8 +19,14 @@ from pathlib import Path
 from iris.engine.types import EngineError, EngineErrorCode, EngineHome, EnginePython
 from iris.system.win_subprocess import no_window_kwargs
 
-# Local checkout SHA from HOW.md. Bump this when the hosted tree moves.
-ENGINE_HERMES_SHA = "4787e4d56fc8d9265d4c7d3c0fe5accee86b4078"
+def _engine_pin_sha() -> str:
+    from iris.infrastructure.agent_runtime import load_pinned_sha
+
+    return load_pinned_sha()
+
+
+# Prefer vendor/iris-agent-runtime/PIN. Legacy name kept for serin tests.
+ENGINE_HERMES_SHA = _engine_pin_sha()
 
 _PROBE_IMPORT = "import hermes_cli, aiohttp, mcp, ruamel.yaml, dotenv; print('ok')"
 
@@ -126,10 +132,12 @@ def install_into(
         return
     dest = Path(home) / "hermes-agent"
     if runner is not None:
-        runner(dest, sha=ENGINE_HERMES_SHA, clone=clone)
+        runner(dest, sha=_engine_pin_sha(), clone=clone)
         return
     from iris.system.hermes_install import install_hermes_with_system_python
 
-    result = install_hermes_with_system_python(home=Path(home), sha=ENGINE_HERMES_SHA)
+    result = install_hermes_with_system_python(
+        home=Path(home), sha=_engine_pin_sha()
+    )
     if result is not None and not getattr(result, "ok", True):
         return

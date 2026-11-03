@@ -16,6 +16,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from iris.infrastructure.api_quota import ApiQuota
+from iris.infrastructure.hermes_credentials import hermes_home
 
 _SETTINGS_URL = "https://ollama.com/settings"
 # aria-label="Session usage 0.2% used" 또는 "Session usage 4.0%"
@@ -56,7 +57,7 @@ def resolve_ollama_cookie() -> str:
     """`__Secure-session=...` 또는 raw session 값."""
     raw = (os.environ.get("OLLAMA_CLOUD_COOKIE") or "").strip()
     if not raw:
-        hermes_env = Path(os.environ.get("LOCALAPPDATA") or "") / "hermes" / ".env"
+        hermes_env = hermes_home() / ".env"
         if hermes_env.is_file():
             try:
                 for line in hermes_env.read_text(encoding="utf-8", errors="replace").splitlines():

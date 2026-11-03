@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from iris.infrastructure.hermes_credentials import hermes_home
 from iris.ui.settings.hud_dialog import (
     configure_hud_dialog,
     make_hint,
@@ -34,12 +34,7 @@ _KNOWN_MCP_DESC = {
 
 
 def hermes_root() -> Path:
-    local = os.environ.get("LOCALAPPDATA", "").strip()
-    if local:
-        p = Path(local) / "hermes"
-        if p.is_dir():
-            return p
-    return Path.home() / ".hermes"
+    return hermes_home()
 
 
 def _parse_skill_description(text: str) -> str:
@@ -340,7 +335,7 @@ class SkillsDialog(QDialog):
         root.setSpacing(10)
         root.addWidget(make_title("Skills"))
         root.addWidget(
-            make_hint("Hermes에 연결된 스킬입니다. 「사용」으로 채팅에 넣고, 아래에서 커스텀 스킬을 추가할 수 있습니다.")
+            make_hint("Iris Agent에 연결된 스킬입니다. 「사용」으로 채팅에 넣고, 아래에서 커스텀 스킬을 추가할 수 있습니다.")
         )
 
         scroll, self._list_lay = make_scroll_body()
@@ -423,8 +418,8 @@ class McpDialog(QDialog):
         root.addWidget(make_title("MCP Servers"))
         root.addWidget(
             make_hint(
-                "Hermes config.yaml의 mcp_servers입니다. 「사용」으로 채팅에 넣고, "
-                "추가 후 Hermes gateway 재연결을 권장합니다."
+                "Iris Agent config.yaml의 mcp_servers입니다. 「사용」으로 채팅에 넣고, "
+                "추가 후 Iris Agent gateway 재연결을 권장합니다."
             )
         )
 
@@ -496,7 +491,7 @@ class McpDialog(QDialog):
         QMessageBox.information(
             self,
             "MCP 추가",
-            "config.yaml에 저장했습니다.\nHermes gateway 재연결을 권장합니다.",
+            "config.yaml에 저장했습니다.\nIris Agent gateway 재연결을 권장합니다.",
         )
 
 

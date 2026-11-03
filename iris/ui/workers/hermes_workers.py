@@ -1,6 +1,11 @@
-"""백그라운드 Hermes API 워커."""
+﻿"""백그라운드 Hermes API 워커."""
 
 from __future__ import annotations
+
+import logging
+
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -41,11 +46,58 @@ from iris.system.hermes_gateway import (
 )
 from iris.system.hermes_iris_control_sync import sync_iris_control
 
+from iris.infrastructure.agent_runtime import (
+    AGENT_LOOP_FAILED_PREFIX,
+    AGENT_LOOP_PROPAGATE_BASE,
+    AgentLoopStandinResult,
+    attach_agent_loop_worker,
+    ensure_agent_loop_handle,
+    ensure_agent_loop_no_console,
+    format_agent_loop_failure,
+    replace_agent_loop_worker,
+    reset_agent_loop,
+    run_agent_loop_standin,
+)
+from iris.infrastructure.agent_tool_registry import speak_invoke_agent_tool
+
+
 
 def _engine_source() -> EngineSource:
     """Same source the process singleton parsed. Do not start both modes."""
     return shared_engine().source
 
+
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+# Phase 5 Prove 1 — worker → UI bridge is these signals only (no sync UI calls).
+IRIS_AGENT_LOOP_UI_SIGNALS = frozenset({"finished_ok", "failed"})
+
+_log = logging.getLogger(__name__)
+
+
+def safe_agent_ui_slot(fn: _F) -> _F:
+    """Wrap slots that receive IrisAgentLoopStandinWorker signals.
+
+    Uncaught exceptions leaving a MainWindow slot abort Iris (0xC0000409).
+    Agent→UI path must stay signal-only; this wrapper is the thin UI boundary.
+    """
+
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 — slot boundary; never re-raise
+            _log.exception("agent UI slot contained: %s", exc)
+            return None
+
+    return wrapper  # type: ignore[return-value]
+
+
+def prove1_ui_abort_if_uncaught() -> None:
+    """Intentional raise for Prove 1. Must never be a live MainWindow slot."""
+    raise RuntimeError(
+        "phase5-prove1: would abort Iris if uncaught on the UI thread"
+    )
 
 class HermesHealthWorker(QThread):
     """Engine ready check. ExternalGateway keeps the :8642 health path."""
@@ -101,7 +153,7 @@ class HermesHealthWorker(QThread):
                 )
 
             if report.needs_gateway_reload:
-                self.notice.emit("MCP 연결 — Hermes gateway 완전 재기동…")
+                self.notice.emit("MCP 연결 — Iris Agent gateway 완전 재기동…")
                 ok = restart_hermes_gateway(
                     base_url,
                     api_key=api_key,
@@ -111,7 +163,7 @@ class HermesHealthWorker(QThread):
                 if ok:
                     mcp_ok, mcp_detail = verify_iris_mcp_tools(command=command)
                     if mcp_ok:
-                        self.notice.emit(f"Hermes MCP 재연결 완료 — {mcp_detail}")
+                        self.notice.emit(f"Iris Agent MCP 재연결 완료 — {mcp_detail}")
                     else:
                         self.notice.emit(
                             f"Gateway는 떴지만 MCP 검증 실패: {mcp_detail}"
@@ -147,7 +199,7 @@ class HermesHealthWorker(QThread):
                 if ok:
                     mcp_ok2, mcp_detail2 = verify_iris_mcp_tools(command=command)
                     self.notice.emit(
-                        f"Hermes MCP 재연결: {mcp_detail2}"
+                        f"Iris Agent MCP 재연결: {mcp_detail2}"
                         if mcp_ok2
                         else f"MCP 재검증 실패: {mcp_detail2}"
                     )
@@ -166,12 +218,12 @@ class HermesHealthWorker(QThread):
                 self.finished_ok.emit(ok)
                 return
         except Exception as sync_exc:  # noqa: BLE001
-            self.notice.emit(f"Iris↔Hermes control sync skip: {str(sync_exc)[:120]}")
+            self.notice.emit(f"Iris Agent control sync skip: {str(sync_exc)[:120]}")
 
         if is_hermes_gateway_running(base_url, api_key=api_key):
             self.finished_ok.emit(True)
             return
-        self.notice.emit("Hermes gateway가 꺼져 있습니다. 시작합니다…")
+        self.notice.emit("Iris Agent gateway가 꺼져 있습니다. 시작합니다…")
         ok = ensure_hermes_gateway_running(
             base_url,
             api_key=api_key,
@@ -180,7 +232,7 @@ class HermesHealthWorker(QThread):
         if ok:
             mcp_ok, mcp_detail = verify_iris_mcp_tools(command=command)
             self.notice.emit(
-                f"Hermes gateway 시작됨 — {mcp_detail}"
+                f"Iris Agent gateway 시작됨 — {mcp_detail}"
                 if mcp_ok
                 else f"Gateway 시작됐지만 MCP 실패: {mcp_detail}"
             )
@@ -193,8 +245,8 @@ class HermesHealthWorker(QThread):
                 self.notice.emit(diag.user_message()[:400])
             else:
                 self.notice.emit(
-                    "Hermes gateway를 시작할 수 없습니다. "
-                    "hermes 설치·포트 8642·로그(%LOCALAPPDATA%\\hermes\\logs\\iris-gateway)를 확인하세요."
+                    "Iris Agent gateway를 시작할 수 없습니다. "
+                    "설치·포트 8642·로그(%LOCALAPPDATA%\\hermes\\logs\\iris-gateway)를 확인하세요."
                 )
         self.finished_ok.emit(ok)
 
@@ -237,7 +289,7 @@ class HermesControlSyncWorker(QThread):
             if report.errors:
                 lines.append("오류: " + "; ".join(report.errors[:2]))
 
-            self.progress.emit("상태: Hermes gateway 재기동…")
+            self.progress.emit("상태: Iris Agent gateway 재기동…")
             ok = restart_hermes_gateway(
                 self._base_url,
                 api_key=self._api_key,
@@ -383,7 +435,7 @@ class HermesChatWorker(QThread):
         """게이트웨이 기동 보장. 실패하면 사용자에게 보일 문구를 돌려준다."""
         if is_hermes_gateway_running(source.base_url, api_key=source.api_key):
             return ""
-        self.tool_progress.emit("Hermes gateway 기동 중…")
+        self.tool_progress.emit("Iris Agent gateway 기동 중…")
         if ensure_hermes_gateway_running(
             source.base_url, api_key=source.api_key, command="hermes"
         ):
@@ -394,12 +446,45 @@ class HermesChatWorker(QThread):
         if diag is not None:
             return diag.user_message()[:400]
         return (
-            "Hermes gateway를 시작할 수 없습니다. "
+            "Iris Agent gateway를 시작할 수 없습니다. "
             r"설치·포트·%LOCALAPPDATA%\hermes\logs\iris-gateway 로그를 확인하세요."
         )
 
+    @staticmethod
+    def invoke_native_tool(
+        name: str, args: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Speak/native registry invoke (Phase 2.3+). No MCP stdio / :8765."""
+        return speak_invoke_agent_tool(name, args or {})
+
+    def _wire_native_speak_tools(self) -> None:
+        """Prove speak path owns native wiki/mail/calendar before the turn."""
+        listed = self.invoke_native_tool("iris.wiki.list_notes", {"limit": 1})
+        if not listed.get("ok"):
+            self.tool_progress.emit(
+                f"native wiki.list_notes skip: {listed.get('error') or listed}"
+            )
+        searched = self.invoke_native_tool(
+            "iris.wiki.search", {"query": "iris", "limit": 1}
+        )
+        if not searched.get("ok"):
+            self.tool_progress.emit(
+                f"native wiki.search skip: {searched.get('error') or searched}"
+            )
+        mail = self.invoke_native_tool("iris.mail.list_accounts", {})
+        if not mail.get("ok"):
+            self.tool_progress.emit(
+                f"native mail.list_accounts skip: {mail.get('error') or mail}"
+            )
+        cal = self.invoke_native_tool("iris.calendar.list_events", {})
+        if not cal.get("ok"):
+            self.tool_progress.emit(
+                f"native calendar.list_events skip: {cal.get('error') or cal}"
+            )
+
     def run(self) -> None:
         try:
+            self._wire_native_speak_tools()
             source = _engine_source()
             if isinstance(source, ExternalGateway):
                 self._run_external(source)
@@ -526,14 +611,101 @@ class HermesChatWorker(QThread):
         if not self._cancel:
             self.failed.emit(last_error or "모델 응답 실패")
 
+class IrisAgentLoopStandinWorker(QThread):
+    """Phase 5 Prove 0?? ??in-process loop stand-in off the UI thread.
+
+    Contract (Prove 1):
+    - Worker must not create/touch QWidget or call sync UI (processEvents, show, ??.
+    - Results cross to UI only via ``finished_ok`` / ``failed`` (see
+      ``IRIS_AGENT_LOOP_UI_SIGNALS``). UI slots should use ``safe_agent_ui_slot``.
+    - Exceptions in ``run`` are emitted as ``failed``; they must not escape into
+      MainWindow slots as uncaught.
+
+    Contract (Prove 2):
+    - ``ensure_agent_loop_no_console`` at worker entry (CREATE_NO_WINDOW reuse).
+    - ``Exception`` ??``failed`` with ``format_agent_loop_failure`` payload.
+      Process stay-alive; kill is not a recovery path.
+    - ``AGENT_LOOP_PROPAGATE_BASE`` (SystemExit, KeyboardInterrupt) re-raise ??
+      do not swallow those as agent_failed.
+
+    Contract (Prove 3):
+    - Owned by ``AgentLoopHandle`` via ``attach_agent_loop_worker`` /
+      ``replace_agent_loop_worker``. ``reset_agent_loop`` may quit/wait this
+      worker while the UI host object stays the same.
+    Stub-only until Merge; does not call :8642.
+    """
+
+    finished_ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        *,
+        prompt: str = "prove0",
+        force_fail: bool = False,
+        standin_force_fail: bool = False,
+        settle_ms: int = 0,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._prompt = prompt
+        self._force_fail = force_fail
+        self._standin_force_fail = standin_force_fail
+        self._settle_ms = max(0, int(settle_ms))
+
+    def run(self) -> None:
+        ensure_agent_loop_no_console()
+        try:
+            if self._settle_ms:
+                # Keep this worker busy so Prove 1 can show the UI thread still ticks.
+                self.msleep(self._settle_ms)
+            if self._force_fail:
+                raise RuntimeError("phase5-prove1 forced worker failure")
+            result: AgentLoopStandinResult = run_agent_loop_standin(
+                prompt=self._prompt,
+                force_fail=self._standin_force_fail,
+            )
+            if not result.ok:
+                detail = next(
+                    (
+                        m
+                        for m in result.messages
+                        if m.startswith(AGENT_LOOP_FAILED_PREFIX)
+                    ),
+                    "agent loop stand-in returned ok=False",
+                )
+                self.failed.emit(detail)
+                return
+            self.finished_ok.emit(result)
+        except AGENT_LOOP_PROPAGATE_BASE:
+            raise
+        except Exception as e:  # noqa: BLE001 ??worker boundary; emit failed
+            self.failed.emit(format_agent_loop_failure(e))
+
+
+# Optional product alias — gate 4 does not require mass renames.
+IrisAgentHealthWorker = HermesHealthWorker
 
 # re-export for callers that resolve targets in UI thread
 __all__ = [
     "HermesHealthWorker",
+    "IrisAgentHealthWorker",
     "HermesControlSyncWorker",
     "HermesModelSyncWorker",
     "HermesChatWorker",
+    "IrisAgentLoopStandinWorker",
+    "IRIS_AGENT_LOOP_UI_SIGNALS",
+    "safe_agent_ui_slot",
+    "prove1_ui_abort_if_uncaught",
     "ChatAttempt",
     "HermesInferenceTarget",
     "resolve_hermes_inference",
+    "format_agent_loop_failure",
+    "AGENT_LOOP_PROPAGATE_BASE",
+    "AGENT_LOOP_FAILED_PREFIX",
+    "ensure_agent_loop_no_console",
+    "ensure_agent_loop_handle",
+    "attach_agent_loop_worker",
+    "reset_agent_loop",
+    "replace_agent_loop_worker",
 ]

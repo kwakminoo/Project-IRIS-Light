@@ -1,6 +1,9 @@
 """현재 채팅 세션의 저장 상태.
 
 MainWindow는 이 객체의 결과를 패널에 그린다. 위젯은 여기 없다.
+
+정본은 ``iris.runtime.chat_canonical`` — Iris SQLite ``chat_messages``.
+런타임 session DB 는 UI 히스토리 정본이 아니다.
 """
 
 from __future__ import annotations

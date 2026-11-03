@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
+from iris.infrastructure.agent_runtime import iris_agent_home
 
 # 플레이스홀더·데모 키 잔존 → 채팅 401. token_urlsafe(32)는 보통 43자·마커 없음.
 _WEAK_KEY_MARKERS = (
@@ -19,10 +20,8 @@ _WEAK_KEY_MARKERS = (
 
 
 def hermes_home() -> Path:
-    local = os.environ.get("LOCALAPPDATA", "").strip()
-    if local:
-        return Path(local) / "hermes"
-    return Path.home() / ".hermes"
+    """제품 런타임 홈. ``iris_agent_home()`` 과 동일 (Phase 1 단일 함수)."""
+    return iris_agent_home()
 
 
 def is_weak_hermes_api_key(key: str) -> bool:
@@ -35,7 +34,7 @@ def is_weak_hermes_api_key(key: str) -> bool:
 
 
 def load_hermes_dotenv() -> dict[str, str]:
-    """%LOCALAPPDATA%/hermes/.env → dict (API_SERVER_* 등)."""
+    """런타임 홈 ``.env`` → dict (API_SERVER_* 등)."""
     path = hermes_home() / ".env"
     out: dict[str, str] = {}
     if not path.is_file():

@@ -2,7 +2,7 @@
 name: iris-session-status
 description: >
   Summarize current Iris Light session: companion mode, workspace, IDE, project_root,
-  model, Hermes online, email accounts. Use when asked: 지금 상태, 세션 요약,
+  model, agent online, email accounts. Use when asked: 지금 상태, 세션 요약,
   Iris status, what's open, companion 켜져 있어?
 ---
 
@@ -10,6 +10,10 @@ description: >
 
 ## Steps
 
-1. Call `iris_get_state` (and optionally `iris_get_catalog` only if planning further actions).
-2. Reply in a short bullet list: ui_mode, workspace_mode, preferred_ide, project_root, model, hermes_online.
+1. Prefer native `iris.tools.catalog` when checking which Iris tools exist.
+   For live UI state call native `iris.session.get_state` (alias `get_state`) —
+   product speak path, no MCP Control HTTP. If the result is `requires_iris_ui`,
+   tell the user to ask from Iris chat (or click) so Qt MainWindow can answer.
+2. Reply in a short bullet list: ui_mode, workspace_mode, preferred_ide, project_root, model, agent online.
+   Map any legacy `*_online` agent flag to the label "agent online" for the user.
 3. Do not invent fields that are missing from the tool result.

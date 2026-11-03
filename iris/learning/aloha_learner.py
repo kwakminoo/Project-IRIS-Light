@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Protocol
 
+from iris.infrastructure.hermes_credentials import hermes_home
 from iris.learning.models import LearningEvent, SemanticTrace, SessionManifest, TraceStep
 from iris.learning.paths import aloha_act_root, aloha_learn_root, traces_dir
 
@@ -32,7 +33,7 @@ def _load_vlm_keys() -> dict[str, str]:
         val = os.environ.get(name, "").strip()
         if val:
             keys[name] = val
-    hermes_env = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / ".env"
+    hermes_env = hermes_home() / ".env"
     if hermes_env.is_file():
         try:
             for line in hermes_env.read_text(encoding="utf-8", errors="ignore").splitlines():

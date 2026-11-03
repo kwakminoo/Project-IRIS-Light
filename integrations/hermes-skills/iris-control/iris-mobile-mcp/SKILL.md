@@ -1,7 +1,7 @@
 ---
 name: iris-mobile-mcp
 description: >
-  Android 에뮬레이터·앱 UI를 Hermes mobile-mcp로 조작한다.
+  Android 에뮬레이터·앱 UI를 Iris Agent mobile-mcp로 조작한다.
   Use when: 에뮬 앱 조작, 화면 탭, APK 설치 후 UI 조작, 모바일 MCP,
   스크린샷으로 버튼 눌러줘, 텍스트 입력해줘, Instagram 앱 열기(실험),
   mobile_list_available_devices, mobile_take_screenshot, mobile_click_on_screen.
@@ -12,7 +12,7 @@ description: >
 # Iris + mobile-mcp (실험)
 
 Windows + 로컬 Android SDK + 프로젝트 AVD `IrisLight_Pixel` 전제.
-전제: Node 20+, `npx`, Hermes `mcp_servers.mobile-mcp` 등록
+전제: Node 20+, `npx`, Iris Agent `mcp_servers.mobile-mcp` 등록
 (`npx -y @mobilenext/mobile-mcp@latest`, Iris sync가 `ANDROID_HOME`/`PATH` 맞춤).
 
 ## Routing

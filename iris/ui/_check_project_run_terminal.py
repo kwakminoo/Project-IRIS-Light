@@ -26,6 +26,9 @@ def main() -> None:
         encoding="utf-8"
     )
     assert "ensureTerminal" in poller
+    assert "currentTerminal" in poller and "lastUsedTerminal" in poller, "터미널 재사용 경로 소실"
+    assert "via: 'theia_terminal'" in poller or 'via: "theia_terminal"' in poller
+    assert "bridge_fallback" not in poller, "via=bridge_fallback 터미널 성공 재도입 금지"
     assert "withTimeout" in poller
     assert "pollBusy" in poller
 

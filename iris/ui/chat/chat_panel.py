@@ -2013,7 +2013,7 @@ class ChatPanel(QWidget):
     def append_hermes_update_prompt(self, *, detail: str = "") -> None:
         """Hermes 업데이트 안내 + 업데이트 / 나중에 링크."""
         self.finish_typing()
-        text = "Hermes 업데이트가 가능합니다. 업데이트를 하시겠습니까?"
+        text = "Iris Agent 업데이트가 가능합니다. 업데이트를 하시겠습니까?"
         extra = (detail or "").strip()
         if extra:
             text = f"{text} ({extra})"

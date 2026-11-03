@@ -121,7 +121,7 @@ function waitForFrontendCommand(id, timeoutMs = 30000) {
                 const age = lastFrontendPollAt ? (Date.now() - lastFrontendPollAt) : -1;
                 const hint = lastFrontendPollAt
                     ? `last frontend poll ${age}ms ago`
-                    : 'no frontend poll yet — is IRIS IDE Theia loaded?';
+                    : 'no frontend poll yet — is IRIS IDE loaded?';
                 const timed = new Error(`frontend command timeout (${hint})`);
                 timed.code = 'timeout';
                 reject(timed);
@@ -151,7 +151,7 @@ async function enqueueFrontend(cmd, args, timeoutMs = 30000, pollWaitMs = 800) {
     if (!lastFrontendPollAt) {
         const seen = await waitForPoll(pollWaitMs);
         if (!seen) {
-            throw new Error('no frontend poll yet — is IRIS IDE Theia loaded?');
+            throw new Error('no frontend poll yet — is IRIS IDE loaded?');
         }
     }
     const id = nextCommandId++;
@@ -264,33 +264,19 @@ async function dispatch(cmd, args) {
             const rel = String(args.path || '');
             const abs = resolvePath(rel);
             if (!fs.existsSync(abs)) throw new Error(`file not found: ${rel}`);
-            try {
-                return await enqueueFrontend(cmd, { path: rel, abs, line: args.line || 1, column: args.column || 1 }, 3500);
-            } catch {
-                editorState = { uri: abs, path: rel, line: args.line || 1, column: args.column || 1 };
-                return { path: abs, opened: true, via: 'bridge_fallback' };
-            }
+            // No bridge_fallback: timeout/miss is a hard error (HTTP 400), not a fake open.
+            return await enqueueFrontend(cmd, { path: rel, abs, line: args.line || 1, column: args.column || 1 }, 3500);
         }
         case 'saveFile':
         case 'saveAll': {
-            let front;
-            try {
-                front = await enqueueFrontend(cmd, args, 4000);
-            } catch (err) {
-                const missing = String(err && err.message || err).includes('no frontend poll');
-                if (!missing || cmd === 'saveAll') throw err;
-                front = { noEditor: true };
-            }
-            if (front && front.noEditor) {
-                if (cmd === 'saveAll') throw new Error('no open editor to save');
-                const rel = String(args.path || editorState?.path || '');
-                if (!rel) throw new Error('no open editor to save');
-                const abs = resolvePath(rel);
-                if (!fs.existsSync(abs)) throw new Error(`file not found: ${rel}`);
-                return { path: abs, saved: true, via: 'disk', editor: false };
-            }
+            // No disk-only soft success: without a frontend editor flush this is a hard error
+            // (same honesty contract as openFile — no via:'disk' saved:true disguise).
+            const front = await enqueueFrontend(cmd, args, 4000);
             if (!front || front.saved !== true) {
                 throw new Error(String((front && front.reason) || 'save failed'));
+            }
+            if (front.via === 'disk' || front.editor === false) {
+                throw new Error('IRIS IDE editor did not save (disk-only save is not an editor flush)');
             }
             return front;
         }
@@ -315,8 +301,19 @@ async function dispatch(cmd, args) {
         }
         case 'replaceSelection':
         case 'applyTextEdit':
-        case 'insertText':
+        case 'insertText': {
+            // No disk-append soft success: selection/insert/document edits need Monaco.
+            const edited = await enqueueFrontend(cmd, args, 4000);
+            if (!edited || edited.noEditor) {
+                throw new Error(String((edited && (edited.reason || edited.error)) || 'IRIS IDE editor did not apply buffer edit'));
+            }
+            if (edited.via !== 'editor') {
+                throw new Error('IRIS IDE buffer edit requires via=editor (disk append is not a selection replace)');
+            }
+            return edited;
+        }
         case 'replaceRange': {
+            // Disk range write kept for non-ide.edit callers; ide.edit rejects via≠editor.
             try {
                 const edited = await enqueueFrontend(cmd, args, 4000);
                 if (!edited || !edited.noEditor) return edited;
@@ -332,11 +329,7 @@ async function dispatch(cmd, args) {
         case 'gotoDefinition':
             return await enqueueFrontend(cmd, args, 8000);
         case 'createTerminal':
-            try {
-                return await enqueueFrontend('createTerminal', { name: String(args.name || 'IRIS') }, 3500);
-            } catch {
-                return { name: String(args.name || 'IRIS'), created: false, via: 'bridge_fallback' };
-            }
+            return await enqueueFrontend('createTerminal', { name: String(args.name || 'IRIS') }, 3500);
         case 'runTerminalCommand': {
             const command = String(args.command || args.cmd || '').trim();
             const argv = Array.isArray(args.argv) ? args.argv.map(item => String(item)) : [];
@@ -360,7 +353,13 @@ async function dispatch(cmd, args) {
             return await enqueueFrontend(cmd, args, cmd === 'pluginLoaded' ? 8000 : 20000, cmd === 'pluginLoaded' ? 7000 : 800);
         case 'getGitStatus':
             try {
-                return { porcelain: execSync('git status --porcelain', { cwd: workspaceRoot, encoding: 'utf8' }) };
+                return {
+                    porcelain: execSync('git status --porcelain', {
+                        cwd: workspaceRoot,
+                        encoding: 'utf8',
+                        windowsHide: true,
+                    }),
+                };
             } catch {
                 return { porcelain: '' };
             }
@@ -368,7 +367,13 @@ async function dispatch(cmd, args) {
             try {
                 const rel = String(args.path || '');
                 const gitCmd = rel ? `git diff -- ${rel}` : 'git diff';
-                return { diff: execSync(gitCmd, { cwd: workspaceRoot, encoding: 'utf8' }) };
+                return {
+                    diff: execSync(gitCmd, {
+                        cwd: workspaceRoot,
+                        encoding: 'utf8',
+                        windowsHide: true,
+                    }),
+                };
             } catch {
                 return { diff: '' };
             }

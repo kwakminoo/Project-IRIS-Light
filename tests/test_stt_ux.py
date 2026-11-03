@@ -180,3 +180,72 @@ class SttUxTests(TestCase):
         assert save is not None
         self.assertTrue(save.isEnabled())
         dlg.close()
+
+    def test_tts_button_between_mic_and_profile_toggles_pref(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from iris.storage.database import Database
+        from iris.storage.voice_prefs import load_voice_preferences, save_voice_preferences
+        from iris.storage.voice_prefs import VoicePreferences
+        from iris.ui.widgets.drag_tab import DragTab
+        from iris.ui.window.main_window import MainWindow
+
+        drag = DragTab(QWidget())
+        names = []
+        lay = drag.layout()
+        assert lay is not None
+        for i in range(lay.count()):
+            sub = lay.itemAt(i).layout()
+            if sub is None:
+                continue
+            row = [sub.itemAt(j).widget() for j in range(sub.count())]
+            row = [w for w in row if w is not None]
+            if any(w.objectName() == "WinCtrlMic" for w in row):
+                names = [(w.objectName(), w.toolTip()) for w in row]
+                break
+        mic_at = next(i for i, pair in enumerate(names) if pair[0] == "WinCtrlMic")
+        tts_at = next(i for i, pair in enumerate(names) if pair[0] == "WinCtrlTts")
+        profile_at = next(i for i, pair in enumerate(names) if pair[1] == "사용자 프로필")
+        self.assertLess(mic_at, tts_at)
+        self.assertLess(tts_at, profile_at)
+        self.assertEqual(drag._btn_tts.toolTip(), "TTS 켜기")
+        drag.set_tts_enabled(True)
+        self.assertTrue(drag._btn_tts.isChecked())
+        self.assertEqual(drag._btn_tts.toolTip(), "TTS 끄기")
+
+        with tempfile.TemporaryDirectory() as td:
+            db = Database(Path(td) / "t.db")
+            try:
+                save_voice_preferences(db, VoicePreferences(tts_enabled=False))
+                statuses: list[str] = []
+                stopped: list[int] = []
+                boot: list[int] = []
+                synced: list[int] = []
+                host = type("Host", (), {})()
+                host._db = db
+                host._voice_prefs = load_voice_preferences(db)
+                host._tts_idle_status = lambda: "ON" if host._voice_prefs.tts_enabled else "OFF"
+                host._drag = drag
+                host._status_header = type("H", (), {"set_tts_status": lambda _s, text: statuses.append(text)})()
+                host._live_activity = type("L", (), {"append_instant_line": lambda _s, text: None})()
+                host._schedule_tts_runtime_bootstrap = lambda: boot.append(1)
+                host._stop_tts_playback = lambda: stopped.append(1)
+                host._set_tts_orb_warmup = lambda _active: None
+                host._sync_voice_conversation_state = lambda: synced.append(1)
+                MainWindow._on_tts_header_clicked(host)
+                _APP.processEvents()
+                self.assertTrue(host._voice_prefs.tts_enabled)
+                self.assertTrue(drag._btn_tts.isChecked())
+                self.assertEqual(load_voice_preferences(db).tts_enabled, True)
+                self.assertEqual(statuses, ["ON"])
+                self.assertEqual(boot, [1])
+                self.assertEqual(stopped, [])
+                MainWindow._on_tts_header_clicked(host)
+                self.assertFalse(load_voice_preferences(db).tts_enabled)
+                self.assertFalse(drag._btn_tts.isChecked())
+                self.assertEqual(stopped, [1])
+                self.assertEqual(synced, [1])
+                self.assertIn("OFF", statuses)
+            finally:
+                db.close()

@@ -19,7 +19,6 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
-    QSplitter,
     QTimeEdit,
     QVBoxLayout,
     QWidget,
@@ -42,7 +41,11 @@ from iris.ui.settings.hud_dialog import (
     make_title,
 )
 from iris.ui.shared.theme_tokens import TOKENS
-from iris.ui.workspaces.workspace_iris_chat import mount_chat_host, shift_chat_column
+from iris.ui.workspaces.workspace_iris_chat import (
+    install_companion_shell,
+    mount_chat_host,
+    shift_chat_column,
+)
 
 _WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
 
@@ -311,28 +314,8 @@ class CalendarWorkspacePage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(6)
-        self._splitter = splitter
-        self._chat_list_extra = 0
-        splitter.addWidget(self._build_center())
-
-        # IDE Companion과 같은 채팅 호스트가 여기로 옮겨진다.
-        self._chat_host = QWidget()
-        self._chat_host.setObjectName("CalendarChatHost")
-        self._chat_host.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._chat_host.setStyleSheet("QWidget#CalendarChatHost { background: transparent; }")
-        self._chat_host.setMinimumWidth(300)
-        self._chat_lay = QVBoxLayout(self._chat_host)
-        self._chat_lay.setContentsMargins(0, 0, 0, 0)
-        self._chat_lay.setSpacing(0)
-        splitter.addWidget(self._chat_host)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        splitter.setSizes([820, 420])
-        outer.addWidget(splitter)
+        # IDE와 동일: IdeUnifiedShell 8:2 (좌 캘린더 · 우 Companion)
+        install_companion_shell(self, self._build_center(), root=outer)
 
     def place_chat_host(self, host: QWidget) -> None:
         mount_chat_host(self, host)

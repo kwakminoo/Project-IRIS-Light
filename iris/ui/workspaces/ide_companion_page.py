@@ -25,14 +25,16 @@ CHAT_LIST_WIDTH = 220
 # 상단 구체 슬롯 — 좁은 20% 컬럼에서 3.0 스케일은 슬롯 밖으로 번져 로그와 겹쳤음
 EMAIL_ORB_HEIGHT = 260
 EMAIL_ORB_SCALE = 2.1
+# 좌 본문 : 우 Companion = 8:2 (IDE 타일·메일/캘린더/위키 공통 계약)
 COMPANION_CONTENT_RATIO = 0.8
 _UNIFIED_IDE_RATIO = COMPANION_CONTENT_RATIO
+# 메인↔서포팅패널 핸들: 평소 투명, 호버 1초 또는 드래그 시에만 표시
 _HANDLE_REVEAL_MS = 1000
-_HANDLE_BAR_COLOR = QColor(255, 255, 255, 56)
+_HANDLE_BAR_COLOR = QColor(255, 255, 255, 56)  # ≈ rgba(255,255,255,0.22)
 
 
 class _CompanionSplitHandle(QSplitterHandle):
-    """평소 투명, 1초 호버·드래그 때만 막대."""
+    """서포팅패널 경계 — 평소 투명, 1초 호버·드래그 때만 막대 표시."""
 
     def __init__(self, orientation: Qt.Orientation, parent: QSplitter) -> None:
         super().__init__(orientation, parent)
@@ -45,6 +47,9 @@ class _CompanionSplitHandle(QSplitterHandle):
         self._reveal.setSingleShot(True)
         self._reveal.setInterval(_HANDLE_REVEAL_MS)
         self._reveal.timeout.connect(self._on_reveal_timeout)
+
+    def bar_visible(self) -> bool:
+        return self._bar_on
 
     def _set_bar(self, on: bool) -> None:
         on = bool(on)
@@ -76,6 +81,7 @@ class _CompanionSplitHandle(QSplitterHandle):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         self._pressed = False
+        # 조정 종료 → 투명. 커서가 아직 위에 있으면 다시 1초 호버 대기.
         self._set_bar(False)
         if self.underMouse():
             self._reveal.start()
@@ -95,7 +101,10 @@ class _CompanionSplit(QSplitter):
 
 
 class IdeUnifiedShell(QWidget):
-    """단일 창 내부 — 좌 본문 80% + 우 Iris Companion 20%."""
+    """단일 창 내부 — 좌 본문 80% + 우 Iris Companion 20%.
+
+    IDE HWND 도킹뿐 아니라 메일/캘린더/위키 워크스페이스도 같은 셸을 쓴다.
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -110,6 +119,7 @@ class IdeUnifiedShell(QWidget):
         self._split.setChildrenCollapsible(False)
         self._split.setHandleWidth(6)
         self._split.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # 핸들 그림은 _CompanionSplitHandle — 스타일시트는 투명만 (평소 안 보이게)
         self._split.setStyleSheet(
             "QSplitter#IdeUnifiedHSplit { background: transparent; }"
             "QSplitter#IdeUnifiedHSplit::handle {"
@@ -233,6 +243,7 @@ class IdeUnifiedShell(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        # 창 폭이 바뀌어도 기억된(또는 기본 8:2) 비율 유지 — IDE 타일과 동일 계약
         if getattr(self, "_applying_ratio", False) or self.width() <= 1:
             return
         self._applying_ratio = True

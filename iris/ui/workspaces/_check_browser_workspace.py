@@ -64,7 +64,13 @@ def main() -> int:
     app.processEvents()
     assert panel.tab_count() == 3, panel.tab_count()
 
+    from iris.browser.session import get_browser_session
+    from iris.browser.types import PanelHost, docked_site
+
+    get_browser_session().note_view_host(PanelHost(site="dedicated"))
     w._ui_mode = "ide_companion"
+    w._clear_leftover_dedicated_host()
+    assert docked_site(get_browser_session().view_host()) == "ide_internal", "leftover dedicated must be cleared"
     ide_panel = w.show_browser_workspace()
     app.processEvents()
     assert w._ui_mode == "ide_companion", "browser must not exit companion"

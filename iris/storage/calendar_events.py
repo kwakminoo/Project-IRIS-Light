@@ -21,6 +21,19 @@ class CalendarEvent:
     reminded_overdue: bool = False
 
 
+def parse_event_instant(value: str) -> datetime:
+    """ISO start_at → aware datetime. Naive strings are local wall time."""
+    dt = datetime.fromisoformat((value or "").strip())
+    if dt.tzinfo is None:
+        return dt.astimezone()
+    return dt
+
+
+def reminder_clock_now() -> datetime:
+    """Aware 'now' for reminder compares. Matches parse_event_instant."""
+    return datetime.now().astimezone()
+
+
 def ensure_calendar_schema(db: Database) -> None:
     db._execute(
         """

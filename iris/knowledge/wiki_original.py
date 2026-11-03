@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import mimetypes
 import re
 import shutil
+import tempfile
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -16,6 +18,55 @@ _EMPTY = "(요약에 쓸 모델이 없습니다.)"
 # ponytail: 문서 전체가 아니라 리소스 하나. 이보다 큰 그림·글꼴은 URL을 남긴다.
 _ASSET_BYTES = 15_000_000
 _SKIP_TAGS = {"script", "noscript"}
+
+
+def assets_dir_for(note_path: Path) -> Path:
+    """노트 옆 assets 폴더. Windows Chromium이 한글 경로 PDF를 못 열어서 ASCII 이름만 쓴다."""
+    digest = hashlib.sha1(note_path.name.encode("utf-8")).hexdigest()[:16]
+    return note_path.parent / f"worig-{digest}.assets"
+
+
+def viewer_local_path(path: Path) -> Path:
+    """WebEngine에 넘길 로컬 경로. 비ASCII면 TEMP에 ASCII 이름으로 복사한다."""
+    src = path.resolve()
+    if not src.is_file():
+        return src
+    if str(src).isascii():
+        return src
+    digest = hashlib.sha1(str(src).encode("utf-8")).hexdigest()[:16]
+    staged = Path(tempfile.gettempdir()) / "iris-wiki-original" / f"{digest}{src.suffix.lower()}"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    src_st = src.stat()
+    # size·mtime이 같으면 큰 PDF를 다시 복사하지 않는다.
+    if (
+        not staged.is_file()
+        or staged.stat().st_size != src_st.st_size
+        or int(staged.stat().st_mtime) < int(src_st.st_mtime)
+    ):
+        shutil.copyfile(src, staged)
+    return staged
+
+
+def first_page_png(path: Path, *, dpi: int = 110) -> bytes | None:
+    """PDF 1페이지만 PNG로. pymupdf 없거나 실패면 None."""
+    src = Path(path)
+    if not src.is_file() or src.suffix.lower() != ".pdf":
+        return None
+    try:
+        import pymupdf
+    except ImportError:
+        return None
+    doc = None
+    try:
+        doc = pymupdf.open(str(src))
+        if doc.page_count < 1:
+            return None
+        return doc[0].get_pixmap(dpi=dpi).tobytes("png")
+    except Exception:
+        return None
+    finally:
+        if doc is not None:
+            doc.close()
 
 
 def split_summary_sections(summary: str) -> tuple[str, str]:
@@ -72,9 +123,13 @@ def insert_original_marker(path: Path, asset_rel: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+# PDF·URL·이미지·HTML은 위키 미리보기 아래 Chromium 원본이 필수다.
+_REQUIRED_ORIGINAL_KINDS = frozenset({"pdf", "url", "image"})
+
+
 def store_original(note_path: Path, *, kind: str, source: str) -> str:
     """노트 옆에 원본을 둔다. 마커에 쓸 상대 경로. 없으면 빈 문자열."""
-    folder = note_path.with_name(note_path.stem + ".assets")
+    folder = assets_dir_for(note_path)
     try:
         if kind == "pdf":
             src = Path(source)
@@ -111,8 +166,38 @@ def store_original(note_path: Path, *, kind: str, source: str) -> str:
             dest = folder / "original.html"
             dest.write_text(html, encoding="utf-8")
             return f"{folder.name}/original.html"
+        if kind == "office":
+            src = Path(source)
+            if not src.is_file():
+                return ""
+            folder.mkdir(parents=True, exist_ok=True)
+            dest = folder / f"original{src.suffix.lower() or '.bin'}"
+            shutil.copyfile(src, dest)
+            return f"{folder.name}/{dest.name}"
     except (OSError, ValueError, TimeoutError):
         return ""
+    return ""
+
+
+def _needs_original(kind: str, source: str) -> bool:
+    k = (kind or "").strip().lower()
+    if k in _REQUIRED_ORIGINAL_KINDS:
+        return True
+    if k == "office":
+        return True
+    if k == "text" and Path(source).suffix.lower() in {".html", ".htm"}:
+        return True
+    return False
+
+
+def require_original(note_path: Path, *, kind: str, source: str) -> str:
+    """문서 원본을 노트 옆에 두고 마커를 쓴다. 필수 kind에서 실패하면 예외."""
+    asset = store_original(note_path, kind=kind, source=source)
+    if asset:
+        insert_original_marker(note_path, asset)
+        return asset
+    if _needs_original(kind, source):
+        raise ValueError(f"wiki original missing for {kind}: {source}")
     return ""
 
 
@@ -286,6 +371,25 @@ def _check() -> None:
     assert asset.endswith("original.pdf")
     assert "## 원본" not in top
     assert "## 전체 요약" in top
+    assert _needs_original("pdf", "x.pdf")
+    assert not _needs_original("text", "note.md")
+    note = Path("초파리-논문.md")
+    assert assets_dir_for(note).name.startswith("worig-")
+    assert assets_dir_for(note).name.isascii()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf = Path(tmp) / "one.pdf"
+        try:
+            import pymupdf
+        except ImportError:
+            assert first_page_png(pdf) is None
+        else:
+            doc = pymupdf.open()
+            doc.new_page(width=200, height=200)
+            doc.save(str(pdf))
+            doc.close()
+            png = first_page_png(pdf)
+            assert png and png[:4] == b"\x89PNG", png and png[:8]
 
     html = inline_html(
         """<html><head>

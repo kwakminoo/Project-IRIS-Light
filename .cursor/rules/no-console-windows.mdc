@@ -1,18 +1,47 @@
 ---
-description: Windows에서 subprocess 호출 시 콘솔/터미널 창이 뜨지 않게 한다
-globs: iris/system/**/*.py,iris/audio/**/*.py,iris/monitoring/**/*.py
-alwaysApply: false
+description: Windows에서 채팅·서브프로세스 호출 시 콘솔/터미널 창이 뜨지 않게 한다
+globs: iris/**/*.py,tests/test_no_console_window.py
+alwaysApply: true
 ---
 
 # No visible console windows (Windows)
 
-- `adb`, `taskkill`, venv `python` 등 콘솔 서브시스템 실행은 반드시 `iris.system.win_subprocess.no_window_kwargs()`를 쓴다.
-- 에뮬 프로세스 목록은 **psutil**만 사용. PowerShell CIM / 숨김 없는 `tasklist`로 스캔하지 않는다 (콘솔 깜빡임).
+채팅에 텍스트·이미지를 보내도 Cascadia/콘솔 창이 깜빡이면 안 된다.
+`pythonw` 부모가 콘솔 서브시스템 자식(`python.exe`, `git`, `cmd`, `npx.cmd`, `tesseract` …)을
+`CREATE_NO_WINDOW` 없이 띄우면 Windows Terminal이 잠깐 보인다.
+
+## 계약
+
+- Iris 기동(`iris/__main__.py`)에서 반드시:
+  - `suppress_platform_ver_console()` — `platform.win32_ver`의 `cmd /c ver` 차단
+  - `install_no_console_subprocess_patch()` — `subprocess.*`에 `CREATE_NO_WINDOW`(+SW_HIDE) 기본 주입
+- 개별 호출도 `iris.system.win_subprocess.no_window_kwargs()`를 쓴다 (명시가 안전).
+- Hermes `iris-control` MCP command는 Windows에서 **`pythonw.exe`** (stdio 파이프는 유지, 콘솔 창 없음).
+- `adb`, `taskkill`, venv `python`, `git` 등 콘솔 실행은 숨김 플래그 없이 호출하지 않는다.
+- 에뮬 프로세스 목록은 **psutil**만. PowerShell CIM / 숨김 없는 `tasklist` 스캔 금지.
 - CallMonitor 등 폴링 핫패스에서 프로세스 스캔 금지 — adb만, 없으면 바로 실패.
-- Android 에뮬레이터 **GUI** 기동:
-  - `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`만 사용.
-  - **`CREATE_NO_WINDOW` / `STARTUPINFO` / `SW_HIDE` 금지** — `UpdateLayeredWindowIndirect` 실패로 **검은 화면**이 된다 (실측).
-  - Win11에서 뜨는 터미널은 `ConsoleWindowClass`가 아니라 **`PseudoConsoleWindow`**(qemu/netsimd/crashpad PID) + **`CASCADIA_HOSTING_WINDOW_CLASS`**(Windows Terminal, 제목=exe 경로). `_hide_emulator_console_surfaces`로 숨긴다 (Qt 폰 화면 제외).
-- `CREATE_NEW_CONSOLE` / 숨김 없는 `powershell` / 숨김 없는 `taskkill` 금지.
-- 막는 대상은 **터미널/콘솔 플래시**뿐이다. 에뮬레이터 화면 창은 보여야 한다.
-- 음성 런타임은 `.venv-voice`의 Windows `Scripts/python.exe`와 Unix `bin/python`을 모두 인식하고, 없으면 mock/STT 요구에 맞게 자동 bootstrap한다.
+
+## GUI 예외 (창이 보여야 하는 경우)
+
+Android 에뮬레이터 **GUI** 기동:
+
+- `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`만 사용.
+- **`CREATE_NO_WINDOW` / `STARTUPINFO` / `SW_HIDE` 금지** — `UpdateLayeredWindowIndirect` 실패로 **검은 화면**.
+- 전역 패치는 `DETACHED_PROCESS` / `CREATE_NEW_CONSOLE`이 있으면 주입하지 않는다.
+- Win11 터미널 표면은 `_hide_emulator_console_surfaces`로 숨긴다 (Qt 폰 화면 제외).
+
+의도적으로 콘솔가 필요하면 `iris_allow_console=True` 또는 `IRIS_ALLOW_CONSOLE=1`.
+
+## 금지
+
+- `CREATE_NEW_CONSOLE` / 숨김 없는 `powershell` / 숨김 없는 `taskkill`
+- 채팅 핫패스에서 `shell=True` + 콘솔 명령 (가능하면 argv 리스트 + `no_window_kwargs`)
+- MCP를 Windows `python.exe`로만 고정 (pythonw가 있으면 그걸 씀)
+
+## 검증
+
+```powershell
+.venv\Scripts\python.exe -m unittest tests.test_no_console_window -v
+```
+
+수동: Iris 재시작 후 채팅에 텍스트·이미지 전송 → Cascadia/cmd 창이 안 떠야 한다.

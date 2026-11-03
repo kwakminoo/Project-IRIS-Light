@@ -69,7 +69,7 @@ class IrisIdeInstallDialog(QDialog):
         root.addWidget(make_title("IRIS IDE"))
         root.addWidget(
             make_hint(
-                "Node · yarn · Theia 빌드 — 진행 상황은 아래 로그에 표시됩니다. "
+                "IRIS IDE 빌드 — 진행 상황은 아래 로그에 표시됩니다. "
                 "시작 프로토콜 설치와 동일한 방식입니다."
             )
         )
@@ -92,7 +92,7 @@ class IrisIdeInstallDialog(QDialog):
 
     def _start_install(self) -> None:
         self._card.begin_install(
-            "IRIS IDE 설치 중… yarn · tsc · theia build 순으로 진행됩니다.",
+            "IRIS IDE 설치 중… 빌드가 진행됩니다.",
             reset=True,
             step_id="iris_ide",
         )
@@ -164,7 +164,7 @@ def prompt_iris_ide_install(parent: QWidget | None) -> bool:
     box.setIcon(QMessageBox.Icon.Information)
     box.setWindowTitle("IRIS IDE")
     box.setText("IRIS IDE가 설치되어 있지 않습니다.")
-    box.setInformativeText("IRIS에 내장된 Eclipse Theia 기반 IDE입니다. 지금 설치할까요?")
+    box.setInformativeText("IRIS에 내장된 IDE입니다. 지금 설치할까요?")
     cancel_btn = box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
     install_btn = box.addButton("설치", QMessageBox.ButtonRole.AcceptRole)
     box.setDefaultButton(install_btn)

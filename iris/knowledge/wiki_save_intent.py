@@ -48,6 +48,8 @@ class WikiSaveRequest:
     rel_path: str | None = None
     from_attachment: bool = False
     content: str = ""
+    sources: tuple[str, ...] = ()
+    followup: bool = False
 
 
 def _norm(text: str) -> str:
@@ -157,6 +159,58 @@ def parse_wiki_save_request(
     }
     return WikiSaveRequest(
         source=source,
+        sources=tuple(candidates),
         mode=mode,
         from_attachment=from_att,
+    )
+
+
+_BATCH_WORDS = ("pdf", "위키", "wiki", "저장", "파일", "첨부")
+_NOTE_EXT = {".pdf", ".md", ".markdown", ".txt", ".csv", ".json", ".html", ".htm"}
+
+
+def keep_wiki_batch(text: str) -> bool:
+    """저장 직후 질문이면 재첨부 배치를 유지한다. 다른 화제는 끊는다."""
+    body = (text or "").strip().lower()
+    if not body:
+        return True
+    return any(word in body for word in _BATCH_WORDS)
+
+
+def followup_wiki_save(
+    text: str,
+    attachments: list[str] | tuple[str, ...] = (),
+    *,
+    pending: bool,
+    mode: str = "raw",
+) -> WikiSaveRequest | None:
+    """저장 요청 뒤에 글 없이 파일만 다시 붙이면 그 파일 전부를 같은 배치로 본다."""
+    if not pending or (text or "").strip():
+        return None
+    candidates = extract_source_candidates("", attachments)
+    if not candidates:
+        return None
+    return WikiSaveRequest(
+        source=candidates[0],
+        sources=tuple(candidates),
+        mode=mode or "raw",
+        from_attachment=True,
+        followup=True,
+    )
+
+
+def reject_attachment_rewrite(paths: list[str] | tuple[str, ...] = ()) -> str:
+    """첨부가 문서를 포함하면 write_user_note 대신 import_pages 를 요구한다."""
+    docs = [
+        str(path)
+        for path in paths
+        if Path(str(path)).suffix.lower() in _NOTE_EXT
+    ]
+    if not docs:
+        return ""
+    listed = "\n".join(docs)
+    return (
+        "첨부 파일은 wiki.import_pages 로 저장한다. "
+        "wiki.write_user_note 로 본문을 다시 쓰지 말 것.\n"
+        f"sources:\n{listed}"
     )

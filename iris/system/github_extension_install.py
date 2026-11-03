@@ -1,7 +1,7 @@
 """GitHub URL → Hermes MCP config / skills 폴더 설치.
 
-채팅에서 주소와 함께 MCP 연결·Skill 적용을 요청하면, Hermes가 실제로 읽는
-`%LOCALAPPDATA%/hermes/config.yaml` 과 `skills/` 에만 기록한다.
+채팅에서 주소와 함께 MCP 연결·Skill 적용을 요청하면, Iris Agent 홈
+(`iris_agent_home()` / config.yaml·skills/) 에만 기록한다.
 저장소 README의 임의 셸은 실행하지 않는다.
 
 ponytail: GitHub 목록은 깊이 3·25회·파일 40개·2MB. 로컬 빌드가 필요한 서버는

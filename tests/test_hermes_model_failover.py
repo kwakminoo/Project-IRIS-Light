@@ -15,11 +15,11 @@ from PyQt6.QtWidgets import QApplication
 
 _APP = QApplication.instance() or QApplication(sys.argv)
 
-from iris.engine import ExternalGateway  # noqa: E402
+from iris.engine.types import ExternalGateway  # noqa: E402
 from iris.ui.workers.chat_attempt import ChatAttempt  # noqa: E402
 from iris.ui.workers.hermes_workers import HermesChatWorker  # noqa: E402
 
-_EXTERNAL = ExternalGateway(base_url="http://127.0.0.1:8642/v1", api_key="")
+_EXT = ExternalGateway(base_url="http://127.0.0.1:8642/v1", api_key="")
 
 
 class _FakeHermesClient:
@@ -80,7 +80,7 @@ class HermesFailoverTests(TestCase):
         )
         out = _Collector(worker)
         with (
-            patch("iris.ui.workers.hermes_workers._engine_source", return_value=_EXTERNAL),
+            patch("iris.ui.workers.hermes_workers._engine_source", return_value=_EXT),
             patch("iris.ui.workers.hermes_workers.HermesClient", client),
             patch(
                 "iris.ui.workers.hermes_workers.is_hermes_gateway_running",
@@ -242,7 +242,7 @@ class HermesFailoverTests(TestCase):
         out = _Collector(worker)
         worker.request_cancel()
         with (
-            patch("iris.ui.workers.hermes_workers._engine_source", return_value=_EXTERNAL),
+            patch("iris.ui.workers.hermes_workers._engine_source", return_value=_EXT),
             patch("iris.ui.workers.hermes_workers.HermesClient", client),
             patch(
                 "iris.ui.workers.hermes_workers.is_hermes_gateway_running",
@@ -263,7 +263,7 @@ class HermesFailoverTests(TestCase):
         )
         out = _Collector(worker)
         with (
-            patch("iris.ui.workers.hermes_workers._engine_source", return_value=_EXTERNAL),
+            patch("iris.ui.workers.hermes_workers._engine_source", return_value=_EXT),
             patch("iris.ui.workers.hermes_workers.HermesClient", client),
             patch(
                 "iris.ui.workers.hermes_workers.is_hermes_gateway_running",

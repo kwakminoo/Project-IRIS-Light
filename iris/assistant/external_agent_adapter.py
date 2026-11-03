@@ -1,4 +1,4 @@
-"""백엔드 상태 표시 — Hermes API 헬스 반영."""
+"""백엔드 상태 표시 — Iris Agent 헬스 반영."""
 
 from __future__ import annotations
 
@@ -13,13 +13,13 @@ def external_backend_status_line(
     *,
     hermes_online: bool = False,
 ) -> str:
-    """상태 칩용 한 줄 요약. OpenClaw는 Light에서 미사용."""
+    """상태 칩용 한 줄 요약."""
     if settings is None:
-        return "OpenClaw (Unavailable) | Hermes (Unavailable)"
+        return "Iris Agent (Unavailable)"
     if not settings.hermes_enabled:
-        hermes = "Unavailable"
+        status = "Unavailable"
     elif hermes_online:
-        hermes = "Connected"
+        status = "Connected"
     else:
-        hermes = "Offline"
-    return f"OpenClaw (Unavailable) | Hermes ({hermes})"
+        status = "Offline"
+    return f"Iris Agent ({status})"

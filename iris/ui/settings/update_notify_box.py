@@ -27,7 +27,7 @@ class UpdateNotifyBox(QGroupBox):
             )
         )
         self.iris_notify = QCheckBox("아이리스 업데이트 알림 허용")
-        self.hermes_notify = QCheckBox("헤르메스 업데이트 알림 허용")
+        self.hermes_notify = QCheckBox("아이리스 에이전트 업데이트 알림 허용")
         self.iris_notify.setChecked(prefs.iris)
         self.hermes_notify.setChecked(prefs.hermes)
         lay.addWidget(self.iris_notify)

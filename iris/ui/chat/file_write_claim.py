@@ -11,13 +11,23 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from iris.system.project_ops import extract_first_code_block
+from iris.system.project_ops import code_fence_body_start, extract_first_code_block
 
 CHAT_ONLY = "채팅에만 있고 파일은 만들지 않았다"
 _CODE_ONLY_PROMPT = "코드만 출력. 설명·파일명·완료 문장 금지"
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 _WRITE_RE = re.compile(r"작성|넣어|써|스크립트|코드")
-_CLAIM_RE = re.compile(r"처리 완료|생성하겠습니다|작성했습니다|파일을 열었습니다|저장했습니다")
+# 파일 생성 허위 완료만. 위키·PDF 「저장했습니다」단독은 건드리지 않는다.
+_CLAIM_RE = re.compile(
+    r"처리 완료|생성하겠습니다|생성했습니다|작성했습니다|파일을 열었습니다|"
+    r"만들었습니다|만들어 드렸|스크립트를 만들|코드를 작성했|파일로 썼"
+)
+_FILE_GOAL_RE = re.compile(
+    r"생성|작성|스크립트|만들어|\.py\b|\.js\b|\.ts\b|코드 파일|파일로 써|write_file|파일 만들"
+)
+_NAMED_FILE_RE = re.compile(
+    r"(?i)\b([A-Za-z0-9_\-./]+\.(?:py|js|ts|tsx|jsx|html|css|md|txt|json))\b"
+)
 _CODE_HINT = re.compile(
     r"(^\s*(import|from|def|class|for|while|if|return|print|const|let|var|function)\b)|[{}=();]",
     re.M,
@@ -38,8 +48,103 @@ class GateResult:
     suppress_followup_write: bool
 
 
+@dataclass(frozen=True)
+class TurnWriteEvidence:
+    wrote: bool
+    verified_path: str = ""
+
+
+@dataclass(frozen=True)
+class FileCreateGoal:
+    matched: bool
+
+
+@dataclass(frozen=True)
+class LocalWritePlan:
+    """skip | ask | write. write 만 pairs 를 채운다. iris_generated 발명 금지."""
+
+    kind: str
+    pairs: tuple[tuple[str, str], ...] = ()
+    ask_message: str = ""
+
+
 def contains_completion_claim(text: str) -> bool:
     return bool(_CLAIM_RE.search(text or ""))
+
+
+def turn_write_evidence(
+    *,
+    verified_path: str = "",
+    tool_written: bool = False,
+) -> TurnWriteEvidence:
+    path = (verified_path or "").strip()
+    if path and Path(path).is_file():
+        return TurnWriteEvidence(True, str(Path(path).resolve()))
+    if tool_written:
+        return TurnWriteEvidence(True, "")
+    return TurnWriteEvidence(False, "")
+
+
+def file_create_goal(goal: str) -> FileCreateGoal:
+    return FileCreateGoal(bool(_FILE_GOAL_RE.search(goal or "")))
+
+
+def named_rel_paths(text: str) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in _NAMED_FILE_RE.finditer(text or ""):
+        name = match.group(1).replace("\\", "/").lstrip("./")
+        if not name or name.casefold() == "iris_generated.py":
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def extract_all_code_blocks(text: str) -> list[dict]:
+    out: list[dict] = []
+    raw = text or ""
+    pos = 0
+    while pos < len(raw):
+        opened = code_fence_body_start(raw[pos:])
+        if opened is None:
+            break
+        lang, start = opened
+        abs_start = pos + start
+        tail = raw[abs_start:]
+        end = tail.find("```")
+        if end < 0:
+            break
+        code = tail[:end].strip("\n")
+        if code.strip():
+            out.append({"lang": lang, "code": code})
+        pos = abs_start + end + 3
+    return out
+
+
+def plan_local_file_writes(goal: str, assistant: str) -> LocalWritePlan:
+    """조건이 모두 맞을 때만 write. 애매하면 ask 또는 skip."""
+    if not file_create_goal(goal).matched:
+        return LocalWritePlan("skip")
+    names = named_rel_paths(goal)
+    fences = extract_all_code_blocks(assistant)
+    if not fences:
+        return LocalWritePlan("skip")
+    if not names:
+        return LocalWritePlan(
+            "ask",
+            ask_message="파일 이름을 알려 주세요. 임의로 iris_generated.py 를 만들지 않습니다.",
+        )
+    if len(names) != len(fences):
+        return LocalWritePlan(
+            "ask",
+            ask_message="파일 이름과 코드 블록 개수가 맞지 않습니다. 이름과 코드를 맞춰 주세요.",
+        )
+    pairs = tuple((name, str(block["code"])) for name, block in zip(names, fences))
+    return LocalWritePlan("write", pairs=pairs)
 
 
 def verified_write_path(result: dict | None) -> str:
@@ -67,10 +172,23 @@ def settle_completion_claim(
     *,
     verified_path: str = "",
     try_write: Callable[[str, str], dict | None] | None = None,
+    wrote: bool = False,
 ) -> GateResult:
-    """모델이 쓴 답을 그대로 둔다. 완료 단어로 파일을 쓰거나 문장을 바꾸지 않는다."""
-    del verified_path, try_write
-    return GateResult(text or "", False)
+    """파일 생성 완료 주장 + 이번 턴 write 증거 없으면 원문 끝에 CHAT_ONLY 한 줄.
+
+    try_write 로 펜스→파일을 쓰지 않는다 (전면 폴백 복구 금지).
+    """
+    del try_write
+    body = text or ""
+    evidence = turn_write_evidence(verified_path=verified_path, tool_written=wrote)
+    if evidence.wrote:
+        return GateResult(body, False)
+    if not contains_completion_claim(body):
+        return GateResult(body, False)
+    if CHAT_ONLY in body:
+        return GateResult(body, True)
+    display = body.rstrip() + "\n\n" + CHAT_ONLY
+    return GateResult(display, True)
 
 
 def image_write_request(text: str, attachments: list[str] | tuple[str, ...]) -> bool:

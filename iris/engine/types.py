@@ -194,7 +194,10 @@ EngineSource = Union[InternalSidecar, ExternalGateway]
 
 
 def _default_engine_home() -> EngineHome:
-    return EngineHome(Path.home() / ".iris-light" / "engine")
+    # Product home (= Iris Agent home). Same tree as pin/migrate/supervisor.
+    from iris.infrastructure.agent_runtime import iris_agent_home
+
+    return EngineHome(iris_agent_home())
 
 
 def _settings_flag(settings: object, name: str) -> bool:

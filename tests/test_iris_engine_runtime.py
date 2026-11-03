@@ -160,7 +160,9 @@ class ParseEngineSourceTests(TestCase):
         source = parse_engine_source(object())
         self.assertIsInstance(source, InternalSidecar)
         assert isinstance(source, InternalSidecar)
-        self.assertEqual(source.home, Path.home() / ".iris-light" / "engine")
+        from iris.infrastructure.agent_runtime import iris_agent_home
+
+        self.assertEqual(source.home, iris_agent_home())
         self.assertTrue(source.kill_on_shutdown)
 
     def test_external_flag_yields_gateway_that_does_not_kill(self) -> None:

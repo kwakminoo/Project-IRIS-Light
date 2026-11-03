@@ -22,6 +22,7 @@ from iris.infrastructure.hermes_client import (
     HermesClient,
     HealthProbeResult,
 )
+from iris.infrastructure.agent_runtime import ensure_iris_agent_home
 from iris.infrastructure.hermes_credentials import (
     hermes_home,
     load_hermes_dotenv,
@@ -102,7 +103,7 @@ class GatewayDiagnosis:
 
     def chat_message(self) -> str:
         """Concise chat summary; full command and logs stay in diagnostics."""
-        return f"Hermes를 시작하지 못했습니다.\n{self.message} [{self.code}]"
+        return f"Iris Agent를 시작하지 못했습니다.\n{self.message} [{self.code}]"
 
     def detailed_message(self) -> str:
         """Developer details, including complete saved stdout/stderr."""
@@ -703,8 +704,8 @@ def start_hermes_gateway(command: str = "hermes") -> bool:
         _set_diagnosis(
             GatewayDiagnosis(
                 code=CODE_EXE_MISSING,
-                message="Hermes 실행 파일/venv python을 찾지 못했습니다.",
-                action="시작 프로토콜에서 Hermes 설치를 다시 실행하거나 PATH를 확인하세요.",
+                message="Iris Agent 실행 파일/venv python을 찾지 못했습니다.",
+                action="시작 프로토콜에서 Iris Agent 설치를 다시 실행하거나 PATH를 확인하세요.",
                 detail=report,
                 log_dir=str(_gateway_log_dir()),
             )
@@ -1045,7 +1046,7 @@ def _diagnose_port_conflict(base_url: str) -> GatewayDiagnosis | None:
         return GatewayDiagnosis(
             code=CODE_PORT_CONFLICT,
             message=(
-                f"포트 {port} 응답이 Hermes가 아닙니다 "
+                f"포트 {port} 응답이 Iris Agent가 아닙니다 "
                 f"(PID {pid}, {name or 'unknown'})."
             ),
             action="점유 프로세스를 종료한 뒤 설치를 다시 실행하세요.",
@@ -1432,11 +1433,22 @@ def _wait_until_healthy(
 
 
 def _apply_ollama_options_guard_now() -> bool:
-    """설치본 options 가드. True 면 이번에 디스크가 바뀌었다."""
+    """가드 부재 시 제품 트리에 1회 적용. True면 이번에 파일이 바뀜(gateway 재시작 신호)."""
     try:
-        from iris.system.hermes_ollama_guard import apply_ollama_options_guard
+        from iris.system.hermes_ollama_guard import (
+            apply_ollama_options_guard,
+            ollama_options_guard_present,
+        )
 
-        return bool(apply_ollama_options_guard(_hermes_agent_dir()))
+        root = _hermes_agent_dir()
+        if ollama_options_guard_present(root):
+            return False
+        changed = bool(apply_ollama_options_guard(root))
+        if not changed:
+            _log.warning(
+                "ollama options guard missing from Iris Agent tree and pattern not found"
+            )
+        return changed
     except Exception:
         return False
 
@@ -1452,6 +1464,7 @@ def ensure_hermes_gateway_running(
     on_progress: Callable[[str], None] | None = None,
 ) -> bool:
     """켜져 있으면 즉시 True. 아니면 기동 후 /health·/v1/models 준비까지 대기."""
+    ensure_iris_agent_home()
     key = resolve_hermes_api_key(api_key)
     guard_changed = _apply_ollama_options_guard_now()
 
@@ -1571,7 +1584,7 @@ def ensure_hermes_gateway_running(
         )
         return False
 
-    _note("Hermes gateway 기동…")
+    _note("Iris Agent gateway 기동…")
     if not start_hermes_gateway(command):
         return False
     return _wait_until_healthy(

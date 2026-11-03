@@ -102,6 +102,22 @@ if (fs.existsSync(iconIco)) {
     copyIcon('favicon.ico', iconIco);
 }
 
+function copyPdfJs() {
+    const srcDir = path.join(root, 'vendor', 'pdfjs');
+    const destDir = path.join(frontendDir, 'pdfjs');
+    if (!fs.existsSync(path.join(srcDir, 'pdf.mjs')) || !fs.existsSync(path.join(srcDir, 'pdf.worker.mjs'))) {
+        console.warn('patch-theia-build: vendor/pdfjs missing — Iris PDF viewer assets not copied');
+        return false;
+    }
+    fs.mkdirSync(destDir, { recursive: true });
+    for (const name of ['pdf.mjs', 'pdf.worker.mjs']) {
+        fs.copyFileSync(path.join(srcDir, name), path.join(destDir, name));
+    }
+    console.log('patch-theia-build: copied vendor/pdfjs → lib/frontend/pdfjs');
+    return true;
+}
+copyPdfJs();
+
 const bundlePath = path.join(frontendDir, 'bundle.js');
 const bundleText = fs.existsSync(bundlePath) ? fs.readFileSync(bundlePath, 'utf8') : '';
 const bundleHasIris = bundleText.includes('iris-ide-frontend-module');
@@ -113,7 +129,9 @@ const bundleHasCurrentExt =
     bundleText.includes('iris.ide.showStartScreen') &&
     bundleText.includes('iris.ide.runFile') &&
     bundleText.includes('IRIS_EXIT:') &&
-    bundleText.includes('setDiagnostics');
+    bundleText.includes('setDiagnostics') &&
+    bundleText.includes('iris.pdf') &&
+    bundleText.includes('iris-pdf');
 if (rebundle || !bundleHasIris || !bundleHasCurrentExt) {
     console.log('patch-theia-build: rebundling frontend (iris extension)...');
     execSync('node esbuild.mjs', { cwd: root, stdio: 'inherit' });

@@ -5,7 +5,8 @@ from __future__ import annotations
 import inspect
 import sys
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, QPointF, Qt
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 
 from iris.system.ide_tiler import (
@@ -19,8 +20,43 @@ from iris.system.ide_tiler import (
 from iris.ui.widgets.visualizer import Visualizer
 from iris.ui.window.cyberspace_background import CyberspaceBackground
 from iris.ui.window.frameless_chrome import FramelessShell
-from iris.ui.workspaces.ide_companion_page import IdeCompanionPage, IdeUnifiedShell
+from iris.ui.workspaces.ide_companion_page import (
+    IdeCompanionPage,
+    IdeUnifiedShell,
+    _CompanionSplitHandle,
+)
 from iris.ui.workspaces.iris_ide_window import IrisIdeWindow
+
+
+def _mouse(kind: QEvent.Type, *, buttons: Qt.MouseButton) -> QMouseEvent:
+    pos = QPointF(1, 1)
+    return QMouseEvent(
+        kind,
+        pos,
+        pos,
+        Qt.MouseButton.LeftButton,
+        buttons,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def _assert_supporting_handle_fade(shell: IdeUnifiedShell) -> None:
+    handle = shell.splitter().handle(1)
+    assert isinstance(handle, _CompanionSplitHandle)
+    assert not handle.bar_visible()
+    handle.mousePressEvent(_mouse(QEvent.Type.MouseButtonPress, buttons=Qt.MouseButton.LeftButton))
+    assert handle.bar_visible()
+    handle.mouseReleaseEvent(
+        _mouse(QEvent.Type.MouseButtonRelease, buttons=Qt.MouseButton.NoButton)
+    )
+    assert not handle.bar_visible()
+    # 호버 1초 만료(드래그 중으로 간주해 underMouse 없이 표시)
+    handle._pressed = True
+    handle._on_reveal_timeout()
+    assert handle.bar_visible()
+    handle._pressed = False
+    handle._set_bar(False)
+    assert not handle.bar_visible()
 
 
 def _assert_no_orb_above_in_unified_source() -> None:
@@ -207,6 +243,7 @@ def main() -> int:
     closed = shell._split.sizes()
     assert closed == before, (before, closed)
     assert shell.split_handle_width() == 6
+    _assert_supporting_handle_fade(shell)
     ide2.set_embedded(True, host=shell)
     assert ide2.is_embedded()
     assert ide2.isWindow()

@@ -110,6 +110,58 @@ def _iris_ide_context(window: MainWindow) -> dict[str, Any]:
     return shared_ide_link().editor_state(_iris_ide_client(window))
 
 
+def iris_ide_editor_opened(bridge_out: Any) -> tuple[bool, str]:
+    """True only when IRIS IDE poller opened a tab. Soft-success paths are gone."""
+    if not isinstance(bridge_out, dict):
+        return False, "empty bridge open result"
+    if bridge_out.get("via") == "bridge_fallback":
+        return False, str(
+            bridge_out.get("error")
+            or "IDE editor did not open (obsolete bridge_fallback)"
+        )
+    if bridge_out.get("opened") is False:
+        return False, str(bridge_out.get("error") or "IDE editor did not open")
+    viewer = bridge_out.get("viewer")
+    if viewer is not None and viewer not in ("iris.pdf", "monaco"):
+        return False, f"unsupported IDE viewer: {viewer}"
+    return True, ""
+
+
+def iris_ide_save_ok(bridge_out: Any) -> tuple[bool, str]:
+    """True only when the editor buffer was flushed. Disk-only is not a save."""
+    if not isinstance(bridge_out, dict):
+        return False, "empty bridge save result"
+    if bridge_out.get("saved") is not True:
+        return False, str(bridge_out.get("reason") or bridge_out.get("error") or "save failed")
+    if bridge_out.get("via") == "disk" or bridge_out.get("editor") is False:
+        return False, "IRIS IDE editor did not save (no open editor buffer)"
+    return True, ""
+
+
+def iris_ide_edit_ok(bridge_out: Any) -> tuple[bool, str]:
+    """True only when Monaco applied the edit. Disk append is not a selection replace."""
+    if not isinstance(bridge_out, dict):
+        return False, "empty bridge edit result"
+    if bridge_out.get("noEditor") is True:
+        return False, "IRIS IDE editor did not apply buffer edit (no open editor)"
+    if bridge_out.get("via") != "editor":
+        return False, "IRIS IDE buffer edit requires via=editor (disk append is not a selection replace)"
+    return True, ""
+
+
+def iris_ide_query_ok(bridge_out: Any) -> tuple[bool, str]:
+    """True only after a language-service query finished. Empty items need queried true."""
+    if not isinstance(bridge_out, dict):
+        return False, "empty bridge language-query result"
+    if bridge_out.get("queried") is not True:
+        return False, str(
+            bridge_out.get("error")
+            or bridge_out.get("reason")
+            or "language service did not complete a query"
+        )
+    return True, ""
+
+
 def _ide_open_file_path(
     window: MainWindow,
     path: str,
@@ -153,6 +205,19 @@ def _ide_open_file_path(
                 }
             link = shared_ide_link()
             out = _bridge_call_pumping(lambda: link.open_file(rel, line=line, column=column))
+            visible, open_err = iris_ide_editor_opened(out)
+            if not visible:
+                return {
+                    "ok": False,
+                    "path": path,
+                    "error": open_err,
+                    "line": line,
+                    "column": column,
+                    "visible": False,
+                    "bridge": out,
+                    "via": (out or {}).get("via") if isinstance(out, dict) else None,
+                    "viewer": (out or {}).get("viewer") if isinstance(out, dict) else None,
+                }
             return {
                 "ok": True,
                 "path": path,
@@ -161,6 +226,7 @@ def _ide_open_file_path(
                 "column": column,
                 "visible": True,
                 "bridge": out,
+                "viewer": (out or {}).get("viewer") if isinstance(out, dict) else None,
             }
         except Exception as exc:  # noqa: BLE001
             return {
@@ -216,6 +282,100 @@ def _bound_session(window: MainWindow, *, require_workspace: bool = False) -> tu
     return session, ""
 
 
+def ensure_iris_ide_workspace(
+    window: Any,
+    work_root: str | Path,
+    *,
+    action: str,
+    open_folder: Callable[[str], str] | None = None,
+    new_window: bool = False,
+) -> dict[str, Any] | None:
+    """work_root 와 bound workspace 를 맞춘다. None = 진행 가능, dict = err_result.
+
+    이미 일치하면 open_folder 를 호출하지 않는다(멱등).
+    불일치면 기존 _open_ide_folder 경로로 맞추고, 맞춘 뒤 다시 확인한다.
+    new_window 기본 False: 이미 bound 된 Companion 에서 폴더만 바꾼다(새 창 spawn 금지).
+    """
+    try:
+        root_s = str(Path(str(work_root)).expanduser().resolve())
+    except OSError:
+        root_s = str(Path(str(work_root)).expanduser())
+    session, session_err = _bound_session(window, require_workspace=True)
+    if session_err or session is None:
+        return err_result(
+            action,
+            session_err or "bound IDE workspace session required",
+            {
+                "project_root": root_s,
+                "bound_workspace_root": None,
+                "open_folder_path": root_s,
+                "hint": "ide.open_folder",
+            },
+        )
+    try:
+        bound = str(Path(session.workspace_root).resolve())
+    except OSError:
+        bound = str(session.workspace_root or "")
+    if bound == root_s:
+        return None
+
+    def _default_open(path: str) -> str:
+        # 액션 스레드에서 직접 호출(기존 open_similar 와 동일). Queued _call_on_ui(3s)로
+        # 동기 open_folder 를 감싸면 타임아웃·재진입 함정.
+        err = window._open_ide_folder(path, new_window=new_window, source="chat")
+        return str(err or "")
+
+    opener = open_folder if open_folder is not None else _default_open
+    try:
+        open_err = opener(root_s)
+    except Exception as exc:  # noqa: BLE001
+        open_err = str(exc)
+    open_err_s = str(open_err or "").strip()
+    if open_err_s:
+        return err_result(
+            action,
+            f"failed to align IDE workspace to project_root: {open_err_s}",
+            {
+                "project_root": root_s,
+                "bound_workspace_root": bound,
+                "open_folder_path": root_s,
+                "error": open_err_s,
+                "hint": "ide.open_folder",
+            },
+        )
+
+    session2, session2_err = _bound_session(window, require_workspace=True)
+    if session2_err or session2 is None:
+        return err_result(
+            action,
+            session2_err or "IDE workspace missing after open_folder",
+            {
+                "project_root": root_s,
+                "bound_workspace_root": bound,
+                "open_folder_path": root_s,
+                "error": session2_err or "missing session",
+                "hint": "ide.open_folder",
+            },
+        )
+    try:
+        bound2 = str(Path(session2.workspace_root).resolve())
+    except OSError:
+        bound2 = str(session2.workspace_root or "")
+    if bound2 != root_s:
+        return err_result(
+            action,
+            "IDE workspace still mismatched after open_folder",
+            {
+                "project_root": root_s,
+                "bound_workspace_root": bound2,
+                "open_folder_path": root_s,
+                "error": "workspace_root did not update",
+                "hint": "ide.open_folder",
+            },
+        )
+    return None
+
+
 def _qt_pump() -> None:
     """processEvents는 GUI 스레드 전용 — 오프-UI 액션에서 부르면 no-op."""
     try:
@@ -240,7 +400,7 @@ def _bridge_call_pumping(call: Callable[[], Any], *, timeout: float = 20.0) -> A
 
     IRIS IDE는 같은 프로세스의 QWebEngineView다. UI 스레드에서 응답을 기다리면
     QtWebEngine의 in-process 네트워크 서비스가 멈춰 Theia가 폴링·응답을 못 하고,
-    브리지는 3.5초 뒤 bridge_fallback으로 이탈한다 (파일은 나중에야 열린다).
+    브리지가 3.5초 안에 응답하지 못하면 하드 오류다 (가짜 open 없음).
     """
     box: dict[str, Any] = {}
 

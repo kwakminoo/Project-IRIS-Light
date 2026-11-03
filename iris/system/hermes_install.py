@@ -28,17 +28,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
+from iris.infrastructure.agent_runtime import (
+    apply_iris_agent_baseline_overlays,
+    ensure_iris_agent_home,
+    load_pinned_sha,
+    load_upstream_url,
+)
 from iris.system import hermes_gateway as gw
 
-HERMES_REPO_HTTPS = "https://github.com/NousResearch/hermes-agent.git"
+HERMES_REPO_HTTPS = load_upstream_url()
 StreamFn = Callable[[str], None]
 _HERMES_PYTHON_MIN = (3, 11)
 _HERMES_PYTHON_MAX_EXCLUSIVE = (3, 14)
 _PY_LAUNCHER_FLAGS = ("-3.11", "-3.12", "-3.13")
-_WANTED_EXTRAS = ("homeassistant", "mcp")
 _PIP_FALLBACK_LIMIT = (
     "pip 폴백은 uv.lock pin을 재현하지 않습니다. "
-    "선언된 extras 만 설치하며 requirements.txt 는 사용하지 않습니다."
+    "extras mcp,messaging 만 설치하며 requirements.txt 는 사용하지 않습니다."
 )
 _ERROR_LINE = re.compile(
     r"(?i)\b(error|exception|traceback|failed|winerror|timeout|permissionerror)\b"
@@ -412,8 +417,8 @@ def _user_path_prepend(scripts: Path) -> None:
     path = os.environ.get("PATH", "")
     if s.lower() not in path.lower():
         os.environ["PATH"] = s + os.pathsep + path
-    # 실제 사용자 Hermes 홈만 레지스트리에 남긴다. Temp 등 테스트 홈은 이 프로세스만.
-    real = Path(os.environ.get("LOCALAPPDATA") or "") / "hermes"
+    # 제품 홈(또는 IRIS_AGENT_HOME) 아래 Scripts 만 레지스트리에 남긴다.
+    real = gw.hermes_home()
     try:
         scripts.resolve().relative_to(real.resolve())
     except (ValueError, OSError):
@@ -461,7 +466,9 @@ def _redact(text: str) -> str:
     return redact_secrets(text or "")
 
 
-def write_install_log(body: str, *, prefix: str = "iris-install", home: Path | None = None) -> Path:
+def write_install_log(
+    body: str, *, prefix: str = "iris-install", home: Path | None = None
+) -> Path:
     log_dir = (home if home is not None else gw.hermes_home()) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -523,53 +530,6 @@ def hermes_install_lock(home: Path) -> Iterator[Path]:
 def _timeout_kind(exc: BaseException) -> str:
     kind = getattr(exc, "kind", "")
     return str(kind) if kind in ("idle", "hard") else "hard"
-
-
-def _declared_optional_extras(pyproject: Path) -> frozenset[str]:
-    if not pyproject.is_file():
-        return frozenset()
-    try:
-        import tomllib
-
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return frozenset()
-    optional = data.get("project", {}).get("optional-dependencies")
-    if not isinstance(optional, dict):
-        return frozenset()
-    return frozenset(str(name) for name in optional)
-
-
-def _wanted_extras(agent: Path) -> tuple[str, ...]:
-    declared = _declared_optional_extras(agent / "pyproject.toml")
-    return tuple(name for name in _WANTED_EXTRAS if name in declared)
-
-
-def _uv_extra_args(extras: tuple[str, ...]) -> list[str]:
-    args: list[str] = []
-    for name in extras:
-        args.extend(("--extra", name))
-    return args
-
-
-def _pip_editable_spec(extras: tuple[str, ...]) -> str:
-    if not extras:
-        return "."
-    return ".[" + ",".join(extras) + "]"
-
-
-_PROBE_PINS = (
-    "aiohttp==3.14.3",
-    "mcp==2.0.0",
-    "httpx2==2.7.0",
-    "starlette==1.3.1",
-    "python-dotenv==1.2.2",
-    "ruamel.yaml==0.18.16",
-)
-
-
-def _boost_probe_deps(venv_py: Path) -> subprocess.CompletedProcess[str]:
-    return _run([str(venv_py), "-m", "pip", "install", *_PROBE_PINS], timeout=300.0)
 
 
 def _probe_venv(venv_py: Path) -> tuple[bool, str]:
@@ -668,7 +628,9 @@ def _activate_staged(
     if probe_gateway:
         ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
     else:
-        venv_py = live / ("venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python")
+        venv_py = live / (
+            "venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python"
+        )
         ok, detail = _probe_venv(venv_py)
     if not ok:
         _restore_backup(home, stamp)
@@ -704,14 +666,11 @@ def _run_dep(
     cwd: str,
     run_streamed: Callable[..., subprocess.CompletedProcess[str]] | None,
     hard: float,
-    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """pip/uv 는 무출력만으로 죽이지 않는다. 전체 시간 제한과 취소는 유지."""
     if run_streamed is not None:
-        return run_streamed(
-            cmd, cwd=cwd, timeout=None, hard_timeout=hard, hidden=True, env=env
-        )
-    return _run(cmd, cwd=cwd, timeout=hard, env=env)
+        return run_streamed(cmd, cwd=cwd, timeout=None, hard_timeout=hard, hidden=True)
+    return _run(cmd, cwd=cwd, timeout=hard)
 
 
 def _pip_unmarked_core_deps(venv_py: Path, agent: Path) -> subprocess.CompletedProcess[str]:
@@ -768,24 +727,25 @@ def _finish_staged_install(
         _discard_tree(staging)
         return InstallResult(False, "사용자가 중단함", "cancel")
 
-    extras = _wanted_extras(staging)
     lock = staging / "uv.lock"
     installed = False
     if uv and lock.is_file():
-        extra_note = ",".join(extras) if extras else "no extras"
-        emit(f"uv sync --frozen ({extra_note})…")
+        # Pin dropped `homeassistant`. mcp = control tools; messaging pulls aiohttp.
+        # UV_PROJECT_ENVIRONMENT must be staging/venv — bare uv sync creates .venv and
+        # probe (venv/Scripts/python) then fails with ModuleNotFoundError: hermes_cli.
+        emit("uv sync --frozen (mcp, messaging)…")
         env = os.environ.copy()
         env["VIRTUAL_ENV"] = str(venv_dir)
         env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
         cmd = [
             uv, "sync", "--frozen", "--no-dev", "--active",
-            *_uv_extra_args(extras),
+            "--extra", "mcp", "--extra", "messaging",
             "--python", str(venv_py),
         ]
         started = time.monotonic()
         try:
-            proc = _run_dep(
-                cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0, env=env
+            proc = _run_pkg_install(
+                cmd, cwd=str(staging), run_streamed=run_streamed, env=env
             )
         except subprocess.TimeoutExpired as exc:
             log.append(str(exc))
@@ -803,9 +763,8 @@ def _finish_staged_install(
         emit(_PIP_FALLBACK_LIMIT)
 
     if not installed:
-        spec = _pip_editable_spec(extras)
-        emit(f"pip install -e {spec}…")
-        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", spec]
+        emit("pip install -e .[mcp,messaging]…")
+        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", ".[mcp,messaging]"]
         started = time.monotonic()
         try:
             pip = _run_dep(pip_cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0)
@@ -833,7 +792,14 @@ def _finish_staged_install(
             log.append(pip.stdout or "")
             log.append(pip.stderr or "")
             if pip.returncode == 0:
-                boost = _boost_probe_deps(venv_py)
+                boost = _run(
+                    [
+                        str(venv_py), "-m", "pip", "install",
+                        "aiohttp==3.14.3", "mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1",
+                        "python-dotenv==1.2.2", "ruamel.yaml==0.18.16",
+                    ],
+                    timeout=300.0,
+                )
                 log.append(boost.stdout or "")
                 log.append(boost.stderr or "")
                 if boost.returncode != 0:
@@ -854,27 +820,6 @@ def _finish_staged_install(
             return fail("exit", "pip 설치 실패", "\n".join(log))
 
     ok, detail = _probe_venv(venv_py)
-    if not ok:
-        emit("probe 실패 — aiohttp/mcp pin…")
-        log.append(detail)
-        boost = _boost_probe_deps(venv_py)
-        log.append(boost.stdout or "")
-        log.append(boost.stderr or "")
-        if boost.returncode != 0:
-            _discard_tree(staging)
-            return fail("exit", "gateway/mcp 의존성 보강 실패", "\n".join(log))
-        emit("probe pin 후 editable 재설치…")
-        edit = _run(
-            [str(venv_py), "-m", "pip", "install", "-e", "."],
-            cwd=str(staging),
-            timeout=300.0,
-        )
-        log.append(edit.stdout or "")
-        log.append(edit.stderr or "")
-        if edit.returncode != 0:
-            _discard_tree(staging)
-            return fail("exit", "editable 재설치 실패", "\n".join(log))
-        ok, detail = _probe_venv(venv_py)
     log.append(f"probe={ok} {detail}")
     if not ok:
         _discard_tree(staging)
@@ -1002,7 +947,6 @@ def _try_uv_sync(
     env = os.environ.copy()
     env["VIRTUAL_ENV"] = str(venv_dir)
     env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
-    extras = _wanted_extras(agent)
     cmd = [
         uv,
         "sync",
@@ -1010,7 +954,10 @@ def _try_uv_sync(
         "--active",
         "--python",
         str(venv_py),
-        *_uv_extra_args(extras),
+        "--extra",
+        "mcp",
+        "--extra",
+        "messaging",
     ]
     try:
         return _run_pkg_install(cmd, cwd=str(agent), run_streamed=run_streamed, env=env)
@@ -1019,13 +966,45 @@ def _try_uv_sync(
 
 
 def _guard_installed_agent(agent: Path) -> None:
-    """우회 설치로 hermes-agent 트리가 생긴 직후 options 가드 1회. 실패해도 설치는 성공."""
+    """우회 설치 직후 Iris Agent baseline overlay 1회. 실패해도 설치는 성공."""
     try:
-        from iris.system.hermes_ollama_guard import apply_ollama_options_guard
-
-        apply_ollama_options_guard(agent)
+        apply_iris_agent_baseline_overlays(agent)
     except Exception:
         return
+
+
+def _checkout_pinned_sha(git: str, staging: Path, pin: str) -> subprocess.CompletedProcess[str]:
+    """shallow clone 대신 init+fetch+checkout 으로 pin 만 받는다."""
+    init = _run([git, "-c", "core.longpaths=true", "init", str(staging)], timeout=60.0)
+    if init.returncode != 0:
+        return init
+    remote = _run(
+        [git, "-C", str(staging), "remote", "add", "origin", HERMES_REPO_HTTPS],
+        timeout=30.0,
+    )
+    if remote.returncode != 0:
+        return remote
+    fetch = _run(
+        [
+            git,
+            "-c",
+            "core.longpaths=true",
+            "-C",
+            str(staging),
+            "fetch",
+            "--depth",
+            "1",
+            "origin",
+            pin,
+        ],
+        timeout=600.0,
+    )
+    if fetch.returncode != 0:
+        return fetch
+    return _run(
+        [git, "-C", str(staging), "checkout", "--force", "FETCH_HEAD"],
+        timeout=120.0,
+    )
 
 
 def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | None:
@@ -1045,19 +1024,6 @@ def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | No
     return None
 
 
-def _checkout_pin(git: str, staging: Path, sha: str) -> subprocess.CompletedProcess[str]:
-    fetch = _run(
-        [git, "-c", "core.longpaths=true", "-C", str(staging), "fetch", "--depth", "1", "origin", sha],
-        timeout=600.0,
-    )
-    if fetch.returncode != 0:
-        return fetch
-    return _run(
-        [git, "-c", "core.longpaths=true", "-C", str(staging), "checkout", "--detach", sha],
-        timeout=120.0,
-    )
-
-
 def install_hermes_with_system_python(
     *,
     command: str = "hermes",
@@ -1069,7 +1035,7 @@ def install_hermes_with_system_python(
 ) -> InstallResult:
     """staging 에 설치하고 import probe 통과 후에만 live 와 교체.
 
-    home 기본값은 HermesHome. Engine 은 EngineHome Path 를 넘긴다.
+    home 기본은 제품 Iris Agent 홈. Engine 경로면 EngineHome Path 를 넘긴다.
     """
 
     def _emit(msg: str) -> None:
@@ -1077,10 +1043,14 @@ def install_hermes_with_system_python(
             on_stream(msg)
 
     explicit_home = home is not None
-    home = Path(home) if explicit_home else gw.hermes_home()
+    home = Path(home) if explicit_home else ensure_iris_agent_home()
+    # EngineHome install must not require :8642 gateway probe.
+    probe_gateway = not explicit_home
 
     def _fail(kind: str, prefix: str, body: str, log_path: Path | None = None) -> InstallResult:
-        path = log_path or write_install_log(body or prefix, prefix="iris-install", home=home)
+        path = log_path or write_install_log(
+            body or prefix, prefix="iris-install", home=home
+        )
         msg = format_install_failure(prefix, body, path, kind)
         _emit(msg)
         return InstallResult(False, msg, kind, str(path))
@@ -1090,12 +1060,16 @@ def install_hermes_with_system_python(
 
     try:
         with hermes_install_lock(home):
-            # probe_hermes_runtime reads HermesHome. An explicit home is a
-            # different tree (EngineHome); the caller already probed that one.
+            # probe_hermes_runtime reads the default gateway home. Explicit
+            # EngineHome is a different tree; caller already probed that one.
             if not explicit_home:
-                already, already_detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
+                already, already_detail = gw.probe_hermes_runtime(
+                    command=command, timeout_sec=30.0
+                )
                 if already:
-                    return InstallResult(True, f"이미 사용 가능 ({already_detail})", "ok")
+                    return InstallResult(
+                        True, f"이미 사용 가능 ({already_detail})", "ok"
+                    )
             py = ensure_system_python_winget(run_streamed=run_streamed, on_stream=on_stream)
             if py is None:
                 return _fail("python", "베이스 Python 없음", "py -3.11..3.13 / winget 3.11 실패")
@@ -1109,27 +1083,32 @@ def install_hermes_with_system_python(
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
             staging = home / f"hermes-agent.staging-{stamp}"
             _discard_tree(staging)
-            _emit("Hermes 저장소 HTTPS clone (staging)…")
+            pin = (sha or "").strip() or load_pinned_sha()
+            _emit(f"Iris Agent 런타임 pin checkout ({pin[:7]})…")
             started = time.monotonic()
-            clone = _run(
-                [git, "-c", "core.longpaths=true", "clone", "--depth", "1", HERMES_REPO_HTTPS, str(staging)],
-                timeout=600.0,
+            staging.mkdir(parents=True, exist_ok=True)
+            clone = _checkout_pinned_sha(git, staging, pin)
+            log.append(
+                f"pin={pin} checkout rc={clone.returncode} "
+                f"elapsed={time.monotonic() - started:.1f}s"
             )
-            log.append(f"clone rc={clone.returncode} elapsed={time.monotonic() - started:.1f}s")
             log.append(clone.stdout or "")
             log.append(clone.stderr or "")
-            if clone.returncode != 0 or not staging.is_dir():
+            if clone.returncode != 0 or not (staging / "hermes_cli").is_dir():
                 _discard_tree(staging)
-                return _fail("clone", "git clone 실패", "\n".join(log))
-            if sha:
-                _emit(f"Hermes pin checkout {sha[:12]}…")
-                pin = _checkout_pin(git, staging, sha)
-                log.append(f"checkout {sha} rc={pin.returncode}")
-                log.append(pin.stdout or "")
-                log.append(pin.stderr or "")
-                if pin.returncode != 0:
-                    _discard_tree(staging)
-                    return _fail("clone", "git checkout 실패", "\n".join(log))
+                return _fail("clone", "git pin checkout 실패", "\n".join(log))
+            head = _run(
+                [git, "-C", str(staging), "rev-parse", "HEAD"], timeout=30.0
+            )
+            got = (head.stdout or "").strip()
+            log.append(f"rev-parse={got}")
+            if got.lower() != pin.lower():
+                _discard_tree(staging)
+                return _fail(
+                    "clone",
+                    "pin SHA 불일치",
+                    f"want={pin} got={got}\n" + "\n".join(log),
+                )
             want = hermes_python_range(staging)
             have = python_version(py)
             log.append(f"repo python range={want} chosen={have}")
@@ -1153,7 +1132,7 @@ def install_hermes_with_system_python(
                 fail=_fail,
                 run_streamed=run_streamed,
                 should_abort=should_abort,
-                probe_gateway=not explicit_home,
+                probe_gateway=probe_gateway,
             )
     except InstallBusy as exc:
         return _fail("lock", "설치 잠금", str(exc))

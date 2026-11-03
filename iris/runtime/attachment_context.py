@@ -134,8 +134,16 @@ def reset_chat_image_reader(token) -> None:
 
 
 def _ocr_image(path: Path) -> str:
-    """문장과 무관. 비전이 글자를 주면 그걸 쓰고, 비면 PDF와 같은 OCR."""
+    """문장과 무관. 격자 구조화 → 비전 글자 → OCR."""
     from iris.knowledge.content_extract import _ocr_png_bytes, _png_bytes
+    from iris.knowledge.grid_extract import extract_binary_grid, format_grid_attachment_text
+
+    try:
+        structured = extract_binary_grid(path)
+    except Exception:
+        structured = None
+    if structured and structured.get("grids"):
+        return format_grid_attachment_text(structured)
 
     try:
         raw = path.read_bytes()

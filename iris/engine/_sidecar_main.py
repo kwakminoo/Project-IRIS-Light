@@ -27,6 +27,21 @@ import json
 import logging
 from pathlib import Path
 
+
+def _force_utf8_stdio() -> None:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            continue
+
+
+_force_utf8_stdio()
 _HOST_STDOUT = sys.stdout
 
 

@@ -1,0 +1,3 @@
+PDF.js (Mozilla) — Mozilla Public License 2.0
+Vendored from mathematic.vscode-pdf extension assets for Iris-owned offline rendering.
+Runtime Open VSX / marketplace customEditor is not used.

@@ -3,6 +3,8 @@
 Tools: iris_get_state, iris_get_catalog, iris_invoke
 ponytail: NDJSON JSON-RPC (MCP Python SDK stdio). No MCP SDK dependency.
 천장: Iris가 꺼져 있으면 도구가 명확한 에러를 반환 (조용히 실패 금지).
+Phase 2.4: wiki.list_notes / wiki.search iris_invoke → native registry
+(no Control HTTP) when the action is already product-owned.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from iris.browser.observation import browser_teaching_block
+from iris.infrastructure.agent_tool_registry import try_native_control_invoke
 
 
 def _state_dir() -> Path:
@@ -221,6 +224,9 @@ def _handle_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         args = arguments.get("args")
         if not isinstance(args, dict):
             args = {}
+        native = try_native_control_invoke(action, args)
+        if native is not None:
+            return _tool_result(native)
         return _tool_result(_http("POST", "/v1/invoke", {"action": action, "args": args}))
     return _tool_result({"ok": False, "action": name, "result": {}, "error": f"unknown tool: {name}"})
 

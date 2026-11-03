@@ -15,6 +15,8 @@ from iris.ui.chat.at_path_refs import extract_at_path_refs, normalize_at_path, r
 from iris.ui.chat.file_write_claim import (
     CHAT_ONLY,
     apply_image_code_pipe,
+    file_create_goal,
+    plan_local_file_writes,
     reveal_line,
     settle_completion_claim,
     verified_write_path,
@@ -109,8 +111,9 @@ class CompletionGateTests(unittest.TestCase):
     def test_claim_without_tool_is_not_success(self) -> None:
         said = "interpolation_test.py 를 생성하겠습니다. 처리 완료"
         gate = settle_completion_claim(said, verified_path="", try_write=None)
-        self.assertEqual(gate.display, said)
-        self.assertNotIn("채팅에만 있고", gate.display)
+        self.assertIn(CHAT_ONLY, gate.display)
+        self.assertTrue(gate.display.startswith(said))
+        self.assertTrue(gate.suppress_followup_write)
 
     def test_claim_with_fence_writes_once(self) -> None:
         with tempfile.TemporaryDirectory(prefix="iris-gate-") as td:
@@ -126,8 +129,33 @@ class CompletionGateTests(unittest.TestCase):
             said = "작성했습니다\n```python\nprint(1)\n```"
             gate = settle_completion_claim(said, verified_path="", try_write=try_write)
             self.assertEqual(calls, [])
-            self.assertEqual(gate.display, said)
+            self.assertIn(CHAT_ONLY, gate.display)
+            self.assertTrue(gate.display.startswith(said))
             self.assertFalse((root / "from_fence.py").exists())
+
+    def test_local_write_plan_pairs_named_fence(self) -> None:
+        self.assertTrue(file_create_goal("5-1.py 만들어줘").matched)
+        self.assertFalse(file_create_goal("오늘 날씨 알려줘").matched)
+        write = plan_local_file_writes(
+            "5-1.py 스크립트 만들어줘",
+            "```python\nprint(1)\n```",
+        )
+        self.assertEqual(write.kind, "write")
+        self.assertEqual(write.pairs, (("5-1.py", "print(1)"),))
+        ask = plan_local_file_writes(
+            "스크립트 만들어줘",
+            "```python\nprint(1)\n```",
+        )
+        self.assertEqual(ask.kind, "ask")
+        self.assertNotIn("iris_generated", ask.ask_message.lower().replace("_", ""))
+        self.assertIn("이름", ask.ask_message)
+        skip = plan_local_file_writes("안녕", "```python\nprint(1)\n```")
+        self.assertEqual(skip.kind, "skip")
+        ambiguous = plan_local_file_writes(
+            "a.py 와 b.py 만들어줘",
+            "```python\nprint(1)\n```",
+        )
+        self.assertEqual(ambiguous.kind, "ask")
 
 
 class ImagePipeTests(unittest.TestCase):
