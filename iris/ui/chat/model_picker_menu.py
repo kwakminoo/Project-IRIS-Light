@@ -108,15 +108,8 @@ def is_local_endpoint(url: str) -> bool:
 
 
 def is_local_picker_model(m: PickerModel) -> bool:
-    """제공자 이름과 무관하게, 이 기기에서 도는 채팅 모델인지."""
-    if m.is_api:
-        return is_local_endpoint(m.provider_base)
-    from iris.infrastructure.ollama_client import OllamaModelInfo, is_embedding_model_name
-
-    name = (m.runtime or "").strip()
-    if not name or OllamaModelInfo(name=name).is_cloud or is_embedding_model_name(name):
-        return False
-    return True
+    """로컬 Base URL 커스텀 API (LM Studio 등)만 LOCAL MODEL."""
+    return bool(m.is_api and is_local_endpoint(m.provider_base))
 
 
 class ModelBrandDialog(QDialog):
@@ -274,7 +267,7 @@ class ModelPickerMenu(QFrame):
             root.addWidget(row)
 
         if has_ollama:
-            row = _MenuRow("OL", "Ollama", "클라우드", show_arrow=True)
+            row = _MenuRow("OL", "Ollama", "로컬·클라우드", show_arrow=True)
             row.clicked.connect(self._on_ollama)
             root.addWidget(row)
 
@@ -350,9 +343,8 @@ def split_picker_groups(
 ) -> tuple[list[PickerModel], list[PickerModel], dict[str, list[PickerModel]], list[PickerModel]]:
     """(local, ollama, api_brands_by_provider_id, singles).
 
-    로컬 채팅 모델은 제공자와 상관없이 첫 묶음으로 뺀다. 나머지는 제공자 이름이
-    아니라 **실제 모델 수**로만 분기함. 모델이 많은 제공자는 하위 목록 창
-    (`ModelBrandDialog`)으로 묶고, 적은 제공자는 팝업에 바로 노출함.
+    로컬 Base URL 커스텀 API만 `local`로 뺀다. Ollama(로컬·클라우드)는 `ollama`.
+    원격 API는 제공자 이름이 아니라 **실제 모델 수**로만 분기함.
     """
     local: list[PickerModel] = []
     ollama: list[PickerModel] = []
@@ -418,16 +410,15 @@ if __name__ == "__main__":
     )
     assert is_local_endpoint("http://192.168.0.8:11434/v1")
     assert not is_local_endpoint("https://integrate.api.nvidia.com/v1")
-    assert is_local_picker_model(o) and is_local_picker_model(local_api)
+    assert not is_local_picker_model(o) and is_local_picker_model(local_api)
     assert not is_local_picker_model(cloud) and not is_local_picker_model(n)
-    # 로컬은 1개여도 메뉴에 펼치지 않고 LOCAL MODEL 한 줄로만 연다.
     assert LOCAL_MODEL_MENU_LABEL == "LOCAL MODEL"
-    one_local, _ol, _br, _si = split_picker_groups([o])
-    assert len(one_local) == 1 and len(one_local) < BRAND_MIN_MODELS
+    one_local, one_ol, _br, _si = split_picker_groups([o])
+    assert one_local == [] and len(one_ol) == 1
     # 모델 2개인 제공자는 그대로 노출, BRAND_MIN_MODELS 이상이면 브랜드로 묶음
     local, ol, brands, si = split_picker_groups([o, cloud, local_api, n, g])
-    assert [m.runtime for m in local] == ["gemma4:latest", "api:lm:llama"]
-    assert [m.runtime for m in ol] == ["gemma4:31b-cloud"]
+    assert [m.runtime for m in local] == ["api:lm:llama"]
+    assert [m.runtime for m in ol] == ["gemma4:31b-cloud", "gemma4:latest"]
     assert brands == {} and len(si) == 2
     many = [
         PickerModel(
@@ -440,9 +431,10 @@ if __name__ == "__main__":
         for i in range(BRAND_MIN_MODELS)
     ]
     local, ol, brands, si = split_picker_groups([o, *many])
-    assert [m.runtime for m in local] == ["gemma4:latest"]
+    assert local == []
+    assert [m.runtime for m in ol] == ["gemma4:latest"]
     assert list(brands) == ["gm"] and len(brands["gm"]) == BRAND_MIN_MODELS
-    assert si == [] and ol == []
+    assert si == []
     assert brand_label(brands["gm"]) == "Gemini"
     assert is_api_runtime_model(n.runtime)
     assert picker_tier_color(n) == _COLOR_MODEL_DEFAULT

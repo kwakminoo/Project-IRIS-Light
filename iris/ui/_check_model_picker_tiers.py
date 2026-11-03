@@ -100,8 +100,8 @@ def main() -> None:
             *gemini_many,
         ]
     )
-    assert [m.runtime for m in local] == ["llama3.2:latest"]
-    assert len(ollama) == 1
+    assert local == []
+    assert [m.runtime for m in ollama] == ["a:cloud", "llama3.2:latest"]
     assert list(brands) == ["gm"], brands  # Gemini는 이름이 아니라 개수로 묶임
     assert len(brands["gm"]) == BRAND_MIN_MODELS
     assert [m.provider_name for m in singles] == ["OpenAI"]  # 1개 제공자는 그대로 노출
