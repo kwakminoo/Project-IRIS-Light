@@ -6,7 +6,12 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-from iris.ui.chat.chat_blocks import FencedCodeBlock, ToolShellBlock, tool_block_markers
+from iris.ui.chat.chat_blocks import (
+    FencedCodeBlock,
+    ToolShellBlock,
+    parse_fence_info,
+    tool_block_markers,
+)
 
 _TOOL_START = re.compile(r"IRIS_TOOL_([A-Za-z0-9_-]+)_START")
 _FENCE = "```"
@@ -37,6 +42,9 @@ class CodeSegment:
     language: str
     code: str
     complete: bool = False
+    path: str = ""
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 @dataclass
@@ -46,6 +54,18 @@ class ToolSegment:
 
 
 ChatSegment = ProseSegment | CodeSegment | ToolSegment
+
+
+def _code_segment_from_info(info: str, code: str, *, complete: bool) -> CodeSegment:
+    meta = parse_fence_info(info)
+    return CodeSegment(
+        language=meta.language,
+        code=code,
+        complete=complete,
+        path=meta.path,
+        start_line=meta.start_line,
+        end_line=meta.end_line,
+    )
 
 
 def prose_char_count(text: str) -> int:
@@ -93,26 +113,22 @@ def parse_chat_segments(text: str, *, final: bool = False) -> list[ChatSegment]:
             nl = raw.find("\n", fence_end)
             if nl < 0:
                 # lang 줄이 아직 안 끝남 — prose로 보류하지 않고 code 대기
-                lang = raw[fence_end:].strip()
-                segments.append(CodeSegment(language=lang, code="", complete=False))
+                info = raw[fence_end:].strip()
+                segments.append(_code_segment_from_info(info, "", complete=False))
                 return segments
-            lang = raw[fence_end:nl].strip()
+            info = raw[fence_end:nl].strip()
             code_start = nl + 1
             tail = raw[code_start:]
             close_idx = _find_closing_fence(tail)
             if close_idx < 0:
                 safe_code = tail if final else _safe_partial_code(tail)
                 segments.append(
-                    CodeSegment(language=lang, code=safe_code, complete=False)
+                    _code_segment_from_info(info, safe_code, complete=False)
                 )
                 return segments
             code = tail[:close_idx]
             segments.append(
-                CodeSegment(
-                    language=lang,
-                    code=code.rstrip("\n"),
-                    complete=True,
-                )
+                _code_segment_from_info(info, code.rstrip("\n"), complete=True)
             )
             i = code_start + close_idx + 3
             continue
@@ -242,7 +258,13 @@ class ChatBlockBuffer:
             ops.append(
                 RenderOp(
                     kind=RenderOpKind.INSERT_CODE,
-                    code=FencedCodeBlock(seg.code, language=seg.language),
+                    code=FencedCodeBlock(
+                        seg.code,
+                        language=seg.language,
+                        path=seg.path,
+                        start_line=seg.start_line,
+                        end_line=seg.end_line,
+                    ),
                 )
             )
 

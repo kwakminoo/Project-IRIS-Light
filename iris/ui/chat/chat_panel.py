@@ -3043,10 +3043,19 @@ class ChatPanel(QWidget):
         from iris.core.chat_block_parser import streaming_body_segments, ProseSegment
 
         # Keep Markdown context across fences (e.g. lists containing code).
+        from iris.ui.chat.chat_blocks import format_fence_info
+
         segments = streaming_body_segments(parse_chat_segments(body), self._typing_index)
-        source = "".join(seg.text if isinstance(seg, ProseSegment)
-                         else f"\n\n```{seg.language}\n{seg.code}\n```\n\n"
-                         for seg in segments if hasattr(seg, "text") or hasattr(seg, "code"))
+        source = "".join(
+            seg.text
+            if isinstance(seg, ProseSegment)
+            else (
+                f"\n\n```{format_fence_info(seg.language, seg.path, seg.start_line, seg.end_line)}"
+                f"\n{seg.code}\n```\n\n"
+            )
+            for seg in segments
+            if hasattr(seg, "text") or hasattr(seg, "code")
+        )
         visible = assistant_visible_text(source, streaming=bool(self._stream_active))
         return render_iris_message(visible) if visible.strip() else ""
 

@@ -10,6 +10,7 @@ from iris.core.markdown_text import (
     markdown_to_plain,
     markdown_to_plain_partial,
 )
+from iris.ui.chat.chat_blocks import format_fence_info
 from iris.ui.chat.typography import TOKENS
 
 _IRIS_PREFIX = re.compile(
@@ -63,7 +64,10 @@ def assistant_visible_text(raw: str, *, streaming: bool) -> str:
                 prose = _streaming_head(prose)
             parts.append(_replace_unnecessary_paths(prose))
         elif isinstance(seg, CodeSegment):
-            parts.append(f"\n\n```{seg.language}\n{seg.code}\n```\n\n")
+            info = format_fence_info(
+                seg.language, seg.path, seg.start_line, seg.end_line
+            )
+            parts.append(f"\n\n```{info}\n{seg.code}\n```\n\n")
     return "".join(parts).strip()
 
 
@@ -326,7 +330,13 @@ def streaming_segments_html(
             parts.append(
                 wrap_document_html(
                     fenced_code_to_html(
-                        FencedCodeBlock(seg.code, language=seg.language)
+                        FencedCodeBlock(
+                            seg.code,
+                            language=seg.language,
+                            path=seg.path,
+                            start_line=seg.start_line,
+                            end_line=seg.end_line,
+                        )
                     )
                 )
             )
