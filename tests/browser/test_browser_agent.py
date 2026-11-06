@@ -76,8 +76,20 @@ class PackHermesResultTests(unittest.TestCase):
         result = self._article_result()
         blob = pack_hermes_result(result)
         self.assertTrue(blob["ok"])
-        self.assertIn("trusted", blob)
-        self.assertIn("page_text", blob)
+        self.assertEqual(
+            set(blob),
+            {
+                "ok",
+                "command_kind",
+                "detail",
+                "trusted",
+                "page_text",
+                "url",
+                "phase",
+                "playing",
+                "gen",
+            },
+        )
         self.assertNotIn("title", blob)
         self.assertNotIn("nodes", blob)
         self.assertNotIn("excerpt", blob)

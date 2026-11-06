@@ -150,6 +150,11 @@ class ToolProgress:
 
 
 @dataclass(frozen=True)
+class ReasoningDelta:
+    text: str
+
+
+@dataclass(frozen=True)
 class TurnFinished:
     text: str
 
@@ -164,7 +169,14 @@ class TurnCancelled:
     pass
 
 
-TurnEvent = Union[ContentDelta, ToolProgress, TurnFinished, TurnFailed, TurnCancelled]
+TurnEvent = Union[
+    ContentDelta,
+    ToolProgress,
+    ReasoningDelta,
+    TurnFinished,
+    TurnFailed,
+    TurnCancelled,
+]
 
 
 EngineHome = NewType("EngineHome", Path)

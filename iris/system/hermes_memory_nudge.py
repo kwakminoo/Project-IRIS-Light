@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from iris.browser.observation import browser_teaching_block
 from iris.system.hermes_iris_control_sync import hermes_home
@@ -120,8 +121,8 @@ def _memory_nudge_version(text: str) -> int:
     return max(found) if found else 0
 
 
-def ensure_memory_nudge() -> str:
-    mem_dir = hermes_home() / "memories"
+def ensure_memory_nudge(home: Path | None = None) -> str:
+    mem_dir = (Path(home) if home is not None else hermes_home()) / "memories"
     mem_dir.mkdir(parents=True, exist_ok=True)
     path = mem_dir / "MEMORY.md"
     existing = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""

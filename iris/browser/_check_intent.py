@@ -64,7 +64,16 @@ def _veto_chats_reach_launch() -> None:
 
         class _Win:
             _sending_followthrough = False
+            _conversation_id = 1
             _turn_gate = ChatTurnGate()
+
+            def _mark_chat_working(self, _cid):
+                return None
+
+            def __getattr__(self, name):
+                if name.startswith("_try_"):
+                    return lambda *_a, **_k: False
+                raise AttributeError(name)
             _hermes_online = True
             _saved_model = "gemma4:e2b"
             _settings = SimpleNamespace(ollama_model="gemma4:e2b")

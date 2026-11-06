@@ -125,7 +125,11 @@ def _parse_scroll(args: dict[str, Any]) -> BrowserCommand:
         dy = dy or 800
     elif page == "up":
         dy = dy or -800
-    return Scroll(delta_x=dx, delta_y=dy, source=_actor(args))
+    raw_ref = args.get("ref")
+    ref = str(raw_ref).strip() if raw_ref else None
+    if ref == "":
+        ref = None
+    return Scroll(delta_x=dx, delta_y=dy, ref=ref, source=_actor(args))
 
 
 def _parse_snapshot(args: dict[str, Any]) -> BrowserCommand:

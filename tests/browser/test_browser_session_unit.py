@@ -2,20 +2,23 @@ from __future__ import annotations
 
 import unittest
 
-from iris.browser._driver import youtube_like_fixture_driver
+from iris.browser._driver import FakePageDriver, _FakePage, youtube_like_fixture_driver
 from iris.browser.registry import parse_command
 from iris.browser.search import search_url
 from iris.browser.session import BrowserSession
 from iris.browser.types import (
     BrowserPhase,
     ByRef,
+    CTX_CAP,
     Click,
     HistoryStep,
     MiniHost,
     MiniPlayer,
     Navigate,
     Open,
+    PageNode,
     PanelHost,
+    Reload,
     Scroll,
     Search,
     as_docked,
@@ -44,6 +47,19 @@ class ParseBoundaryTests(unittest.TestCase):
         assert isinstance(click, Click)
         self.assertIsInstance(click.target, ByRef)
         self.assertEqual(click.target.ref, "g1e0")
+
+    def test_parse_scroll_with_ref(self) -> None:
+        cmd = parse_command({"command": "scroll", "ref": "g2e3"})
+        self.assertIsInstance(cmd, Scroll)
+        assert isinstance(cmd, Scroll)
+        self.assertEqual(cmd.ref, "g2e3")
+        via_action = parse_command({"action": "browser.scroll", "ref": "g1e0"})
+        assert isinstance(via_action, Scroll)
+        self.assertEqual(via_action.ref, "g1e0")
+        bare = parse_command({"command": "scroll", "dy": 800})
+        assert isinstance(bare, Scroll)
+        self.assertIsNone(bare.ref)
+        self.assertEqual(bare.delta_y, 800)
 
     def test_parse_google_and_youtube_play(self) -> None:
         g = parse_command({"command": "search", "query": "React 공식 문서", "engine": "google"})
@@ -180,6 +196,135 @@ class SessionFakeDriverTests(unittest.TestCase):
         self.assertTrue(r.ok)
         self.assertGreater(r.snapshot.scroll_y, before)
 
+    def test_scroll_to_ref_on_fixture(self) -> None:
+        r = self.session.execute(Navigate(url="https://react.dev/learn"))
+        self.assertTrue(r.ok)
+        node = next(n for n in r.snapshot.nodes if n.name == "Below fold")
+        self.assertFalse(node.in_view)
+        moved = self.session.execute(Scroll(ref=node.ref))
+        self.assertTrue(moved.ok, moved.detail)
+        after = next(n for n in moved.snapshot.nodes if n.name == "Below fold")
+        self.assertTrue(after.in_view)
+        self.assertGreater(moved.snapshot.scroll_y, 0)
+
+    def test_stale_ref_after_snapshot_and_reload(self) -> None:
+        first = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertTrue(first.ok)
+        old = first.snapshot.nodes[0].ref
+        snapped = self.session.execute(parse_command({"command": "snapshot"}))
+        self.assertTrue(snapped.ok)
+        self.assertNotEqual(snapped.snapshot.gen, first.snapshot.gen)
+        miss = self.session.execute(Click(target=ByRef(ref=old)))
+        self.assertFalse(miss.ok)
+        self.assertEqual(miss.detail, "stale_ref")
+        self.assertEqual(miss.snapshot.phase, BrowserPhase.READY)
+        newer = snapped.snapshot.nodes[0].ref
+        reloaded = self.session.execute(Reload())
+        self.assertTrue(reloaded.ok)
+        again = self.session.execute(Click(target=ByRef(ref=newer)))
+        self.assertFalse(again.ok)
+        self.assertEqual(again.detail, "stale_ref")
+        self.assertEqual(again.snapshot.phase, BrowserPhase.READY)
+
+    def test_disconnected_element_is_stale_ref(self) -> None:
+        r = self.session.execute(Navigate(url="https://react.dev"))
+        ref = r.snapshot.nodes[0].ref
+        self.driver.mark_disconnected(0)
+        miss = self.session.execute(Click(target=ByRef(ref=ref)))
+        self.assertFalse(miss.ok)
+        self.assertEqual(miss.detail, "stale_ref")
+        self.assertEqual(miss.snapshot.phase, BrowserPhase.READY)
+        scroll_miss = self.session.execute(Scroll(ref=ref))
+        self.assertFalse(scroll_miss.ok)
+        self.assertEqual(scroll_miss.detail, "stale_ref")
+        self.assertEqual(scroll_miss.snapshot.phase, BrowserPhase.READY)
+
+    def test_idle_snapshot_does_not_restamp(self) -> None:
+        first = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertTrue(first.ok)
+        gen = first.snapshot.gen
+        refs = [node.ref for node in first.snapshot.nodes]
+        idle = self.session.snapshot()
+        self.assertEqual(idle.gen, gen)
+        self.assertEqual([node.ref for node in idle.nodes], refs)
+
+    def test_idle_snapshot_restamps_when_url_changes(self) -> None:
+        first = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertTrue(first.ok)
+        old_ref = first.snapshot.nodes[0].ref
+        self.driver.navigate("https://fixture.local/watch?v=fixture-iu")
+        idle = self.session.snapshot()
+        self.assertIn("/watch", idle.url)
+        self.assertNotEqual(idle.gen, first.snapshot.gen)
+        self.assertTrue(any("밤편지" in (node.name or "") for node in idle.nodes))
+        self.assertFalse(any(node.ref == old_ref for node in idle.nodes))
+        miss = self.session.execute(Click(target=ByRef(ref=old_ref)))
+        self.assertFalse(miss.ok)
+        self.assertEqual(miss.detail, "stale_ref")
+        self.assertEqual(miss.snapshot.phase, BrowserPhase.READY)
+
+    def test_idle_snapshot_restamps_on_tab_return(self) -> None:
+        first = self.session.execute(Navigate(url="https://react.dev"))
+        self.driver.navigate("https://fixture.local/watch?v=fixture-iu")
+        away = self.session.snapshot()
+        self.driver.navigate("https://react.dev")
+        back = self.session.snapshot()
+        self.assertIn("react", back.url)
+        self.assertNotEqual(back.gen, away.gen)
+        self.assertTrue(any(node.name == "React" for node in back.nodes))
+
+    def test_idle_snapshot_restamps_when_tab_index_changes(self) -> None:
+        first = self.session.execute(Navigate(url="https://react.dev"))
+
+        class _Tabs:
+            def __init__(self) -> None:
+                self.idx = 0
+
+            def tab_count(self) -> int:
+                return 2
+
+            def current_tab_index(self) -> int:
+                return self.idx
+
+        tabs = _Tabs()
+        self.session._panel_ref = tabs
+        same = self.session.snapshot()
+        self.assertEqual(same.gen, first.snapshot.gen)
+        tabs.idx = 1
+        switched = self.session.snapshot()
+        self.assertEqual(switched.tab_index, 1)
+        self.assertNotEqual(switched.gen, first.snapshot.gen)
+        self.assertTrue(any(node.name == "React" for node in switched.nodes))
+
+    def test_stamp_copies_flags_and_clips_context(self) -> None:
+        page = _FakePage(
+            url="https://fixture.local/flags",
+            title="Flags",
+            nodes=[
+                PageNode(
+                    ref="",
+                    role="button",
+                    name="Go",
+                    disabled=True,
+                    checked=True,
+                    selected=True,
+                    focused=True,
+                    context="C" * 80,
+                )
+            ],
+        )
+        session = BrowserSession(driver=FakePageDriver({page.url: page}))
+        stamped = session.execute(Navigate(url=page.url))
+        self.assertTrue(stamped.ok, stamped.detail)
+        self.assertEqual(stamped.snapshot.phase, BrowserPhase.READY)
+        node = stamped.snapshot.nodes[0]
+        self.assertTrue(node.disabled)
+        self.assertTrue(node.checked)
+        self.assertTrue(node.selected)
+        self.assertTrue(node.focused)
+        self.assertEqual(node.context, "C" * CTX_CAP)
+        self.assertRegex(node.ref, r"^g\d+e0$")
+
     def test_idempotent_navigate(self) -> None:
         self.session.execute(Navigate(url="https://react.dev"))
         r = self.session.execute(Navigate(url="https://react.dev"))
@@ -297,6 +442,110 @@ class RegistrySyncTests(unittest.TestCase):
             ),
         )
         self.assertEqual(len(command_specs()), len(names))
+
+
+class SessionWaitAndCrashTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.driver = youtube_like_fixture_driver()
+        self.session = BrowserSession(driver=self.driver)
+
+    def test_reload_ok_ready(self) -> None:
+        r = self.session.execute(Reload())
+        self.assertTrue(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
+
+    def test_reload_timeout_faults(self) -> None:
+        self.driver.queue_wait("timeout")
+        r = self.session.execute(Reload())
+        self.assertFalse(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.FAULTED)
+        self.assertIn("timeout", r.detail)
+        self.assertEqual(self.session.snapshot().phase, BrowserPhase.FAULTED)
+
+    def test_navigate_timeout_faults(self) -> None:
+        self.driver.queue_wait("timeout")
+        r = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertFalse(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.FAULTED)
+
+    def test_navigate_ok_saw_busy(self) -> None:
+        self.driver.queue_wait("ok")
+        r = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertTrue(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
+        self.assertIn(BrowserPhase.BUSY, self.driver.phases_seen)
+
+    def test_search_play_timeout_faults(self) -> None:
+        self.driver.queue_wait("ok")
+        self.driver.queue_wait("timeout")
+        r = self.session.execute(Search(query="IU night letter", engine="youtube", play=True))
+        self.assertFalse(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.FAULTED)
+        self.assertIn("timeout", (r.detail or "").lower())
+        self.assertEqual(self.driver.try_play_calls, 0)
+
+    def test_search_play_still_succeeds(self) -> None:
+        r = self.session.execute(Search(query="IU night letter", engine="youtube", play=True))
+        self.assertTrue(r.ok)
+        self.assertTrue(r.snapshot.media and r.snapshot.media.playing)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
+
+    def test_crash_faults_snapshot(self) -> None:
+        self.session.execute(Navigate(url="https://react.dev"))
+        seen: list = []
+        self.session.add_listener(seen.append)
+        self.driver.crash()
+        snap = self.session.snapshot()
+        self.assertEqual(snap.phase, BrowserPhase.FAULTED)
+        self.assertIn("reload", (snap.last_error or "").lower())
+        self.assertTrue(seen)
+        self.assertEqual(seen[-1].phase, BrowserPhase.FAULTED)
+
+    def test_reload_crash_during_wait(self) -> None:
+        self.driver.queue_wait("crash")
+        r = self.session.execute(Reload())
+        self.assertFalse(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.FAULTED)
+        self.assertIn("crashed", (r.detail or "").lower())
+
+    def test_normal_termination_is_not_a_fault(self) -> None:
+        self.session.execute(Navigate(url="https://react.dev"))
+        self.driver.crash(status="normal")
+        self.assertEqual(self.session.snapshot().phase, BrowserPhase.READY)
+
+    def test_faulted_same_url_navigate_not_idempotent(self) -> None:
+        self.session.execute(Navigate(url="https://react.dev"))
+        self.driver.crash()
+        r = self.session.execute(Navigate(url="https://react.dev"))
+        self.assertNotEqual(r.detail, "idempotent")
+        self.assertTrue(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
+
+    def test_play_budget_miss_after_watch_stays_ready(self) -> None:
+        from unittest.mock import patch
+
+        clock = {"now": 0.0, "navs": 0}
+        orig = self.driver.navigate
+
+        def navigate(url: str, *, deadline: float | None = None) -> None:
+            orig(url, deadline=deadline)
+            clock["navs"] += 1
+            if clock["navs"] >= 2:
+                clock["now"] = 90.0
+
+        def mono() -> float:
+            return clock["now"]
+
+        with (
+            patch.object(self.driver, "navigate", navigate),
+            patch("iris.browser.session.time.monotonic", mono),
+            patch("iris.browser._driver.time.monotonic", mono),
+        ):
+            r = self.session.execute(Search(query="IU night letter", engine="youtube", play=True))
+        self.assertFalse(r.ok)
+        self.assertEqual(r.snapshot.phase, BrowserPhase.READY)
+        self.assertIn("timed out", (r.detail or "").lower())
+        self.assertEqual(self.driver.try_play_calls, 0)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,41 @@
+ts	phase	decision	why	evidence	result
+2026-10-27T00:21:00Z	start	opened figure-it-out for Hermes internal engine integration	large cross-cutting change needs a predicate and a trail before code	chat 2026-10-27 Hermes Agent 자체 엔진 통합	open
+2026-10-27T00:25:00Z	frame	IRIS already auto-starts a child Hermes gateway on 127.0.0.1:8642	the user request is not a greenfield agent; the gap is install and isolation, not a missing HTTP client	iris/system/hermes_gateway.py:1445 iris/infrastructure/hermes_client.py:1 iris/config/settings.py:67	measured
+2026-10-27T00:26:00Z	frame	Hermes Agent is MIT and has a Python library entry plus gateway API server	vendoring or importing is license-ok; in-process is documented but crash-isolates poorly next to Qt	https://raw.githubusercontent.com/NousResearch/hermes-agent/main/LICENSE hermes-agent.nousresearch.com/docs/developer-guide/architecture	measured
+2026-10-27T00:27:00Z	frame	done predicate is IRIS-only chat with tools, no manual hermes install or :8642 connect	user must not run hermes gateway themselves; existing browser/YouTube/IDE/calendar must still work	user query section 7	open
+2026-10-27T00:28:00Z	frame	spawned four how explorers before locking in-process vs managed-process	architect Phase A requires a real mental model; guessing the attach point would lock the wrong shape	agents 3870225e 7ee0dd8a 812dae65 c6c08315	open
+2026-10-27T00:32:00Z	how	gateway is already IRIS-managed and outlives the GUI	user pain is install location and first-run, not a missing start/stop loop	iris/system/hermes_gateway.py:1445 iris/ui/window/main_window.py closeEvent LICENSE.md:157	measured
+2026-10-27T00:32:30Z	how	LICENSE.md keeps Hermes unbundled on purpose	process isolation is the license story, not just a crash wall	LICENSE.md:149-157	measured
+2026-10-27T00:33:00Z	how	Hermes sees three MCP tools and calls Control Surface over HTTP	in-process AIAgent would merge Qt crash domains and break gateway restart	iris/mcp/iris_control_stdio.py iris/system/hermes_iris_control_sync.py	measured
+2026-10-27T00:36:00Z	how	chat owns SQLite history and POSTs full messages with no Hermes session id	cancel is a worker flag; Hermes-on does not fall back to Ollama if gateway start fails	iris/ui/workers/hermes_workers.py iris/infrastructure/hermes_client.py iris/storage/conversations.py	measured
+2026-10-27T00:38:00Z	how	local Hermes 0.21.5 is MIT at LOCALAPPDATA/hermes/hermes-agent and is not imported	in-process AIAgent exists only in the Hermes venv; core deps target CPython 3.14	%LOCALAPPDATA%\hermes\hermes-agent\run_agent.py LICENSE.md:157	measured
+2026-10-27T00:40:00Z	how	explainer confirmed three attach points: lifecycle, HTTP client, in-process AIAgent	chat/UI/tools stay only if those seams stay	.tmp/hermes-internal-engine/HOW.md	measured
+2026-10-27T00:41:00Z	workflow	next is architect arena then harness then lifecycle units	how is enough to sketch; do not write agent loop again	.tmp/hermes-internal-engine/HOW.md	open
+2026-10-27T00:45:00Z	arena	candidate 1 is an AIAgent sidecar with a three-method Engine	Hermes stays in its 3.14 venv; default path is not the OpenAI gateway	.tmp/hermes-internal-engine/candidate-1/DESIGN.md	open
+2026-10-27T00:48:00Z	arena	candidate 2 is a hosted AIAgent worker on stdin/stdout	hosted tools skip MCP and call ActionRegistry over IPC	.tmp/hermes-internal-engine/candidate-2/DESIGN.md	open
+2026-10-27T00:49:00Z	arena	both candidates rejected in-process import and a polished :8642 default	strong agreement on a Hermes-venv child that is not a public server	.tmp/hermes-internal-engine/PARENT_SCORES.md	open
+2026-10-27T00:52:00Z	arena	picked candidate-1 as base; judge 12/12 vs 9/12 matched the parent	keep MCP tools; graft linter, homes, boot asserts, disk/pid reconcile	.tmp/hermes-internal-engine/SYNTHESIS.md .tmp/hermes-internal-engine/CROSS_JUDGE.md	open
+2026-10-27T00:55:00Z	unit	unit 1 types landed; ChatTranscript parse and split tests green	session id cannot be expressed on the turn type	50dc0ef tests/test_iris_engine_types.py	tests green
+2026-10-27T00:58:00Z	unit	unit 2 handle fails closed with NOT_INSTALLED and never raises	one lock, one child slot, cancel is TurnCancelled	52e6eda tests/test_iris_engine_runtime.py	tests green
+2026-10-27T01:02:00Z	unit	unit 3 parse and GuiPython refuse landed	unknown host lines are PROTOCOL; matching GUI python exits 2	33ad79b tests/test_iris_engine_sidecar.py	tests green
+2026-10-27T01:06:00Z	unit	unit 4 probe fails closed and does not spawn	WRONG_PYTHON and NOT_INSTALLED keep _child None	9fabf58 tests/test_iris_engine_install.py	tests green
+2026-10-27T01:07:00Z	unit	inserted sidecar hello spawn before worker wiring	wiring now would make every chat NOT_INSTALLED	.tmp/hermes-internal-engine/PLAYBOOK.md	open
+2026-10-27T01:54:00Z	unit	hello sidecar spawn and shutdown kill	second ensure_ready reuses pid; exit 2 and no-hello leave no child	25ce336 tests/test_iris_engine_spawn.py	tests green
+2026-10-27T01:59:00Z	unit	EngineHome install reuses hermes_install home=	explicit home skips HermesHome probe; pin checkout after clone	587f576 tests/test_iris_engine_install.py	tests green
+2026-10-27T02:05:00Z	unit	sidecar stays alive after hello and accepts turn	two turns keep the same pid; stop/EOF exit 0	b57e57f tests/test_iris_engine_turn_pipe.py	tests green
+2026-10-27T02:10:00Z	unit	sidecar AIAgent persist-off streams delta then done	missing run_agent stays unwired; non-user tail is NO_USER_UTTERANCE	2d1daa2 tests/test_iris_engine_agent_loop.py	tests green
+2026-10-27T02:14:00Z	unit	ensure_ready installs empty EngineHome then probes again	WRONG_PYTHON skips install; tests use temp home and patch install_into	a194b01 tests/test_iris_engine_install.py	tests green
+2026-10-27T02:21:00Z	unit	default health and chat use shared_engine	InternalSidecar does not start :8642; ExternalGateway keeps HTTP; closeEvent shutdown	24db40b tests/test_hermes_workers_engine.py	tests green
+2026-10-27T02:25:00Z	unit	boot model sync skips :8642 on InternalSidecar	ExternalGateway still constructs HermesClient	2f18e1c tests/test_hermes_workers_engine.py	tests green
+2026-10-27T02:28:00Z	unit	HUD confirm on write/run/rename/scaffold	boot assert fails without confirm_required	e3196e9 tests/test_iris_engine_approval.py	tests green
+2026-10-27T02:34:00Z	unit	internal health syncs iris-control into EngineHome	reconnect_gateway False; default sync still HermesHome	06fd9b5 tests/test_hermes_iris_control_sync.py	tests green
+2026-10-27T02:48:00Z	unit	first-run extras omit aiohttp so probe boosts pins	uv/pip success no longer skips the aiohttp pin	61907e8 tests/test_hermes_install_bypass.py	tests green
+2026-10-27T02:16:00Z	unit	uv --active plus editable restore after aiohttp pin	boost pip dropped hermes_cli; retarget live venv then probe	57ba1e7 tests/test_hermes_install_bypass.py	tests green
+2026-10-27T02:15:17Z	live	EngineHome first-run produced EnginePython	probe hermes_cli+aiohttp+mcp ok; no new :8642 from install	C:\Users\serin\.iris-light\engine\hermes-agent\venv\Scripts\python.exe	measured
+2026-10-27T02:18:00Z	unit	mid-turn cancel kills sidecar; 180s event idle	tool turns were dying at 10s silence	0603669 tests/test_iris_engine_runtime.py	tests green
+2026-10-27T02:21:00Z	unit	turn carries base_url/api_key; Ollama dummy key	Hermes _init_openai_client needs both for explicit custom	a09c644 738c358	tests green
+2026-10-27T02:24:00Z	unit	sidecar stdout reserved; AIAgent quiet_mode	Hermes robot emoji on stdout broke NDJSON	170dbcc tests/test_iris_engine_agent_loop.py	tests green
+2026-10-27T02:25:58Z	live	internal sidecar Ollama turn finished pong	ensure_ready + gemma4:e2b + shutdown left no sidecar	.tmp/hermes-internal-engine/live_turn.py	measured
+2026-10-27T02:27:20Z	verify	IDE bundles still have required markers	workspace and install bundle.js	iris-ide sync_workspace_build	tests green
+2026-10-27T02:28:00Z	verify	78 engine/install tests green; desktop shortcut is dist\IRIS.exe	:8642 pid 13276 is a pre-existing Oct 18 process not started by IRIS engine	live_check.py	measured
+2026-10-27T02:30:00Z	verify	unit 7 live: IRIS-only ready, YouTube play, mini-player, quit	composer send missed (computer-use down); headless Ollama pong later	84d6c743 LIVE.md live_turn.py	measured

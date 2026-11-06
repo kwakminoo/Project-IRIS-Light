@@ -135,13 +135,73 @@ def _on_delta(text: object) -> None:
     _emit({"t": "delta", "text": chunk})
 
 
-def _on_tool(label: object = None, *args: object, **kwargs: object) -> None:
-    text = label
-    if text is None and args:
-        text = args[0]
+_TOOL_EVENT_KINDS = frozenset({"tool.started", "tool.completed", "tool.progress"})
+_NOT_A_TOOL_NAME = frozenset(
+    {
+        "",
+        "tool.started",
+        "tool.completed",
+        "tool.progress",
+        "reasoning.available",
+        "_thinking",
+    }
+)
+
+
+_reasoning_streamed = False
+
+
+def tool_use_label(kind: object, name: object = None) -> str | None:
+    """Live-activity line for one tool callback. None when it is not a tool name."""
+    if str(kind or "") not in _TOOL_EVENT_KINDS:
+        return None
+    tool = "" if name is None else str(name).strip()
+    if tool in _NOT_A_TOOL_NAME:
+        return None
+    return f"[IRIS tool use: {tool}]"
+
+
+def _on_tool(kind: object = None, *args: object, **kwargs: object) -> None:
+    if kind is None and args:
+        kind = args[0]
+        args = args[1:]
+    if kind is None:
+        kind = kwargs.get("label", "")
+    name = args[0] if args else kwargs.get("name")
+    label = tool_use_label(kind, name)
+    if label:
+        _emit({"t": "tool", "label": label})
+        return
+    kind_text = "" if kind is None else str(kind)
+    if kind_text == "reasoning.available":
+        _emit_reasoning_fallback(args, kwargs)
+        return
+    if kind_text in _NOT_A_TOOL_NAME:
+        return
+    if kind_text:
+        _emit({"t": "tool", "label": kind_text})
+
+
+def _on_reasoning(text: object) -> None:
+    global _reasoning_streamed
     if text is None:
-        text = kwargs.get("label", "")
-    _emit({"t": "tool", "label": "" if text is None else str(text)})
+        return
+    chunk = str(text)
+    if not chunk:
+        return
+    _reasoning_streamed = True
+    _emit({"t": "think", "text": chunk})
+
+
+def _emit_reasoning_fallback(args: tuple[object, ...], kwargs: dict[str, object]) -> None:
+    if _reasoning_streamed:
+        return
+    preview = args[1] if len(args) > 1 else kwargs.get("preview")
+    if preview is None:
+        return
+    chunk = str(preview)
+    if chunk:
+        _emit({"t": "think", "text": chunk})
 
 
 def _done_text(result: object) -> str:
@@ -153,12 +213,15 @@ def _done_text(result: object) -> str:
 
 
 def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
+    global _reasoning_streamed
+    _reasoning_streamed = False
     wanted = {
         "skip_memory": True,
         "session_db": None,
         "load_soul_identity": True,
         "stream_delta_callback": _on_delta,
         "tool_progress_callback": _on_tool,
+        "reasoning_callback": _on_reasoning,
         "quiet_mode": True,
     }
     model = raw.get("model")

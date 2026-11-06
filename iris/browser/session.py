@@ -3,14 +3,17 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Callable
 
+from iris.browser._driver import recovery_text, remaining_wait
 from iris.browser.search import BROWSER_HOME_URL, search_url
 from iris.browser.types import (
     BrowserCommand,
     BrowserPhase,
     BrowserResult,
     BrowserSnapshot,
+    CTX_CAP,
     Click,
     Extract,
     HistoryStep,
@@ -45,6 +48,8 @@ SnapshotListener = Callable[[BrowserSnapshot], None]
 
 log = logging.getLogger("iris.browser")
 
+PLAY_BUDGET_SEC = 90.0
+
 
 class BrowserSession:
     def __init__(
@@ -67,6 +72,7 @@ class BrowserSession:
         self._last_result: BrowserResult | None = None
         self._panel_ref: Any = None
         self._gen = 0
+        self._published_fault: str | None = None
 
     def set_ui_call(self, ui_call: UiCall) -> None:
         self._ui_call = ui_call
@@ -153,13 +159,24 @@ class BrowserSession:
             if self._driver is not None:
                 try:
                     live = self._driver.read_snapshot()
-                    self._snap = self._overlay_host(
-                        live.evolve(
-                            gen=self._snap.gen,
-                            nodes=self._snap.nodes,
-                            excerpt=self._snap.excerpt or live.excerpt,
+                    tab_index, _tab_count = self._tab_meta()
+                    page_changed = (live.url or "") != (self._snap.url or "") or tab_index != self._snap.tab_index
+                    if page_changed:
+                        self._snap = self._overlay_host(self._stamp(live))
+                    else:
+                        self._snap = self._overlay_host(
+                            live.evolve(
+                                gen=self._snap.gen,
+                                nodes=self._snap.nodes,
+                                excerpt=self._snap.excerpt or live.excerpt,
+                            )
                         )
-                    )
+                    if (
+                        self._snap.phase == BrowserPhase.FAULTED
+                        and self._published_fault != self._snap.last_error
+                    ):
+                        self._published_fault = self._snap.last_error
+                        self._publish(self._snap)
                 except Exception as exc:
                     self._snap = self._snap.evolve(
                         phase=BrowserPhase.FAULTED,
@@ -227,6 +244,8 @@ class BrowserSession:
 
     def _publish(self, snap: BrowserSnapshot) -> None:
         self._snap = self._overlay_host(snap)
+        if self._snap.phase != BrowserPhase.FAULTED:
+            self._published_fault = None
         for listener in list(self._listeners):
             try:
                 listener(self._snap)
@@ -236,11 +255,17 @@ class BrowserSession:
     def _stamp(self, snap: BrowserSnapshot) -> BrowserSnapshot:
         self._gen += 1
         nodes = tuple(
-            PageNode(
+            replace(
+                n,
                 ref=make_page_ref(self._gen, i),
-                role=n.role,
                 name=(n.name or "")[:NAME_CAP],
-                interactive=n.interactive,
+                frame=n.frame or "",
+                in_view=bool(n.in_view),
+                disabled=bool(n.disabled),
+                checked=bool(n.checked),
+                selected=bool(n.selected),
+                focused=bool(n.focused),
+                context=(n.context or "")[:CTX_CAP],
             )
             for i, n in enumerate(snap.nodes[:NODE_CAP])
         )
@@ -344,7 +369,8 @@ class BrowserSession:
                 if isinstance(cmd, Search):
                     url = search_url(cmd.query, engine=cmd.engine)
                     log.info("search engine=%s play=%s url=%s", cmd.engine, cmd.play, url)
-                    driver.navigate(url)
+                    deadline = time.monotonic() + PLAY_BUDGET_SEC if cmd.play else None
+                    driver.navigate(url, deadline=deadline)
                     snap = driver.read_snapshot()
                     block = page_block_reason(snap.url, snap.title)
                     if block:
@@ -353,7 +379,7 @@ class BrowserSession:
                         return BrowserResult(False, "search", snap, detail=block)
                     detail = ""
                     if cmd.play:
-                        play_err = _play_first_result(driver)
+                        play_err = _play_first_result(driver, deadline=deadline)
                         snap = driver.read_snapshot()
                         playing = bool(snap.media and snap.media.playing)
                         if play_err or not playing:
@@ -418,9 +444,9 @@ class BrowserSession:
                 if isinstance(cmd, Click):
                     try:
                         self._resolve_ref(cmd.target.ref)
+                        driver.click(cmd.target)
                     except LookupError as exc:
                         return BrowserResult(False, "click", self._overlay_host(self._snap), detail=str(exc))
-                    driver.click(cmd.target)
                     self._settle(driver)
                     snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "click", snap)
@@ -428,15 +454,22 @@ class BrowserSession:
                 if isinstance(cmd, TypeText):
                     try:
                         self._resolve_ref(cmd.target.ref)
+                        driver.type_text(cmd.target, cmd.text, clear=cmd.clear)
                     except LookupError as exc:
                         return BrowserResult(False, "type", self._overlay_host(self._snap), detail=str(exc))
-                    driver.type_text(cmd.target, cmd.text, clear=cmd.clear)
                     self._settle(driver)
                     snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "type", snap)
 
                 if isinstance(cmd, Scroll):
-                    driver.scroll_by(cmd.delta_x, cmd.delta_y)
+                    try:
+                        if cmd.ref:
+                            self._resolve_ref(cmd.ref)
+                            driver.scroll_by(cmd.delta_x, cmd.delta_y, ref=cmd.ref)
+                        else:
+                            driver.scroll_by(cmd.delta_x, cmd.delta_y)
+                    except LookupError as exc:
+                        return BrowserResult(False, "scroll", self._overlay_host(self._snap), detail=str(exc))
                     self._settle(driver)
                     snap = self._publish_fresh(driver.read_snapshot())
                     return BrowserResult(True, "scroll", snap)
@@ -445,6 +478,12 @@ class BrowserSession:
                 return BrowserResult(False, str(kind), snap, detail="unknown command")
             except Exception as exc:
                 log.exception("browser command %s failed: %s", kind, exc)
+                mark = getattr(self._driver, "mark_fault", None)
+                if callable(mark):
+                    try:
+                        mark(str(exc))
+                    except Exception:
+                        pass
                 snap = empty_snapshot(phase=BrowserPhase.FAULTED)
                 if self._driver is not None:
                     try:
@@ -457,24 +496,30 @@ class BrowserSession:
                 return BrowserResult(False, str(kind), snap, detail=str(exc))
 
 
-def _wait_watch_or_block(driver: Any, timeout: float = 12.0) -> BrowserSnapshot:
-    deadline = time.monotonic() + timeout
+def _wait_watch_or_block(driver: Any, *, deadline: float) -> BrowserSnapshot:
     last = driver.read_snapshot()
     while time.monotonic() < deadline:
         last = driver.read_snapshot()
         if is_youtube_watch_url(last.url) or "/watch" in (last.url or ""):
             return last
-        block = page_block_reason(last.url, last.title)
-        if block:
+        if page_block_reason(last.url, last.title):
             return last
-        time.sleep(0.25)
+        pause = remaining_wait(deadline, 0.25)
+        if pause <= 0:
+            break
+        time.sleep(pause)
     return last
 
 
-def _play_first_result(driver: Any) -> str:
-    """Open first watch result, then verify media playing. No restriction bypass."""
+def _play_first_result(driver: Any, *, deadline: float) -> str:
     from iris.browser.types import ByCss, ByText
     from iris.browser.youtube import first_watch_locator
+
+    if remaining_wait(deadline, 1.0) <= 0:
+        mark = getattr(driver, "mark_fault", None)
+        if callable(mark):
+            mark(recovery_text("play"))
+        raise TimeoutError(recovery_text("play"))
 
     locators = (
         first_watch_locator(),
@@ -485,17 +530,18 @@ def _play_first_result(driver: Any) -> str:
     getter = getattr(driver, "first_watch_url", None)
     last_err = "no video result"
     opened = False
-    deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline:
-        href = getter() if callable(getter) else ""
-        if href:
+        href = ""
+        if callable(getter):
             try:
-                driver.navigate(href)
-                opened = True
-                last_err = ""
-                break
-            except Exception as exc:
-                last_err = str(exc)
+                href = getter(deadline=deadline)
+            except TypeError:
+                href = getter()
+        if href:
+            driver.navigate(href, deadline=deadline)
+            opened = True
+            last_err = ""
+            break
         for loc in locators:
             try:
                 driver.click(loc)
@@ -523,19 +569,26 @@ def _play_first_result(driver: Any) -> str:
             return block
         if "youtube.com" not in (snap.url or "").lower():
             break
-        time.sleep(0.45)
+        pause = remaining_wait(deadline, 0.45)
+        if pause <= 0:
+            break
+        time.sleep(pause)
     if last_err:
         return last_err
-    time.sleep(0.4)
-    snap = _wait_watch_or_block(driver)
+    pause = remaining_wait(deadline, 0.4)
+    if pause > 0:
+        time.sleep(pause)
+    snap = _wait_watch_or_block(driver, deadline=deadline)
     block = page_block_reason(snap.url, snap.title)
     if block:
         return block
     if not (is_youtube_watch_url(snap.url) or "/watch" in (snap.url or "")):
         return f"opened {snap.url} (not a watch URL — site may have blocked playback)"
+    if remaining_wait(deadline, 1.0) <= 0:
+        return recovery_text("play")
     try_play = getattr(driver, "try_play", None)
     if callable(try_play):
-        note = try_play()
+        note = try_play(deadline=deadline)
         if note:
             return note
     return ""

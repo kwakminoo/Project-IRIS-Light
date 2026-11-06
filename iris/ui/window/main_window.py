@@ -1546,7 +1546,15 @@ class MainWindow(QMainWindow):
                 or self._settings.ollama_model
             ).strip()
             if model:
-                self._sync_hermes_model(model)
+                try:
+                    self._sync_hermes_model(model)
+                except Exception as exc:  # noqa: BLE001
+                    try:
+                        self._live_activity.append_instant_line(
+                            f"Hermes model sync skip: {str(exc)[:120]}"
+                        )
+                    except Exception:
+                        pass
         self._hermes_health_worker = None
         if getattr(self, "_boot_ready_pending", False):
             self._boot_ready_pending = False
@@ -1618,23 +1626,23 @@ class MainWindow(QMainWindow):
                 db=self._db,
                 ollama_base_url=self._settings.ollama_base_url,
             )
+            worker = HermesModelSyncWorker(
+                self._settings.hermes_base_url,
+                target.model,
+                api_key=self._settings.hermes_api_key,
+                command=self._settings.hermes_command,
+                target=target,
+                parent=self,
+            )
+            self._hermes_model_worker = worker
+            worker.finished_ok.connect(self._on_hermes_model_synced)
+            worker.failed.connect(self._on_hermes_model_sync_failed)
+            worker.start()
         except Exception as exc:  # noqa: BLE001
+            self._hermes_model_worker = None
             self._live_activity.append_instant_line(
                 f"Iris Agent model sync skip: {str(exc)[:120]}"
             )
-            return
-        worker = HermesModelSyncWorker(
-            self._settings.hermes_base_url,
-            target.model,
-            api_key=self._settings.hermes_api_key,
-            command=self._settings.hermes_command,
-            target=target,
-            parent=self,
-        )
-        self._hermes_model_worker = worker
-        worker.finished_ok.connect(self._on_hermes_model_synced)
-        worker.failed.connect(self._on_hermes_model_sync_failed)
-        worker.start()
 
     def _on_hermes_model_synced(self) -> None:
         model = self._chat.current_model() or self._settings.ollama_model
@@ -3766,16 +3774,33 @@ class MainWindow(QMainWindow):
             _log("[ERROR] reason=chat panel missing or empty paths")
 
     def _begin_ide_companion_drag(self, paths: list[str]) -> None:
-        """Theia dragstart — QWebEngine OLE DnD가 Qt로 안 넘어오므로 경로만 보관."""
+        """Theia dragstart — 경로는 보관하고, OLE 드래그는 다음 틱에 넘긴다."""
         clean = [str(p).strip() for p in paths if str(p).strip()]
         self._pending_ide_drag = clean
         # 탭 제스처: WebEngine 밖 pointerup이 유실되므로 앱 전역 release로 첨부.
         app = QApplication.instance()
         if app is not None and app != self:
             app.installEventFilter(self)
+        # chat.drag_start가 반환된 뒤에 DoDragDrop. 같은 스택에서 돌리면 HTTP가 막힌다.
+        if app is not None:
+            queued = list(clean)
+            QTimer.singleShot(0, lambda p=queued: self._drag_companion_hdrop(p))
         # ponytail: 포기한 드래그 pending 고착 방지. 천장 20s — 필요 시 drag_end가 갱신.
         token = list(clean)
         QTimer.singleShot(20_000, lambda t=token: self._expire_ide_companion_drag(t))
+
+    def _drag_companion_hdrop(self, paths: list[str]) -> None:
+        if self._pending_ide_drag != paths:
+            return
+        from iris.ui.window.win_ole_drop import drag_hdrop_while_button
+
+        effect = drag_hdrop_while_button(paths)
+        if effect == 0:
+            return
+        if self._pending_ide_drag != paths:
+            return
+        self._attach_os_drop_paths(paths)
+        self._pending_ide_drag = []
 
     def _expire_ide_companion_drag(self, expected: list[str]) -> None:
         if self._pending_ide_drag == expected:
@@ -3921,9 +3946,20 @@ class MainWindow(QMainWindow):
         if text:
             self._live_activity.append_instant_line(f"MCP: {text}")
 
+    def _log_user_input(self, text: str) -> None:
+        shown = (text or "").strip()
+        if not shown:
+            return
+        self._live_activity.append_instant_line(f">>> {shown}")
+
     def _on_user_text(self, text: str, attachments: list | None = None) -> None:
         att = tuple(str(p).strip() for p in (attachments or []) if str(p).strip())
         self._try_open_at_path_refs(text)
+        self._log_user_input(
+            self._format_user_turn_content(
+                UserTurn(text=text or "", source=UserTurnSource.KEYBOARD, attachments=att)
+            )
+        )
         self._turn_dispatcher.submit(
             text=text,
             source=UserTurnSource.KEYBOARD,
@@ -5364,6 +5400,7 @@ class MainWindow(QMainWindow):
         for sig in (
             getattr(worker, "connecting", None),
             getattr(worker, "tool_progress", None),
+            getattr(worker, "reasoning", None),
             getattr(worker, "thinking_started", None),
             getattr(worker, "thinking_chunk", None),
             getattr(worker, "thinking_done", None),
@@ -5383,6 +5420,8 @@ class MainWindow(QMainWindow):
             worker.switched.connect(self._on_chat_model_switched)
         if hasattr(worker, "tool_progress"):
             worker.tool_progress.connect(lambda message, tid=turn_id: self._on_hermes_tool_progress_for_turn(message, tid))
+        if hasattr(worker, "reasoning"):
+            worker.reasoning.connect(lambda chunk, tid=turn_id: self._on_hermes_reasoning_for_turn(chunk, tid))
         if hasattr(worker, "thinking_started"):
             worker.thinking_started.connect(lambda tid=turn_id: self._on_thinking_started_for_turn(tid))
         if hasattr(worker, "thinking_chunk"):
@@ -5638,16 +5677,16 @@ class MainWindow(QMainWindow):
             else:
                 text = (message or "").strip()
                 if text:
-                    from iris.runtime.tool_force import is_exit_tool_name
-                    from iris.runtime.turn_followthrough import counts_as_tool_ok
+                    from iris.runtime.tool_force import tool_activity
                     from iris.ui.wiki_turn import note_wiki_tool
 
-                    low = text.lower()
-                    if is_exit_tool_name(low.split()[0] if low.split() else "") or "respond ok" in low:
-                        slot.exit_tool_seen = True
-                    if counts_as_tool_ok(text):
-                        slot.tool_ok_count += 1
-                    note_wiki_tool(self, text)
+                    noted = tool_activity(text)
+                    if noted is not None:
+                        if noted.exit_tool:
+                            slot.exit_tool_seen = True
+                        if noted.count_ok:
+                            slot.tool_ok_count += 1
+                        note_wiki_tool(self, noted.record)
         finally:
             self._bound_slot = None
 
@@ -5780,25 +5819,32 @@ class MainWindow(QMainWindow):
             return
         text = (message or "").strip()
         if text:
-            from iris.runtime.tool_force import RESPOND_OK_ACTIVITY, is_exit_tool_name
-            from iris.runtime.turn_followthrough import counts_as_tool_ok
-
-            low = text.lower()
-            if is_exit_tool_name(low.split()[0] if low.split() else "") or "respond ok" in low:
-                self._exit_tool_seen = True
-                if "respond" in low and "ok" in low:
-                    text = RESPOND_OK_ACTIVITY
-            if counts_as_tool_ok(text):
-                self._tool_ok_count += 1
-            self._turn_tool_lines.append(text)
+            from iris.runtime.tool_force import tool_activity
             from iris.ui.wiki_turn import note_wiki_tool
 
-            note_wiki_tool(self, text)
-            self._live_activity.append_instant_line(f"[IRIS tool] {text}")
+            noted = tool_activity(text)
+            if noted is None:
+                return
+            if noted.exit_tool:
+                self._exit_tool_seen = True
+            if noted.count_ok:
+                self._tool_ok_count += 1
+            self._turn_tool_lines.append(noted.record)
+            note_wiki_tool(self, noted.record)
+            shown = text if text.startswith("[IRIS tool use:") else f"[IRIS tool] {noted.record}"
+            self._live_activity.append_instant_line(shown)
             # 도구 왕복 중에도 생성 중 표시를 유지한다.
             if not self._busy:
                 self._busy = True
             self._chat.set_generating(True)
+
+    def _on_hermes_reasoning_for_turn(self, chunk: str, turn_id: str) -> None:
+        self._relay_foreground_turn(turn_id, lambda: self._on_hermes_reasoning(chunk))
+
+    def _on_hermes_reasoning(self, chunk: str = "") -> None:
+        if self._ignore_chat_result:
+            return
+        self._live_activity.append_reasoning(chunk or "")
 
     def _on_chat_connecting(self, model: str, host: str) -> None:
         if self._ignore_chat_result:
@@ -5807,11 +5853,6 @@ class MainWindow(QMainWindow):
         self._live_activity.append_instant_line(
             f"Connecting to '{model}' via {backend} on '{host}'"
         )
-        # 방금 보낸 사용자 메시지
-        if self._history:
-            last = self._history[-1]
-            if last.get("role") == "user":
-                self._live_activity.append_instant_line(f">>> {last.get('content', '')}")
 
     def _on_thinking_started(self) -> None:
         if self._ignore_chat_result:
@@ -6701,6 +6742,7 @@ class MainWindow(QMainWindow):
             self._live_activity.append_instant_line("VOICE barge_in")
             self._cancel_current_turn(reason="voice_barge_in", preserve_partial_response=True)
         self._live_activity.append_instant_line(f"VOICE turn_created text={body[:80]}")
+        self._log_user_input(body)
         turn = self._turn_dispatcher.submit(
             text=body,
             source=UserTurnSource.VOICE,
