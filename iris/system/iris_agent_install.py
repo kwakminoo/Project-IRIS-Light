@@ -1,4 +1,4 @@
-"""Iris Agent Windows 설치 우회 — uv managed Python junction(WinError 448) 회피.
+"""Hermes Windows 설치 우회 — uv managed Python junction(WinError 448) 회피.
 
 공식 install.ps1 은 시스템 Python을 거부하고 checkout 전용 uv managed
 interpreter 만 받는다. OneDrive/필터 등으로 minor-version junction 생성이
@@ -9,7 +9,7 @@ interpreter 만 받는다. OneDrive/필터 등으로 minor-version junction 생�
 pip 는 uv.lock pin 을 재현하지 않으며 requirements.txt 는 쓰지 않는다.
 
 Python: 처음엔 3.11 → 3.12 → 3.13 을 고르고, clone 한 뒤 그 저장소의 uv.lock·pyproject 가
-요구하는 범위(iris_agent_python_range)를 벗어나면 다시 고른다. 2026-10-02 upstream 은
+요구하는 범위(hermes_python_range)를 벗어나면 다시 고른다. 2026-10-02 upstream 은
 requires-python 이 >=3.11,<3.15 인데 의존성이 전부 `python_version >= '3.14'` 로 묶여
 3.11 로는 핵심 패키지가 하나도 깔리지 않았다 (ruamel 없음, 실제 사례).
 """
@@ -29,24 +29,21 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from iris.infrastructure.agent_runtime import (
-    IRIS_AGENT_CHECKOUT_NAME,
-    LEGACY_AGENT_CHECKOUT_NAME,
     apply_iris_agent_baseline_overlays,
     ensure_iris_agent_home,
     load_pinned_sha,
     load_upstream_url,
 )
-from iris.system import iris_agent_gateway as gw
+from iris.system import hermes_gateway as gw
 
 HERMES_REPO_HTTPS = load_upstream_url()
 StreamFn = Callable[[str], None]
 _HERMES_PYTHON_MIN = (3, 11)
 _HERMES_PYTHON_MAX_EXCLUSIVE = (3, 14)
 _PY_LAUNCHER_FLAGS = ("-3.11", "-3.12", "-3.13")
-_WANTED_EXTRAS = ("homeassistant", "mcp")
 _PIP_FALLBACK_LIMIT = (
     "pip 폴백은 uv.lock pin을 재현하지 않습니다. "
-    "선언된 extras 만 설치하며 requirements.txt 는 사용하지 않습니다."
+    "extras mcp,messaging 만 설치하며 requirements.txt 는 사용하지 않습니다."
 )
 _ERROR_LINE = re.compile(
     r"(?i)\b(error|exception|traceback|failed|winerror|timeout|permissionerror)\b"
@@ -129,7 +126,7 @@ def _ver(text: str) -> tuple[int, int]:
     return int(major), int(minor)
 
 
-def iris_agent_python_range(repo: Path) -> PyRange:
+def hermes_python_range(repo: Path) -> PyRange:
     """그 checkout 이 실제로 설치되는 Python 범위.
 
     pyproject 의 requires-python 과 uv.lock 의 supported-markers 중 좁은 쪽."""
@@ -195,7 +192,7 @@ def find_bootstrap_python(want: PyRange | None = None) -> Path | None:
     if launched is not None:
         return launched
     try:
-        from iris.system.iris_agent_control_sync import project_root
+        from iris.system.hermes_iris_control_sync import project_root
 
         root = project_root()
     except Exception:  # noqa: BLE001
@@ -287,7 +284,7 @@ def _kill_hermes_tree_holders(agent: Path) -> None:
     except ImportError:
         # taskkill by image — best effort
         flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        for image in ("iris-agent.exe", "iris.exe", "hermes.exe", "python.exe", "pythonw.exe"):
+        for image in ("hermes.exe", "python.exe", "pythonw.exe"):
             subprocess.run(
                 ["taskkill", "/F", "/T", "/IM", image],
                 capture_output=True,
@@ -306,25 +303,16 @@ def _kill_hermes_tree_holders(agent: Path) -> None:
     time.sleep(0.4)
 
 
-def _checkout_sidecar(name: str, *, kind: str, keep: str | None = None) -> bool:
-    """iris-agent / hermes-agent 의 .broken- / .trash- / .staging- 사이드카."""
-    for base in (IRIS_AGENT_CHECKOUT_NAME, LEGACY_AGENT_CHECKOUT_NAME):
-        prefix = f"{base}.{kind}-"
-        if name.startswith(prefix) and name != (keep or ""):
-            return True
-    return False
-
-
-def force_retire_iris_agent(
+def force_retire_hermes_agent(
     *,
     command: str = "hermes",
     keep_staging: str | None = None,
 ) -> str:
-    """잠긴 iris-agent·hermes-agent / .broken-* / staging-* 를 rename 으로 치우고 삭제 시도.
+    """잠긴 hermes-agent / .broken-* / staging-* 를 rename 으로 치우고 삭제 시도.
 
-    keep_staging: 진행 중 clone 디렉터리명(예: iris-agent.staging-…)만 보존.
+    keep_staging: 진행 중 clone 디렉터리명(예: hermes-agent.staging-…)만 보존.
     """
-    home = gw.iris_agent_home()
+    home = gw.hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     try:
         gw.stop_hermes_gateway(command, wait_sec=6.0)
@@ -333,10 +321,7 @@ def force_retire_iris_agent(
 
     notes: list[str] = []
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    targets = [
-        home / IRIS_AGENT_CHECKOUT_NAME,
-        home / LEGACY_AGENT_CHECKOUT_NAME,
-    ]
+    targets = [home / "hermes-agent"]
     try:
         targets.extend(
             sorted(
@@ -344,9 +329,12 @@ def force_retire_iris_agent(
                 for p in home.iterdir()
                 if p.is_dir()
                 and (
-                    _checkout_sidecar(p.name, kind="broken")
-                    or _checkout_sidecar(p.name, kind="trash")
-                    or _checkout_sidecar(p.name, kind="staging", keep=keep_staging)
+                    p.name.startswith("hermes-agent.broken-")
+                    or p.name.startswith("hermes-agent.trash-")
+                    or (
+                        p.name.startswith("hermes-agent.staging-")
+                        and p.name != (keep_staging or "")
+                    )
                 )
             )
         )
@@ -357,7 +345,7 @@ def force_retire_iris_agent(
         if not path.exists():
             continue
         _kill_hermes_tree_holders(path)
-        trash = home / f"{IRIS_AGENT_CHECKOUT_NAME}.trash-{stamp}-{path.name[-8:]}"
+        trash = home / f"hermes-agent.trash-{stamp}-{path.name[-8:]}"
         try:
             path.rename(trash)
             notes.append(f"치움→{trash.name}")
@@ -406,20 +394,20 @@ def force_retire_iris_agent(
     # 오래된 trash 최대 N개 · 남은 staging(보존분 제외) 전부 삭제
     try:
         trashes = sorted(
-            p
-            for p in home.iterdir()
-            if p.is_dir() and _checkout_sidecar(p.name, kind="trash")
+            p for p in home.iterdir() if p.is_dir() and p.name.startswith("hermes-agent.trash-")
         )
         for old in trashes[:-_MAX_TRASH_KEEP]:
             shutil.rmtree(old, ignore_errors=True)
         for st in home.iterdir():
-            if st.is_dir() and _checkout_sidecar(
-                st.name, kind="staging", keep=keep_staging
+            if (
+                st.is_dir()
+                and st.name.startswith("hermes-agent.staging-")
+                and st.name != (keep_staging or "")
             ):
                 shutil.rmtree(st, ignore_errors=True)
     except OSError:
         pass
-    return "; ".join(notes) if notes else "정리할 agent checkout 없음"
+    return "; ".join(notes) if notes else "정리할 hermes-agent 없음"
 
 
 def _user_path_prepend(scripts: Path) -> None:
@@ -430,7 +418,7 @@ def _user_path_prepend(scripts: Path) -> None:
     if s.lower() not in path.lower():
         os.environ["PATH"] = s + os.pathsep + path
     # 제품 홈(또는 IRIS_AGENT_HOME) 아래 Scripts 만 레지스트리에 남긴다.
-    real = gw.iris_agent_home()
+    real = gw.hermes_home()
     try:
         scripts.resolve().relative_to(real.resolve())
     except (ValueError, OSError):
@@ -478,8 +466,10 @@ def _redact(text: str) -> str:
     return redact_secrets(text or "")
 
 
-def write_install_log(body: str, *, prefix: str = "iris-install", home: Path | None = None) -> Path:
-    log_dir = (home if home is not None else gw.iris_agent_home()) / "logs"
+def write_install_log(
+    body: str, *, prefix: str = "iris-install", home: Path | None = None
+) -> Path:
+    log_dir = (home if home is not None else gw.hermes_home()) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     path = log_dir / f"{prefix}-{stamp}.log"
@@ -516,7 +506,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 @contextmanager
-def iris_agent_install_lock(home: Path) -> Iterator[Path]:
+def hermes_install_lock(home: Path) -> Iterator[Path]:
     home.mkdir(parents=True, exist_ok=True)
     path = home / "iris-hermes-install.lock"
     if path.is_file():
@@ -525,7 +515,7 @@ def iris_agent_install_lock(home: Path) -> Iterator[Path]:
         except (OSError, ValueError):
             pid = 0
         if _pid_alive(pid):
-            raise InstallBusy(f"다른 Iris Agent 설치가 진행 중입니다 (pid {pid})")
+            raise InstallBusy(f"다른 Hermes 설치가 진행 중입니다 (pid {pid})")
     path.write_text(str(os.getpid()), encoding="utf-8")
     try:
         yield path
@@ -540,53 +530,6 @@ def iris_agent_install_lock(home: Path) -> Iterator[Path]:
 def _timeout_kind(exc: BaseException) -> str:
     kind = getattr(exc, "kind", "")
     return str(kind) if kind in ("idle", "hard") else "hard"
-
-
-def _declared_optional_extras(pyproject: Path) -> frozenset[str]:
-    if not pyproject.is_file():
-        return frozenset()
-    try:
-        import tomllib
-
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return frozenset()
-    optional = data.get("project", {}).get("optional-dependencies")
-    if not isinstance(optional, dict):
-        return frozenset()
-    return frozenset(str(name) for name in optional)
-
-
-def _wanted_extras(agent: Path) -> tuple[str, ...]:
-    declared = _declared_optional_extras(agent / "pyproject.toml")
-    return tuple(name for name in _WANTED_EXTRAS if name in declared)
-
-
-def _uv_extra_args(extras: tuple[str, ...]) -> list[str]:
-    args: list[str] = []
-    for name in extras:
-        args.extend(("--extra", name))
-    return args
-
-
-def _pip_editable_spec(extras: tuple[str, ...]) -> str:
-    if not extras:
-        return "."
-    return ".[" + ",".join(extras) + "]"
-
-
-_PROBE_PINS = (
-    "aiohttp==3.14.3",
-    "mcp==2.0.0",
-    "httpx2==2.7.0",
-    "starlette==1.3.1",
-    "python-dotenv==1.2.2",
-    "ruamel.yaml==0.18.16",
-)
-
-
-def _boost_probe_deps(venv_py: Path) -> subprocess.CompletedProcess[str]:
-    return _run([str(venv_py), "-m", "pip", "install", *_PROBE_PINS], timeout=300.0)
 
 
 def _probe_venv(venv_py: Path) -> tuple[bool, str]:
@@ -608,20 +551,19 @@ def _discard_tree(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _restore_backup(home: Path, stamp: str, *, restore_legacy: bool = False) -> None:
-    live = home / IRIS_AGENT_CHECKOUT_NAME
-    destination = home / (LEGACY_AGENT_CHECKOUT_NAME if restore_legacy else IRIS_AGENT_CHECKOUT_NAME)
-    backup = home / f"{IRIS_AGENT_CHECKOUT_NAME}.prev-{stamp}"
-    failed = home / f"{IRIS_AGENT_CHECKOUT_NAME}.failed-{stamp}"
+def _restore_backup(home: Path, stamp: str) -> None:
+    live = home / "hermes-agent"
+    backup = home / f"hermes-agent.prev-{stamp}"
+    failed = home / f"hermes-agent.failed-{stamp}"
     if live.exists():
         try:
             _discard_tree(failed)
             live.rename(failed)
         except OSError:
             return
-    if backup.exists() and not destination.exists():
+    if backup.exists() and not live.exists():
         try:
-            backup.rename(destination)
+            backup.rename(live)
         except OSError:
             pass
 
@@ -678,43 +620,31 @@ def _activate_staged(
 ) -> tuple[bool, str]:
     """교체하고 경로를 고친 뒤, 최종 위치에서만 실행 probe 한다."""
     old = Path(staging)
-    restore_legacy = not (home / IRIS_AGENT_CHECKOUT_NAME).exists() and (
-        home / LEGACY_AGENT_CHECKOUT_NAME
-    ).exists()
     swapped, note = _swap_in_staging(home, staging, stamp)
     if not swapped:
         return False, note
-    live = home / IRIS_AGENT_CHECKOUT_NAME
+    live = home / "hermes-agent"
     _retarget_moved_tree(live, old, live)
     if probe_gateway:
-        ok, detail = gw.probe_iris_agent_runtime(command=command, timeout_sec=30.0)
+        ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
     else:
-        venv_py = live / ("venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python")
+        venv_py = live / (
+            "venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python"
+        )
         ok, detail = _probe_venv(venv_py)
     if not ok:
-        _restore_backup(home, stamp, restore_legacy=restore_legacy)
+        _restore_backup(home, stamp)
         return False, detail
-    legacy = home / LEGACY_AGENT_CHECKOUT_NAME
-    if legacy.exists():
-        trash = home / f"{LEGACY_AGENT_CHECKOUT_NAME}.trash-{stamp}-leftover"
-        try:
-            legacy.rename(trash)
-            shutil.rmtree(trash, ignore_errors=True)
-        except OSError:
-            pass
     return True, detail
 
 
 def _swap_in_staging(home: Path, staging: Path, stamp: str) -> tuple[bool, str]:
-    live = home / IRIS_AGENT_CHECKOUT_NAME
-    legacy = home / LEGACY_AGENT_CHECKOUT_NAME
-    backup = home / f"{IRIS_AGENT_CHECKOUT_NAME}.prev-{stamp}"
+    live = home / "hermes-agent"
+    backup = home / f"hermes-agent.prev-{stamp}"
     moved = False
-    # 캐노니컬이 없고 레거시만 있으면 그걸 백업으로 비킨다.
-    incumbent = live if live.exists() else (legacy if legacy.exists() else None)
-    if incumbent is not None:
+    if live.exists():
         try:
-            incumbent.rename(backup)
+            live.rename(backup)
             moved = True
         except OSError as exc:
             return False, f"기존 설치를 비키지 못했습니다: {exc}"
@@ -723,7 +653,7 @@ def _swap_in_staging(home: Path, staging: Path, stamp: str) -> tuple[bool, str]:
     except OSError as exc:
         if moved and backup.exists() and not live.exists():
             try:
-                backup.rename(incumbent)
+                backup.rename(live)
             except OSError:
                 pass
         return False, f"staging 교체 실패, 기존 설치 유지 시도: {exc}"
@@ -736,14 +666,11 @@ def _run_dep(
     cwd: str,
     run_streamed: Callable[..., subprocess.CompletedProcess[str]] | None,
     hard: float,
-    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """pip/uv 는 무출력만으로 죽이지 않는다. 전체 시간 제한과 취소는 유지."""
     if run_streamed is not None:
-        return run_streamed(
-            cmd, cwd=cwd, timeout=None, hard_timeout=hard, hidden=True, env=env
-        )
-    return _run(cmd, cwd=cwd, timeout=hard, env=env)
+        return run_streamed(cmd, cwd=cwd, timeout=None, hard_timeout=hard, hidden=True)
+    return _run(cmd, cwd=cwd, timeout=hard)
 
 
 def _pip_unmarked_core_deps(venv_py: Path, agent: Path) -> subprocess.CompletedProcess[str]:
@@ -784,9 +711,6 @@ def _finish_staged_install(
     should_abort: Callable[[], bool] | None,
     probe_gateway: bool = True,
 ) -> InstallResult:
-    # packages.find + CLI shims must exist before uv/pip builds editable metadata.
-    # Soft-fail: overlay miss must not abort a otherwise-good install.
-    _guard_installed_agent(staging)
     venv_dir = staging / "venv"
     emit("venv 생성…")
     venv_proc = _run([str(py), "-m", "venv", str(venv_dir)], timeout=180.0)
@@ -803,26 +727,25 @@ def _finish_staged_install(
         _discard_tree(staging)
         return InstallResult(False, "사용자가 중단함", "cancel")
 
-    extras = _wanted_extras(staging)
     lock = staging / "uv.lock"
     installed = False
     if uv and lock.is_file():
+        # Pin dropped `homeassistant`. mcp = control tools; messaging pulls aiohttp.
         # UV_PROJECT_ENVIRONMENT must be staging/venv — bare uv sync creates .venv and
         # probe (venv/Scripts/python) then fails with ModuleNotFoundError: hermes_cli.
-        extra_note = ",".join(extras) if extras else "no extras"
-        emit(f"uv sync --frozen ({extra_note})…")
+        emit("uv sync --frozen (mcp, messaging)…")
         env = os.environ.copy()
         env["VIRTUAL_ENV"] = str(venv_dir)
         env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
         cmd = [
             uv, "sync", "--frozen", "--no-dev", "--active",
-            *_uv_extra_args(extras),
+            "--extra", "mcp", "--extra", "messaging",
             "--python", str(venv_py),
         ]
         started = time.monotonic()
         try:
-            proc = _run_dep(
-                cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0, env=env
+            proc = _run_pkg_install(
+                cmd, cwd=str(staging), run_streamed=run_streamed, env=env
             )
         except subprocess.TimeoutExpired as exc:
             log.append(str(exc))
@@ -840,9 +763,8 @@ def _finish_staged_install(
         emit(_PIP_FALLBACK_LIMIT)
 
     if not installed:
-        spec = _pip_editable_spec(extras)
-        emit(f"pip install -e {spec}…")
-        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", spec]
+        emit("pip install -e .[mcp,messaging]…")
+        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", ".[mcp,messaging]"]
         started = time.monotonic()
         try:
             pip = _run_dep(pip_cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0)
@@ -870,7 +792,14 @@ def _finish_staged_install(
             log.append(pip.stdout or "")
             log.append(pip.stderr or "")
             if pip.returncode == 0:
-                boost = _boost_probe_deps(venv_py)
+                boost = _run(
+                    [
+                        str(venv_py), "-m", "pip", "install",
+                        "aiohttp==3.14.3", "mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1",
+                        "python-dotenv==1.2.2", "ruamel.yaml==0.18.16",
+                    ],
+                    timeout=300.0,
+                )
                 log.append(boost.stdout or "")
                 log.append(boost.stderr or "")
                 if boost.returncode != 0:
@@ -892,18 +821,33 @@ def _finish_staged_install(
 
     ok, detail = _probe_venv(venv_py)
     if not ok:
+        # uv sync can leave aiohttp/mcp missing on the 3.14 pin set.
+        # Pin those first. Only re-run editable install if probe still fails —
+        # pip -e . re-resolves and can hit Pillow↔browser-harness conflicts.
         emit("probe 실패 — aiohttp/mcp pin…")
         log.append(detail)
-        boost = _boost_probe_deps(venv_py)
+        boost = _run(
+            [
+                str(venv_py),
+                "-m",
+                "pip",
+                "install",
+                "aiohttp==3.14.3",
+                "mcp==2.0.0",
+                "httpx2==2.7.0",
+                "starlette==1.3.1",
+                "python-dotenv==1.2.2",
+                "ruamel.yaml==0.18.16",
+            ],
+            timeout=300.0,
+        )
         log.append(boost.stdout or "")
         log.append(boost.stderr or "")
         if boost.returncode != 0:
             _discard_tree(staging)
             return fail("exit", "gateway/mcp 의존성 보강 실패", "\n".join(log))
-        # uv sync 성공(installed=True) 뒤에는 pip editable 금지 —
-        # Pillow override 를 pip 가 깨뜨림. editable 복구는 pip 경로만.
         ok, detail = _probe_venv(venv_py)
-        if not ok and not installed:
+        if not ok:
             emit("probe pin 후 editable 재설치…")
             edit = _run(
                 [str(venv_py), "-m", "pip", "install", "-e", "."],
@@ -927,12 +871,7 @@ def _finish_staged_install(
     if not runtime_ok:
         log.append(runtime_detail)
         return fail("probe", "최종 경로 실행 검증 실패", "\n".join(log))
-    live_scripts = (
-        home
-        / IRIS_AGENT_CHECKOUT_NAME
-        / "venv"
-        / ("Scripts" if sys.platform == "win32" else "bin")
-    )
+    live_scripts = (home / "hermes-agent" / "venv" / ("Scripts" if sys.platform == "win32" else "bin"))
     _user_path_prepend(live_scripts)
     return InstallResult(True, f"우회 설치 성공 ({runtime_detail})", "ok")
 
@@ -949,7 +888,7 @@ def last_bypass_log_path() -> str:
 
 
 def new_bypass_pip_log_path() -> Path:
-    logs = gw.iris_agent_home() / "logs"
+    logs = gw.hermes_home() / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return logs / f"iris-bypass-pip-{stamp}.log"
@@ -1048,7 +987,6 @@ def _try_uv_sync(
     env = os.environ.copy()
     env["VIRTUAL_ENV"] = str(venv_dir)
     env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
-    extras = _wanted_extras(agent)
     cmd = [
         uv,
         "sync",
@@ -1056,7 +994,10 @@ def _try_uv_sync(
         "--active",
         "--python",
         str(venv_py),
-        *_uv_extra_args(extras),
+        "--extra",
+        "mcp",
+        "--extra",
+        "messaging",
     ]
     try:
         return _run_pkg_install(cmd, cwd=str(agent), run_streamed=run_streamed, env=env)
@@ -1107,15 +1048,15 @@ def _checkout_pinned_sha(git: str, staging: Path, pin: str) -> subprocess.Comple
 
 
 def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | None:
-    """staging → iris-agent rename. 실패 시 메시지."""
+    """staging → hermes-agent rename. 실패 시 메시지."""
     if agent.exists():
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        trash = home / f"{IRIS_AGENT_CHECKOUT_NAME}.trash-{stamp}-swap"
+        trash = home / f"hermes-agent.trash-{stamp}-swap"
         try:
             agent.rename(trash)
             shutil.rmtree(trash, ignore_errors=True)
         except OSError as exc:
-            return f"기존 {IRIS_AGENT_CHECKOUT_NAME} 교체 실패: {exc}"
+            return f"기존 hermes-agent 교체 실패: {exc}"
     try:
         staging.rename(agent)
     except OSError as exc:
@@ -1123,7 +1064,7 @@ def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | No
     return None
 
 
-def install_iris_agent_with_system_python(
+def install_hermes_with_system_python(
     *,
     command: str = "hermes",
     on_stream: StreamFn | None = None,
@@ -1158,11 +1099,11 @@ def install_iris_agent_with_system_python(
         return InstallResult(False, "사용자가 중단함", "cancel")
 
     try:
-        with iris_agent_install_lock(home):
-            # probe_iris_agent_runtime reads the default gateway home. Explicit
+        with hermes_install_lock(home):
+            # probe_hermes_runtime reads the default gateway home. Explicit
             # EngineHome is a different tree; caller already probed that one.
             if not explicit_home:
-                already, already_detail = gw.probe_iris_agent_runtime(
+                already, already_detail = gw.probe_hermes_runtime(
                     command=command, timeout_sec=30.0
                 )
                 if already:
@@ -1180,7 +1121,7 @@ def install_iris_agent_with_system_python(
             if should_abort and should_abort():
                 return InstallResult(False, "사용자가 중단함", "cancel")
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            staging = home / f"{IRIS_AGENT_CHECKOUT_NAME}.staging-{stamp}"
+            staging = home / f"hermes-agent.staging-{stamp}"
             _discard_tree(staging)
             pin = (sha or "").strip() or load_pinned_sha()
             _emit(f"Iris Agent 런타임 pin checkout ({pin[:7]})…")
@@ -1208,11 +1149,11 @@ def install_iris_agent_with_system_python(
                     "pin SHA 불일치",
                     f"want={pin} got={got}\n" + "\n".join(log),
                 )
-            want = iris_agent_python_range(staging)
+            want = hermes_python_range(staging)
             have = python_version(py)
             log.append(f"repo python range={want} chosen={have}")
             if have is None or not (want[0] <= have < want[1]):
-                _emit(f"이 Iris Agent는 Python {want[0][0]}.{want[0][1]} 이상이 필요해요 — 다시 고릅니다…")
+                _emit(f"이 Hermes 는 Python {want[0][0]}.{want[0][1]} 이상이 필요해요 — 다시 고릅니다…")
                 py = ensure_system_python_winget(run_streamed=run_streamed, on_stream=on_stream, want=want)
                 if py is None:
                     _discard_tree(staging)
@@ -1263,4 +1204,4 @@ if __name__ == "__main__":
     assert "런타임 실패" in rt and "iris-bypass-pip-rt" in rt
     clipped = clip_needs_user_message("line\n" * 40 + ("x" * 900))
     assert len(clipped) <= _NEEDS_USER_MSG_LIMIT
-    print("iris_agent_install helpers ok", find_bootstrap_python())
+    print("hermes_install helpers ok", find_bootstrap_python())
