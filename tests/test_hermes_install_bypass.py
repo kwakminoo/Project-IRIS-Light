@@ -529,5 +529,55 @@ class HermesPythonRangeTests(unittest.TestCase):
             self.assertEqual(finish.call_args.kwargs["py"], Path("py314"))
 
 
+class HermesInstallUvProbeRecoveryTests(unittest.TestCase):
+    def test_uv_sync_probe_boost_skips_editable_reinstall(self) -> None:
+        """uv sync 성공 뒤 aiohttp만 없으면 pin 보강으로 끝내고 pip -e 를 다시 돌리지 않는다."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "engine"
+            staging = home / "hermes-agent.staging"
+            staging.mkdir(parents=True)
+            (staging / "uv.lock").write_text("x", encoding="utf-8")
+            if sys.platform == "win32":
+                (staging / "venv" / "Scripts").mkdir(parents=True)
+                (staging / "venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+            else:
+                (staging / "venv" / "bin").mkdir(parents=True)
+                (staging / "venv" / "bin" / "python").write_text("", encoding="utf-8")
+            probes = iter([(False, "No module named 'aiohttp'"), (True, "ok")])
+            edits: list[list[str]] = []
+
+            def run(cmd, **_kwargs):
+                if "-e" in cmd and cmd[-1] == ".":
+                    edits.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            def run_pkg(cmd, **_kwargs):
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with (
+                patch.object(hi, "_run", side_effect=run),
+                patch.object(hi, "_run_pkg_install", side_effect=run_pkg),
+                patch.object(hi, "_probe_venv", side_effect=lambda *_a, **_k: next(probes)),
+                patch.object(hi, "_activate_staged", return_value=(True, "live")),
+                patch.object(hi, "_user_path_prepend"),
+            ):
+                result = hi._finish_staged_install(
+                    staging=staging,
+                    home=home,
+                    stamp="t",
+                    py=Path("python"),
+                    uv="uv",
+                    command="hermes",
+                    log=[],
+                    emit=lambda _m: None,
+                    fail=lambda *a, **k: hi.InstallResult(False, "fail", "exit"),
+                    run_streamed=None,
+                    should_abort=None,
+                    probe_gateway=False,
+                )
+            self.assertTrue(result.ok)
+            self.assertEqual(len(edits), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
