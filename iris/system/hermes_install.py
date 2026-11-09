@@ -820,6 +820,46 @@ def _finish_staged_install(
             return fail("exit", "pip 설치 실패", "\n".join(log))
 
     ok, detail = _probe_venv(venv_py)
+    if not ok:
+        # uv sync can leave aiohttp/mcp missing on the 3.14 pin set.
+        # Pin those first. Only re-run editable install if probe still fails —
+        # pip -e . re-resolves and can hit Pillow↔browser-harness conflicts.
+        emit("probe 실패 — aiohttp/mcp pin…")
+        log.append(detail)
+        boost = _run(
+            [
+                str(venv_py),
+                "-m",
+                "pip",
+                "install",
+                "aiohttp==3.14.3",
+                "mcp==2.0.0",
+                "httpx2==2.7.0",
+                "starlette==1.3.1",
+                "python-dotenv==1.2.2",
+                "ruamel.yaml==0.18.16",
+            ],
+            timeout=300.0,
+        )
+        log.append(boost.stdout or "")
+        log.append(boost.stderr or "")
+        if boost.returncode != 0:
+            _discard_tree(staging)
+            return fail("exit", "gateway/mcp 의존성 보강 실패", "\n".join(log))
+        ok, detail = _probe_venv(venv_py)
+        if not ok:
+            emit("probe pin 후 editable 재설치…")
+            edit = _run(
+                [str(venv_py), "-m", "pip", "install", "-e", "."],
+                cwd=str(staging),
+                timeout=300.0,
+            )
+            log.append(edit.stdout or "")
+            log.append(edit.stderr or "")
+            if edit.returncode != 0:
+                _discard_tree(staging)
+                return fail("exit", "editable 재설치 실패", "\n".join(log))
+            ok, detail = _probe_venv(venv_py)
     log.append(f"probe={ok} {detail}")
     if not ok:
         _discard_tree(staging)
