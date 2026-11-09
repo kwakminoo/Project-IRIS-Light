@@ -9,14 +9,9 @@ from PyQt6.QtWidgets import QApplication
 
 from iris.audio.mic_state import MicState
 from iris.core.state_machine import AppState, StateMachine
-import iris.engine as _engine
-from iris.engine.types import ReasoningDelta as _ReasoningDelta
 from iris.runtime import UserTurnDispatcher
 from iris.runtime.chat_turn_gate import ChatTurnGate
 from iris.runtime.user_turn import UserTurnSource
-
-# hermes_workers imports ReasoningDelta; package __init__ does not export it yet.
-_engine.ReasoningDelta = _ReasoningDelta
 
 QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
 
