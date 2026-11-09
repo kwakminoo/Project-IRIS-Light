@@ -546,6 +546,51 @@ def _probe_venv(venv_py: Path) -> tuple[bool, str]:
     return True, f"venv import ok ({venv_py})"
 
 
+_PROBE_GATEWAY_PINS = (
+    "aiohttp==3.14.3",
+    "mcp==2.0.0",
+    "httpx2==2.7.0",
+    "starlette==1.3.1",
+    "python-dotenv==1.2.2",
+    "ruamel.yaml==0.18.16",
+)
+
+
+def _recover_probe_pins_before_editable(
+    venv_py: Path,
+    staging: Path,
+    *,
+    first_detail: str,
+    log: list[str],
+    emit: Callable[[str], None],
+) -> tuple[bool, str, str | None]:
+    emit("probe 실패 — aiohttp/mcp pin…")
+    log.append(first_detail)
+    boost = _run(
+        [str(venv_py), "-m", "pip", "install", *_PROBE_GATEWAY_PINS],
+        timeout=300.0,
+    )
+    log.append(boost.stdout or "")
+    log.append(boost.stderr or "")
+    if boost.returncode != 0:
+        return False, first_detail, "gateway/mcp 의존성 보강 실패"
+    ok, detail = _probe_venv(venv_py)
+    if ok:
+        return True, detail, None
+    emit("probe pin 후 editable 재설치…")
+    edit = _run(
+        [str(venv_py), "-m", "pip", "install", "-e", "."],
+        cwd=str(staging),
+        timeout=300.0,
+    )
+    log.append(edit.stdout or "")
+    log.append(edit.stderr or "")
+    if edit.returncode != 0:
+        return False, detail, "editable 재설치 실패"
+    ok, detail = _probe_venv(venv_py)
+    return ok, detail, None
+
+
 def _discard_tree(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
@@ -820,6 +865,17 @@ def _finish_staged_install(
             return fail("exit", "pip 설치 실패", "\n".join(log))
 
     ok, detail = _probe_venv(venv_py)
+    if not ok:
+        ok, detail, err = _recover_probe_pins_before_editable(
+            venv_py,
+            staging,
+            first_detail=detail,
+            log=log,
+            emit=emit,
+        )
+        if err is not None:
+            _discard_tree(staging)
+            return fail("exit", err, "\n".join(log))
     log.append(f"probe={ok} {detail}")
     if not ok:
         _discard_tree(staging)
