@@ -5452,8 +5452,14 @@ class MainWindow(QMainWindow):
         if not finish_id and showing and self._turn_dispatcher.active_turn is not None:
             finish_id = self._turn_dispatcher.active_turn.id
         if finish_id:
-            QTimer.singleShot(0, lambda fid=finish_id: self._turn_dispatcher.finish_active_turn(fid))
-        if showing:
+            # Clear dispatcher _active before sync so TTS-off finish does not stick PROCESSING.
+            def _finish_then_sync(fid: str = finish_id, do_sync: bool = showing) -> None:
+                self._turn_dispatcher.finish_active_turn(fid)
+                if do_sync:
+                    self._sync_voice_conversation_state()
+
+            QTimer.singleShot(0, _finish_then_sync)
+        elif showing:
             self._sync_voice_conversation_state()
         self._on_chat_turn_finished(finish_cid)
 
