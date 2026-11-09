@@ -531,7 +531,6 @@ class HermesPythonRangeTests(unittest.TestCase):
 
 class HermesInstallUvProbeRecoveryTests(unittest.TestCase):
     def test_uv_sync_probe_boost_skips_editable_reinstall(self) -> None:
-        """uv sync 성공 뒤 aiohttp만 없으면 pin 보강으로 끝내고 pip -e 를 다시 돌리지 않는다."""
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "engine"
             staging = home / "hermes-agent.staging"
