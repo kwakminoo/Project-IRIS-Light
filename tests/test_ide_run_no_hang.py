@@ -74,6 +74,7 @@ def _invoke_project_run(tmp_root: str, run_terminal_command, **extra_args):
     surface = _FakeSurface()
     window = _make_window(tmp_root, run_terminal_command)
     control_bindings._register_actions(window, surface)  # type: ignore[arg-type]
+    surface.registry.set_human_confirm(lambda spec, args: True)
     args = {"project_root": tmp_root, "command": "print(1)", "reveal_terminal": True}
     args.update(extra_args)
     return surface.registry.invoke("project.run", args)
@@ -135,6 +136,7 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
 
         window._iris_ide_bridge_client = _no_client
         control_bindings._register_actions(window, surface)  # type: ignore[arg-type]
+        surface.registry.set_human_confirm(lambda spec, args: True)
         t0 = time.monotonic()
         result = surface.registry.invoke(
             "project.run",

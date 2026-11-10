@@ -23,6 +23,8 @@ _FENCED_PRE = re.compile(
     r"<pre(?:\s[^>]*)?>\s*<code(?:\s+class=\"language-([^\"]*)\")?[^>]*>([\s\S]*?)</code>\s*</pre>",
     re.IGNORECASE,
 )
+# python-markdown fenced_code lang token is [\w#.+-]* — colon/space/path break the fence.
+_FENCE_OPEN_LINE = re.compile(r"(?m)^(?P<fence>`{3,}|~{3,})(?P<info>[^\n]*)\n")
 
 _IMG_TAG = re.compile(
     r"<img\b([^>]*?)(?:\s*/\s*>|>\s*</img\s*>|>)",
@@ -288,6 +290,23 @@ def _upgrade_inline_code_file_chips(html_body: str) -> str:
     return _INLINE_CODE_TAG.sub(_repl, html_body)
 
 
+def _rewrite_fence_info_for_markdown(source: str) -> tuple[str, list]:
+    """Strip path/line meta from fence openers so python-markdown accepts them.
+
+    Returns rewritten source and FenceInfo list in document order for card upgrade.
+    """
+    from iris.ui.chat.chat_blocks import FenceInfo, parse_fence_info
+
+    metas: list[FenceInfo] = []
+
+    def _repl(match: re.Match[str]) -> str:
+        meta = parse_fence_info((match.group("info") or "").strip())
+        metas.append(meta)
+        return f"{match.group('fence')}{meta.language}\n"
+
+    return _FENCE_OPEN_LINE.sub(_repl, source or ""), metas
+
+
 def _markdown_body_to_html(text: str) -> str:
     from iris.ui.chat.gpt_answer_contract import normalize_binary_fences_for_display
     from iris.ui.chat.markdown_normalization import normalize_markdown_source
@@ -299,6 +318,7 @@ def _markdown_body_to_html(text: str) -> str:
         normalize_binary_fences_for_display(normalize_markdown_source(text))
     )
     source = _inject_file_chips_in_source(_normalize_prose_symbols(source))
+    source, fence_metas = _rewrite_fence_info_for_markdown(source)
     try:
         import markdown as md
 
@@ -313,7 +333,7 @@ def _markdown_body_to_html(text: str) -> str:
         return restore_chat_math(document.toHtml(), formulas)
 
     rendered = _sanitize_chat_html(rendered)
-    rendered = _upgrade_fenced_pre_to_cards(rendered)
+    rendered = _upgrade_fenced_pre_to_cards(rendered, fence_metas)
     rendered = _upgrade_inline_code_file_chips(rendered)
     # 스타일 뒤에 넣어야 수식 이미지가 사진용 img 스타일로 바뀌지 않는다.
     return restore_chat_math(wrap_document_html(_style_chat_html(rendered)), formulas)
@@ -390,17 +410,41 @@ def matrix_grid_to_html(grid: MatrixGrid) -> str:
     return "".join(parts)
 
 
-def _upgrade_fenced_pre_to_cards(html_body: str) -> str:
-    from iris.ui.chat.chat_blocks import FencedCodeBlock, fenced_code_to_html
+def _upgrade_fenced_pre_to_cards(
+    html_body: str,
+    fence_metas: list | None = None,
+) -> str:
+    from iris.ui.chat.chat_blocks import (
+        FencedCodeBlock,
+        fenced_code_to_html,
+        parse_fence_info,
+    )
+
+    metas = list(fence_metas or [])
+    meta_i = 0
 
     def _repl(match: re.Match[str]) -> str:
-        lang = (match.group(1) or "").strip()
+        nonlocal meta_i
         code = html.unescape(match.group(2) or "")
+        if meta_i < len(metas):
+            meta = metas[meta_i]
+            meta_i += 1
+        else:
+            meta = parse_fence_info((match.group(1) or "").strip())
+        lang = (meta.language or "").strip()
         if lang.lower() == "matrix":
             return matrix_grid_to_html(parse_matrix_grid(code))
         if lang.lower() == "diff" or _looks_like_git_diff(code):
             return diff_block_to_html(code)
-        return fenced_code_to_html(FencedCodeBlock(code, language=lang))
+        return fenced_code_to_html(
+            FencedCodeBlock(
+                code,
+                language=meta.language,
+                path=meta.path,
+                start_line=meta.start_line,
+                end_line=meta.end_line,
+            )
+        )
 
     return _FENCED_PRE.sub(_repl, html_body)
 

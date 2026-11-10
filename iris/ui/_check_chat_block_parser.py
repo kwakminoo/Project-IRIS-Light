@@ -40,6 +40,25 @@ def test_fence_split_across_chunks() -> None:
     assert any(o.kind == RenderOpKind.REPLACE_PROSE for o in ops3)
 
 
+def test_fence_path_meta() -> None:
+    segs = parse_chat_segments(
+        "```python:iris/ui/chat/chat_blocks.py\nx=1\n```",
+        final=True,
+    )
+    code = next(s for s in segs if isinstance(s, CodeSegment))
+    assert code.complete
+    assert code.language == "python"
+    assert code.path == "iris/ui/chat/chat_blocks.py"
+    assert code.code == "x=1"
+
+    ranged = parse_chat_segments(
+        "```python:12:40:iris/foo.py\ny=2\n```",
+        final=True,
+    )
+    rcode = next(s for s in ranged if isinstance(s, CodeSegment))
+    assert rcode.start_line == 12 and rcode.end_line == 40 and rcode.path == "iris/foo.py"
+
+
 def test_tool_marker_complete() -> None:
     buf = ChatBlockBuffer()
     start = "IRIS_TOOL_run1_START\ntitle: Tests\ncommand: pytest\noutput: ok\n"
@@ -55,6 +74,7 @@ def test_tool_marker_complete() -> None:
 
 def main() -> int:
     test_fence_split_across_chunks()
+    test_fence_path_meta()
     test_tool_marker_complete()
     print("chat_block_parser check ok")
     return 0

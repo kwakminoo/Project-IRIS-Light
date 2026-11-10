@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from iris.browser.observation import browser_teaching_block
 from iris.system.hermes_iris_control_sync import hermes_home
@@ -56,6 +57,7 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 15g. Read and change the open IRIS IDE like an editor, not from an empty success: `ide.diagnostics` (reported false is not "no problems"; empty list is clean only when reported true), `ide.symbols`/`ide.references`/`ide.definition` (ok needs queried true; empty items then means none), `ide.edit` (ok only via=editor; disk append is not a selection replace and fails), `ide.save` (ok only for editor buffer flush; disk-only is failure), `ide.task`, `ide.debug` (start needs a launch name; no session is not success). Do not claim a fix, a save, or a debug session without ok.
 15d. Image attachment → code file: `project.write_image_code` (`image` path, `rel_path`). If the target file is unknown, ask. Never claim the file was written without ok.
 15e. If the user message contains `[자료 본문]`, answer from that excerpt (PDF, folder, file, or link). Do not ask for page screenshots first. Do not say you cannot read PDF. HWP is unsupported. Saving a chat as a PDF file stays 15b (`note.export_pdf` only).
+15h. Lecture PDF chip + create every practice/lab script (`실습 전부 만들어`, `프로그램 N-M 파일로`, dump labs): call `content.dump_lab_scripts` with the Attachment absolute path (optional `out_dir=labs`). Do not ask the user to paste the full PDF. Do not refill via full `content.extract` for this intent. The tool returns written paths/labels only — never program bodies. List those paths in the reply.
 
 16. Email / 메일: `workspace.open_email`, then native `iris.mail.list_accounts` for accounts, then `email.list_messages` (today=true or since=YYYY-MM-DD) / `email.read_message` / `email.open_compose` / `email.send` (skill iris-email). Never invent inbox contents.
 
@@ -120,8 +122,8 @@ def _memory_nudge_version(text: str) -> int:
     return max(found) if found else 0
 
 
-def ensure_memory_nudge() -> str:
-    mem_dir = hermes_home() / "memories"
+def ensure_memory_nudge(home: Path | None = None) -> str:
+    mem_dir = (Path(home) if home is not None else hermes_home()) / "memories"
     mem_dir.mkdir(parents=True, exist_ok=True)
     path = mem_dir / "MEMORY.md"
     existing = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
@@ -152,6 +154,7 @@ def ensure_memory_nudge() -> str:
         and "extension.install_github" in existing
         and "project.write_image_code" in existing
         and "[자료 본문]" in existing
+        and "content.dump_lab_scripts" in existing
         and "no keyword shortcut" in existing
         and "email.list_messages" in existing
         and "iris-email" in existing

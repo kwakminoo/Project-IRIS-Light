@@ -137,6 +137,7 @@ def main() -> None:
     check_chat_drag_actions()
     check_finish_keeps_pending_outside()
     check_companion_drag_race()
+    check_pdf_skips_ole_hdrop()
     check_win_shell_drop_arm()
     check_explorer_overlay_drop()
     check_ole_explorer_drop()
@@ -278,6 +279,22 @@ def check_companion_drag_race() -> None:
     inst._attach_os_drop_paths.assert_called_with([r"C:\proj\late.py"])
 
 
+def check_pdf_skips_ole_hdrop() -> None:
+    """PDF 경로는 DoDragDrop를 돌리지 않는다 — 셸 미리보기 영구 블록 방지."""
+    import time
+
+    from iris.ui.window.win_ole_drop import drag_hdrop_while_button, ole_hdrop_paths_safe
+
+    assert ole_hdrop_paths_safe([r"C:\proj\a.py"]) is True
+    assert ole_hdrop_paths_safe([r"C:\proj\doc.PDF"]) is False
+    assert ole_hdrop_paths_safe([r"C:\proj\a.py", r"C:\proj\doc.pdf"]) is False
+
+    t0 = time.perf_counter()
+    assert drag_hdrop_while_button([r"C:\proj\doc.pdf"], button_down=lambda: True) == 0
+    assert time.perf_counter() - t0 < 1.0, "PDF DoDragDrop skip must return immediately"
+    print("pdf_skips_ole_hdrop ok")
+
+
 def check_ole_explorer_drop() -> None:
     """탐색기와 같은 CF_HDROP이 금지 커서(effect 0) 없이 기존 첨부 콜백으로 간다."""
     import sys
@@ -381,6 +398,7 @@ def check_korean_explorer_names() -> None:
     from iris.ui.chat.composer_attachments import attachment_filename, validate_files
     from iris.ui.window.win_ole_drop import drag_hdrop_onto, install_explorer_drop_target
 
+    # PDF 이름은 validate만. DoDragDrop는 셸이 PDF에서 멈출 수 있어 비-PDF로 OLE를 검증한다.
     names = [
         "실전모의고사(엑셀).pdf",
         "보고서 최종본.pdf",
@@ -388,13 +406,25 @@ def check_korean_explorer_names() -> None:
         "IRIS_기능정리_v2.docx",
         "한글파일명.png",
     ]
+    ole_names = [
+        "실전모의고사(엑셀).bin",
+        "보고서 최종본.bin",
+        "테스트 파일 01.txt",
+        "IRIS_기능정리_v2.docx",
+        "한글파일명.png",
+    ]
     folder = Path(tempfile.mkdtemp(prefix="iris-drop-"))
     paths = []
+    ole_paths = []
     try:
         for name in names:
             path = folder / name
             path.write_bytes(b"iris-drop")
             paths.append(str(path))
+        for name in ole_names:
+            path = folder / name
+            path.write_bytes(b"iris-drop")
+            ole_paths.append(str(path))
         ok, errors = validate_files(paths)
         assert errors == [], errors
         assert [attachment_filename(p) for p in ok] == names, ok
@@ -425,9 +455,9 @@ def check_korean_explorer_names() -> None:
             try:
                 for n in range(10):
                     seen.clear()
-                    effect = drag_hdrop_onto(hwnd, paths)
+                    effect = drag_hdrop_onto(hwnd, ole_paths)
                     assert effect == 1, f"{label} drop {n} effect={effect}"
-                    assert seen and [Path(p).name for p in seen[-1]] == names, seen
+                    assert seen and [Path(p).name for p in seen[-1]] == ole_names, seen
             finally:
                 user32.ClipCursor(None)
                 host.close()

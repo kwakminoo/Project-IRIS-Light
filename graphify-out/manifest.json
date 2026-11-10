@@ -2154,21 +2154,21 @@
     "semantic_hash": "a60eaa14c4475397e8a819ec14a93593"
   },
   "iris/system/hermes_install.py": {
-    "mtime": 1792309634.4497766,
-    "seen": 1792640697.4949548,
-    "ast_hash": "480b02f67e80f0961ad1f66f3c22dbba",
-    "semantic_hash": "480b02f67e80f0961ad1f66f3c22dbba"
+    "mtime": 1793066353.235221,
+    "seen": 1793066862.0554686,
+    "ast_hash": "dd58045e87d56eec7e0135f9d8cf3cae",
+    "semantic_hash": ""
   },
   "iris/system/hermes_iris_control_sync.py": {
-    "mtime": 1792744978.306775,
-    "seen": 1792745174.8938112,
-    "ast_hash": "a107eaf506e5d598c48774bb5cd22ce2",
+    "mtime": 1793064665.7905958,
+    "seen": 1793064804.7386675,
+    "ast_hash": "b8e1cbbd00a2137007a5e29519b80efe",
     "semantic_hash": ""
   },
   "iris/system/hermes_memory_nudge.py": {
-    "mtime": 1792744955.8829956,
-    "seen": 1792745174.8938112,
-    "ast_hash": "88f0b033cfd5b74750eb0e0e5883bb76",
+    "mtime": 1793064674.5833955,
+    "seen": 1793064804.7386675,
+    "ast_hash": "889c8f2c8d6fa057899b3ecc155f21f8",
     "semantic_hash": ""
   },
   "iris/system/hermes_ollama_guard.py": {
@@ -2178,10 +2178,10 @@
     "semantic_hash": "35b56c6d10c25261942429d96adb276d"
   },
   "iris/system/hermes_soul_sync.py": {
-    "mtime": 1786684972.2390661,
-    "seen": 1792640697.4949548,
-    "ast_hash": "d1a01194aed77e1bb817641c2ee9c8b4",
-    "semantic_hash": "d1a01194aed77e1bb817641c2ee9c8b4"
+    "mtime": 1793064671.167392,
+    "seen": 1793064804.7386675,
+    "ast_hash": "4ced8cfad27b092112fcb7737b6a4f4a",
+    "semantic_hash": ""
   },
   "iris/system/hermes_update.py": {
     "mtime": 1791249217.3823626,
@@ -2382,10 +2382,10 @@
     "semantic_hash": "7dc66b9a98c2b774ad124a0f3b57e2bf"
   },
   "iris/ui/_check_control_action_split.py": {
-    "mtime": 1792638409.371589,
-    "seen": 1792640697.4949548,
-    "ast_hash": "eccb9dc6d3c2beef9c278d0e4c7e3800",
-    "semantic_hash": "eccb9dc6d3c2beef9c278d0e4c7e3800"
+    "mtime": 1793064344.2905123,
+    "seen": 1793064460.7750814,
+    "ast_hash": "4910af154d459272431929981ab72c90",
+    "semantic_hash": ""
   },
   "iris/ui/_check_control_scenarios.py": {
     "mtime": 1786684972.336414,
@@ -2820,9 +2820,9 @@
     "semantic_hash": "f5db12062faaf1812de8db0c8c6ed169"
   },
   "iris/ui/control_actions/action_catalog.json": {
-    "mtime": 1793015659.9397023,
-    "seen": 1793016139.8871703,
-    "ast_hash": "a5afccfaa5d09317a8e486d58f20fd25",
+    "mtime": 1793064336.587427,
+    "seen": 1793064460.7750814,
+    "ast_hash": "045f5c093c2a9e1fb0a3b677966efd73",
     "semantic_hash": ""
   },
   "iris/ui/control_actions/agent_turn.py": {
@@ -2880,10 +2880,10 @@
     "semantic_hash": "5a20b978e9404d12808c0beade9ccc47"
   },
   "iris/ui/control_actions/project.py": {
-    "mtime": 1792309634.4688928,
-    "seen": 1792640697.4949548,
-    "ast_hash": "3c01f0b6769b7c9a7e69a89c889cc88f",
-    "semantic_hash": "3c01f0b6769b7c9a7e69a89c889cc88f"
+    "mtime": 1793064333.517022,
+    "seen": 1793064460.7750814,
+    "ast_hash": "e97ecbdcaedb242e5953a72d4703c8b6",
+    "semantic_hash": ""
   },
   "iris/ui/control_actions/routine.py": {
     "mtime": 1791249217.4048882,
@@ -3324,9 +3324,9 @@
     "semantic_hash": "70e2857138c54d1006ddf71a2debbd60"
   },
   "iris/ui/window/main_window.py": {
-    "mtime": 1793021114.505407,
-    "seen": 1793025555.49716,
-    "ast_hash": "da2212d30c74c25e33c40d35f54b7f36",
+    "mtime": 1793064286.6361353,
+    "seen": 1793064460.7750814,
+    "ast_hash": "77cf762b20aa4abb7b6400aff0b0cb02",
     "semantic_hash": ""
   },
   "iris/ui/window/setup_wizard.py": {
@@ -3432,10 +3432,10 @@
     "semantic_hash": "c25c2e5c2babaf4c89919d86d527ab5d"
   },
   "iris/ui/workers/hermes_workers.py": {
-    "mtime": 1792309634.483345,
-    "seen": 1792640697.4949548,
-    "ast_hash": "cd950f1b8c85d026d718aa4f73de5a3c",
-    "semantic_hash": "cd950f1b8c85d026d718aa4f73de5a3c"
+    "mtime": 1793064676.2942636,
+    "seen": 1793064804.7396643,
+    "ast_hash": "7db37abca821cb57c71219b682dfa66c",
+    "semantic_hash": ""
   },
   "iris/ui/workers/history_embed_worker.py": {
     "mtime": 1791249217.411106,
@@ -4026,16 +4026,16 @@
     "semantic_hash": "2543f594fd4210ed32f8dd96a7fe4bef"
   },
   "tests/test_hermes_install_bypass.py": {
-    "mtime": 1792309634.494115,
-    "seen": 1792640697.4949548,
-    "ast_hash": "f76b3d69ca72be224a4ba987573da52d",
-    "semantic_hash": "f76b3d69ca72be224a4ba987573da52d"
+    "mtime": 1793066362.4350252,
+    "seen": 1793066862.0554686,
+    "ast_hash": "748d3aa2d9a66158091388d545ebde28",
+    "semantic_hash": ""
   },
   "tests/test_hermes_model_failover.py": {
-    "mtime": 1792309634.4951217,
-    "seen": 1792640697.4949548,
-    "ast_hash": "52c67bef48e851cfeaa8f8facd37e211",
-    "semantic_hash": "52c67bef48e851cfeaa8f8facd37e211"
+    "mtime": 1793063928.5805058,
+    "seen": 1793064085.667393,
+    "ast_hash": "fceb8e0fa8bf0913f62f16152c804b77",
+    "semantic_hash": ""
   },
   "tests/test_hermes_ollama_options_guard.py": {
     "mtime": 1791249207.3275688,
@@ -4080,10 +4080,10 @@
     "semantic_hash": "de8c5b452795e16c747ad393327b08a5"
   },
   "tests/test_ide_run_no_hang.py": {
-    "mtime": 1791249207.3295758,
-    "seen": 1792640697.4949548,
-    "ast_hash": "24f0ce34271df4b5842e3633d287f550",
-    "semantic_hash": "24f0ce34271df4b5842e3633d287f550"
+    "mtime": 1793064346.5009587,
+    "seen": 1793064460.7760863,
+    "ast_hash": "d72a91d3224f623225b12cdd9e4ce448",
+    "semantic_hash": ""
   },
   "tests/test_iris_ide_new_window.py": {
     "mtime": 1791249207.3295758,
@@ -4212,10 +4212,10 @@
     "semantic_hash": "dff950217f579ee495aa530f8c869433"
   },
   "tests/test_request_model.py": {
-    "mtime": 1792309634.5013366,
-    "seen": 1792640697.4949548,
-    "ast_hash": "ff2c5b90a6f0b77424a7f40f4eb3a008",
-    "semantic_hash": "ff2c5b90a6f0b77424a7f40f4eb3a008"
+    "mtime": 1793063930.648385,
+    "seen": 1793064085.667393,
+    "ast_hash": "9080da72a9996492e61b625a4bd4b70e",
+    "semantic_hash": ""
   },
   "tests/test_review_fixes.py": {
     "mtime": 1792309634.5013366,
@@ -8781,6 +8781,204 @@
     "mtime": 1793021474.9638598,
     "seen": 1793025555.4986002,
     "ast_hash": "b75a7ea863232807dfa783499b95b4b1",
+    "semantic_hash": ""
+  },
+  "iris/engine/__init__.py": {
+    "mtime": 1793062282.6918423,
+    "seen": 1793062438.625003,
+    "ast_hash": "87444d43a403da604912d7ad3ce6d5a2",
+    "semantic_hash": ""
+  },
+  "iris/engine/_sidecar.py": {
+    "mtime": 1793063015.1236813,
+    "seen": 1793063132.6637998,
+    "ast_hash": "6944a710638a5d5886583e020bd1eed0",
+    "semantic_hash": ""
+  },
+  "iris/engine/_sidecar_main.py": {
+    "mtime": 1793063333.1582289,
+    "seen": 1793063419.2215438,
+    "ast_hash": "c6ecfb11dcc89e65faf54a9b75b2ff32",
+    "semantic_hash": ""
+  },
+  "iris/engine/runtime.py": {
+    "mtime": 1793066534.6187034,
+    "seen": 1793066862.0534546,
+    "ast_hash": "f6cbcbfe721e5752abe480f0345f3034",
+    "semantic_hash": ""
+  },
+  "iris/engine/types.py": {
+    "mtime": 1793064340.8714364,
+    "seen": 1793064460.7750814,
+    "ast_hash": "bb2c5321272bef9b876fde226e6e9417",
+    "semantic_hash": ""
+  },
+  "tests/test_iris_engine_runtime.py": {
+    "mtime": 1793066557.902932,
+    "seen": 1793066862.0574791,
+    "ast_hash": "7c27f5f96603413894042e20631b7fb6",
+    "semantic_hash": ""
+  },
+  "tests/test_iris_engine_sidecar.py": {
+    "mtime": 1793063041.385659,
+    "seen": 1793063132.6637998,
+    "ast_hash": "d36bfe3329dfa619596fa7c69783c3a3",
+    "semantic_hash": ""
+  },
+  "tests/test_iris_engine_types.py": {
+    "mtime": 1793061460.4316356,
+    "seen": 1793061916.3824666,
+    "ast_hash": "8150a86ebb4b08c52480031af8ba08f6",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/ARENA_RUBRIC.md": {
+    "mtime": 1793060973.611705,
+    "seen": 1793061916.3824666,
+    "ast_hash": "99ca29a9d23ab445cd582bda3f5f1528",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/CROSS_JUDGE.md": {
+    "mtime": 1793061294.244713,
+    "seen": 1793061916.3824666,
+    "ast_hash": "28eabb117f25b1fda81769c402657dba",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/GROUNDING.md": {
+    "mtime": 1793060770.5800369,
+    "seen": 1793061916.3824666,
+    "ast_hash": "06d96101e1b564b5679d592310c06bdf",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/HOW.md": {
+    "mtime": 1793060913.0395644,
+    "seen": 1793061916.3824666,
+    "ast_hash": "681185a487ae8139096419a3a93fde1b",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/PARENT_SCORES.md": {
+    "mtime": 1793061234.8739474,
+    "seen": 1793061916.3824666,
+    "ast_hash": "c9eb6e2d17f1c37bd6f33712205e393c",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/PLAYBOOK.md": {
+    "mtime": 1793061331.1661797,
+    "seen": 1793061916.3824666,
+    "ast_hash": "125082e89e22a8f60d1e49ed14cd0693",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/SYNTHESIS.md": {
+    "mtime": 1793061329.1592607,
+    "seen": 1793061916.3824666,
+    "ast_hash": "3043a222c615cdea843be4705543f887",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/candidate-1/DESIGN.md": {
+    "mtime": 1793061184.5295477,
+    "seen": 1793061916.3824666,
+    "ast_hash": "97995777311b421c964980664d263679",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/candidate-1/RATIONALE.md": {
+    "mtime": 1793061157.3428552,
+    "seen": 1793061916.3824666,
+    "ast_hash": "487812c60fe08b8c373c0d892f431f18",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/candidate-1/REJECTED.md": {
+    "mtime": 1793061166.1756713,
+    "seen": 1793061916.3824666,
+    "ast_hash": "bb5e25aaae0537e679252089805db3cd",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/candidate-1/USAGE.md": {
+    "mtime": 1793061180.0841262,
+    "seen": 1793061916.3824666,
+    "ast_hash": "1fad9fb0afa5515b0f391ffebbf98e66",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/candidate-2/DESIGN.md": {
+    "mtime": 1793061192.4278185,
+    "seen": 1793061916.3824666,
+    "ast_hash": "33c7e51769fd6d8de11bf5f1dfeed0d2",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/candidate-2/RATIONALE.md": {
+    "mtime": 1793061184.2612038,
+    "seen": 1793061916.3824666,
+    "ast_hash": "f9b203d80b83459930dc3e313ebd5b96",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/candidate-2/REJECTED.md": {
+    "mtime": 1793061185.5006845,
+    "seen": 1793061916.3824666,
+    "ast_hash": "ff0a0ce7eec8ac88727a53f10b892566",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/candidate-2/USAGE.md": {
+    "mtime": 1793061185.2773085,
+    "seen": 1793061916.3824666,
+    "ast_hash": "306a079120054b64b9d00ce069dc279c",
+    "semantic_hash": ""
+  },
+  "iris/engine/_home.py": {
+    "mtime": 1793065818.5974696,
+    "seen": 1793066862.0534546,
+    "ast_hash": "26c222d4aae3b588812fe7fd56aa43ba",
+    "semantic_hash": ""
+  },
+  "tests/test_iris_engine_install.py": {
+    "mtime": 1793063596.9262395,
+    "seen": 1793063680.3498714,
+    "ast_hash": "934f8b48a5693b6c611bcba51572176b",
+    "semantic_hash": ""
+  },
+  "tests/test_iris_engine_spawn.py": {
+    "mtime": 1793062315.147131,
+    "seen": 1793062438.625003,
+    "ast_hash": "5ae8d336cf542fe9d6206fa79e1979c7",
+    "semantic_hash": ""
+  },
+  "tests/test_iris_engine_turn_pipe.py": {
+    "mtime": 1793063075.1477644,
+    "seen": 1793063132.6637998,
+    "ast_hash": "8afa432e4f66fb16b8d6903aee1ee46e",
+    "semantic_hash": ""
+  },
+  "tests/iris_engine_fake_agent.py": {
+    "mtime": 1793063337.579724,
+    "seen": 1793063419.2215438,
+    "ast_hash": "dfe0d47dad944c032a3ab3764287239a",
+    "semantic_hash": ""
+  },
+  "tests/test_iris_engine_agent_loop.py": {
+    "mtime": 1793063347.4074557,
+    "seen": 1793063419.2215438,
+    "ast_hash": "985d32a42bad0b23e668cf1125c6ff1c",
+    "semantic_hash": ""
+  },
+  "tests/test_hermes_workers_engine.py": {
+    "mtime": 1793064690.6591744,
+    "seen": 1793064804.7396643,
+    "ast_hash": "68baddfe3d0cbbf75e1dd293af41bbcf",
+    "semantic_hash": ""
+  },
+  "tests/test_iris_engine_approval.py": {
+    "mtime": 1793064343.9534154,
+    "seen": 1793064460.7760863,
+    "ast_hash": "b504a28e21f42fb47b62d7b18ba39d56",
+    "semantic_hash": ""
+  },
+  "tests/test_hermes_iris_control_sync.py": {
+    "mtime": 1793064693.827998,
+    "seen": 1793064804.7396643,
+    "ast_hash": "a010db56334533a54dfa7b0b53ea54de",
+    "semantic_hash": ""
+  },
+  ".tmp/hermes-internal-engine/live_check.py": {
+    "mtime": 1793065258.4572563,
+    "seen": 1793066862.0534546,
+    "ast_hash": "e90625f3a0c06ae965ffbc70540cba37",
     "semantic_hash": ""
   }
 }

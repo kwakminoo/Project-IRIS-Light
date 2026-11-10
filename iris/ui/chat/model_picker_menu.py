@@ -108,7 +108,6 @@ def is_local_endpoint(url: str) -> bool:
 
 
 def is_local_picker_model(m: PickerModel) -> bool:
-    """제공자 이름과 무관하게, 이 기기에서 도는 채팅 모델인지."""
     if m.is_api:
         return is_local_endpoint(m.provider_base)
     from iris.infrastructure.ollama_client import OllamaModelInfo, is_embedding_model_name
@@ -350,9 +349,8 @@ def split_picker_groups(
 ) -> tuple[list[PickerModel], list[PickerModel], dict[str, list[PickerModel]], list[PickerModel]]:
     """(local, ollama, api_brands_by_provider_id, singles).
 
-    로컬 채팅 모델은 제공자와 상관없이 첫 묶음으로 뺀다. 나머지는 제공자 이름이
-    아니라 **실제 모델 수**로만 분기함. 모델이 많은 제공자는 하위 목록 창
-    (`ModelBrandDialog`)으로 묶고, 적은 제공자는 팝업에 바로 노출함.
+    로컬 Ollama(비클라우드) + 로컬 Base URL 커스텀 API는 `local`.
+    Ollama 클라우드 런타임만 `ollama`. 원격 API는 **모델 수**로만 분기.
     """
     local: list[PickerModel] = []
     ollama: list[PickerModel] = []
@@ -420,13 +418,12 @@ if __name__ == "__main__":
     assert not is_local_endpoint("https://integrate.api.nvidia.com/v1")
     assert is_local_picker_model(o) and is_local_picker_model(local_api)
     assert not is_local_picker_model(cloud) and not is_local_picker_model(n)
-    # 로컬은 1개여도 메뉴에 펼치지 않고 LOCAL MODEL 한 줄로만 연다.
     assert LOCAL_MODEL_MENU_LABEL == "LOCAL MODEL"
-    one_local, _ol, _br, _si = split_picker_groups([o])
-    assert len(one_local) == 1 and len(one_local) < BRAND_MIN_MODELS
+    one_local, one_ol, _br, _si = split_picker_groups([o])
+    assert len(one_local) == 1 and one_ol == []
     # 모델 2개인 제공자는 그대로 노출, BRAND_MIN_MODELS 이상이면 브랜드로 묶음
     local, ol, brands, si = split_picker_groups([o, cloud, local_api, n, g])
-    assert [m.runtime for m in local] == ["gemma4:latest", "api:lm:llama"]
+    assert {m.runtime for m in local} == {"api:lm:llama", "gemma4:latest"}
     assert [m.runtime for m in ol] == ["gemma4:31b-cloud"]
     assert brands == {} and len(si) == 2
     many = [
@@ -440,9 +437,10 @@ if __name__ == "__main__":
         for i in range(BRAND_MIN_MODELS)
     ]
     local, ol, brands, si = split_picker_groups([o, *many])
-    assert [m.runtime for m in local] == ["gemma4:latest"]
+    assert len(local) == 1 and local[0].runtime == "gemma4:latest"
+    assert ol == []
     assert list(brands) == ["gm"] and len(brands["gm"]) == BRAND_MIN_MODELS
-    assert si == [] and ol == []
+    assert si == []
     assert brand_label(brands["gm"]) == "Gemini"
     assert is_api_runtime_model(n.runtime)
     assert picker_tier_color(n) == _COLOR_MODEL_DEFAULT

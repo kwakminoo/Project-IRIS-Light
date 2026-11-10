@@ -122,6 +122,10 @@ export class IrisPdfWidget extends BaseWidget implements Navigatable {
                 }
                 await this.renderPage(pageNum);
                 this.status.textContent = `페이지 ${pageNum}/${total}`;
+                // Yield so large PDFs do not freeze the WebEngine UI thread ("Not Responding").
+                await new Promise<void>(resolve => {
+                    window.setTimeout(() => resolve(), 0);
+                });
             }
             this.status.textContent = `${total}페이지`;
         } catch (err) {

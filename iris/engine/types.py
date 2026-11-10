@@ -35,6 +35,7 @@ class EngineErrorCode(Enum):
     CANCELLED = "cancelled"
     NO_USER_UTTERANCE = "no_user_utterance"
     TOOL_TRANSPORT = "tool_transport"
+    BILLING = "billing"
     UNKNOWN = "unknown"
 
 
@@ -49,6 +50,10 @@ _USER_MESSAGES = {
     EngineErrorCode.CANCELLED: "요청이 취소되었습니다.",
     EngineErrorCode.NO_USER_UTTERANCE: "보낼 사용자 메시지가 없습니다.",
     EngineErrorCode.TOOL_TRANSPORT: "도구 호출에 실패했습니다.",
+    EngineErrorCode.BILLING: (
+        "Ollama 클라우드 크레딧이 부족합니다. "
+        "요금을 충전하거나 다른 모델로 바꾸세요."
+    ),
     EngineErrorCode.UNKNOWN: "엔진에서 알 수 없는 오류가 났습니다.",
 }
 
@@ -150,6 +155,11 @@ class ToolProgress:
 
 
 @dataclass(frozen=True)
+class ReasoningDelta:
+    text: str
+
+
+@dataclass(frozen=True)
 class TurnFinished:
     text: str
 
@@ -164,7 +174,14 @@ class TurnCancelled:
     pass
 
 
-TurnEvent = Union[ContentDelta, ToolProgress, TurnFinished, TurnFailed, TurnCancelled]
+TurnEvent = Union[
+    ContentDelta,
+    ToolProgress,
+    ReasoningDelta,
+    TurnFinished,
+    TurnFailed,
+    TurnCancelled,
+]
 
 
 EngineHome = NewType("EngineHome", Path)

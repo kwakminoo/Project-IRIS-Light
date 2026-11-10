@@ -503,10 +503,15 @@ class HermesPythonRangeTests(unittest.TestCase):
             seen: list = []
 
             def run(cmd, **kwargs):
-                if "clone" in cmd:
+                if "init" in cmd:
                     dest = Path(cmd[-1])
-                    dest.mkdir(parents=True)
-                    (dest / "pyproject.toml").write_text('requires-python = ">=3.14,<3.15"\n', encoding="utf-8")
+                    dest.mkdir(parents=True, exist_ok=True)
+                    (dest / "hermes_cli").mkdir(exist_ok=True)
+                    (dest / "pyproject.toml").write_text(
+                        'requires-python = ">=3.14,<3.15"\n', encoding="utf-8"
+                    )
+                if "rev-parse" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, hi.load_pinned_sha() + "\n", "")
                 return subprocess.CompletedProcess(cmd, 0, "", "")
 
             def ensure(**kwargs):
@@ -515,7 +520,7 @@ class HermesPythonRangeTests(unittest.TestCase):
 
             finish = MagicMock(return_value=hi.InstallResult(True, "ok", "ok"))
             with (
-                patch.object(hi.gw, "hermes_home", return_value=home),
+                patch.object(hi, "ensure_iris_agent_home", return_value=home),
                 patch.object(hi.gw, "probe_hermes_runtime", return_value=(False, "missing")),
                 patch.object(hi, "ensure_system_python_winget", side_effect=ensure),
                 patch.object(hi, "python_version", side_effect=lambda p: (3, 14) if str(p) == "py314" else (3, 11)),
@@ -527,6 +532,222 @@ class HermesPythonRangeTests(unittest.TestCase):
             self.assertTrue(result.ok)
             self.assertEqual(seen, [None, ((3, 14), (3, 15))])
             self.assertEqual(finish.call_args.kwargs["py"], Path("py314"))
+
+
+class HermesInstallHomeArgTests(unittest.TestCase):
+    def test_explicit_home_does_not_read_gateway_hermes_home(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            engine_home = Path(td) / "engine"
+            engine_home.mkdir()
+            finish = MagicMock(return_value=hi.InstallResult(True, "ok", "ok"))
+
+            def run(cmd, **kwargs):
+                if "init" in cmd:
+                    dest = Path(cmd[-1])
+                    dest.mkdir(parents=True, exist_ok=True)
+                    (dest / "hermes_cli").mkdir(exist_ok=True)
+                    (dest / "pyproject.toml").write_text(
+                        '[project]\nrequires-python = ">=3.11,<3.15"\n',
+                        encoding="utf-8",
+                    )
+                if "rev-parse" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, hi.load_pinned_sha() + "\n", "")
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with (
+                patch.object(hi, "ensure_iris_agent_home", side_effect=AssertionError("product home")),
+                patch.object(
+                    hi.gw, "probe_hermes_runtime", side_effect=AssertionError("probe HermesHome")
+                ),
+                patch.object(hi, "ensure_system_python_winget", return_value=Path("python")),
+                patch.object(hi, "python_version", return_value=(3, 11)),
+                patch.object(hi.shutil, "which", side_effect=lambda n: "git" if n == "git" else None),
+                patch.object(hi, "_run", side_effect=run),
+                patch.object(hi, "_finish_staged_install", finish),
+            ):
+                result = hi.install_hermes_with_system_python(home=engine_home)
+            self.assertTrue(result.ok)
+            self.assertEqual(finish.call_args.kwargs["home"], engine_home)
+            self.assertFalse(finish.call_args.kwargs["probe_gateway"])
+            self.assertEqual(Path(finish.call_args.kwargs["staging"]).parent, engine_home)
+
+    def test_sha_checkouts_after_clone(self) -> None:
+        pin = "4787e4d56fc8d9265d4c7d3c0fe5accee86b4078"
+        with tempfile.TemporaryDirectory() as td:
+            engine_home = Path(td) / "engine"
+            engine_home.mkdir()
+            cmds: list[list[str]] = []
+            finish = MagicMock(return_value=hi.InstallResult(True, "ok", "ok"))
+
+            def run(cmd, **kwargs):
+                cmds.append(list(cmd))
+                if "init" in cmd:
+                    dest = Path(cmd[-1])
+                    dest.mkdir(parents=True, exist_ok=True)
+                    (dest / "hermes_cli").mkdir(exist_ok=True)
+                    (dest / "pyproject.toml").write_text(
+                        '[project]\nrequires-python = ">=3.11,<3.15"\n',
+                        encoding="utf-8",
+                    )
+                if "rev-parse" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, pin + "\n", "")
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with (
+                patch.object(hi, "ensure_system_python_winget", return_value=Path("python")),
+                patch.object(hi, "python_version", return_value=(3, 11)),
+                patch.object(hi.shutil, "which", side_effect=lambda n: "git" if n == "git" else None),
+                patch.object(hi, "_run", side_effect=run),
+                patch.object(hi, "_finish_staged_install", finish),
+            ):
+                result = hi.install_hermes_with_system_python(home=engine_home, sha=pin)
+            self.assertTrue(result.ok)
+            joined = [" ".join(c) for c in cmds]
+            self.assertTrue(any("fetch" in j and pin in j for j in joined))
+            self.assertTrue(any("checkout" in j and "FETCH_HEAD" in j for j in joined))
+            self.assertTrue(any("rev-parse" in j for j in joined))
+
+
+class HermesInstallDeclaredExtrasTests(unittest.TestCase):
+    def test_drops_extras_the_project_does_not_declare(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            agent = Path(td)
+            (agent / "pyproject.toml").write_text(
+                "[project.optional-dependencies]\nmcp = [\"mcp\"]\n",
+                encoding="utf-8",
+            )
+            extras = hi._wanted_extras(agent)
+            self.assertEqual(extras, ("mcp",))
+            self.assertEqual(hi._pip_editable_spec(extras), ".[mcp]")
+            self.assertEqual(hi._uv_extra_args(extras), ["--extra", "mcp"])
+            self.assertNotIn("homeassistant", extras)
+
+    def test_empty_when_pyproject_has_no_optional_table(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            agent = Path(td)
+            (agent / "pyproject.toml").write_text(
+                '[project]\nname = "hermes-agent"\n',
+                encoding="utf-8",
+            )
+            extras = hi._wanted_extras(agent)
+            self.assertEqual(extras, ())
+            self.assertEqual(hi._pip_editable_spec(extras), ".")
+            self.assertEqual(hi._uv_extra_args(extras), [])
+
+    def test_finish_does_not_pass_unknown_homeassistant_extra(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "engine"
+            staging = home / "hermes-agent.staging"
+            staging.mkdir(parents=True)
+            (staging / "uv.lock").write_text("x", encoding="utf-8")
+            (staging / "pyproject.toml").write_text(
+                "[project.optional-dependencies]\nmcp = [\"mcp\"]\n",
+                encoding="utf-8",
+            )
+            if sys.platform == "win32":
+                (staging / "venv" / "Scripts").mkdir(parents=True)
+                (staging / "venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+            else:
+                (staging / "venv" / "bin").mkdir(parents=True)
+                (staging / "venv" / "bin" / "python").write_text("", encoding="utf-8")
+            seen: list[list[str]] = []
+            seen_env: list[object] = []
+
+            def run_dep(cmd, **kwargs):
+                seen.append(list(cmd))
+                seen_env.append(kwargs.get("env"))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            def run(cmd, **_kwargs):
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with (
+                patch.object(hi, "_run", side_effect=run),
+                patch.object(hi, "_run_dep", side_effect=run_dep),
+                patch.object(hi, "_probe_venv", return_value=(True, "ok")),
+                patch.object(hi, "_activate_staged", return_value=(True, "live")),
+                patch.object(hi, "_user_path_prepend"),
+            ):
+                result = hi._finish_staged_install(
+                    staging=staging,
+                    home=home,
+                    stamp="t",
+                    py=Path("python"),
+                    uv="uv",
+                    command="hermes",
+                    log=[],
+                    emit=lambda _m: None,
+                    fail=lambda *a, **k: hi.InstallResult(False, "fail", "exit"),
+                    run_streamed=None,
+                    should_abort=None,
+                    probe_gateway=False,
+                )
+            self.assertTrue(result.ok)
+            joined = " ".join(" ".join(c) for c in seen)
+            self.assertIn("--extra mcp", joined)
+            self.assertIn("--active", joined)
+            self.assertNotIn("homeassistant", joined)
+            self.assertTrue(seen_env)
+            env = seen_env[0]
+            self.assertIsInstance(env, dict)
+            assert isinstance(env, dict)
+            self.assertEqual(env.get("UV_PROJECT_ENVIRONMENT"), str(staging / "venv"))
+            self.assertEqual(env.get("VIRTUAL_ENV"), str(staging / "venv"))
+
+    def test_pip_extras_success_boosts_when_probe_misses_aiohttp(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "engine"
+            staging = home / "hermes-agent.staging"
+            staging.mkdir(parents=True)
+            (staging / "pyproject.toml").write_text(
+                "[project.optional-dependencies]\nmcp = [\"mcp\"]\n",
+                encoding="utf-8",
+            )
+            if sys.platform == "win32":
+                (staging / "venv" / "Scripts").mkdir(parents=True)
+                (staging / "venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+            else:
+                (staging / "venv" / "bin").mkdir(parents=True)
+                (staging / "venv" / "bin" / "python").write_text("", encoding="utf-8")
+            probes = iter([(False, "No module named 'aiohttp'"), (True, "ok")])
+            boosts: list[list[str]] = []
+            edits: list[list[str]] = []
+
+            def run(cmd, **_kwargs):
+                if any("aiohttp==" in str(part) for part in cmd):
+                    boosts.append(list(cmd))
+                if "-e" in cmd and cmd[-1] == ".":
+                    edits.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            def run_dep(cmd, **_kwargs):
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with (
+                patch.object(hi, "_run", side_effect=run),
+                patch.object(hi, "_run_dep", side_effect=run_dep),
+                patch.object(hi, "_probe_venv", side_effect=lambda *_a, **_k: next(probes)),
+                patch.object(hi, "_activate_staged", return_value=(True, "live")),
+                patch.object(hi, "_user_path_prepend"),
+            ):
+                result = hi._finish_staged_install(
+                    staging=staging,
+                    home=home,
+                    stamp="t",
+                    py=Path("python"),
+                    uv=None,
+                    command="hermes",
+                    log=[],
+                    emit=lambda _m: None,
+                    fail=lambda *a, **k: hi.InstallResult(False, "fail", "exit"),
+                    run_streamed=None,
+                    should_abort=None,
+                    probe_gateway=False,
+                )
+            self.assertTrue(result.ok)
+            self.assertEqual(len(boosts), 1)
+            self.assertTrue(any("aiohttp==3.14.3" in part for part in boosts[0]))
+            self.assertEqual(len(edits), 1)
 
 
 if __name__ == "__main__":

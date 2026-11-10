@@ -109,12 +109,16 @@ def hermes_home() -> Path:
     return _product_hermes_home()
 
 
-def hermes_config_path() -> Path:
-    return hermes_home() / "config.yaml"
+def _resolved_home(home: Path | None = None) -> Path:
+    return Path(home) if home is not None else hermes_home()
 
 
-def hermes_skills_iris_control_dir() -> Path:
-    return hermes_home() / "skills" / "iris-control"
+def hermes_config_path(home: Path | None = None) -> Path:
+    return _resolved_home(home) / "config.yaml"
+
+
+def hermes_skills_iris_control_dir(home: Path | None = None) -> Path:
+    return _resolved_home(home) / "skills" / "iris-control"
 
 
 def repo_skills_iris_control_dir() -> Path:
@@ -266,8 +270,8 @@ def desired_mcp_block(repo: Path) -> dict[str, Any]:
     return block
 
 
-def _hermes_mcp_tool_candidates() -> list[Path]:
-    agent = hermes_home() / "hermes-agent"
+def _hermes_mcp_tool_candidates(home: Path | None = None) -> list[Path]:
+    agent = _resolved_home(home) / "hermes-agent"
     found = [
         agent / "tools" / "mcp_tool.py",
         agent / "hermes_cli" / "tools" / "mcp_tool.py",
@@ -279,8 +283,8 @@ def _hermes_mcp_tool_candidates() -> list[Path]:
     return found
 
 
-def _hermes_mcp_tool_path() -> Path | None:
-    for path in _hermes_mcp_tool_candidates():
+def _hermes_mcp_tool_path(home: Path | None = None) -> Path | None:
+    for path in _hermes_mcp_tool_candidates(home):
         if path.is_file():
             return path
     return None
@@ -336,14 +340,18 @@ def verify_hermes_stdio_dead_check(*, agent_root: Path | None = None) -> str:
 
 
 def ensure_hermes_stdio_dead_check_patch(
-    *, agent_root: Path | None = None, mutate: bool = False
+    home: Path | None = None, *, agent_root: Path | None = None, mutate: bool | None = None
 ) -> str:
-    """stdio dead-check. 기본은 verify. ``mutate=True`` 는 install baseline 만.
+    """stdio dead-check. home= 이면 그 트리에 패치. mutate 기본은 install baseline 만.
 
     자식 PID가 살아 있는데 True(dead)를 반환해 iris-control 도구가
     'has exited' TimeoutError로 즉시 실패하던 회귀를 고친다.
     pin 업스트림이 이미 고쳤으면 쓰기를 하지 않는다.
     """
+    if mutate is None:
+        mutate = home is not None
+    if agent_root is None and home is not None:
+        agent_root = _resolved_home(home) / "hermes-agent"
     status = verify_hermes_stdio_dead_check(agent_root=agent_root)
     if not mutate:
         return status
@@ -351,7 +359,14 @@ def ensure_hermes_stdio_dead_check_patch(
         return status
     path = _mcp_tool_path_for_agent(agent_root)
     if path is None:
-        return status
+        agent = _resolved_home(home) / "hermes-agent"
+        checked = "\n".join(f"  - {p}" for p in _hermes_mcp_tool_candidates(home))
+        if not agent.is_dir():
+            return (
+                "hermes mcp_tool.py missing — "
+                f"설치 디렉터리 없음: {agent}\n확인한 경로:\n{checked}"
+            )
+        return f"hermes mcp_tool.py missing\n확인한 경로:\n{checked}"
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -429,7 +444,9 @@ def _mcp_equivalent(a: Any, b: Any) -> bool:
     return True
 
 
-def ensure_mcp_in_config(repo: Path | None = None) -> tuple[bool, bool, str]:
+def ensure_mcp_in_config(
+    repo: Path | None = None, *, home: Path | None = None
+) -> tuple[bool, bool, str]:
     """Upsert iris-control + mobile-mcp. Returns (iris_installed, any_changed, message)."""
     try:
         import yaml
@@ -441,7 +458,7 @@ def ensure_mcp_in_config(repo: Path | None = None) -> tuple[bool, bool, str]:
         )
 
     repo = repo or project_root()
-    path = hermes_config_path()
+    path = hermes_config_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     desired_iris = desired_mcp_block(repo)
     desired_mobile = desired_mobile_mcp_block()
@@ -514,7 +531,7 @@ def _merge_disabled_toolsets(existing: list[object]) -> list[str]:
     return merged
 
 
-def ensure_hermes_disabled_terminal() -> tuple[bool, str]:
+def ensure_hermes_disabled_terminal(*, home: Path | None = None) -> tuple[bool, str]:
     """Keep today's name. Merge terminal and the Hermes page-driving browser toolset.
 
     Do not disable the `web` toolset (web_search / web_extract).
@@ -524,7 +541,7 @@ def ensure_hermes_disabled_terminal() -> tuple[bool, str]:
     except ImportError:
         return False, "PyYAML missing — cannot set agent.disabled_toolsets"
 
-    path = hermes_config_path()
+    path = hermes_config_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
         try:
@@ -607,11 +624,11 @@ def _skill_md_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def skills_content_stale(repo: Path | None = None) -> list[str]:
+def skills_content_stale(repo: Path | None = None, *, home: Path | None = None) -> list[str]:
     """SKILL.md bytes/hash differ from repo (presence alone is not enough)."""
     repo = repo or project_root()
     src_root = repo / "integrations" / "hermes-skills" / "iris-control"
-    dst_root = hermes_skills_iris_control_dir()
+    dst_root = hermes_skills_iris_control_dir(home)
     stale: list[str] = []
     if not src_root.is_dir():
         return list(SKILL_NAMES)
@@ -631,11 +648,13 @@ def skills_content_stale(repo: Path | None = None) -> list[str]:
     return stale
 
 
-def ensure_skills_installed(repo: Path | None = None) -> tuple[list[str], list[str], list[str]]:
+def ensure_skills_installed(
+    repo: Path | None = None, *, home: Path | None = None
+) -> tuple[list[str], list[str], list[str]]:
     """Returns (copied, ok, missing). Force re-copy when SKILL.md hash differs."""
     repo = repo or project_root()
     src_root = repo / "integrations" / "hermes-skills" / "iris-control"
-    dst_root = hermes_skills_iris_control_dir()
+    dst_root = hermes_skills_iris_control_dir(home)
     copied: list[str] = []
     ok: list[str] = []
     missing: list[str] = []
@@ -669,12 +688,12 @@ def ensure_skills_installed(repo: Path | None = None) -> tuple[list[str], list[s
     return copied, ok, missing
 
 
-def load_mcp_servers_config() -> dict[str, Any]:
+def load_mcp_servers_config(home: Path | None = None) -> dict[str, Any]:
     try:
         import yaml
     except ImportError:
         return {}
-    path = hermes_config_path()
+    path = hermes_config_path(home)
     if not path.is_file():
         return {}
     try:
@@ -811,24 +830,24 @@ def probe_mcp_server(name: str, cfg: Any) -> dict[str, Any]:
     return out
 
 
-def audit_all_mcp_servers() -> list[dict[str, Any]]:
-    servers = load_mcp_servers_config()
+def audit_all_mcp_servers(home: Path | None = None) -> list[dict[str, Any]]:
+    servers = load_mcp_servers_config(home)
     return [probe_mcp_server(str(name), cfg) for name, cfg in servers.items()]
 
 
-def verify_install(repo: Path | None = None) -> SyncReport:
+def verify_install(repo: Path | None = None, *, home: Path | None = None) -> SyncReport:
     try:
         import yaml
     except ImportError:
-        report = SyncReport(config_path=str(hermes_config_path()), ok=False)
+        report = SyncReport(config_path=str(hermes_config_path(home)), ok=False)
         report.errors.append(
             "PyYAML 패키지(모듈) 없음 — `.venv`에서 `pip install PyYAML` 후 다시 시도"
         )
         return report
 
     repo = repo or project_root()
-    report = SyncReport(config_path=str(hermes_config_path()))
-    path = hermes_config_path()
+    report = SyncReport(config_path=str(hermes_config_path(home)))
+    path = hermes_config_path(home)
     if not path.is_file():
         report.ok = False
         report.errors.append("Hermes config.yaml missing")
@@ -855,7 +874,7 @@ def verify_install(repo: Path | None = None) -> SyncReport:
             "npx not found - install Node 20+ so Hermes can spawn mobile-mcp"
         )
 
-    dst = hermes_skills_iris_control_dir()
+    dst = hermes_skills_iris_control_dir(home)
     for name in SKILL_NAMES:
         if (dst / name / "SKILL.md").is_file():
             report.skills_ok.append(name)
@@ -864,7 +883,7 @@ def verify_install(repo: Path | None = None) -> SyncReport:
             report.ok = False
     if report.skills_missing:
         report.errors.append("skills missing: " + ", ".join(report.skills_missing))
-    stale = skills_content_stale(repo)
+    stale = skills_content_stale(repo, home=home)
     report.skills_stale = stale
     if stale:
         report.ok = False
@@ -878,18 +897,21 @@ def sync_iris_control(
     *,
     repo: Path | None = None,
     reconnect_gateway: bool = False,
+    home: Path | None = None,
 ) -> SyncReport:
     """MCP + 스킬 설치 후 검증. Hermes 디스크에 남겨 Iris 재시작에도 유지.
 
     - iris-control upsert (이미 동일하면 유지)
     - 등록된 모든 mcp_servers 사전 점검
     - reconnect_gateway=True 이면 gateway가 MCP를 다시 붙이도록 표시
+    - home=None 이면 hermes_home(). Internal sidecar passes EngineHome.
     """
     repo = repo or project_root()
-    report = SyncReport(config_path=str(hermes_config_path()))
+    target = _resolved_home(home)
+    report = SyncReport(config_path=str(hermes_config_path(target)))
 
     try:
-        installed, changed, msg = ensure_mcp_in_config(repo)
+        installed, changed, msg = ensure_mcp_in_config(repo, home=target)
         report.mcp_installed = installed
         report.mcp_changed = changed
         report.messages.append(msg)
@@ -906,7 +928,7 @@ def sync_iris_control(
         report.errors.append(f"mcp sync: {exc}")
 
     try:
-        term_changed, term_msg = ensure_hermes_disabled_terminal()
+        term_changed, term_msg = ensure_hermes_disabled_terminal(home=target)
         report.messages.append(term_msg)
         if term_changed:
             report.needs_gateway_reload = True
@@ -919,7 +941,7 @@ def sync_iris_control(
         report.messages.append(f"terminal policy skip: {exc}")
 
     try:
-        dead_patch = ensure_hermes_stdio_dead_check_patch()
+        dead_patch = ensure_hermes_stdio_dead_check_patch(home=target)
         report.messages.append(dead_patch)
         if "patched" in dead_patch and "already" not in dead_patch:
             report.needs_gateway_reload = True
@@ -950,7 +972,7 @@ def sync_iris_control(
         report.messages.append(f"hermes tool_choice skip: {exc}")
 
     try:
-        copied, ok, missing = ensure_skills_installed(repo)
+        copied, ok, missing = ensure_skills_installed(repo, home=target)
         report.skills_copied = copied
         report.skills_ok = ok
         report.skills_missing = missing
@@ -967,7 +989,7 @@ def sync_iris_control(
     try:
         from iris.system.hermes_memory_nudge import ensure_memory_nudge
 
-        nudge = ensure_memory_nudge()
+        nudge = ensure_memory_nudge(home=target)
         report.messages.append(nudge)
         if "updated" in nudge:
             report.needs_gateway_reload = True
@@ -977,14 +999,14 @@ def sync_iris_control(
     try:
         from iris.system.hermes_soul_sync import ensure_soul
 
-        soul = ensure_soul()
+        soul = ensure_soul(home=target)
         report.messages.append(soul)
         if "updated" in soul:
             report.needs_gateway_reload = True
     except Exception as exc:  # noqa: BLE001
         report.messages.append(f"soul sync skip: {exc}")
 
-    verified = verify_install(repo)
+    verified = verify_install(repo, home=target)
     if not verified.ok:
         report.ok = False
         for e in verified.errors:
@@ -1001,7 +1023,7 @@ def sync_iris_control(
 
     # 등록된 모든 MCP 점검 (다른 서버 설정은 건드리지 않고 상태만 확인·기록)
     try:
-        audited = audit_all_mcp_servers()
+        audited = audit_all_mcp_servers(home=target)
         report.mcp_servers = audited
         report.mcp_ok_count = sum(1 for s in audited if s.get("ok"))
         report.mcp_fail_count = sum(

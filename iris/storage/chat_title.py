@@ -14,7 +14,9 @@ from iris.storage.conversations import (
     ChatMessage,
     _set_title,
     get_conversation,
+    list_messages,
     load_title_basis,
+    suggest_title,
 )
 from iris.storage.database import Database
 
@@ -149,7 +151,20 @@ def apply_generated_title(db: Database, conversation_id: int, raw: str) -> str:
     return title
 
 
+def apply_heuristic_title(db: Database, conversation_id: int) -> str:
+    """LLM 제목이 비었거나 실패했을 때 메시지에서 제목을 고른다."""
+    cid = int(conversation_id)
+    suggested = suggest_title(list_messages(db, cid), basis=load_title_basis(db))
+    return apply_generated_title(db, cid, suggested)
+
+
 if __name__ == "__main__":
+    import tempfile
+    from pathlib import Path
+
+    from iris.storage.conversations import append_message, create_conversation
+    from iris.storage.database import Database
+
     assert normalize_model_title("「파인튜닝 위키 분류 및 저장」") == "파인튜닝 위키 분류 및 저장"
     assert normalize_model_title("제목: 트랜스포머와 어텐션") == "트랜스포머와 어텐션"
     assert normalize_model_title(INTERRUPTED_NOTE) == ""
@@ -163,4 +178,19 @@ if __name__ == "__main__":
     assert jobs.begin(2) == 1
     assert jobs.begin(1) == 2
     assert jobs.current(2) == 1
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        db = Database(Path(tmp) / "t.db")
+        try:
+            conv = create_conversation(db, title=DEFAULT_TITLE)
+            append_message(db, conv.id, "user", "프랜스포머는 뭔지 아는데 어탠션은뭐야?")
+            append_message(
+                db,
+                conv.id,
+                "assistant",
+                "어텐션은 각 토큰이 서로를 보는 방식입니다.",
+            )
+            heur = apply_heuristic_title(db, conv.id)
+            assert heur and heur != DEFAULT_TITLE, heur
+        finally:
+            db.close()
     print("chat_title self-check ok")

@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 OLLAMA_CLOUD_CATALOG_URL = "https://ollama.com/api/tags"
+OLLAMA_HTTP_USER_AGENT = "Iris-Light/1.0"
 
 
 @dataclass(frozen=True)
@@ -415,9 +416,7 @@ class OllamaClient:
         return self.probe_model_status(runtime_name, timeout_sec=timeout_sec) == "ok"
 
     def _local_cloud_fallback(self) -> list[OllamaModelInfo]:
-        models = self.list_models()
-        cloud = [m for m in models if m.is_cloud]
-        return cloud if cloud else models
+        return [m for m in self.list_models() if m.is_cloud]
 
     def list_cloud_preferring(self) -> list[OllamaModelInfo]:
         """하위 호환 — 클라우드 카탈로그(+probe 분류)."""
@@ -636,6 +635,7 @@ class OllamaClient:
 
     def _get_json_url(self, url: str) -> dict[str, Any]:
         req = Request(url, method="GET")
+        req.add_header("User-Agent", OLLAMA_HTTP_USER_AGENT)
         api_key = os.environ.get("OLLAMA_API_KEY", "").strip()
         if api_key:
             req.add_header("Authorization", f"Bearer {api_key}")
@@ -697,4 +697,10 @@ if __name__ == "__main__":
     assert is_embedding_model_name("") is False
     assert embedding_model_rank("bge-m3:latest") < embedding_model_rank("nomic-embed-text")
     assert embedding_model_rank("nomic-embed-text") < embedding_model_rank("weird-vec")
+    mixed = [
+        OllamaModelInfo(name="gemma4:latest"),
+        OllamaModelInfo(name="gemma4:31b-cloud"),
+    ]
+    assert [m for m in mixed if m.is_cloud] == [mixed[1]]
+    assert OLLAMA_HTTP_USER_AGENT
     print("ollama_client self-check ok")

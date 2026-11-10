@@ -7,6 +7,7 @@ from typing import Any, Literal, Union
 
 NODE_CAP = 40
 NAME_CAP = 80
+CTX_CAP = 24
 EXCERPT_CAP = 800
 EXTRACT_DEFAULT = 4000
 EXTRACT_MAX = 8000
@@ -47,6 +48,21 @@ class PageNode:
     role: str
     name: str
     interactive: bool = True
+    frame: str = ""
+    in_view: bool = True
+    disabled: bool = False
+    checked: bool = False
+    selected: bool = False
+    focused: bool = False
+    context: str = ""
+
+
+@dataclass(frozen=True)
+class FrameInfo:
+    id: str
+    origin: str
+    reachable: bool
+    reason: str = ""
 
 
 DockedSite = Literal["dedicated", "ide_internal"]
@@ -179,6 +195,7 @@ class BrowserSnapshot:
     tab_index: int = 0
     tab_count: int = 1
     target_id: str = ""
+    frames: tuple[FrameInfo, ...] = ()
 
     def to_gui_dict(self) -> dict[str, Any]:
         media = self.media.to_dict() if self.media is not None else None
@@ -226,6 +243,7 @@ class BrowserSnapshot:
             "tab_index": self.tab_index,
             "tab_count": self.tab_count,
             "target_id": self.target_id,
+            "frames": self.frames,
         }
         data.update(kwargs)
         return BrowserSnapshot(**data)
@@ -315,6 +333,7 @@ class TypeText:
 class Scroll:
     delta_x: int = 0
     delta_y: int = 0
+    ref: str | None = None
     source: Actor = Actor.AGENT
     kind: Literal["scroll"] = "scroll"
 

@@ -1,12 +1,11 @@
-"""채팅 제목/요약 라우트: Hermes 켜져 있어도 Iris API 모델은 backend=api."""
+"""채팅 제목 라우트: Hermes 켜져 있어도 hermes가 아니다. api: 만 provider API."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
+from iris.runtime.backend_route import resolve_title_route
 from iris.storage.api_providers import ApiProvider
-from iris.ui.window.main_window import MainWindow
 
 
 def main() -> None:
@@ -18,33 +17,27 @@ def main() -> None:
         auth_style="bearer",
         models=["nvidia/nemotron-mini"],
     )
-    win = MagicMock()
-    win._use_hermes_backend = lambda: True
-    win._db = object()
-    win._settings = SimpleNamespace(
-        ollama_base_url="http://127.0.0.1:11434/v1",
-        hermes_base_url="http://127.0.0.1:8642/v1",
-        hermes_api_key="hk",
-        hermes_command="hermes",
-    )
+    ollama = "http://127.0.0.1:11434/v1"
 
     with patch(
-        "iris.ui.window.main_window.get_api_provider", return_value=provider
+        "iris.storage.api_providers.get_api_provider", return_value=provider
     ):
-        route = MainWindow._summary_route_for(
-            win, "api:nv1:nvidia/nemotron-mini"
+        route = resolve_title_route(
+            "api:nv1:nvidia/nemotron-mini",
+            db=object(),
+            ollama_base_url=ollama,
         )
     assert route is not None, "api runtime must resolve"
     assert route.backend == "api", route.backend
     assert route.model == "nvidia/nemotron-mini"
     assert "nvidia.com" in (route.base_url or "")
 
-    with patch(
-        "iris.infrastructure.hermes_client.resolve_hermes_inference",
-        return_value=SimpleNamespace(model="qwen3:8b", provider="custom"),
-    ):
-        local = MainWindow._summary_route_for(win, "qwen3:8b")
-    assert local is not None and local.backend == "hermes", local
+    # Hermes ON 이어도 제목 라우트는 ollama 직행 (도구 불필요)
+    for name in ("qwen3:8b", "gpt-oss:120b-cloud"):
+        local = resolve_title_route(name, db=None, ollama_base_url=ollama)
+        assert local is not None, name
+        assert local.backend == "ollama", (name, local.backend)
+        assert local.model == name
 
     print("chat_title_route self-check ok")
 

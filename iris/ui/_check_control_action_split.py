@@ -26,6 +26,7 @@ def _surface() -> tuple[MagicMock, ActionRegistry]:
     surface.registry = ActionRegistry()
     surface.booting = False
     _register_actions(window, surface)
+    surface.registry.set_human_confirm(lambda spec, args: True)
     return window, surface.registry
 
 

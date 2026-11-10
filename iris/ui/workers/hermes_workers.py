@@ -19,6 +19,7 @@ from iris.engine import (
     EngineSource,
     ExternalGateway,
     InternalSidecar,
+    ReasoningDelta,
     StatelessTurn,
     ToolProgress,
     TurnCancelled,
@@ -98,6 +99,11 @@ def prove1_ui_abort_if_uncaught() -> None:
     raise RuntimeError(
         "phase5-prove1: would abort Iris if uncaught on the UI thread"
     )
+
+def _engine_source() -> EngineSource:
+    """Same source the process singleton parsed. Do not start both modes."""
+    return shared_engine().source
+
 
 class HermesHealthWorker(QThread):
     """Engine ready check. ExternalGateway keeps the :8642 health path."""
@@ -368,6 +374,7 @@ class HermesChatWorker(QThread):
 
     connecting = pyqtSignal(str, str)  # model, host
     tool_progress = pyqtSignal(str)
+    reasoning = pyqtSignal(str)
     content_chunk = pyqtSignal(str)
     finished_ok = pyqtSignal(str)
     failed = pyqtSignal(str)
@@ -521,6 +528,9 @@ class HermesChatWorker(QThread):
                 elif isinstance(event, ToolProgress):
                     if event.label:
                         self.tool_progress.emit(event.label)
+                elif isinstance(event, ReasoningDelta):
+                    if event.text:
+                        self.reasoning.emit(event.text)
                 elif isinstance(event, TurnFinished):
                     self.finished_ok.emit("".join(content_parts) or event.text)
                     finished = True

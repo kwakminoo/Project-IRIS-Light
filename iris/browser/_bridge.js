@@ -13,11 +13,71 @@
 
   let lastEls = [];
 
-  function inViewport(el) {
+  function topRect(el) {
     const r = el.getBoundingClientRect();
+    let top = r.top;
+    let left = r.left;
+    let win = el.ownerDocument && el.ownerDocument.defaultView;
+    while (win && win !== window) {
+      const frame = win.frameElement;
+      if (!frame) break;
+      const fr = frame.getBoundingClientRect();
+      top += fr.top;
+      left += fr.left;
+      win = frame.ownerDocument && frame.ownerDocument.defaultView;
+    }
+    return { top, left, bottom: top + r.height, right: left + r.width, width: r.width, height: r.height };
+  }
+
+  function inViewport(el) {
+    const r = topRect(el);
     const vh = window.innerHeight || 0;
     const vw = window.innerWidth || 0;
     return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+  }
+
+  function frameDoc(iframe) {
+    try {
+      return iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document) || null;
+    } catch (err) {
+      // SecurityError on contentDocument is why cross-origin frames stay unreachable.
+      return null;
+    }
+  }
+
+  function frameOrigin(iframe) {
+    try {
+      const loc = iframe.contentWindow && iframe.contentWindow.location;
+      if (loc && loc.origin) return String(loc.origin);
+    } catch (err) {}
+    const src = String((iframe.getAttribute && iframe.getAttribute("src")) || iframe.src || "");
+    if (!src) return "";
+    try {
+      return new URL(src, location.href).origin;
+    } catch (err2) {
+      return "";
+    }
+  }
+
+  function describeFrame(iframe, id) {
+    const doc = frameDoc(iframe);
+    const origin = frameOrigin(iframe);
+    if (doc) {
+      return { id, origin: origin || String(location.origin || ""), reachable: true, reason: "" };
+    }
+    if (origin && origin !== String(location.origin || "")) {
+      return { id, origin, reachable: false, reason: "cross_origin" };
+    }
+    return { id, origin: origin || "", reachable: false, reason: origin ? "cross_origin" : "opaque" };
+  }
+
+  function collectFrames() {
+    const frames = [];
+    const iframes = Array.from(document.querySelectorAll("iframe"));
+    iframes.forEach((iframe, i) => {
+      frames.push(describeFrame(iframe, "f" + i));
+    });
+    return frames;
   }
 
   function inArticle(el) {
@@ -29,7 +89,9 @@
     if (target.kind === "ref") {
       const index = Number(target.index);
       if (!Number.isInteger(index) || index < 0) return null;
-      return lastEls[index] || null;
+      const el = lastEls[index] || null;
+      if (!el || !el.isConnected) return null;
+      return el;
     }
     const nth = Math.max(0, Number(target.nth) || 0);
     if (target.kind === "css") {
@@ -61,39 +123,188 @@
     return null;
   }
 
-  function collectNodes() {
-    const raw = Array.from(
-      document.querySelectorAll("a[href], button, [role='button'], h1, h2, input, textarea, [role='link']")
+  function namedControls(doc) {
+    return Array.from(
+      doc.querySelectorAll("a[href], button, [role='button'], h1, h2, input, textarea, [role='link']")
     );
-    raw.sort((a, b) => {
-      const av = inViewport(a) ? 0 : 1;
-      const bv = inViewport(b) ? 0 : 1;
+  }
+
+  function accName(el) {
+    const type = String(el.type || "").toLowerCase();
+    const labelled = (el.getAttribute("aria-labelledby") || "").trim();
+    if (labelled) {
+      const doc = el.ownerDocument || document;
+      const parts = labelled.split(/\s+/).map((id) => {
+        const node = doc.getElementById(id);
+        return node ? textOf(node) : "";
+      });
+      const joined = parts.join(" ").replace(/\s+/g, " ").trim();
+      if (joined) return joined;
+    }
+    const aria = (el.getAttribute("aria-label") || "").trim();
+    if (aria) return aria;
+    const doc = el.ownerDocument || document;
+    if (el.id) {
+      const labels = doc.querySelectorAll("label[for]");
+      for (let i = 0; i < labels.length; i++) {
+        if (labels[i].htmlFor === el.id) {
+          const t = textOf(labels[i]).trim();
+          if (t) return t;
+        }
+      }
+    }
+    const wrap = el.closest && el.closest("label");
+    if (wrap) {
+      const t = textOf(wrap).trim();
+      if (t) return t;
+    }
+    const alt = (el.getAttribute("alt") || "").trim();
+    if (alt) return alt;
+    const img = el.querySelector && el.querySelector("img[alt], input[type='image']");
+    if (img) {
+      const childAlt = (img.getAttribute("alt") || "").trim();
+      if (childAlt) return childAlt;
+    }
+    const visible = String(el.innerText || el.textContent || "").trim();
+    if (visible.length > 1) return visible;
+    const title = (el.getAttribute("title") || "").trim();
+    if (title) return title;
+    if (visible) return visible;
+    const placeholder = (el.getAttribute("placeholder") || "").trim();
+    if (placeholder) return placeholder;
+    const named = (el.getAttribute("name") || "").trim();
+    if (named) return named;
+    if (el.tagName === "INPUT" && (type === "submit" || type === "button" || type === "reset")) {
+      const native = (el.getAttribute("value") || "").trim();
+      if (native) return native;
+    }
+    return "";
+  }
+
+  function contextOf(el, ownName) {
+    const own = String(ownName || "");
+    function take(text) {
+      const t = String(text || "").replace(/\s+/g, " ").trim();
+      if (!t || t === own) return "";
+      return t;
+    }
+    const fieldset = el.closest && el.closest("fieldset");
+    if (fieldset) {
+      const legend = fieldset.querySelector("legend");
+      const t = take(legend ? textOf(legend) : "");
+      if (t) return t;
+    }
+    const group = el.closest && el.closest("[role='group'], [role='radiogroup']");
+    if (group) {
+      const labelled = (group.getAttribute("aria-labelledby") || "").trim();
+      if (labelled) {
+        const gdoc = group.ownerDocument || document;
+        const parts = labelled.split(/\s+/).map((id) => {
+          const node = gdoc.getElementById(id);
+          return node ? textOf(node) : "";
+        });
+        const t = take(parts.join(" "));
+        if (t) return t;
+      }
+      const t = take(group.getAttribute("aria-label") || "");
+      if (t) return t;
+    }
+    const form = el.closest && el.closest("form");
+    if (form) {
+      const t = take(form.getAttribute("aria-label") || form.getAttribute("name") || form.id || "");
+      if (t) return t;
+    }
+    const scope =
+      (el.closest && el.closest("article, section, form")) ||
+      (el.ownerDocument && el.ownerDocument.body);
+    if (scope) {
+      const headings = scope.querySelectorAll("h1, h2, h3");
+      let found = "";
+      for (let i = 0; i < headings.length; i++) {
+        const heading = headings[i];
+        if (heading === el) continue;
+        if (heading.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) {
+          found = textOf(heading);
+        }
+      }
+      const t = take(found);
+      if (t) return t;
+    }
+    return "";
+  }
+
+  function flagState(el) {
+    const ariaDisabled = String(el.getAttribute("aria-disabled") || "").toLowerCase();
+    const ariaChecked = String(el.getAttribute("aria-checked") || "").toLowerCase();
+    const ariaSelected = String(el.getAttribute("aria-selected") || "").toLowerCase();
+    const doc = el.ownerDocument || document;
+    return {
+      disabled: !!(el.disabled || ariaDisabled === "true"),
+      checked: !!(el.checked || ariaChecked === "true" || ariaChecked === "mixed"),
+      selected: !!(el.selected || ariaSelected === "true"),
+      focused: !!(doc.activeElement === el),
+    };
+  }
+
+  function roleOf(el) {
+    const tag = el.tagName;
+    if (tag === "A") return "link";
+    if (el.getAttribute("role") === "link") return "link";
+    if (tag === "BUTTON") return "button";
+    if (el.getAttribute("role") === "button") return "button";
+    if (tag === "H1" || tag === "H2") return tag.toLowerCase();
+    if (tag === "TEXTAREA") return "textbox";
+    if (tag === "INPUT") {
+      const type = String(el.type || "text").toLowerCase();
+      if (type === "checkbox") return "checkbox";
+      if (type === "radio") return "radio";
+      if (type === "submit" || type === "button" || type === "reset" || type === "image") return "button";
+      return "textbox";
+    }
+    return tag.toLowerCase();
+  }
+
+  function collectNodes() {
+    const items = namedControls(document).map((el) => ({ el, frame: "" }));
+    const iframes = Array.from(document.querySelectorAll("iframe"));
+    iframes.forEach((iframe, i) => {
+      const doc = frameDoc(iframe);
+      if (!doc) return;
+      const frame = "f" + i;
+      namedControls(doc).forEach((el) => items.push({ el, frame }));
+    });
+    items.sort((a, b) => {
+      const av = inViewport(a.el) ? 0 : 1;
+      const bv = inViewport(b.el) ? 0 : 1;
       if (av !== bv) return av - bv;
-      const aa = inArticle(a) ? 0 : 1;
-      const ba = inArticle(b) ? 0 : 1;
+      const aa = inArticle(a.el) ? 0 : 1;
+      const ba = inArticle(b.el) ? 0 : 1;
       if (aa !== ba) return aa - ba;
       return 0;
     });
     const out = [];
     lastEls = [];
-    for (const el of raw) {
+    for (const item of items) {
       if (out.length >= 40) break;
-      const name = textOf(el) || el.getAttribute("placeholder") || el.getAttribute("name") || "";
+      const el = item.el;
+      const type = String(el.type || "").toLowerCase();
+      if (el.tagName === "INPUT" && type === "hidden") continue;
+      const name = accName(el);
       if (!name) continue;
       const heading = el.tagName === "H1" || el.tagName === "H2";
-      const role =
-        el.tagName === "A" || el.getAttribute("role") === "link"
-          ? "link"
-          : el.tagName === "BUTTON" || el.getAttribute("role") === "button"
-            ? "button"
-            : el.tagName === "INPUT" || el.tagName === "TEXTAREA"
-              ? "textbox"
-              : el.tagName.toLowerCase();
+      const flags = flagState(el);
       out.push({
-        role,
+        role: roleOf(el),
         name: String(name).slice(0, 80),
         interactive: !heading,
         index: out.length,
+        frame: item.frame,
+        in_view: inViewport(el),
+        disabled: flags.disabled,
+        checked: flags.checked,
+        selected: flags.selected,
+        focused: flags.focused,
+        context: contextOf(el, name),
       });
       lastEls.push(el);
     }
@@ -215,13 +426,19 @@
     resolve,
     click(target) {
       const el = resolve(target);
-      if (!el) return { ok: false, error: "element not found" };
+      if (!el) {
+        const miss = target && target.kind === "ref" ? "stale_ref" : "element not found";
+        return { ok: false, error: miss };
+      }
       el.click();
       return { ok: true };
     },
     type(target, text, clear) {
       const el = resolve(target);
-      if (!el) return { ok: false, error: "element not found" };
+      if (!el) {
+        const miss = target && target.kind === "ref" ? "stale_ref" : "element not found";
+        return { ok: false, error: miss };
+      }
       el.focus();
       if (clear) {
         if ("value" in el) el.value = "";
@@ -244,6 +461,12 @@
         scrollY: Math.round(window.scrollY || 0),
       };
     },
+    scrollTo(target) {
+      const el = resolve(target);
+      if (!el) return { ok: false, error: "stale_ref" };
+      el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      return { ok: true, in_view: inViewport(el) };
+    },
     snapshot() {
       const media = mediaState();
       return {
@@ -253,6 +476,7 @@
         scrollY: Math.round(window.scrollY || 0),
         readyState: String(document.readyState || ""),
         nodes: collectNodes(),
+        frames: collectFrames(),
         excerpt: excerptText(),
         media,
       };

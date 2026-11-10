@@ -507,6 +507,7 @@ class MainWindow(QMainWindow):
         self._turn_attachment_paths: tuple[str, ...] = ()
         self._wiki_session_worker = None
         self._pdf_export_worker = None
+        self._lab_dump_worker = None
         self._ext_install_worker: ExtensionInstallWorker | None = None
         self._pending_ext: dict | None = None
         self._recent_voice_turns: deque[tuple[float, int | None, str]] = deque()
@@ -1546,7 +1547,15 @@ class MainWindow(QMainWindow):
                 or self._settings.ollama_model
             ).strip()
             if model:
-                self._sync_hermes_model(model)
+                try:
+                    self._sync_hermes_model(model)
+                except Exception as exc:  # noqa: BLE001
+                    try:
+                        self._live_activity.append_instant_line(
+                            f"Hermes model sync skip: {str(exc)[:120]}"
+                        )
+                    except Exception:
+                        pass
         self._hermes_health_worker = None
         if getattr(self, "_boot_ready_pending", False):
             self._boot_ready_pending = False
@@ -1618,23 +1627,23 @@ class MainWindow(QMainWindow):
                 db=self._db,
                 ollama_base_url=self._settings.ollama_base_url,
             )
+            worker = HermesModelSyncWorker(
+                self._settings.hermes_base_url,
+                target.model,
+                api_key=self._settings.hermes_api_key,
+                command=self._settings.hermes_command,
+                target=target,
+                parent=self,
+            )
+            self._hermes_model_worker = worker
+            worker.finished_ok.connect(self._on_hermes_model_synced)
+            worker.failed.connect(self._on_hermes_model_sync_failed)
+            worker.start()
         except Exception as exc:  # noqa: BLE001
+            self._hermes_model_worker = None
             self._live_activity.append_instant_line(
                 f"Iris Agent model sync skip: {str(exc)[:120]}"
             )
-            return
-        worker = HermesModelSyncWorker(
-            self._settings.hermes_base_url,
-            target.model,
-            api_key=self._settings.hermes_api_key,
-            command=self._settings.hermes_command,
-            target=target,
-            parent=self,
-        )
-        self._hermes_model_worker = worker
-        worker.finished_ok.connect(self._on_hermes_model_synced)
-        worker.failed.connect(self._on_hermes_model_sync_failed)
-        worker.start()
 
     def _on_hermes_model_synced(self) -> None:
         model = self._chat.current_model() or self._settings.ollama_model
@@ -2700,7 +2709,9 @@ class MainWindow(QMainWindow):
 
         대화마다 워커를 둔다. 하나를 같이 쓰면 새 채팅 제목 요청이
         이전 채팅 결과를 취소하고, 화면 밖 채팅은 제목을 못 받는다.
+        제목은 Hermes 없이 api/ollama 직행. 실패 시 휴리스틱만 쓴다.
         """
+        from iris.runtime.backend_route import resolve_title_route
         from iris.storage.chat_title import title_exchange, title_messages
         from iris.storage.conversations import (
             DEFAULT_TITLE,
@@ -2730,13 +2741,19 @@ class MainWindow(QMainWindow):
             return
         if exchange is None:
             return
-        model = ""
-        try:
-            model = self._chat.current_model() or self._settings.ollama_model
-        except Exception:  # noqa: BLE001
-            model = self._settings.ollama_model
-        route = self._summary_route_for(model)
+        model = (self._runs.slot(cid).inference_model or "").strip()
+        if not model:
+            try:
+                model = self._chat.current_model() or self._settings.ollama_model
+            except Exception:  # noqa: BLE001
+                model = self._settings.ollama_model
+        route = resolve_title_route(
+            model,
+            db=self._db,
+            ollama_base_url=self._settings.ollama_base_url,
+        )
         if route is None:
+            self._apply_chat_title_heuristic(cid)
             return
         generation = self._title_requests.begin(cid)
         self._cancel_chat_title(cid)
@@ -2750,17 +2767,32 @@ class MainWindow(QMainWindow):
             )
             worker.finished_ok.connect(self._on_chat_title_ready)
             worker.failed.connect(
-                lambda msg: self._live_activity.append_instant_line(
-                    f"채팅 제목 실패: {str(msg)[:60]}"
-                )
+                lambda _msg, c=cid, g=generation: self._on_chat_title_failed(c, g)
             )
             self._chat_title_workers[cid] = worker
             worker.start()
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             self._chat_title_workers.pop(cid, None)
-            self._live_activity.append_instant_line(
-                f"채팅 제목을 요청하지 못했습니다: {str(exc)[:60]}"
-            )
+            self._apply_chat_title_heuristic(cid)
+
+    def _apply_chat_title_heuristic(self, conversation_id: int) -> None:
+        from iris.storage.chat_title import apply_heuristic_title
+
+        try:
+            title = apply_heuristic_title(self._db, int(conversation_id))
+        except Exception:  # noqa: BLE001
+            return
+        if not title:
+            return
+        self._retitle_project_chat_note(int(conversation_id), title)
+        self._refresh_chat_history_panel()
+
+    def _on_chat_title_failed(self, conversation_id: int, generation: int) -> None:
+        cid = int(conversation_id)
+        if int(generation) != self._title_requests.current(cid):
+            return
+        self._chat_title_workers.pop(cid, None)
+        self._apply_chat_title_heuristic(cid)
 
     def _retitle_project_chat_note(self, conversation_id: int, title: str) -> None:
         shown = " ".join((title or "").split())
@@ -2787,14 +2819,17 @@ class MainWindow(QMainWindow):
         worker = self._chat_title_workers.get(cid)
         if worker is not None and int(getattr(worker, "_generation", -1)) == int(generation):
             self._chat_title_workers.pop(cid, None)
-        from iris.storage.chat_title import apply_generated_title
+        from iris.storage.chat_title import apply_generated_title, apply_heuristic_title
+        from iris.storage.conversations import DEFAULT_TITLE
 
         try:
-            title = apply_generated_title(self._db, int(conversation_id), raw)
-        except Exception as exc:  # noqa: BLE001
-            self._live_activity.append_instant_line(f"채팅 제목 저장 실패: {str(exc)[:60]}")
+            title = apply_generated_title(self._db, cid, raw)
+            if title in ("", DEFAULT_TITLE):
+                title = apply_heuristic_title(self._db, cid)
+        except Exception:  # noqa: BLE001
+            self._apply_chat_title_heuristic(cid)
             return
-        self._retitle_project_chat_note(int(conversation_id), title)
+        self._retitle_project_chat_note(cid, title)
         self._refresh_chat_history_panel()
 
     def _start_handoff_summary(self, from_model: str, context: object) -> None:
@@ -3766,16 +3801,33 @@ class MainWindow(QMainWindow):
             _log("[ERROR] reason=chat panel missing or empty paths")
 
     def _begin_ide_companion_drag(self, paths: list[str]) -> None:
-        """Theia dragstart — QWebEngine OLE DnD가 Qt로 안 넘어오므로 경로만 보관."""
+        """Theia dragstart — 경로는 보관하고, OLE 드래그는 다음 틱에 넘긴다."""
         clean = [str(p).strip() for p in paths if str(p).strip()]
         self._pending_ide_drag = clean
         # 탭 제스처: WebEngine 밖 pointerup이 유실되므로 앱 전역 release로 첨부.
         app = QApplication.instance()
         if app is not None and app != self:
             app.installEventFilter(self)
+        # chat.drag_start가 반환된 뒤에 DoDragDrop. 같은 스택에서 돌리면 HTTP가 막힌다.
+        if app is not None:
+            queued = list(clean)
+            QTimer.singleShot(0, lambda p=queued: self._drag_companion_hdrop(p))
         # ponytail: 포기한 드래그 pending 고착 방지. 천장 20s — 필요 시 drag_end가 갱신.
         token = list(clean)
         QTimer.singleShot(20_000, lambda t=token: self._expire_ide_companion_drag(t))
+
+    def _drag_companion_hdrop(self, paths: list[str]) -> None:
+        if self._pending_ide_drag != paths:
+            return
+        from iris.ui.window.win_ole_drop import drag_hdrop_while_button
+
+        effect = drag_hdrop_while_button(paths)
+        if effect == 0:
+            return
+        if self._pending_ide_drag != paths:
+            return
+        self._attach_os_drop_paths(paths)
+        self._pending_ide_drag = []
 
     def _expire_ide_companion_drag(self, expected: list[str]) -> None:
         if self._pending_ide_drag == expected:
@@ -3921,9 +3973,20 @@ class MainWindow(QMainWindow):
         if text:
             self._live_activity.append_instant_line(f"MCP: {text}")
 
+    def _log_user_input(self, text: str) -> None:
+        shown = (text or "").strip()
+        if not shown:
+            return
+        self._live_activity.append_instant_line(f">>> {shown}")
+
     def _on_user_text(self, text: str, attachments: list | None = None) -> None:
         att = tuple(str(p).strip() for p in (attachments or []) if str(p).strip())
         self._try_open_at_path_refs(text)
+        self._log_user_input(
+            self._format_user_turn_content(
+                UserTurn(text=text or "", source=UserTurnSource.KEYBOARD, attachments=att)
+            )
+        )
         self._turn_dispatcher.submit(
             text=text,
             source=UserTurnSource.KEYBOARD,
@@ -4583,6 +4646,105 @@ class MainWindow(QMainWindow):
         self._finish_current_turn(turn.id)
         return True
 
+    def _try_local_lab_dump(self, turn: UserTurn, model: str = "") -> bool:
+        from iris.knowledge.lab_script_dump import is_lab_dump_intent, pdf_paths_from
+        from iris.knowledge.page_vision import transcribe_images
+        from iris.ui.workers.lab_dump_worker import LabDumpWorker
+
+        pdfs = pdf_paths_from(turn.attachments)
+        if not is_lab_dump_intent(turn.text or "", pdfs):
+            return False
+        display = self._format_user_turn_content(turn)
+        self._chat.append_message_instant("You", display)
+        self._record_history("user", display)
+        root = self._current_project_root()
+        if not root:
+            msg = "프로젝트를 연 뒤 다시 요청해 주세요."
+            self._chat.append_message_instant("Iris", msg)
+            self._record_history("assistant", msg)
+            self._finish_current_turn(turn.id, open_followup=False)
+            return True
+        worker = getattr(self, "_lab_dump_worker", None)
+        if worker is not None and worker.isRunning():
+            msg = "이전 실습 스크립트 추출이 아직 진행 중입니다."
+            self._chat.append_message_instant("Iris", msg)
+            self._record_history("assistant", msg)
+            self._finish_current_turn(turn.id, open_followup=False)
+            return True
+        image_reader = None
+        if model:
+            spec = self._material_vision_spec(model)
+            ask = turn.text or ""
+
+            def _read_image(png: bytes, spec=spec, ask=ask) -> str:
+                return transcribe_images(
+                    [png],
+                    model=spec["model"],
+                    ollama_base_url=spec["ollama_base_url"],
+                    api_base_url=spec["api_base_url"],
+                    api_key=spec["api_key"],
+                    auth_style=spec["auth_style"],
+                    prompt=ask,
+                )
+
+            image_reader = _read_image
+        self._chat.append_message_instant("Iris", "실습 스크립트를 PDF에서 추출해 저장하는 중…")
+        self._chat.set_generating(True)
+        dump = LabDumpWorker(
+            pdfs[0],
+            root,
+            query=turn.text or "",
+            image_reader=image_reader,
+            parent=self,
+        )
+        dump.finished_ok.connect(
+            lambda reply, tid=turn.id: self._on_lab_dump_ok(tid, reply),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        dump.finished_err.connect(
+            lambda err, tid=turn.id: self._on_lab_dump_err(tid, err),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._lab_dump_worker = dump
+        dump.start()
+        return True
+
+    def _on_lab_dump_ok(self, turn_id: str, reply) -> None:
+        msg = getattr(reply, "user_visible", None) or str(reply or "")
+        try:
+            self._chat.set_generating(False)
+            self._chat.append_message_instant("Iris", msg)
+            self._record_history("assistant", msg)
+            self._refresh_context_gauge()
+            self._finish_current_turn(turn_id, open_followup=False)
+        except Exception:  # noqa: BLE001 — 슬롯 예외는 PyQt가 qFatal로 프로세스를 죽인다
+            try:
+                self._chat.set_generating(False)
+            except Exception:
+                pass
+            try:
+                self._finish_current_turn(turn_id, open_followup=False)
+            except Exception:
+                pass
+
+    def _on_lab_dump_err(self, turn_id: str, err: str) -> None:
+        msg = err or "실습 스크립트 추출에 실패했습니다."
+        try:
+            self._chat.set_generating(False)
+            self._chat.append_message_instant("Iris", msg)
+            self._record_history("assistant", msg)
+            self._refresh_context_gauge()
+            self._finish_current_turn(turn_id, open_followup=False)
+        except Exception:  # noqa: BLE001
+            try:
+                self._chat.set_generating(False)
+            except Exception:
+                pass
+            try:
+                self._finish_current_turn(turn_id, open_followup=False)
+            except Exception:
+                pass
+
     def _try_local_pdf_save(self, turn: UserTurn) -> bool:
         from iris.knowledge.pdf_export import is_pdf_save_intent, output_path_for, trace
         from iris.ui.workers.pdf_export_worker import PdfExportWorker
@@ -4820,6 +4982,8 @@ class MainWindow(QMainWindow):
             )
             self._refresh_hermes_health()
 
+        if self._try_local_lab_dump(turn, model):
+            return
         attached_store = self._chat_session.attachments
         if turn.attachments or attached_store.roots:
             from iris.knowledge.page_vision import transcribe_images
@@ -5364,6 +5528,7 @@ class MainWindow(QMainWindow):
         for sig in (
             getattr(worker, "connecting", None),
             getattr(worker, "tool_progress", None),
+            getattr(worker, "reasoning", None),
             getattr(worker, "thinking_started", None),
             getattr(worker, "thinking_chunk", None),
             getattr(worker, "thinking_done", None),
@@ -5383,6 +5548,8 @@ class MainWindow(QMainWindow):
             worker.switched.connect(self._on_chat_model_switched)
         if hasattr(worker, "tool_progress"):
             worker.tool_progress.connect(lambda message, tid=turn_id: self._on_hermes_tool_progress_for_turn(message, tid))
+        if hasattr(worker, "reasoning"):
+            worker.reasoning.connect(lambda chunk, tid=turn_id: self._on_hermes_reasoning_for_turn(chunk, tid))
         if hasattr(worker, "thinking_started"):
             worker.thinking_started.connect(lambda tid=turn_id: self._on_thinking_started_for_turn(tid))
         if hasattr(worker, "thinking_chunk"):
@@ -5452,8 +5619,13 @@ class MainWindow(QMainWindow):
         if not finish_id and showing and self._turn_dispatcher.active_turn is not None:
             finish_id = self._turn_dispatcher.active_turn.id
         if finish_id:
-            QTimer.singleShot(0, lambda fid=finish_id: self._turn_dispatcher.finish_active_turn(fid))
-        if showing:
+            def _finish_then_sync(fid: str = finish_id, do_sync: bool = showing) -> None:
+                self._turn_dispatcher.finish_active_turn(fid)
+                if do_sync:
+                    self._sync_voice_conversation_state()
+
+            QTimer.singleShot(0, _finish_then_sync)
+        elif showing:
             self._sync_voice_conversation_state()
         self._on_chat_turn_finished(finish_cid)
 
@@ -5638,16 +5810,16 @@ class MainWindow(QMainWindow):
             else:
                 text = (message or "").strip()
                 if text:
-                    from iris.runtime.tool_force import is_exit_tool_name
-                    from iris.runtime.turn_followthrough import counts_as_tool_ok
+                    from iris.runtime.tool_force import tool_activity
                     from iris.ui.wiki_turn import note_wiki_tool
 
-                    low = text.lower()
-                    if is_exit_tool_name(low.split()[0] if low.split() else "") or "respond ok" in low:
-                        slot.exit_tool_seen = True
-                    if counts_as_tool_ok(text):
-                        slot.tool_ok_count += 1
-                    note_wiki_tool(self, text)
+                    noted = tool_activity(text)
+                    if noted is not None:
+                        if noted.exit_tool:
+                            slot.exit_tool_seen = True
+                        if noted.count_ok:
+                            slot.tool_ok_count += 1
+                        note_wiki_tool(self, noted.record)
         finally:
             self._bound_slot = None
 
@@ -5780,25 +5952,32 @@ class MainWindow(QMainWindow):
             return
         text = (message or "").strip()
         if text:
-            from iris.runtime.tool_force import RESPOND_OK_ACTIVITY, is_exit_tool_name
-            from iris.runtime.turn_followthrough import counts_as_tool_ok
-
-            low = text.lower()
-            if is_exit_tool_name(low.split()[0] if low.split() else "") or "respond ok" in low:
-                self._exit_tool_seen = True
-                if "respond" in low and "ok" in low:
-                    text = RESPOND_OK_ACTIVITY
-            if counts_as_tool_ok(text):
-                self._tool_ok_count += 1
-            self._turn_tool_lines.append(text)
+            from iris.runtime.tool_force import tool_activity
             from iris.ui.wiki_turn import note_wiki_tool
 
-            note_wiki_tool(self, text)
-            self._live_activity.append_instant_line(f"[IRIS tool] {text}")
+            noted = tool_activity(text)
+            if noted is None:
+                return
+            if noted.exit_tool:
+                self._exit_tool_seen = True
+            if noted.count_ok:
+                self._tool_ok_count += 1
+            self._turn_tool_lines.append(noted.record)
+            note_wiki_tool(self, noted.record)
+            shown = text if text.startswith("[IRIS tool use:") else f"[IRIS tool] {noted.record}"
+            self._live_activity.append_instant_line(shown)
             # 도구 왕복 중에도 생성 중 표시를 유지한다.
             if not self._busy:
                 self._busy = True
             self._chat.set_generating(True)
+
+    def _on_hermes_reasoning_for_turn(self, chunk: str, turn_id: str) -> None:
+        self._relay_foreground_turn(turn_id, lambda: self._on_hermes_reasoning(chunk))
+
+    def _on_hermes_reasoning(self, chunk: str = "") -> None:
+        if self._ignore_chat_result:
+            return
+        self._live_activity.append_reasoning(chunk or "")
 
     def _on_chat_connecting(self, model: str, host: str) -> None:
         if self._ignore_chat_result:
@@ -5807,11 +5986,6 @@ class MainWindow(QMainWindow):
         self._live_activity.append_instant_line(
             f"Connecting to '{model}' via {backend} on '{host}'"
         )
-        # 방금 보낸 사용자 메시지
-        if self._history:
-            last = self._history[-1]
-            if last.get("role") == "user":
-                self._live_activity.append_instant_line(f">>> {last.get('content', '')}")
 
     def _on_thinking_started(self) -> None:
         if self._ignore_chat_result:
@@ -6701,6 +6875,7 @@ class MainWindow(QMainWindow):
             self._live_activity.append_instant_line("VOICE barge_in")
             self._cancel_current_turn(reason="voice_barge_in", preserve_partial_response=True)
         self._live_activity.append_instant_line(f"VOICE turn_created text={body[:80]}")
+        self._log_user_input(body)
         turn = self._turn_dispatcher.submit(
             text=body,
             source=UserTurnSource.VOICE,

@@ -39,9 +39,22 @@ class ProseBlock:
 
 
 @dataclass(frozen=True)
+class FenceInfo:
+    """Parsed markdown/stream fence info string. Pure domain; no HTML."""
+
+    language: str = ""
+    path: str = ""
+    start_line: int | None = None
+    end_line: int | None = None
+
+
+@dataclass(frozen=True)
 class FencedCodeBlock:
     code: str
     language: str = ""
+    path: str = ""
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 @dataclass(frozen=True)
@@ -292,20 +305,159 @@ def _display_lang_name(language: str) -> str:
     return _LANG_DISPLAY_NAMES.get(lang.lower(), lang.capitalize())
 
 
+def _looks_like_lang(token: str) -> bool:
+    s = (token or "").strip()
+    if not s or "/" in s or "\\" in s or "." in s:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_+#-]*", s))
+
+
+def _looks_like_path(token: str) -> bool:
+    s = (token or "").strip()
+    if not s:
+        return False
+    if "/" in s or "\\" in s:
+        return True
+    return bool(re.search(r"\.[A-Za-z0-9]{1,8}\Z", s))
+
+
+def parse_fence_info(info: str) -> FenceInfo:
+    """Pure boundary parse for fence info / language-class strings. Never raises."""
+    raw = (info or "").strip()
+    if not raw:
+        return FenceInfo()
+
+    # "python path/to/file.py" — single space separator (lang has no colon)
+    if " " in raw:
+        left, _, right = raw.partition(" ")
+        left, right = left.strip(), right.strip()
+        if left and right and ":" not in left and _looks_like_lang(left) and _looks_like_path(right):
+            return FenceInfo(language=left, path=right.replace("\\", "/"))
+
+    parts = raw.split(":")
+    # "python:12:40:path/to/file.py"
+    if len(parts) >= 4 and parts[1].isdigit() and parts[2].isdigit():
+        lang = parts[0].strip()
+        path = ":".join(parts[3:]).strip().replace("\\", "/")
+        if lang and path and (_looks_like_lang(lang) or not parts[0].isdigit()):
+            try:
+                start_line = int(parts[1])
+                end_line = int(parts[2])
+            except ValueError:
+                start_line = end_line = None
+            return FenceInfo(
+                language=lang,
+                path=path,
+                start_line=start_line,
+                end_line=end_line,
+            )
+
+    # "12:40:path/to/file.py"
+    if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+        path = ":".join(parts[2:]).strip().replace("\\", "/")
+        if path:
+            try:
+                start_line = int(parts[0])
+                end_line = int(parts[1])
+            except ValueError:
+                start_line = end_line = None
+            return FenceInfo(
+                language="",
+                path=path,
+                start_line=start_line,
+                end_line=end_line,
+            )
+
+    # "python:path/to/file.py"
+    if len(parts) >= 2:
+        lang = parts[0].strip()
+        path = ":".join(parts[1:]).strip().replace("\\", "/")
+        if _looks_like_lang(lang) and _looks_like_path(path):
+            return FenceInfo(language=lang, path=path)
+
+    if _looks_like_path(raw):
+        return FenceInfo(path=raw.replace("\\", "/"))
+
+    return FenceInfo(language=raw)
+
+
+def format_fence_info(
+    language: str = "",
+    path: str = "",
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> str:
+    """Inverse of parse_fence_info for stream → markdown round-trip."""
+    lang = (language or "").strip()
+    path_s = (path or "").strip().replace("\\", "/")
+    if path_s and start_line is not None and end_line is not None:
+        if lang:
+            return f"{lang}:{start_line}:{end_line}:{path_s}"
+        return f"{start_line}:{end_line}:{path_s}"
+    if path_s and lang:
+        return f"{lang}:{path_s}"
+    if path_s:
+        return path_s
+    return lang
+
+
+def fenced_code_from_info(info: str, code: str) -> FencedCodeBlock:
+    meta = parse_fence_info(info)
+    return FencedCodeBlock(
+        code,
+        language=meta.language,
+        path=meta.path,
+        start_line=meta.start_line,
+        end_line=meta.end_line,
+    )
+
+
 def fenced_code_to_html(block: FencedCodeBlock) -> str:
     t = TOKENS
-    lang = html.escape(_display_lang_name(block.language or ""), quote=True)
+    path = (block.path or "").strip().replace("\\", "/")
+    lang_display = _display_lang_name(block.language or "")
     highlighted = highlight_code(block.code or "", block.language or "")
     code = highlighted if highlighted is not None else html.escape(block.code or "")
-    lang_cell = (
-        f'<span style="color:{t.text_muted};letter-spacing:0.3px;">{lang}</span>'
-        if lang
-        else "&nbsp;"
-    )
+
+    if path:
+        basename = html.escape(path.rsplit("/", 1)[-1] or path)
+        title_path = path
+        if block.start_line is not None:
+            if block.end_line is not None and block.end_line != block.start_line:
+                title_path = f"{path}:{block.start_line}-{block.end_line}"
+            else:
+                title_path = f"{path}:{block.start_line}"
+        title_attr = html.escape(title_path, quote=True)
+        # path primary, language muted secondary (arena graft B)
+        if lang_display:
+            left_cell = (
+                f'<span style="color:{t.text_primary};" title="{title_attr}">{basename}</span>'
+                f'<span style="color:{t.text_muted};letter-spacing:0.3px;">'
+                f" · {html.escape(lang_display)}</span>"
+            )
+        else:
+            left_cell = (
+                f'<span style="color:{t.text_primary};" title="{title_attr}">{basename}</span>'
+            )
+        open_target = path if block.start_line is None else f"{path}:{block.start_line}"
+        open_href = html.escape(file_anchor_for(open_target), quote=True)
+        open_link = (
+            f'<a href="{open_href}" style="color:{t.text_muted};text-decoration:none;'
+            f'margin-right:10px;">열기</a>'
+        )
+    else:
+        left_cell = (
+            f'<span style="color:{t.text_muted};letter-spacing:0.3px;">'
+            f"{html.escape(lang_display)}</span>"
+            if lang_display
+            else "&nbsp;"
+        )
+        open_link = ""
+
     copy_href = html.escape(copy_anchor_for(block.code or ""), quote=True)
     # Qt Rich Text는 일반 <pre>/<div>에 padding·border(-bottom)를 그리지 않고
     # float도 지원하지 않는다(실측 확인). <table>/<td>만 이 스타일들을 실제로
-    # 렌더링하므로 헤더(언어명 좌측·복사 우측)와 코드 카드 전체를 표로 구성해
+    # 렌더링하므로 헤더(경로|언어 좌측·열기·복사 우측)와 코드 카드 전체를 표로 구성해
     # 코드 첫 줄과 확실히 분리한다.
     return (
         f'<table width="100%" cellspacing="0" cellpadding="0" '
@@ -313,10 +465,11 @@ def fenced_code_to_html(block: FencedCodeBlock) -> str:
         f"<tr>"
         f'<td style="padding:7px 16px;font-family:{t.chat_ui_font};'
         f'font-size:{t.font_size_micro};border-bottom:1px solid {t.chat_block_border_solid};">'
-        f"{lang_cell}</td>"
+        f"{left_cell}</td>"
         f'<td width="1" style="padding:7px 16px;font-family:{t.chat_ui_font};'
         f"font-size:{t.font_size_micro};white-space:nowrap;text-align:right;"
         f'border-bottom:1px solid {t.chat_block_border_solid};">'
+        f'{open_link}'
         f'<a href="{copy_href}" style="color:{t.text_muted};text-decoration:none;">복사</a>'
         f"</td>"
         f"</tr>"
@@ -334,6 +487,8 @@ def tool_shell_to_html(block: ToolShellBlock) -> str:
     status = (block.status or "ok").strip().lower()
     is_ok = status in ("ok", "success", "done")
     border_color = t.chat_block_border if is_ok else t.error
+    status_label = "성공" if is_ok else "실패"
+    status_color = t.success if is_ok else t.error
     title = html.escape(block.title or "Shell")
     command = html.escape(block.command or "")
     output = html.escape(block.output or "")
@@ -341,14 +496,29 @@ def tool_shell_to_html(block: ToolShellBlock) -> str:
     collapse_href = html.escape(collapse_anchor_for(block.block_id or "tool"), quote=True)
     chevron = "▶" if block.collapsed else "▼"
     body_display = "none" if block.collapsed else "block"
+    status_span = (
+        f'<span style="color:{status_color};font-size:{t.font_size_micro};'
+        f'font-weight:600;margin-right:8px;">{status_label}</span>'
+    )
+    copy_cmd = ""
+    if block.command:
+        copy_href = html.escape(copy_anchor_for(block.command), quote=True)
+        copy_cmd = (
+            f'<a href="{copy_href}" style="color:{t.text_muted};text-decoration:none;'
+            f'font-size:{t.font_size_micro};font-weight:600;margin-right:8px;">명령 복사</a>'
+        )
+    # Keep outer <pre> for collapse markers; split header links so copy is not nested.
     header = (
-        f'<a href="{collapse_href}" style="display:block;padding:6px 10px;font-weight:600;'
-        f"text-decoration:none;color:{t.text_primary};"
+        f'<span style="display:block;padding:6px 10px;font-weight:600;'
         f'border-bottom:1px solid {t.chat_block_border};">'
+        f'<a href="{collapse_href}" style="text-decoration:none;color:{t.text_primary};">'
         f'<span style="color:{t.text_accent};font-family:{t.chat_block_mono_font};'
-        f'font-weight:700;">&gt;_</span> {title}'
-        f'<span style="float:right;color:{t.text_muted};font-size:{t.font_size_micro};'
-        f'font-weight:600;">{chevron}</span></a>'
+        f'font-weight:700;">&gt;_</span> {title}</a>'
+        f'<span style="float:right;">'
+        f"{status_span}{copy_cmd}"
+        f'<a href="{collapse_href}" style="color:{t.text_muted};text-decoration:none;'
+        f'font-size:{t.font_size_micro};font-weight:600;">{chevron}</a>'
+        f"</span></span>"
     )
     command_block = (
         f'<code style="display:block;padding:6px 10px 4px 10px;font-family:{t.chat_block_mono_font};'

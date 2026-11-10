@@ -834,10 +834,75 @@ def iris_run_log_path(project_root: str | Path) -> Path:
     return d / "last_run.log"
 
 
+_PYTHON_LAUNCHER_NAMES = frozenset({"python", "python.exe", "py", "py.exe"})
+
+
+def find_project_venv_python(root: str | Path) -> Path | None:
+    """bound project_root/.venv 인터프리터. 없으면 None (Iris repo .venv 강제 금지)."""
+    root_p = Path(root).expanduser().resolve()
+    if sys.platform == "win32":
+        cand = root_p / ".venv" / "Scripts" / "python.exe"
+    else:
+        cand = root_p / ".venv" / "bin" / "python"
+    return cand if cand.is_file() else None
+
+
+def ensure_project_python(root: str | Path, *, create: bool = False) -> Path | None:
+    """프로젝트 .venv python. create=False면 없을 때 None; create=True면 venv 생성 후 Path."""
+    found = find_project_venv_python(root)
+    if found is not None:
+        return found
+    if not create:
+        return None
+    root_p = Path(root).expanduser().resolve()
+    venv_dir = root_p / ".venv"
+    import subprocess
+
+    from iris.system.win_subprocess import no_window_kwargs
+
+    subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "venv", str(venv_dir)],
+        check=True,
+        cwd=str(root_p),
+        **no_window_kwargs(),
+    )
+    found = find_project_venv_python(root)
+    if found is None:
+        raise FileNotFoundError(f"venv created but python missing under {venv_dir}")
+    return found
+
+
+def _is_python_launcher_token(token: str) -> bool:
+    return Path(str(token)).name.lower() in _PYTHON_LAUNCHER_NAMES
+
+
+def _is_py_version_selector(token: str) -> bool:
+    # Windows `py -3` / `py -3.11` — venv python으로 바꿀 때 제거
+    return bool(re.fullmatch(r"-\d+(\.\d+)?", str(token).strip()))
+
+
+def bind_python_argv(argv: list[str], root: str | Path) -> list[str]:
+    """argv[0]이 python/py 런처면 project .venv 절대경로로 교체. node 등은 그대로."""
+    if not argv:
+        return []
+    out = [str(x) for x in argv]
+    if not _is_python_launcher_token(out[0]):
+        return out
+    py = ensure_project_python(root, create=True)
+    if py is None:
+        raise FileNotFoundError(f"project python unavailable under {root}")
+    rest = out[1:]
+    name = Path(out[0]).name.lower()
+    if name in ("py", "py.exe") and rest and _is_py_version_selector(rest[0]):
+        rest = rest[1:]
+    return [str(py.resolve()), *rest]
+
+
 def build_run_command(
     *,
     command: str | list | None = None,
     file: str = "",
+    project_root: str | Path | None = None,
 ) -> list[str]:
     """실행 argv 구성. file만 있으면 확장자로 interpreter 추론."""
     if isinstance(command, list) and command:
@@ -855,6 +920,11 @@ def build_run_command(
         raise ValueError("command or file required")
     suffix = Path(rel).suffix.lower()
     if suffix == ".py":
+        if project_root is not None:
+            py = ensure_project_python(project_root, create=True)
+            if py is None:
+                raise FileNotFoundError(f"project python unavailable under {project_root}")
+            return [str(py.resolve()), rel]
         return ["python", rel]
     if suffix in (".ps1",):
         return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", rel]

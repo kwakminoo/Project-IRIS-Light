@@ -135,13 +135,73 @@ def _on_delta(text: object) -> None:
     _emit({"t": "delta", "text": chunk})
 
 
-def _on_tool(label: object = None, *args: object, **kwargs: object) -> None:
-    text = label
-    if text is None and args:
-        text = args[0]
+_TOOL_EVENT_KINDS = frozenset({"tool.started", "tool.completed", "tool.progress"})
+_NOT_A_TOOL_NAME = frozenset(
+    {
+        "",
+        "tool.started",
+        "tool.completed",
+        "tool.progress",
+        "reasoning.available",
+        "_thinking",
+    }
+)
+
+
+_reasoning_streamed = False
+
+
+def tool_use_label(kind: object, name: object = None) -> str | None:
+    """Live-activity line for one tool callback. None when it is not a tool name."""
+    if str(kind or "") not in _TOOL_EVENT_KINDS:
+        return None
+    tool = "" if name is None else str(name).strip()
+    if tool in _NOT_A_TOOL_NAME:
+        return None
+    return f"[IRIS tool use: {tool}]"
+
+
+def _on_tool(kind: object = None, *args: object, **kwargs: object) -> None:
+    if kind is None and args:
+        kind = args[0]
+        args = args[1:]
+    if kind is None:
+        kind = kwargs.get("label", "")
+    name = args[0] if args else kwargs.get("name")
+    label = tool_use_label(kind, name)
+    if label:
+        _emit({"t": "tool", "label": label})
+        return
+    kind_text = "" if kind is None else str(kind)
+    if kind_text == "reasoning.available":
+        _emit_reasoning_fallback(args, kwargs)
+        return
+    if kind_text in _NOT_A_TOOL_NAME:
+        return
+    if kind_text:
+        _emit({"t": "tool", "label": kind_text})
+
+
+def _on_reasoning(text: object) -> None:
+    global _reasoning_streamed
     if text is None:
-        text = kwargs.get("label", "")
-    _emit({"t": "tool", "label": "" if text is None else str(text)})
+        return
+    chunk = str(text)
+    if not chunk:
+        return
+    _reasoning_streamed = True
+    _emit({"t": "think", "text": chunk})
+
+
+def _emit_reasoning_fallback(args: tuple[object, ...], kwargs: dict[str, object]) -> None:
+    if _reasoning_streamed:
+        return
+    preview = args[1] if len(args) > 1 else kwargs.get("preview")
+    if preview is None:
+        return
+    chunk = str(preview)
+    if chunk:
+        _emit({"t": "think", "text": chunk})
 
 
 def _done_text(result: object) -> str:
@@ -152,13 +212,40 @@ def _done_text(result: object) -> str:
     return str(result)
 
 
+_BILLING_HINTS = ("402", "credits", "billing", "entitlement")
+
+
+def agent_result_fail(result: object) -> tuple[str, str] | None:
+    """Map a Hermes agent result to fail (code, detail), or None for done."""
+    if not isinstance(result, dict):
+        return None
+    reason = str(result.get("failure_reason") or "").strip()
+    detail = str(
+        result.get("final_response")
+        or result.get("error")
+        or reason
+        or "agent failed"
+    )
+    reason_l = reason.lower()
+    reason_billing = reason_l == "billing" or any(h in reason_l for h in _BILLING_HINTS)
+    if not bool(result.get("failed")) and not reason_billing:
+        return None
+    blob = f"{reason}\n{detail}".lower()
+    if reason_billing or any(h in blob for h in _BILLING_HINTS):
+        return ("billing", detail)
+    return (reason_l or "unknown", detail)
+
+
 def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
+    global _reasoning_streamed
+    _reasoning_streamed = False
     wanted = {
         "skip_memory": True,
         "session_db": None,
         "load_soul_identity": True,
         "stream_delta_callback": _on_delta,
         "tool_progress_callback": _on_tool,
+        "reasoning_callback": _on_reasoning,
         "quiet_mode": True,
     }
     model = raw.get("model")
@@ -179,6 +266,10 @@ def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
         user_message=user,
         conversation_history=history,
     )
+    fail = agent_result_fail(result)
+    if fail is not None:
+        _fail(fail[0], fail[1])
+        return
     _emit({"t": "done", "text": _done_text(result)})
 
 
