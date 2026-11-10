@@ -212,6 +212,30 @@ def _done_text(result: object) -> str:
     return str(result)
 
 
+_BILLING_HINTS = ("402", "credits", "billing", "entitlement")
+
+
+def agent_result_fail(result: object) -> tuple[str, str] | None:
+    """Map a Hermes agent result to fail (code, detail), or None for done."""
+    if not isinstance(result, dict):
+        return None
+    reason = str(result.get("failure_reason") or "").strip()
+    detail = str(
+        result.get("final_response")
+        or result.get("error")
+        or reason
+        or "agent failed"
+    )
+    reason_l = reason.lower()
+    reason_billing = reason_l == "billing" or any(h in reason_l for h in _BILLING_HINTS)
+    if not bool(result.get("failed")) and not reason_billing:
+        return None
+    blob = f"{reason}\n{detail}".lower()
+    if reason_billing or any(h in blob for h in _BILLING_HINTS):
+        return ("billing", detail)
+    return (reason_l or "unknown", detail)
+
+
 def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
     global _reasoning_streamed
     _reasoning_streamed = False
@@ -242,6 +266,10 @@ def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
         user_message=user,
         conversation_history=history,
     )
+    fail = agent_result_fail(result)
+    if fail is not None:
+        _fail(fail[0], fail[1])
+        return
     _emit({"t": "done", "text": _done_text(result)})
 
 

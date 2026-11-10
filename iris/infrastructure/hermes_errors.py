@@ -125,6 +125,10 @@ def explain_chat_error(err: str) -> str:
         return "응답 대기 시간이 초과됐습니다. 잠시 후 다시 시도하세요."
     if looks_like_no_tools_error(raw):
         return "이 모델은 도구 호출을 지원하지 않습니다. 도구를 지원하는 모델을 선택하세요."
+    _billing_ui = (
+        "Ollama 클라우드 크레딧이 부족합니다. "
+        "요금을 충전하거나 다른 모델로 바꾸세요."
+    )
     if status == 429 or any(
         h in low for h in ("quota", "exceeded your current", "rate limit", "resource_exhausted")
     ):
@@ -134,14 +138,15 @@ def explain_chat_error(err: str) -> str:
                 "요금제와 할당량을 확인하거나, 다른 모델로 바꾼 뒤 다시 요청하세요."
             )
         if "ollama" in low:
-            return (
-                "Ollama 클라우드 사용 한도입니다. "
-                "잠시 기다리거나 로컬 모델로 바꾸세요."
-            )
+            return _billing_ui
         return (
             "모델 API 사용 한도를 초과했습니다. "
             "잠시 후 다시 시도하거나 다른 모델로 바꾸세요."
         )
+    if status == 402 or any(
+        h in low for h in ("credits", "billing", "entitlement", "크레딧")
+    ):
+        return _billing_ui
     if status == 413 or any(
         h in low
         for h in (
@@ -244,7 +249,14 @@ if __name__ == "__main__":
         "custom rejected; run `hermes doctor` for details"
     ).lower()
     assert "Iris" in scrub_upstream_hermes_cli_hints("run hermes doctor now")
-    assert "한도" in explain_chat_error("Ollama HTTP 429: rate limit")
+    _billing_ui = (
+        "Ollama 클라우드 크레딧이 부족합니다. "
+        "요금을 충전하거나 다른 모델로 바꾸세요."
+    )
+    assert explain_chat_error("Ollama HTTP 402: credits exhausted") == _billing_ui
+    assert explain_chat_error("billing entitlement denied") == _billing_ui
+    assert explain_chat_error(_billing_ui) == _billing_ui
+    assert explain_chat_error("Ollama HTTP 429: rate limit") == _billing_ui
     assert "답을 만들지 못했습니다" in explain_chat_error("모델 응답 실패")
     _timeout_ui = "응답 대기 시간이 초과됐습니다. 잠시 후 다시 시도하세요."
     assert explain_chat_error("엔진 응답을 읽지 못했습니다.") == _timeout_ui
