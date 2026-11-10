@@ -10,14 +10,19 @@ WM_DROPFILES / nativeEvent / WNDPROC는 쓰지 않는다.
 
 from __future__ import annotations
 
+import ctypes
 import sys
 from ctypes import (
     POINTER,
     WINFUNCTYPE,
     byref,
+    c_int,
     c_long,
+    c_size_t,
+    c_ubyte,
     c_uint32,
     c_ulong,
+    c_ushort,
     c_void_p,
     cast,
     create_unicode_buffer,
@@ -397,17 +402,20 @@ def _restore_qt_drop(host: object) -> None:
         return
 
 
-def drag_hdrop_onto(hwnd: int, paths: list[str]) -> int:
-    """CF_HDROP DoDragDrop. 자가 점검용. 반환값은 마지막으로 본 drop effect."""
-    import ctypes
-    from ctypes import c_int, c_ushort
+def _async_key_down(vk: int) -> bool:
+    user32 = ctypes.windll.user32
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    return bool(int(user32.GetAsyncKeyState(int(vk))) & 0x8000)
 
+
+def _run_hdrop_drag(paths: list[str], query_continue) -> tuple[int, int, list[int]]:
     class GUID(ctypes.Structure):
         _fields_ = [
             ("Data1", c_ulong),
             ("Data2", c_ushort),
             ("Data3", c_ushort),
-            ("Data4", ctypes.c_ubyte * 8),
+            ("Data4", c_ubyte * 8),
         ]
 
     class FORMATETC(ctypes.Structure):
@@ -428,12 +436,12 @@ def drag_hdrop_onto(hwnd: int, paths: list[str]) -> int:
 
     kernel32 = ctypes.windll.kernel32
     ole32 = ctypes.windll.ole32
-    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, c_size_t]
     kernel32.GlobalAlloc.restype = c_void_p
     kernel32.GlobalLock.argtypes = [c_void_p]
     kernel32.GlobalLock.restype = c_void_p
     kernel32.GlobalSize.argtypes = [c_void_p]
-    kernel32.GlobalSize.restype = ctypes.c_size_t
+    kernel32.GlobalSize.restype = c_size_t
     kernel32.GlobalUnlock.argtypes = [c_void_p]
     payload = ("\0".join(paths) + "\0\0").encode("utf-16-le")
     raw = (20).to_bytes(4, "little") + bytes(12) + (1).to_bytes(4, "little") + payload
@@ -498,7 +506,7 @@ def drag_hdrop_onto(hwnd: int, paths: list[str]) -> int:
 
     class Src:
         def __init__(self) -> None:
-            self.n = 0
+            self._query = query_continue
             qi = WINFUNCTYPE(c_long, c_void_p, POINTER(GUID), POINTER(c_void_p))(self.qi)
             add = WINFUNCTYPE(c_ulong, c_void_p)(lambda this: 1)
             rel = WINFUNCTYPE(c_ulong, c_void_p)(lambda this: 1)
@@ -518,10 +526,7 @@ def drag_hdrop_onto(hwnd: int, paths: list[str]) -> int:
             return E_NOINTERFACE
 
         def qcd(self, this, escape, key):
-            self.n += 1
-            if escape or self.n >= 4:
-                return 0x00040100
-            return S_OK
+            return int(self._query(escape, key))
 
         def fb(self, this, effect):
             effects.append(int(effect))
@@ -534,5 +539,70 @@ def drag_hdrop_onto(hwnd: int, paths: list[str]) -> int:
     ole32.DoDragDrop.restype = c_long
     hr = int(ole32.DoDragDrop(data.this, src.this, DROPEFFECT_COPY, byref(effect)) or 0)
     chosen = int(effect.value) or (effects[-1] if effects else 0)
+    return hr, chosen, effects
+
+
+def ole_hdrop_paths_safe(paths: list[str]) -> bool:
+    """False면 DoDragDrop를 돌리지 않는다.
+
+    일부 PDF에서 Windows 셸 썸네일/미리보기가 DoDragDrop 초기화에
+    끼어 QueryContinue 전에 UI 스레드가 영구 블록된다 (응답 없음).
+    Companion 첨부는 pending + chat.drag_end / 마우스 릴리즈로 충분하다.
+    """
+    for raw in paths:
+        name = Path(str(raw).strip()).name
+        if name.lower().endswith(".pdf"):
+            return False
+    return True
+
+
+def drag_hdrop_onto(hwnd: int, paths: list[str]) -> int:
+    """CF_HDROP DoDragDrop. 자가 점검용. 반환값은 마지막으로 본 drop effect."""
+    if not paths or not ole_hdrop_paths_safe(paths):
+        _log("skip DoDragDrop — unsafe or empty paths")
+        return 0
+    polls = [0]
+
+    def query_continue(escape, key) -> int:
+        polls[0] += 1
+        if escape or polls[0] >= 4:
+            return 0x00040100
+        return S_OK
+
+    hr, chosen, effects = _run_hdrop_drag(paths, query_continue)
+    _log(f"DoDragDrop hr=0x{hr & 0xFFFFFFFF:08x} effect={chosen} feedback={effects}")
+    return chosen
+
+
+def drag_hdrop_while_button(
+    paths: list[str],
+    *,
+    button_down=None,
+    escape_down=None,
+) -> int:
+    """버튼을 누르고 있는 동안의 CF_HDROP. 드롭은 effect, 타깃 전 취소는 0."""
+    if not paths:
+        return 0
+    if not ole_hdrop_paths_safe(paths):
+        _log("skip DoDragDrop — unsafe extension; pending attach only")
+        return 0
+    down = button_down if button_down is not None else (lambda: _async_key_down(0x01))
+    esc = escape_down if escape_down is not None else (lambda: _async_key_down(0x1B))
+    continues = [0]
+
+    def query_continue(escape, _key) -> int:
+        if escape or esc():
+            return 0x00040101
+        if not down():
+            return 0x00040100
+        continues[0] += 1
+        # ponytail: ceiling is 200 continues while the button stays down, then cancel; button release is the upgrade path
+        if continues[0] > 200:
+            return 0x00040101
+        return S_OK
+
+    hr, chosen, effects = _run_hdrop_drag(paths, query_continue)
+    if (hr & 0xFFFFFFFF) == 0x00040101:
+        chosen = 0
     _log(f"DoDragDrop hr=0x{hr & 0xFFFFFFFF:08x} effect={chosen} feedback={effects}")
     return chosen

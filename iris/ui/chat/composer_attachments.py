@@ -350,7 +350,11 @@ def _shell_thumbnail(path: Path, side: int = 480) -> QImage | None:
     bitmap = ctypes.c_void_p()
     try:
         # THUMBNAILONLY | BIGGERSIZEOK — 아이콘이 아니라 그림·첫 장면
-        if get_image(factory, _SIZE(side, side), 0x8 | 0x1, ctypes.byref(bitmap)) or not bitmap.value:
+        try:
+            hr = get_image(factory, _SIZE(side, side), 0x8 | 0x1, ctypes.byref(bitmap))
+        except OSError:
+            return None
+        if hr or not bitmap.value:
             return None
         info = _BITMAP()
         gdi32.GetObjectW(bitmap, ctypes.sizeof(info), ctypes.byref(info))
