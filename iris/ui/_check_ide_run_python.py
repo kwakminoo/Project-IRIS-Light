@@ -1,12 +1,3 @@
-"""IDE ▶ 가 워크스페이스 .venv python 을 쓰는지 계약 검사.
-
-실패 조건 (수정 전):
-  iris-ide-run-toolbar 가 bare 'python' 만 쓰고 iris-ide-project-python 이 없다.
-통과 조건:
-  findProjectPython / argvForRunnableFile 모듈이 있고, 워크스페이스 .venv 를
-  PATH python 보다 먼저 고른다.
-"""
-
 from __future__ import annotations
 
 import tempfile
@@ -25,7 +16,6 @@ def _venv_python_at(root: Path) -> Path:
 
 
 def find_project_python(file_abs: Path, workspace_roots: list[Path]) -> tuple[Path, Path] | None:
-    """TS findProjectPython 과 같은 우선순위 (워크스페이스 루트 → 조상 walk-up)."""
     ordered: list[Path] = []
     seen: set[Path] = set()
 
@@ -76,12 +66,10 @@ def check_algorithm() -> None:
         assert hit[1] == root.resolve()
 
         bare = find_project_python(script, [])
-        # walk-up from file still finds root/.venv
         assert bare is not None and bare[0] == py.resolve()
 
         other = root / "other.py"
         other.write_text("print(1)\n", encoding="utf-8")
-        # no .venv beside unrelated path outside? still under root
         hit2 = find_project_python(other, [root])
         assert hit2 is not None
 
@@ -98,7 +86,6 @@ def check_sources() -> None:
     assert "argvForRunnableFile" in toolbar, "toolbar must call argvForRunnableFile"
     assert "WorkspaceService" in toolbar
     assert "FileService" in toolbar
-    # bare RUNNERS.py = 'python' alone is the old bug if helper unused
     assert "iris-ide-project-python" in toolbar or "argvForRunnableFile" in toolbar
 
 

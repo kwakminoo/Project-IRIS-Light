@@ -1,8 +1,3 @@
-/**
- * IDE ▶ 와 project.run 이 같은 워크스페이스 .venv 를 고르게 한다.
- * exists 는 Theia FileService / 테스트 스텁이 주입한다.
- */
-
 export type PathExists = (absPath: string) => boolean | Promise<boolean>;
 
 const PYTHON_EXTS = new Set(['py', 'pyw']);
@@ -32,7 +27,6 @@ function underRoot(fileAbs: string, root: string): boolean {
     return file === base || file.startsWith(base + '/');
 }
 
-/** 워크스페이스 루트 우선, 그다음 파일 조상 디렉터리를 올라가며 .venv python 을 찾는다. */
 export async function findProjectPython(
     fileAbs: string,
     workspaceRoots: string[],
