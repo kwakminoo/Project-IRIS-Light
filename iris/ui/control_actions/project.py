@@ -348,6 +348,7 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
 
     from iris.automation.ide_input import run_command_in_ide_terminal, trigger_default_build_task
     from iris.system.project_ops import (
+        bind_python_argv,
         build_iris_terminal_command,
         build_run_command,
         infer_dev_server_url,
@@ -413,7 +414,9 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
         argv = build_run_command(
             command=args.get("command"),
             file=file_arg,
+            project_root=root_p,
         )
+        argv = bind_python_argv(argv, root_p)
     except Exception as exc:  # noqa: BLE001
         return err_result("project.run", str(exc))
 
