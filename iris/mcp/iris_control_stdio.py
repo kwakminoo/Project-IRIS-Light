@@ -170,6 +170,7 @@ TOOLS = [
             "action=ide.open_file args={path} or {project_root, rel_path}. "
             "path is relative to the bound IDE workspace from iris_get_state, not the shell cwd. "
             "List the workspace first (project.list_files). "
+            "Read a file body with project.read_file (disk UTF-8; not unsaved editor buffer). "
             "If the file is missing, return the error — do not create a substitute file or claim it opened. "
             "action=project.write_file args={rel_path,content,open,stream}; "
             "action=project.run args={file|command}; "

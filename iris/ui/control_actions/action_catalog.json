@@ -198,15 +198,15 @@
     "confirm_required": false
   },
   {
-    "name": "content.extract",
-    "summary": "Extract text from PDF (scanned image pages included), Office, text, image, or http(s) URL. Chat already attaches [자료 본문] before the answer.",
-    "risk": "low",
-    "confirm_required": false
-  },
-  {
     "name": "content.dump_lab_scripts",
     "summary": "From a lecture PDF path, parse every practice/lab program label and write source files under the project (default labs/). Returns written paths and labels only — not PDF text. Prefer this over content.extract + project.write_file when the user wants all labs as files. Pass Attachment absolute path.",
     "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "content.extract",
+    "summary": "Extract text from PDF (scanned image pages included), Office, text, image, or http(s) URL. Chat already attaches [자료 본문] before the answer.",
+    "risk": "low",
     "confirm_required": false
   },
   {
@@ -639,6 +639,12 @@
     "name": "project.open_similar",
     "summary": "Fuzzy-find best matching project and open in Companion; on ambiguous/low_score returns matches (use force=true to override)",
     "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "project.read_file",
+    "summary": "Read a UTF-8 file body from the bound IDE workspace disk (rel_path or path; optional max_bytes). Missing, escape, directory, binary/NUL, or too-large fail — never invent content. Disk bytes only; dirty Monaco buffers need ide.save / ide.edit first.",
+    "risk": "low",
     "confirm_required": false
   },
   {

@@ -9,10 +9,10 @@ from iris.browser.observation import browser_teaching_block
 from iris.system.hermes_iris_control_sync import hermes_home
 
 # Bump when nudge text changes. Lower runtime markers must not skip as "already present".
-_NUDGE_VERSION = 32
+_NUDGE_VERSION = 33
 _MARKER = f"<!-- iris-control-nudge-v{_NUDGE_VERSION} -->"
 
-_BLOCK = """<!-- iris-control-nudge-v32 -->
+_BLOCK = """<!-- iris-control-nudge-v33 -->
 ## Iris Light UI control
 
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
@@ -45,6 +45,7 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 12. After creating/writing code: `mcp__iris_control__iris_invoke` → action=`project.write_file` with `open=true` (default live write: empty tab → wait visible → stream chunks into the file). `rel_path` is the filename the user asked for. If they did not name a file, ask before writing. Do not invent `iris_generated.py`. Use `typewriter:false` only for instant dump. Never claim 생성·작성·처리 완료 without tool ok and a disk path.
 12b. Rename: `project.rename_file` with `path` (current relative path) and `new_path`. Find `path` with `project.list_files` or the open editor. If either path is unknown, ask. Do not claim the name changed unless ok.
+12c. Read body: `mcp__iris_control__iris_invoke` → action=`project.read_file` with `rel_path` (or `path`; use `project.list_files` if unknown). Disk UTF-8 only — not the unsaved Monaco buffer. Dirty tabs need `ide.save` / `ide.edit` first. Missing/escape/binary/too-large fail — never invent content without ok.
 
 13. On run/npm/pip/python/node/shell requests: **only** `project.run` — full output in IDE terminal; chat summary only. Keyword auto-run is off while Iris Agent is on.
 
@@ -162,6 +163,8 @@ def ensure_memory_nudge(home: Path | None = None) -> str:
         and "there is no project.open_folder" in existing
         and "ide.diagnostics" in existing
         and "project.rename_file" in existing
+        and "project.read_file" in existing
+        and "unsaved Monaco buffer" in existing
         and "```matrix" in existing
         and "chat.exec_python" in existing
         and "WRONG" in existing

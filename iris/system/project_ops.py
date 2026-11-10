@@ -294,6 +294,34 @@ def write_project_file(project_root: str | Path, rel_path: str, content: str) ->
     return out
 
 
+def read_project_file(
+    project_root: str | Path, rel_path: str, *, max_bytes: int = 1_048_576
+) -> dict:
+    """Disk UTF-8 dual of write_project_file. Guards fail before inventing content."""
+    _root, path, rel = resolve_under_root(project_root, rel_path)
+    if path.is_dir():
+        raise IsADirectoryError(f"{path} is a directory")
+    if not path.is_file():
+        raise FileNotFoundError(str(path))
+    size = path.stat().st_size
+    if size > max_bytes:
+        raise ValueError(f"file too large (max {max_bytes} bytes)")
+    raw = path.read_bytes()
+    if b"\x00" in raw:
+        raise ValueError("not UTF-8 text")
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("not UTF-8 text") from exc
+    return {
+        "path": str(path),
+        "rel_path": rel,
+        "bytes": len(raw),
+        "encoding": "utf-8",
+        "content": content,
+    }
+
+
 def is_run_request(text: str) -> bool:
     s = (text or "").lower()
     return any(w in s for w in ("실행", "출력", "돌려", "run", "execute", "print"))
