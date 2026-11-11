@@ -41,6 +41,7 @@ from iris.audio.workers import (
 from iris.config.settings import load_settings
 from iris.core.activity_sink import push_activity_line, register_activity_sink
 from iris.core.state_machine import AppState, StateMachine
+from iris.infrastructure.api_model_meta import should_skip_api_model_verify
 from iris.infrastructure.ollama_client import OllamaModelInfo, apply_ollama_cleanup
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.runtime.model_failover import RouteTarget
@@ -1952,9 +1953,9 @@ class MainWindow(QMainWindow):
         provider = get_api_provider(self._db, provider_id)
         if provider is None:
             return
-        if provider.model_states.get(model) == "ok" and provider.tool_support.get(model) in (
-            "yes",
-            "no",
+        if should_skip_api_model_verify(
+            provider.model_states.get(model, ""),
+            provider.tool_support.get(model, "unknown"),
         ):
             return
         if self._api_verify_worker is not None and self._api_verify_worker.isRunning():
