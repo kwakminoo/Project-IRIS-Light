@@ -81,7 +81,6 @@ def chat_error_hides_model(err: str) -> bool:
 
 
 def should_skip_api_model_verify(state: str, tool_support: str) -> bool:
-    """이미 판정이 났으면 재프로브하지 않음. unavailable은 목록에 남기되 재검증 금지."""
     if state == "unavailable":
         return True
     if state == "ok" and tool_support in ("yes", "no"):

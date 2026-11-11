@@ -1,5 +1,3 @@
-"""EOL(410) 모델 선택 시 재검증 루프가 끊기는지 — 순수 로직만."""
-
 from __future__ import annotations
 
 from iris.infrastructure.api_model_meta import (
@@ -13,8 +11,7 @@ def _would_start_verify(state: str, tool_support: str) -> bool:
     return not should_skip_api_model_verify(state, tool_support)
 
 
-def _simulate_select_then_refresh() -> int:
-    """빈 캐시 → 410 unavailable 기록 → 목록 재적용. 검증 시작 횟수를 센다."""
+def _count_verify_attempts_after_410() -> int:
     state = ""
     tool = "unknown"
     attempts = 0
@@ -45,7 +42,7 @@ def main() -> None:
     assert should_skip_api_model_verify("unavailable", "unknown") is True
     assert should_skip_api_model_verify("", "unknown") is False
     assert should_skip_api_model_verify("ok", "yes") is True
-    assert _simulate_select_then_refresh() == 1
+    assert _count_verify_attempts_after_410() == 1
     print("api_model_eol_loop self-check ok")
 
 
