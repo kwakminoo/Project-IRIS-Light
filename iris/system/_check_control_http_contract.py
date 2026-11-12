@@ -11,7 +11,7 @@ os.environ["IRIS_CONTROL_TOKEN"] = "contract-check-token"
 os.environ.pop("IRIS_CONTROL_URL", None)
 
 import iris.system.control_surface as cs
-from iris.mcp.iris_control_stdio import _http, _tool_result
+from iris.system.control_http_client import _http, _tool_result
 
 cs.write_control_endpoint = lambda **_k: None  # type: ignore[assignment]
 cs.clear_control_endpoint = lambda: None  # type: ignore[assignment]

@@ -12,7 +12,7 @@ from iris.core.activity_privacy import prepare_chat_text
 from iris.ui.chat.markdown_normalization import normalize_markdown_source
 from iris.ui.chat.chat_renderer import render_iris_message
 from iris.ui.chat.chat_panel import ChatPanel
-from iris.system.hermes_gateway import _serialized_lifecycle, GatewayDiagnosis
+from iris.system.iris_agent_gateway import _serialized_lifecycle, GatewayDiagnosis
 
 class RenderingPipelineTests(unittest.TestCase):
     @classmethod
@@ -99,7 +99,7 @@ class RenderingPipelineTests(unittest.TestCase):
         self.assertNotIn("command", GatewayDiagnosis(message="종료", command=["internal"]).chat_message())
 
     def test_hermes_whitespace_deltas_reach_markdown_parser(self):
-        from iris.infrastructure.hermes_client import _should_emit_assistant_content
+        from iris.infrastructure.iris_agent_client import _should_emit_assistant_content
         chunks = ["###", " ", "제목", "\n\n", "| A | B |", "\n", "|---|---|", "\n", "|1|2|"]
         kept = [chunk for chunk in chunks if _should_emit_assistant_content(chunk, {"delta": {"content": chunk}})]
         self.assertEqual(kept, chunks)

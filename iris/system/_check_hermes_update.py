@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from iris.system.hermes_update import (
+from iris.system.iris_agent_update import (
     check_hermes_update,
     hermes_update_argv,
 )

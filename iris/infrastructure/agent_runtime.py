@@ -5,7 +5,7 @@
 계약만 제품이 소유한다. 설치는 업스트림을 pin 에만 checkout 한 뒤 overlay 를
 한 번 적용한다. gateway 기동 경로에서는 소스 문자열 치환을 하지 않는다.
 
-Phase 4: 활성 홈은 제품 경로만. 레거시 ``%LOCALAPPDATA%\\hermes`` 는
+Phase 4: 활성 홈은 제품 경로만. 레거시 홈(legacy_agent_home)은
 마이그레이션 원본이며 더 이상 쓰이지 않는다.
 """
 
@@ -31,7 +31,8 @@ IRIS_AGENT_UPSTREAM_URL = "https://github.com/NousResearch/hermes-agent.git"
 
 _MIGRATE_STAMP = ".iris-agent-migrated-from"
 # config / .env / memories only — hermes-agent checkout 은 pin 재설치.
-_MIGRATE_FILES = (".env", "config.yaml", "MEMORY.md", "USER.md")
+# MEMORY.md / USER.md live under memories/; do not dual-copy root stubs.
+_MIGRATE_FILES = (".env", "config.yaml")
 _MIGRATE_DIRS = ("memories", "skills")
 
 
@@ -78,7 +79,7 @@ def legacy_agent_home() -> Path:
 def iris_agent_home() -> Path:
     """활성 런타임 홈 하나. gateway·sync·install·warm 이 이 경로만 쓴다.
 
-    Phase 4: 레거시 ``%LOCALAPPDATA%/hermes`` 로 폴백하지 않는다.
+    Phase 4: legacy_agent_home 으로 폴백하지 않는다.
     이전 데이터는 ``migrate_legacy_agent_home`` / ``ensure_iris_agent_home`` 으로 복사한다.
     """
     return product_agent_home()
@@ -525,7 +526,7 @@ def ensure_iris_agent_runtime(
     home = ensure_iris_agent_home()
     messages: list[str] = [f"home={home}"]
     # circular: hermes_gateway imports ensure_iris_agent_home from this module.
-    from iris.system.hermes_gateway import (
+    from iris.system.iris_agent_gateway import (
         ensure_hermes_gateway_running,
         ensure_hermes_provider_config,
     )
@@ -556,7 +557,7 @@ def ensure_iris_agent_runtime(
 
     # Hermes install/gateway가 업스트림 SOUL.md를 심은 뒤 Iris 페르소나로 되돌린다.
     try:
-        from iris.system.hermes_soul_sync import ensure_soul
+        from iris.system.iris_agent_soul_sync import ensure_soul
 
         messages.append(ensure_soul())
     except Exception as exc:  # noqa: BLE001
@@ -579,7 +580,7 @@ def apply_iris_agent_baseline_overlays(agent_root: Path) -> list[str]:
     """
     root = Path(agent_root)
     messages: list[str] = []
-    from iris.system.hermes_ollama_guard import (
+    from iris.system.iris_agent_ollama_guard import (
         apply_ollama_options_guard,
         ollama_options_guard_present,
     )
@@ -593,12 +594,12 @@ def apply_iris_agent_baseline_overlays(agent_root: Path) -> list[str]:
         log.warning("iris agent baseline: ollama options guard not applied at %s", root)
 
     # circular: sync imports credentials → agent_runtime; mutate only at install.
-    from iris.system.hermes_iris_control_sync import ensure_hermes_stdio_dead_check_patch
+    from iris.system.iris_agent_control_sync import ensure_hermes_stdio_dead_check_patch
 
     messages.append(
         ensure_hermes_stdio_dead_check_patch(agent_root=root, mutate=True)
     )
-    from iris.system.hermes_tool_choice import apply_hermes_tool_choice_overlay
+    from iris.system.iris_agent_tool_choice import apply_hermes_tool_choice_overlay
 
     messages.extend(apply_hermes_tool_choice_overlay(root))
     stamp = root / ".iris-agent-baseline"

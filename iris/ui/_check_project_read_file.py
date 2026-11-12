@@ -8,7 +8,16 @@ from pathlib import Path
 
 from iris.system.project_ops import read_project_file, write_project_file
 
+_ROOT = Path(__file__).resolve().parents[2]
 _CATALOG = Path(__file__).resolve().parent / "control_actions" / "action_catalog.json"
+_VIBE_SKILL = (
+    _ROOT
+    / "integrations"
+    / "hermes-skills"
+    / "iris-control"
+    / "iris-vibe-code"
+    / "SKILL.md"
+)
 
 
 def main() -> None:
@@ -19,6 +28,11 @@ def main() -> None:
     assert entry.get("confirm_required") is False
     summary = str(entry.get("summary") or "").lower()
     assert "bound" in summary or "workspace" in summary
+
+    vibe = _VIBE_SKILL.read_text(encoding="utf-8")
+    assert "project.read_file" in vibe, "iris-vibe-code SKILL must name project.read_file"
+    assert "Disk UTF-8" in vibe or "disk UTF-8" in vibe
+    assert "ide.save" in vibe or "ide.edit" in vibe
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

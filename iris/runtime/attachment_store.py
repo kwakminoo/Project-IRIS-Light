@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
@@ -42,6 +43,22 @@ class AttachmentStore:
         return (name.casefold() in EXCLUDED or name.casefold().startswith((".venv-", ".iris_light_test_tmp"))
                 or any(fnmatch.fnmatch(name, p) for p in self.exclude_patterns))
 
+    @staticmethod
+    def _directory_priority(name: str) -> tuple[int, str]:
+        order = {"iris": 0, "src": 1, "app": 2, "integrations": 20, "lib": 30}
+        folded = name.casefold()
+        return order.get(folded, 10), folded
+
+    @staticmethod
+    def _generated_directory(root: Path, candidate: Path) -> bool:
+        try:
+            relative = candidate.relative_to(root).as_posix().casefold()
+        except ValueError:
+            return True
+        return relative == "integrations/iris-ide/lib" or relative.startswith(
+            "integrations/iris-ide/lib/"
+        )
+
     def attach(self, paths, *, cancelled=lambda: False):
         for raw in paths:
             if cancelled():
@@ -62,13 +79,19 @@ class AttachmentStore:
                 if not root.directory:
                     self._index(root, path.name, path)
                     continue
-                visited = 0
                 def onerror(exc):
                     root.error = "폴더 일부를 읽을 권한이 없거나 삭제되었습니다."
                 for directory, dirs, files in os.walk(path, followlinks=False, onerror=onerror):
-                    dirs[:] = sorted((d for d in dirs if not self._excluded(d) and not _is_link(Path(directory) / d)),
-                                     key=lambda d: (d not in {"src", "iris", "integrations", "lib", "app"}, d))
-                    visited += len(dirs) + len(files)
+                    dirs[:] = sorted(
+                        (
+                            d
+                            for d in dirs
+                            if not self._excluded(d)
+                            and not _is_link(Path(directory) / d)
+                            and not self._generated_directory(path, Path(directory) / d)
+                        ),
+                        key=self._directory_priority,
+                    )
                     for name in sorted(files):
                         if cancelled() or len(root.files) >= MAX_FOLDER_ENTRIES:
                             root.truncated = True
@@ -76,7 +99,7 @@ class AttachmentStore:
                         candidate = Path(directory) / name
                         if not _is_link(candidate) and not self._excluded(name):
                             self._index(root, candidate.relative_to(path).as_posix(), candidate)
-                    if cancelled() or visited >= MAX_FOLDER_ENTRIES:
+                    if cancelled() or len(root.files) >= MAX_FOLDER_ENTRIES:
                         root.truncated = True
                         break
                 if root.truncated and not cancelled():
@@ -114,6 +137,94 @@ class AttachmentStore:
             current = current.parent
         path.resolve().relative_to(base.resolve())
         return path
+
+    def _transfer_source(self, attachment_id: str) -> tuple[AttachedRoot, Path, str]:
+        root = self.roots.get(str(attachment_id or ""))
+        if root is None:
+            raise ValueError("첨부파일을 찾을 수 없습니다.")
+        # ponytail: 원본 전송은 개별 파일만 지원한다. 폴더 전송 요구가 생기면 별도 확인 UX를 둔다.
+        if root.directory:
+            raise ValueError("폴더 첨부는 복사·이동할 수 없습니다. 파일을 개별 첨부해 주세요.")
+        relative = next(iter(root.files), root.path.name)
+        source = self._resolve(root.id, relative)
+        if not source.is_file():
+            raise ValueError("첨부파일 원본이 없거나 파일이 아닙니다.")
+        return root, source, relative
+
+    @staticmethod
+    def _transfer_target(source: Path, destination: str | os.PathLike[str]) -> Path:
+        raw = Path(destination).expanduser()
+        if not raw.is_absolute():
+            raise ValueError("destination은 절대경로여야 합니다.")
+        target = raw / source.name if raw.is_dir() else raw
+        if not target.parent.is_dir():
+            raise ValueError("대상 폴더가 존재하지 않습니다.")
+        if _is_link(target.parent) or (target.exists() and _is_link(target)):
+            raise ValueError("심볼릭 링크/정션 대상에는 쓸 수 없습니다.")
+        return target
+
+    @staticmethod
+    def _copy_atomic(source: Path, target: Path, *, overwrite: bool) -> None:
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"대상 파일이 이미 존재합니다: {target.name}")
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            shutil.copy2(source, temporary)
+            if overwrite:
+                os.replace(temporary, target)
+            else:
+                # Atomic no-clobber: a late competing create must not be overwritten.
+                os.link(temporary, target)
+                temporary.unlink()
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def copy_to(self, attachment_id: str, destination: str, *, overwrite: bool = False) -> Path:
+        """Copy one attached original without exposing its host source path."""
+        _root, source, _relative = self._transfer_source(attachment_id)
+        target = self._transfer_target(source, destination)
+        if source.resolve() == target.resolve():
+            raise ValueError("원본과 대상이 같습니다.")
+        try:
+            self._copy_atomic(source, target, overwrite=bool(overwrite))
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            raise OSError("첨부파일을 대상 위치로 복사하지 못했습니다.") from exc
+        return target
+
+    def move_to(self, attachment_id: str, destination: str, *, overwrite: bool = False) -> Path:
+        """Move one attached original; callers must obtain explicit human confirmation."""
+        root, source, relative = self._transfer_source(attachment_id)
+        target = self._transfer_target(source, destination)
+        if source.resolve() == target.resolve():
+            return target
+        try:
+            self._copy_atomic(source, target, overwrite=bool(overwrite))
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            raise OSError("첨부파일을 대상 위치로 이동하지 못했습니다.") from exc
+        try:
+            source.unlink()
+        except OSError as exc:
+            raise OSError(
+                "대상 복사는 완료됐지만 첨부 원본을 삭제하지 못해 이동을 완료하지 못했습니다."
+            ) from exc
+        root.path = target
+        meta = root.files[relative]
+        meta.update(
+            file_name=target.name,
+            full_path=str(target),
+            relative_path=target.name,
+            folder_root="",
+        )
+        if relative != target.name:
+            root.files = {target.name: meta}
+        return target
 
     def read_attached_file(self, attachment_id, relative_path, *, query="", budget=6000):
         path = self._resolve(attachment_id, relative_path)

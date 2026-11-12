@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QSize, QThread, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices, QPainter, QPalette
+from PyQt6.QtGui import QColor, QDesktopServices, QPalette
 from PyQt6.QtMultimedia import QSoundEffect
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -69,18 +69,7 @@ from iris.storage.learning_prefs import (
     load_learning_preferences,
     save_learning_preferences,
 )
-from iris.storage.api_providers import (
-    BASE_URL_PRESETS,
-    FreeLlmOffer,
-    preset_index_for_base_url,
-    ApiProvider,
-    delete_api_provider,
-    load_api_providers,
-    mask_api_key,
-    parse_models_text,
-    save_api_providers,
-    upsert_api_provider,
-)
+from iris.storage.api_providers import mask_api_key
 from iris.learning.permission import level_choices, policy_for, request_elevation_hint
 from iris.learning.aloha_runtime import bootstrap_runtime, runtime_status
 from iris.learning.hook_probe import probe_input_hooks
@@ -91,7 +80,6 @@ from iris.ui.widgets.mic_input_meter import MicThresholdBar
 from iris.ui.settings import settings_service
 from iris.ui.settings.busy_ring import SettingsBusyOverlay
 from iris.ui.settings.email_connect_guide import EmailAccountBox
-from iris.ui.settings.free_llm_list import build_free_llm_list
 from iris.ui.settings.hud_dialog import (
     build_chat_title_box,
     configure_form,
@@ -107,41 +95,14 @@ from iris.ui.settings.history_failover_box import (
     save_history_failover,
 )
 from iris.ui.settings.routines_box import build_routines_box
-from iris.system.hermes_login_warm import sync as sync_hermes_login_warm
-from iris.ui.settings.hermes_login_warm_box import (
-    HermesLoginWarmBox,
+from iris.system.iris_agent_login_warm import sync as sync_hermes_login_warm
+from iris.ui.settings.iris_agent_login_warm_box import (
+    IrisAgentLoginWarmBox,
     save_hermes_login_warm_box,
 )
 from iris.ui.settings.update_notify_box import UpdateNotifyBox, save_update_notify_box
 from iris.ui.settings.voice_runtime_status import VoiceRuntimeStatusWidget
 from iris.ui.shared.theme_tokens import TOKENS
-
-
-class _StatusDot(QWidget):
-    """API 연결 상태 원 — ok=초록, partial=주황, error=빨강, unknown=회색."""
-
-    def __init__(self, status: str = "unknown", parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._status = status if status in ("ok", "partial", "error", "unknown") else "unknown"
-        self.setFixedSize(10, 10)
-
-    def set_status(self, status: str) -> None:
-        self._status = status if status in ("ok", "partial", "error", "unknown") else "unknown"
-        self.update()
-
-    def paintEvent(self, _event) -> None:  # noqa: N802
-        colors = {
-            "ok": QColor("#22c55e"),
-            "partial": QColor("#f59e0b"),
-            "error": QColor("#ef4444"),
-            "unknown": QColor("#94a3b8"),
-        }
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(colors.get(self._status, colors["unknown"]))
-        painter.drawEllipse(1, 1, 8, 8)
-        painter.end()
 
 
 class _AlohaRuntimeBootstrapWorker(QThread):
@@ -220,11 +181,23 @@ class _DeferredSetupNetworkWorker(QThread):
 class LightSettingsSelection:
     ollama_base_url: str
     ollama_model: str
-    hermes_command: str
-    hermes_base_url: str
-    hermes_api_key: str
+    agent_command: str
+    agent_base_url: str
+    agent_api_key: str
     voice_prefs: VoicePreferences
     learning_prefs: LearningPreferences
+
+    @property
+    def hermes_command(self) -> str:
+        return self.agent_command
+
+    @property
+    def hermes_base_url(self) -> str:
+        return self.agent_base_url
+
+    @property
+    def hermes_api_key(self) -> str:
+        return self.agent_api_key
 
 
 def _nearest_index(combo, value: float) -> int:
@@ -294,12 +267,6 @@ class SettingsDialog(QDialog):
         self._voice_refs_worker: _DeferredVoiceRefsWorker | None = None
         self._aloha_status_worker: _DeferredAlohaStatusWorker | None = None
         self._setup_network_worker: _DeferredSetupNetworkWorker | None = None
-        self._api_providers: list[ApiProvider] = (
-            load_api_providers(db) if db is not None else []
-        )
-        self._api_probe_worker = None
-        self._api_models_worker: QThread | None = None
-        self._api_row_dots: dict[str, _StatusDot] = {}
         profile = load_user_profile(db) if db is not None else UserProfile()
         self._preferred_ide = (profile.preferred_ide or "cursor").strip().lower() or "cursor"
         self._ide_exe_path = profile.ide_exe_path or ""
@@ -315,7 +282,8 @@ class SettingsDialog(QDialog):
         root.addWidget(make_title("SETTINGS"))
         root.addWidget(
             make_hint(
-                "Ollama · Iris Agent · API(검색·캘린더·LLM) · 음성 · 이메일 · IDE Companion을 설정합니다. "
+                "Ollama · Iris Agent · API(검색·캘린더) · 음성 · 이메일 · IDE Companion을 설정합니다. "
+                "LLM 제공자는 헤더 AI Hub에서 관리합니다. "
                 "창을 늘리거나 스크롤하면 모든 항목을 가리지 않고 볼 수 있습니다."
             )
         )
@@ -361,6 +329,7 @@ class SettingsDialog(QDialog):
         q.append(self._section_routines)
         q.append(self._section_voice)
         q.append(self._section_permission)
+        q.append(self._section_local_access)
         q.append(self._section_learning)
         q.append(self._section_email)
         q.append(self._section_ide)
@@ -410,7 +379,7 @@ class SettingsDialog(QDialog):
         self._content_lay.addWidget(make_collapsible(self._update_notify_box))
 
     def _section_hermes_login_warm(self) -> None:
-        self._hermes_login_warm_box = HermesLoginWarmBox(self._db)
+        self._hermes_login_warm_box = IrisAgentLoginWarmBox(self._db)
         self._content_lay.addWidget(make_collapsible(self._hermes_login_warm_box))
 
     def _section_api(self) -> None:
@@ -438,6 +407,30 @@ class SettingsDialog(QDialog):
 
     def _section_permission(self) -> None:
         self._content_lay.addWidget(make_collapsible(self._build_permission_box()))
+
+    def _section_local_access(self) -> None:
+        from iris.storage.local_access_prefs import (
+            SYSTEM,
+            WORKSPACE_ATTACHMENTS,
+            load_local_read_scope,
+        )
+
+        box = QGroupBox("로컬 파일 읽기")
+        lay = QVBoxLayout(box)
+        combo = QComboBox()
+        combo.addItem("Workspace + Attachments", WORKSPACE_ATTACHMENTS)
+        combo.addItem("System", SYSTEM)
+        current = load_local_read_scope(self._db)
+        combo.setCurrentIndex(max(0, combo.findData(current)))
+        self._local_read_scope = combo
+        lay.addWidget(combo)
+        lay.addWidget(
+            make_hint(
+                "System은 사용자가 명시한 절대경로를 읽고 검색할 수 있습니다. "
+                "외부 복사·이동·삭제 권한은 별도이며, 이동은 항상 확인합니다."
+            )
+        )
+        self._content_lay.addWidget(make_collapsible(box))
 
     def _section_learning(self) -> None:
         self._content_lay.addWidget(make_collapsible(self._build_learning_runtime_box()))
@@ -555,14 +548,13 @@ class SettingsDialog(QDialog):
         lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
             make_hint(
-                "검색·캘린더·LLM을 같은 형식으로 나눠 둡니다. "
-                "검색은 프리셋과 키를 넣은 뒤 「추가」로 여러 개 등록합니다."
+                "검색·캘린더 API를 같은 형식으로 나눠 둡니다. "
+                "검색은 프리셋과 키를 넣은 뒤 「추가」로 여러 개 등록합니다. "
+                "LLM 제공자는 AI Hub에서 관리합니다."
             )
         )
         lay.addWidget(self._build_search_api_box())
         lay.addWidget(self._build_calendar_api_box())
-        if self._db is not None:
-            lay.addWidget(self._build_api_providers_box())
         return box
 
     def _build_search_api_box(self) -> QGroupBox:
@@ -853,152 +845,6 @@ class SettingsDialog(QDialog):
             save_calendar_api_key(key)
             self._settings.data_go_kr_service_key = key
 
-    def _build_api_providers_box(self) -> QGroupBox:
-        box = QGroupBox("LLM (OpenAI 호환)")
-        lay = QVBoxLayout(box)
-        lay.setSpacing(TOKENS.spacing_sm)
-        lay.addWidget(
-            make_hint(
-                "이름·API Key·Base URL을 채운 뒤 「추가」를 누르세요. Base URL은 "
-                "테스트가 실제로 접속해 확정합니다(프리셋은 입력란을 채워줄 뿐입니다). "
-                "초록=정상(채팅 모델에 표시), 주황=목록만 성공·대화 실패, 빨강=실패, 회색=미검사."
-            )
-        )
-        lay.addWidget(build_free_llm_list(self._on_free_llm_picked))
-
-        form = QFormLayout()
-        configure_form(form)
-        self._api_name = QLineEdit()
-        self._api_name.setPlaceholderText("예: NVIDIA, OpenAI, OpenRouter")
-        self._api_preset = QComboBox()
-        for label, url in BASE_URL_PRESETS:
-            self._api_preset.addItem(label, url)
-        self._style_combo_light_text(self._api_preset)
-        self._api_preset.currentIndexChanged.connect(self._on_api_preset_changed)
-        self._api_base = QLineEdit()
-        self._api_base.setPlaceholderText("예: https://generativelanguage.googleapis.com/v1beta/openai")
-        self._api_key = QLineEdit()
-        self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._api_key.setPlaceholderText("API Key (로컬 서버면 비워도 됩니다)")
-        self._api_models = QLineEdit()
-        self._api_models.setPlaceholderText("선택: 모델 id (콤마 구분). 비우면 {base}/models 조회")
-        for edit in (self._api_name, self._api_base, self._api_key, self._api_models):
-            edit.setMinimumHeight(32)
-        self._api_preset.setMinimumHeight(32)
-        form.addRow(make_form_label("이름"), self._api_name)
-        form.addRow(make_form_label("API Key"), self._api_key)
-        form.addRow(make_form_label("제공자 프리셋"), self._api_preset)
-        form.addRow(make_form_label("Base URL"), self._api_base)
-        form.addRow(make_form_label("모델 목록"), self._api_models)
-        lay.addLayout(form)
-
-        row = QHBoxLayout()
-        btn_add = QPushButton("추가")
-        btn_add.clicked.connect(self._on_api_add)
-        row.addWidget(btn_add)
-        row.addStretch(1)
-        lay.addLayout(row)
-
-        self._api_status = QLabel("")
-        self._api_status.setWordWrap(True)
-        self._api_status.setObjectName("HudHint")
-        lay.addWidget(self._api_status)
-
-        # 추가된 API 목록 — 폼 아래
-        lay.addWidget(make_hint("등록된 API"))
-        self._api_list_host = QVBoxLayout()
-        self._api_list_host.setSpacing(6)
-        lay.addLayout(self._api_list_host)
-        self._reload_api_provider_rows()
-        return box
-
-    def _reload_api_provider_rows(self) -> None:
-        while self._api_list_host.count():
-            item = self._api_list_host.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-        self._api_row_dots.clear()
-        if not self._api_providers:
-            empty = QLabel("등록된 API 없음 — 위에서 추가하세요")
-            empty.setObjectName("HudHint")
-            self._api_list_host.addWidget(empty)
-            return
-        for p in self._api_providers:
-            row_w = QWidget()
-            row = QHBoxLayout(row_w)
-            row.setContentsMargins(0, 4, 0, 4)
-            row.setSpacing(10)
-            dot = _StatusDot(p.status)
-            self._api_row_dots[p.id] = dot
-            row.addWidget(dot, 0)
-
-            name_lbl = QLabel(p.name or "(이름 없음)")
-            name_lbl.setObjectName("HudMetricName")
-            name_lbl.setMinimumWidth(72)
-            row.addWidget(name_lbl, 0)
-
-            key_lbl = QLabel(mask_api_key(p.api_key))
-            key_lbl.setObjectName("HudHint")
-            key_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            tip_parts = [p.base_url or "(base url 없음)", p.status]
-            if p.models:
-                from iris.infrastructure.ollama_client import roster_summary
-
-                tip_parts.append(
-                    roster_summary(list(p.models), p.model_states, p.tool_support)
-                )
-            if p.last_error:
-                tip_parts.append(p.last_error[:160])
-            key_lbl.setToolTip(" · ".join(tip_parts))
-            row.addWidget(key_lbl, 1)
-
-            btn_test = QPushButton("테스트")
-            btn_test.setFixedWidth(64)
-            btn_test.clicked.connect(lambda _=False, pid=p.id: self._on_api_test(pid))
-            btn_verify = QPushButton("모델 정리")
-            btn_verify.setFixedWidth(74)
-            btn_verify.setToolTip(
-                "등록된 모델을 하나씩 호출해 쓸 수 있음·쓸 수 없음·적합하지 않음을 표시합니다. "
-                "목록에서 빼지 않습니다."
-            )
-            btn_verify.clicked.connect(lambda _=False, pid=p.id: self._on_api_verify_models(pid))
-            btn_del = QPushButton("삭제")
-            btn_del.setFixedWidth(52)
-            btn_del.clicked.connect(lambda _=False, pid=p.id: self._on_api_delete(pid))
-            row.addWidget(btn_test)
-            row.addWidget(btn_verify)
-            row.addWidget(btn_del)
-            self._api_list_host.addWidget(row_w)
-
-    def _persist_api_providers(self) -> None:
-        if self._db is None:
-            return
-        # 폼에 남은 입력도 저장 전에 반영
-        self._flush_api_form_to_providers(silent=True)
-        save_api_providers(self._db, self._api_providers)
-
-    def _on_free_llm_picked(self, offer: FreeLlmOffer) -> None:
-        """무료 AI를 고르면 발급 페이지를 열고, 이름·프리셋·Base URL을 그 브랜드로 채운다."""
-        self._api_name.setText(offer.name)
-        index = preset_index_for_base_url(offer.base_url)
-        self._api_preset.blockSignals(True)
-        self._api_preset.setCurrentIndex(index)
-        self._api_preset.blockSignals(False)
-        url = str(self._api_preset.itemData(index) or offer.base_url)
-        if url:
-            self._api_base.setText(url)
-        self._api_status.setText(f"{offer.name} — 이름과 프리셋을 넣었습니다. 키를 붙여 넣으세요.")
-        self._open_signup_url(offer.signup_url)
-
-    def _on_api_preset_changed(self, index: int) -> None:
-        """프리셋은 Base URL 입력란을 채워줄 뿐 — 확정은 테스트 프로브가 함."""
-        url = str(self._api_preset.itemData(index) or "")
-        if url:
-            self._api_base.setText(url)
-        if not self._api_name.text().strip() and index > 0:
-            self._api_name.setText(self._api_preset.itemText(index))
-
     @staticmethod
     def _style_combo_light_text(combo: QComboBox) -> None:
         """Windows 네이티브 팔레트가 드롭다운 글자를 검게 덮는 경우 대비."""
@@ -1024,209 +870,6 @@ class SettingsDialog(QDialog):
         vol = max(0.0, min(1.0, value / 100.0))
         self._preview_player.set_volume(vol)
         self._ref_preview_player.setVolume(vol)
-
-    def _flush_api_form_to_providers(self, *, silent: bool = False) -> ApiProvider | None:
-        """이름+URL이 채워져 있으면 목록에 추가(저장 버튼만 누른 경우 대비)."""
-        if self._db is None or not hasattr(self, "_api_name"):
-            return None
-        name = self._api_name.text().strip()
-        key = self._api_key.text().strip()
-        base = self._api_base.text().strip().rstrip("/")
-        if not name or not base:
-            if not silent and not base:
-                QMessageBox.warning(
-                    self,
-                    "API 추가",
-                    "Base URL을 입력하세요. 프리셋에서 고르거나 직접 입력할 수 있습니다.",
-                )
-            return None
-        models = parse_models_text(self._api_models.text())
-        # 같은 이름+url이면 키만 갱신
-        for existing in self._api_providers:
-            if existing.name == name and existing.base_url.rstrip("/") == base:
-                if key:
-                    existing.api_key = key
-                if models:
-                    existing.models = models
-                upsert_api_provider(self._db, existing)
-                self._api_providers = load_api_providers(self._db)
-                self._clear_api_form()
-                self._reload_api_provider_rows()
-                return existing
-        provider = ApiProvider(
-            name=name,
-            base_url=base,
-            api_key=key,
-            models=models,
-            status="unknown",
-        )
-        upsert_api_provider(self._db, provider)
-        self._api_providers = load_api_providers(self._db)
-        self._clear_api_form()
-        self._reload_api_provider_rows()
-        return provider
-
-    def _clear_api_form(self) -> None:
-        self._api_name.clear()
-        self._api_base.clear()
-        self._api_key.clear()
-        self._api_models.clear()
-        self._api_preset.setCurrentIndex(0)
-
-    def _on_api_add(self) -> None:
-        if self._db is None:
-            return
-        if not self._api_name.text().strip():
-            QMessageBox.warning(self, "API 추가", "이름을 입력하세요.")
-            return
-        provider = self._flush_api_form_to_providers(silent=False)
-        if provider is None:
-            return
-        self._api_status.setText(f"추가됨: {provider.name} — 연결 테스트 중…")
-        self._verify_after_add_id = provider.id
-        self._on_api_test(provider.id)
-        worker = self._api_probe_worker
-        if worker is None or not worker.isRunning():
-            self._verify_after_add_id = ""
-
-    def _on_api_delete(self, provider_id: str) -> None:
-        if self._db is None:
-            return
-        delete_api_provider(self._db, provider_id)
-        self._api_providers = load_api_providers(self._db)
-        self._reload_api_provider_rows()
-        self._api_status.setText("삭제됨")
-
-    def _on_api_test(self, provider_id: str) -> None:
-        if self._db is None:
-            return
-        provider = next((p for p in self._api_providers if p.id == provider_id), None)
-        if provider is None:
-            return
-        if self._api_probe_worker is not None and self._api_probe_worker.isRunning():
-            self._api_status.setText("다른 테스트가 진행 중입니다…")
-            return
-        self._api_status.setText(f"테스트 중: {provider.name}…")
-        from iris.ui.workers.api_provider_workers import ApiProbeWorker
-
-        worker = ApiProbeWorker(provider, parent=self)
-        self._api_probe_worker = worker
-        worker.finished_probe.connect(self._on_api_probe_done)
-        worker.start()
-
-    def _on_api_verify_models(self, provider_id: str) -> None:
-        """모델 전량을 순차 실측해 목록을 정리 — 하드코딩 목록 없이 실제 계정 기준."""
-        if self._db is None:
-            return
-        provider = next((p for p in self._api_providers if p.id == provider_id), None)
-        if provider is None or not provider.models:
-            self._api_status.setText("정리할 모델이 없습니다. 먼저 「테스트」로 목록을 받으세요.")
-            return
-        worker = getattr(self, "_api_models_worker", None)
-        if worker is not None and worker.isRunning():
-            self._api_status.setText("다른 모델 정리가 진행 중입니다…")
-            return
-        from iris.ui.workers.api_provider_workers import ApiModelsVerifyWorker
-
-        self._api_status.setText(f"{provider.name}: 모델 {len(provider.models)}개 확인 중…")
-        worker = ApiModelsVerifyWorker(provider, parent=self)
-        worker.verified_one.connect(self._on_api_model_verified_one)
-        worker.progress.connect(
-            lambda done, total, usable: self._api_status.setText(
-                f"{provider.name}: 확인 {done}/{total} · 사용 가능 {usable}"
-            )
-        )
-        worker.finished_all.connect(self._on_api_models_verified_all)
-        self._api_models_worker = worker
-        worker.start()
-
-    def _on_api_model_verified_one(
-        self, provider_id: str, model: str, state: str, tool_support: str
-    ) -> None:
-        if self._db is None:
-            return
-        from iris.storage.api_providers import record_model_probe
-
-        record_model_probe(
-            self._db, provider_id, model, state=state, tool_support=tool_support
-        )
-
-    def _on_api_models_verified_all(self, provider_id: str, usable: int, total: int) -> None:
-        self._api_models_worker = None
-        if self._db is None:
-            return
-        self._api_providers = load_api_providers(self._db)
-        self._reload_api_provider_rows()
-        name = next((p.name for p in self._api_providers if p.id == provider_id), provider_id)
-        provider = next((p for p in self._api_providers if p.id == provider_id), None)
-        if provider is None:
-            self._api_status.setText(f"{name}: 정리 완료 — 전체 {total}")
-            return
-        from iris.infrastructure.ollama_client import model_list_tier
-
-        counts = [0, 0, 0]
-        for model in provider.models:
-            rank, _label = model_list_tier(
-                model,
-                state=provider.model_states.get(model, ""),
-                tool=provider.tool_support.get(model, ""),
-            )
-            counts[rank] += 1
-        self._api_status.setText(
-            f"{name}: 쓸 수 있음 {counts[0]} · 쓸 수 없음 {counts[1]} · 적합하지 않음 {counts[2]} / 전체 {len(provider.models)}"
-        )
-
-    def _on_api_probe_done(self, provider_id: str, result: object) -> None:
-        self._api_probe_worker = None
-        if self._db is None:
-            return
-        from iris.infrastructure.openai_compat_client import ProbeResult
-        from iris.storage.api_providers import mark_provider_status
-
-        if not isinstance(result, ProbeResult):
-            return
-        status = result.status
-        detail = result.detail
-        p = next((x for x in self._api_providers if x.id == provider_id), None)
-        merged = list(result.models)
-        for m in list(p.models) if p else []:
-            if m not in merged:
-                merged.append(m)
-        if status == "ok" and not merged:
-            status = "error"
-            detail = f"{detail} · 사용 가능한 모델이 없습니다. 모델 목록을 입력하세요."
-        mark_provider_status(
-            self._db,
-            provider_id,
-            status=status,
-            error="" if status == "ok" else detail,
-            models=merged if merged else None,
-            resolved_base_url=result.base_url,
-            auth_style=result.auth_style,
-        )
-        self._api_providers = load_api_providers(self._db)
-        self._reload_api_provider_rows()
-        label = {"ok": "정상", "partial": "부분 성공", "error": "실패"}.get(status, status)
-        verify_after_add = getattr(self, "_verify_after_add_id", "")
-        self._verify_after_add_id = ""
-        if status == "ok":
-            from iris.system.hermes_ollama_guard import note_after_provider_direct_ok
-
-            head = f"제공자 직접 연결 정상: {detail[:160]}"
-            pnow = next((x for x in self._api_providers if x.id == provider_id), None)
-            extra = ""
-            if pnow is not None:
-                extra = note_after_provider_direct_ok(
-                    pnow,
-                    db=self._db,
-                    hermes_enabled=bool(self._settings.hermes_enabled),
-                    hermes_base_url=self._settings.hermes_base_url,
-                )
-            self._api_status.setText(head if not extra else f"{head}\n{extra}")
-        else:
-            self._api_status.setText(f"{label}: {detail[:200]}")
-        if verify_after_add == provider_id and status in ("ok", "partial"):
-            self._on_api_verify_models(provider_id)
 
     def _build_permission_box(self) -> QGroupBox:
         box = QGroupBox("권한 (업무 학습 · Computer-Use)")
@@ -2422,14 +2065,14 @@ class SettingsDialog(QDialog):
         lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
             make_hint(
-                "MCP(iris_get_state / iris_invoke)와 iris-work-start 스킬을 Iris Agent에 동기화합니다. "
+                "SpeakTools 자세와 iris-work-start 등 스킬을 Iris Agent에 동기화합니다. "
                 "도구가 안 보이면 동기화 후 새 채팅을 시작하세요."
             )
         )
         self._sync_status = QLabel(self._load_sync_status_text())
         self._sync_status.setWordWrap(True)
         lay.addWidget(self._sync_status)
-        self._sync_btn = QPushButton("지금 MCP/스킬 동기화")
+        self._sync_btn = QPushButton("지금 SpeakTools/스킬 동기화")
         self._sync_btn.clicked.connect(self._run_hermes_control_sync)
         lay.addWidget(self._sync_btn)
         self._sync_worker = None
@@ -2442,7 +2085,7 @@ class SettingsDialog(QDialog):
         lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
             make_hint(
-                "Ollama · Iris Agent · iris-control MCP 등 Core 환경과 IRIS IDE(선택)를 설치하거나 상태를 검사합니다. "
+                "Ollama · Iris Agent · SpeakTools 등 Core 환경과 IRIS IDE(선택)를 설치하거나 상태를 검사합니다. "
                 "검사는 서비스 기동·연결을 시도한 뒤, 부족하면 자동 설치/복구까지 진행합니다. "
                 "미설치면 「시작 프로토콜 가동」, 이미 준비됐으면 「검사」가 표시됩니다."
             )
@@ -2701,8 +2344,8 @@ class SettingsDialog(QDialog):
         return SetupProtocol(
             ollama_base_url=self._ollama_url.text().strip()
             or self._settings.ollama_base_url,
-            hermes_base_url=self._settings.hermes_base_url,
-            hermes_command=self._settings.hermes_command or "hermes",
+            agent_base_url=self._settings.agent_base_url,
+            agent_command=self._settings.agent_command or "hermes",
             min_model=self._ollama_model.text().strip() or self._settings.ollama_model,
         )
 
@@ -2792,8 +2435,8 @@ class SettingsDialog(QDialog):
                     self.progress.emit("서비스 기동·연결 확인 중…")
                     _warm_core_services(
                         ollama_base_url=self._proto.ollama_base_url,
-                        hermes_base_url=self._proto.hermes_base_url,
-                        hermes_command=self._proto.hermes_command,
+                        agent_base_url=self._proto.hermes_base_url,
+                        agent_command=self._proto.hermes_command,
                         wait_sec=30.0,
                     )
                     ok, detail = self._proto.verify_core()
@@ -2864,20 +2507,20 @@ class SettingsDialog(QDialog):
         return settings_service.load_hermes_sync_status_text()
 
     def _run_hermes_control_sync(self) -> None:
-        from iris.infrastructure.hermes_credentials import resolve_hermes_api_key
-        from iris.ui.workers.hermes_workers import HermesControlSyncWorker
+        from iris.agent import IrisAgentControlSyncWorker
+        from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
 
         if self._sync_worker is not None and self._sync_worker.isRunning():
             return
-        base = (self._settings.hermes_base_url or "").strip() or "http://127.0.0.1:8642/v1"
+        base = (self._settings.agent_base_url or "").strip() or "http://127.0.0.1:8642/v1"
         try:
-            key = resolve_hermes_api_key(self._settings.hermes_api_key)
+            key = resolve_hermes_api_key(self._settings.agent_api_key)
         except Exception:
-            key = self._settings.hermes_api_key or ""
-        cmd = (self._settings.hermes_command or "").strip() or "hermes"
+            key = self._settings.agent_api_key or ""
+        cmd = (self._settings.agent_command or "").strip() or "hermes"
         self._sync_btn.setEnabled(False)
         self._sync_status.setText("상태: 동기화 중…")
-        worker = HermesControlSyncWorker(
+        worker = IrisAgentControlSyncWorker(
             base, api_key=key, command=cmd, parent=self
         )
         self._sync_worker = worker
@@ -2893,14 +2536,14 @@ class SettingsDialog(QDialog):
         if ok:
             QMessageBox.information(
                 self,
-                "Iris Control 동기화",
-                "동기화 완료.\nIris Agent를 재기동했고 MCP 도구가 연결됐습니다.\n"
+                "SpeakTools 동기화",
+                "동기화 완료.\nIris Agent를 재기동했고 SpeakTools 자세가 반영됐습니다.\n"
                 "Iris에서 새 채팅을 열어 테스트하세요.",
             )
         else:
             QMessageBox.warning(
                 self,
-                "Iris Control 동기화 실패",
+                "SpeakTools 동기화 실패",
                 text[:1800],
             )
 
@@ -3051,7 +2694,11 @@ class SettingsDialog(QDialog):
         if self._db is not None:
             save_voice_preferences(self._db, voice_prefs)
             save_learning_preferences(self._db, learning_prefs)
-            self._persist_api_providers()
+            local_scope = getattr(self, "_local_read_scope", None)
+            if local_scope is not None:
+                from iris.storage.local_access_prefs import save_local_read_scope
+
+                save_local_read_scope(self._db, str(local_scope.currentData() or ""))
             self._persist_chat_title_basis()
             box = getattr(self, "_history_failover_box", None)
             if box is not None:
@@ -3083,18 +2730,18 @@ class SettingsDialog(QDialog):
                     )
         self._persist_search_calendar_api_keys()
         try:
-            from iris.infrastructure.hermes_credentials import resolve_hermes_api_key
+            from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
 
-            hermes_api_key = resolve_hermes_api_key(self._settings.hermes_api_key)
+            hermes_api_key = resolve_hermes_api_key(self._settings.agent_api_key)
         except Exception:
-            hermes_api_key = self._settings.hermes_api_key or ""
+            hermes_api_key = self._settings.agent_api_key or ""
         self._result = LightSettingsSelection(
             ollama_base_url=self._ollama_url.text().strip() or "http://127.0.0.1:11434/v1",
             ollama_model=self._ollama_model.text().strip(),
-            hermes_command=self._settings.hermes_command or "hermes",
-            hermes_base_url=self._settings.hermes_base_url
+            agent_command=self._settings.agent_command or "hermes",
+            agent_base_url=self._settings.agent_base_url
             or "http://127.0.0.1:8642/v1",
-            hermes_api_key=hermes_api_key,
+            agent_api_key=hermes_api_key,
             voice_prefs=voice_prefs,
             learning_prefs=learning_prefs,
         )

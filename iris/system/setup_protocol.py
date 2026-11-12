@@ -23,9 +23,9 @@ from typing import Any, Callable
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from iris.infrastructure.agent_runtime import ensure_iris_agent_runtime
-from iris.infrastructure.hermes_credentials import is_weak_hermes_api_key
-from iris.system.hermes_gateway import (
+from iris.agent import ensure_iris_agent_runtime
+from iris.infrastructure.iris_agent_credentials import is_weak_hermes_api_key
+from iris.system.iris_agent_gateway import (
     CODE_PROCESS_CRASH,
     ensure_hermes_provider_config,
     hermes_executable,
@@ -39,7 +39,7 @@ from iris.system.hermes_gateway import (
     resolve_hermes_api_key,
     verify_iris_mcp_tools,
 )
-from iris.system.hermes_iris_control_sync import (
+from iris.system.iris_agent_control_sync import (
     iris_state_dir,
     project_root,
     sync_iris_control,
@@ -152,7 +152,7 @@ CORE_STEP_LABELS: dict[str, str] = {
     "hermes_install": "Iris Agent 설치",
     "hermes_env": "Iris Agent API 키·서버 설정",
     "hermes_provider": "Iris Agent ↔ Ollama 연결",
-    "iris_control_sync": "iris-control MCP·스킬",
+    "iris_control_sync": "SpeakTools·스킬·mobile-mcp",
     "hermes_gateway": "Iris Agent gateway 기동",
     "core_smoke": "Core 연결 검증",
 }
@@ -417,9 +417,14 @@ def clear_ollama_model_cleanup_pending() -> None:
     save_setup_state(state)
 
 
-def needs_setup_wizard(*, hermes_command: str = "hermes") -> bool:
+def needs_setup_wizard(
+    *,
+    hermes_command: str | None = None,
+    agent_command: str | None = None,
+) -> bool:
     """시작 프로토콜 위저드가 필요한지 — 미설치 또는 한 번도 Core 완료 안 함."""
-    if not ollama_executable() or not hermes_executable(hermes_command):
+    cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
+    if not ollama_executable() or not hermes_executable(cmd):
         return True
     return not is_core_ready()
 
@@ -427,19 +432,27 @@ def needs_setup_wizard(*, hermes_command: str = "hermes") -> bool:
 def _warm_core_services(
     *,
     ollama_base_url: str,
-    hermes_base_url: str,
-    hermes_command: str,
+    hermes_base_url: str | None = None,
+    hermes_command: str | None = None,
+    agent_base_url: str | None = None,
+    agent_command: str | None = None,
     wait_sec: float = 25.0,
 ) -> None:
-    """재부팅 직후 꺼져 있을 수 있는 Ollama/Hermes를 조용히 기동 시도."""
+    """재부팅 직후 꺼져 있을 수 있는 Ollama/Iris Agent를 조용히 기동 시도."""
+    base = (
+        agent_base_url
+        if agent_base_url is not None
+        else (hermes_base_url or "http://127.0.0.1:8642/v1")
+    )
+    cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
     half = max(8.0, wait_sec / 2)
     if ollama_executable():
         ensure_ollama_running(ollama_base_url, wait_sec=half)
-    if hermes_executable(hermes_command):
+    if hermes_executable(cmd):
         ensure_iris_agent_runtime(
-            hermes_base_url,
+            base,
             api_key=resolve_hermes_api_key(),
-            command=hermes_command,
+            command=cmd,
             wait_sec=half,
         )
 
@@ -447,8 +460,10 @@ def _warm_core_services(
 def mark_core_ready_if_healthy(
     *,
     ollama_base_url: str = "http://127.0.0.1:11434/v1",
-    hermes_base_url: str = "http://127.0.0.1:8642/v1",
-    hermes_command: str = "hermes",
+    hermes_base_url: str | None = None,
+    hermes_command: str | None = None,
+    agent_base_url: str | None = None,
+    agent_command: str | None = None,
     min_model: str = "",
 ) -> bool:
     """부팅 게이트 — True면 시작 프로토콜 없이 runtime boot.
@@ -462,13 +477,19 @@ def mark_core_ready_if_healthy(
       시도한 뒤 True (재부팅 직후 일시 미응답은 일반 부팅에서 복구).
     - core_ready가 아니면 기동 시도 후 verify_core_quick 통과 시에만 core_ready 기록.
     """
-    if not ollama_executable() or not hermes_executable(hermes_command):
+    base = (
+        agent_base_url
+        if agent_base_url is not None
+        else (hermes_base_url or "http://127.0.0.1:8642/v1")
+    )
+    cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
+    if not ollama_executable() or not hermes_executable(cmd):
         return False
 
     proto = SetupProtocol(
         ollama_base_url=ollama_base_url,
-        hermes_base_url=hermes_base_url,
-        hermes_command=hermes_command,
+        agent_base_url=base,
+        agent_command=cmd,
         min_model=min_model,
         simulate=False,
         dry_run=False,
@@ -476,15 +497,15 @@ def mark_core_ready_if_healthy(
     if is_core_ready():
         _warm_core_services(
             ollama_base_url=ollama_base_url,
-            hermes_base_url=hermes_base_url,
-            hermes_command=hermes_command,
+            agent_base_url=base,
+            agent_command=cmd,
         )
         return True
 
     _warm_core_services(
         ollama_base_url=ollama_base_url,
-        hermes_base_url=hermes_base_url,
-        hermes_command=hermes_command,
+        agent_base_url=base,
+        agent_command=cmd,
     )
     ok, _detail = proto.verify_core_quick()
     if not ok:
@@ -814,18 +835,26 @@ class SetupProtocol:
         self,
         *,
         ollama_base_url: str = "http://127.0.0.1:11434/v1",
-        hermes_base_url: str = "http://127.0.0.1:8642/v1",
-        hermes_command: str = "hermes",
+        hermes_base_url: str | None = None,
+        hermes_command: str | None = None,
+        agent_base_url: str | None = None,
+        agent_command: str | None = None,
         min_model: str = "",
         simulate: bool | None = None,
         dry_run: bool | None = None,
         allow_core_skip: bool = False,
     ) -> None:
         self.ollama_base_url = ollama_base_url
-        from iris.infrastructure.hermes_client import normalize_hermes_openai_base_url
+        from iris.infrastructure.iris_agent_client import normalize_iris_agent_openai_base_url
 
-        self.hermes_base_url = normalize_hermes_openai_base_url(hermes_base_url)
-        self.hermes_command = hermes_command or "hermes"
+        base = (
+            agent_base_url
+            if agent_base_url is not None
+            else (hermes_base_url or "http://127.0.0.1:8642/v1")
+        )
+        cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
+        self.hermes_base_url = normalize_iris_agent_openai_base_url(base)
+        self.hermes_command = cmd
         self.min_model = (min_model or default_min_model()).strip() or DEFAULT_MIN_MODEL
         self.simulate = is_setup_demo() if simulate is None else bool(simulate)
         self.dry_run = is_setup_dry_run() if dry_run is None else bool(dry_run)
@@ -837,7 +866,7 @@ class SetupProtocol:
         self._abort = False
         self._active_proc: subprocess.Popen[bytes] | None = None
         self._cloud_without_local_confirmed = False
-        # ponytail: Hermes 런타임 자동 재설치는 세션당 1회 — 무한 루프 천장
+        # ponytail: Iris Agent 런타임 자동 재설치는 세션당 1회 — 무한 루프 천장
         self._hermes_runtime_repaired = False
         self._hermes_official_failed = False
         # NeedsUser「우회로 다시 설치」— 공식 스크립트 루프 탈출
@@ -1230,12 +1259,12 @@ class SetupProtocol:
             return False, detail
         key = resolve_hermes_api_key()
         if not is_hermes_gateway_running(self.hermes_base_url, api_key=key, timeout_sec=3.0):
-            from iris.system.hermes_gateway import probe_gateway_health
+            from iris.system.iris_agent_gateway import probe_gateway_health
 
             # 잔상 TIMEOUT 진단을 그대로 쓰지 않는다 — 지금 /health 를 다시 본다.
             health = probe_gateway_health(self.hermes_base_url, timeout_sec=3.0)
             if health.ok:
-                from iris.system.hermes_gateway import probe_gateway_ready
+                from iris.system.iris_agent_gateway import probe_gateway_ready
 
                 ready = probe_gateway_ready(
                     self.hermes_base_url, api_key=key, timeout_sec=3.0
@@ -1278,7 +1307,7 @@ class SetupProtocol:
             return False, report
         key = resolve_hermes_api_key()
         if not is_hermes_gateway_running(self.hermes_base_url, api_key=key):
-            from iris.system.hermes_gateway import probe_gateway_health, probe_gateway_ready
+            from iris.system.iris_agent_gateway import probe_gateway_health, probe_gateway_ready
 
             health = probe_gateway_health(self.hermes_base_url, timeout_sec=3.0)
             ready = probe_gateway_ready(
@@ -1336,9 +1365,9 @@ class SetupProtocol:
             )
             self._record_last_verify("full", False, detail)
             return False, detail
-        from iris.infrastructure.hermes_client import HermesClient
+        from iris.infrastructure.iris_agent_client import IrisAgentClient
 
-        auth = HermesClient(self.hermes_base_url, api_key=key).probe_chat_auth()
+        auth = IrisAgentClient(self.hermes_base_url, api_key=key).probe_chat_auth()
         if auth == "unauthorized":
             detail = (
                 "[API_KEY] Iris Agent 게이트웨이 채팅 401 Unauthorized "
@@ -1513,7 +1542,7 @@ class SetupProtocol:
                     "hermes_install": "[데모] Iris Agent 실행 파일 확인",
                     "hermes_env": "[데모] API 키 동기화됨 (파일 미기록)",
                     "hermes_provider": "[데모] provider 설정됨 (config 미변경)",
-                    "iris_control_sync": "[데모] iris-control MCP·스킬 OK",
+                    "iris_control_sync": "[데모] SpeakTools·스킬 OK",
                     "hermes_gateway": "[데모] gateway /health + MCP OK",
                     "core_smoke": "[데모] Core smoke 통과",
                 }.get(step_id, "[데모] 완료")
@@ -1552,7 +1581,7 @@ class SetupProtocol:
             "ollama_model": f"{self.min_model} 준비됨",
             "hermes_env": "API_SERVER_ENABLED·키 동기화됨",
             "hermes_provider": "provider → Ollama(custom) 설정",
-            "iris_control_sync": "Iris↔Agent: MCP iris-control ok, skills 6/6",
+            "iris_control_sync": "Iris↔Agent: SpeakTools ok, skills 6/6",
             "hermes_gateway": "iris-control tools ok (iris_get_state/catalog/invoke)",
             "core_smoke": "Ollama·Iris Agent·MCP 정상",
         }
@@ -2451,7 +2480,7 @@ class SetupProtocol:
 
     def _wipe_hermes_agent_runtime(self) -> str:
         """깨진 hermes-agent 트리 정리 (.env·config.yaml 유지). 잠금 시 rename 우회."""
-        from iris.system.hermes_install import force_retire_hermes_agent
+        from iris.system.iris_agent_install import force_retire_hermes_agent
 
         return force_retire_hermes_agent(command=self.hermes_command)
 
@@ -2460,7 +2489,7 @@ class SetupProtocol:
 
         R1(c): 스트림에 uv 448 마커가 보이면 조기 abort → 호출부가 우회로.
         """
-        from iris.system.hermes_install import looks_like_uv_python_mount_failure
+        from iris.system.iris_agent_install import looks_like_uv_python_mount_failure
 
         ps = (
             "$ProgressPreference='SilentlyContinue'; "
@@ -2512,7 +2541,7 @@ class SetupProtocol:
     def _hermes_user_fail(
         self, message: str, kind: str, log_path: str, tail: str
     ) -> SetupStepResult:
-        from iris.system.hermes_install import clip_needs_user_message
+        from iris.system.iris_agent_install import clip_needs_user_message
 
         message = clip_needs_user_message(redact_secrets(message))
         self._set_structured_last_error(
@@ -2542,7 +2571,7 @@ class SetupProtocol:
 
     def _install_hermes_bypass(self) -> SetupStepResult:
         """공식 설치가 끝났거나 실패했을 때 1회. 호출당 우회 한 번."""
-        from iris.system.hermes_install import (
+        from iris.system.iris_agent_install import (
             error_log_tail,
             install_hermes_with_system_python,
             last_bypass_log_path,
@@ -2580,7 +2609,7 @@ class SetupProtocol:
         )
 
     def _install_hermes(self) -> SetupStepResult:
-        from iris.system.hermes_install import (
+        from iris.system.iris_agent_install import (
             error_log_tail,
             should_skip_official_installer,
             write_install_log,
@@ -2783,7 +2812,7 @@ class SetupProtocol:
     def _step_iris_control_sync(self) -> SetupStepResult:
         if self._abort:
             return self._record_step("iris_control_sync", "failed", "사용자가 중단함")
-        self._emit_stream("iris-control MCP·스킬 동기화…", None, replace=False)
+        self._emit_stream("SpeakTools·스킬 동기화…", None, replace=False)
         try:
             # 시작 프로토콜 중에는 Control Surface가 아직 없음 — 강제 gateway 재기동 표시만
             # 하고 실제 restart는 hermes_gateway 단계에서 수행한다.
@@ -2802,7 +2831,7 @@ class SetupProtocol:
         if self._abort:
             return self._record_step("hermes_gateway", "failed", "사용자가 중단함")
         key = resolve_hermes_api_key()
-        from iris.system.hermes_gateway import (
+        from iris.system.iris_agent_gateway import (
             get_last_gateway_diagnosis,
             is_hermes_gateway_running,
             restart_hermes_gateway,
@@ -2889,7 +2918,7 @@ class SetupProtocol:
             if ok:
                 self._hermes_key_rotated = False
         elif health_up and ready_up and not _aborting():
-            from iris.system.hermes_gateway import mark_gateway_already_running
+            from iris.system.iris_agent_gateway import mark_gateway_already_running
 
             diag = mark_gateway_already_running(self.hermes_base_url)
             if diag.ok:
@@ -2900,7 +2929,7 @@ class SetupProtocol:
                 ok = _try_start(prefer_restart=True)
         elif health_up and not ready_up and not _aborting():
             # /health OK · /v1/models 실패 (키 불일치·좀비 프로세스)
-            from iris.system.hermes_gateway import probe_gateway_ready
+            from iris.system.iris_agent_gateway import probe_gateway_ready
 
             ready = probe_gateway_ready(
                 self.hermes_base_url, api_key=key, timeout_sec=3.0
@@ -2909,11 +2938,11 @@ class SetupProtocol:
                 f"gateway /health OK · ready 실패 ({ready.code}: {ready.detail}) — 재기동…"
             )
             if ready.code == "models_404" or ready.http_status == 404:
-                from iris.infrastructure.hermes_client import (
-                    normalize_hermes_openai_base_url,
+                from iris.infrastructure.iris_agent_client import (
+                    normalize_iris_agent_openai_base_url,
                 )
 
-                self.hermes_base_url = normalize_hermes_openai_base_url(
+                self.hermes_base_url = normalize_iris_agent_openai_base_url(
                     self.hermes_base_url
                 )
                 os.environ["IRIS_HERMES_BASE_URL"] = self.hermes_base_url
@@ -2984,7 +3013,7 @@ class SetupProtocol:
                 "[HEALTH] gateway /health 실패 — 로그: ~/.iris-light/agent/logs/iris-gateway",
                 action_hint="다시 시도하거나 로그 폴더를 확인하세요.",
             )
-        _progress("MCP iris-control 검증…")
+        _progress("SpeakTools 자세 검증…")
         mcp_ok, mcp_detail = verify_iris_mcp_tools(
             command=self.hermes_command, timeout_sec=25.0
         )
@@ -3025,8 +3054,8 @@ class SetupProtocol:
             detail_s = detail or ""
         elif ready_fail and not self._abort:
             # health OK·models 실패 — 재시도가 no-op이 되지 않게 1회 restart
-            from iris.system.hermes_gateway import probe_gateway_ready
-            from iris.infrastructure.hermes_client import normalize_hermes_openai_base_url
+            from iris.system.iris_agent_gateway import probe_gateway_ready
+            from iris.infrastructure.iris_agent_client import normalize_iris_agent_openai_base_url
 
             ready = probe_gateway_ready(
                 self.hermes_base_url, timeout_sec=3.0
@@ -3037,7 +3066,7 @@ class SetupProtocol:
                 ready.code == "models_http" and "401" in (ready.detail or "")
             )
             if is_404:
-                self.hermes_base_url = normalize_hermes_openai_base_url(
+                self.hermes_base_url = normalize_iris_agent_openai_base_url(
                     self.hermes_base_url
                 )
                 os.environ["IRIS_HERMES_BASE_URL"] = self.hermes_base_url

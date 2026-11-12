@@ -15,12 +15,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from iris.infrastructure.hermes_client import (
+from iris.infrastructure.iris_agent_client import (
     GatewayReadyResult,
     HealthProbeResult,
     parse_health_payload,
 )
-from iris.system import hermes_gateway as gw
+from iris.system import iris_agent_gateway as gw
 
 
 class GatewayDiagnosticsTests(unittest.TestCase):
@@ -336,7 +336,7 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         )
         with patch.object(gw, "probe_gateway_health", return_value=healthy):
             with patch(
-                "iris.system.hermes_gateway.resolve_hermes_api_key",
+                "iris.system.iris_agent_gateway.resolve_hermes_api_key",
                 return_value="x" * 40,
             ):
                 with patch.object(

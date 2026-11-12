@@ -274,7 +274,7 @@ class ContextHandoffWiringTests(TestCase):
         self.win._settings.hermes_api_key = "k"
         self.win._settings.hermes_command = "hermes"
         with patch(
-            "iris.infrastructure.hermes_client.resolve_hermes_inference",
+            "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             return_value=NS(model="upstream", label="up"),
         ):
             route = MainWindow._summary_route_for(self.win, "qwen3:8b")
@@ -456,7 +456,7 @@ class ContextHandoffWiringTests(TestCase):
         primary = NS(model="big-upstream", label="big")
 
         with patch(
-            "iris.infrastructure.hermes_client.resolve_hermes_inference",
+            "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             side_effect=lambda m, **kw: resolved[m],
         ):
             attempts = MainWindow._hermes_fallback_attempts(
@@ -490,7 +490,7 @@ class ContextHandoffWiringTests(TestCase):
             return NS(model="free-upstream", label="free A")
 
         with patch(
-            "iris.infrastructure.hermes_client.resolve_hermes_inference",
+            "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             side_effect=_resolve,
         ):
             attempts = MainWindow._hermes_fallback_attempts(
@@ -511,7 +511,7 @@ class ContextHandoffWiringTests(TestCase):
 
         big = [{"role": "user", "content": "나" * 20000}]
         with patch(
-            "iris.infrastructure.hermes_client.resolve_hermes_inference",
+            "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             side_effect=lambda m, **kw: NS(model="tiny-upstream", label="tiny"),
         ):
             attempts = MainWindow._hermes_fallback_attempts(

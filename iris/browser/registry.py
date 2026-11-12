@@ -225,7 +225,7 @@ def command_recipes() -> tuple[Recipe, ...]:
         Recipe(
             when="youtube_play",
             text=(
-                "Play YouTube: iris_invoke browser.search {engine:youtube, play:true}. "
+                "Play YouTube: SpeakTools/control browser.search {engine:youtube, play:true}. "
                 "Empty leftover query becomes 음악. Success is media.playing. "
                 "Do not claim speakers. Do not claim the video was analyzed."
             ),
@@ -235,7 +235,7 @@ def command_recipes() -> tuple[Recipe, ...]:
         Recipe(
             when="news",
             text=(
-                "Read news: iris_invoke browser.search or browser.navigate, then "
+                "Read news: SpeakTools/control browser.search or browser.navigate, then "
                 "browser.click {ref}, then browser.extract. Success is extract text in PAGE TEXT plus trusted url."
             ),
             control_names=("browser.search", "browser.navigate", "browser.click", "browser.extract"),

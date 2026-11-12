@@ -69,7 +69,9 @@ def register_session_actions(window: SessionHost, reg: ActionRegistry, surface: 
                     }
                 ),
                 "hermes_online": bool(getattr(window, "_hermes_online", False)),
-                "hermes_enabled": bool(window._settings.hermes_enabled),
+                "agent_enabled": bool(window._settings.agent_enabled),
+                # Dual key for MCP clients still reading hermes_enabled.
+                "hermes_enabled": bool(window._settings.agent_enabled),
                 "model": window._settings.model_name or window._settings.ollama_model,
                 "email_accounts": accounts,
                 "selected_email_account_id": window._selected_email_account_id,

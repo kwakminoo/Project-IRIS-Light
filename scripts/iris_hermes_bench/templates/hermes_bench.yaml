@@ -1,0 +1,13 @@
+# Isolated Hermes bench profile. Desktop MCP servers omitted on purpose.
+model:
+  provider: custom
+  base_url: http://127.0.0.1:11434/v1
+  default: gpt-oss:120b-cloud
+  api_key: ollama
+agent:
+  max_turns: 12
+  tool_choice: auto
+  disabled_toolsets:
+    - terminal
+    - browser
+mcp_servers: {}

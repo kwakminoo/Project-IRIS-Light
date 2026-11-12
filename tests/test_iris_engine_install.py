@@ -160,13 +160,13 @@ class EnsureReadyInstallTests(TestCase):
         self.assertIsNone(engine._child)
         self.assertEqual(_child_pids(), before)
 
-    def test_wrong_python_does_not_spawn(self) -> None:
+    def test_wrong_python_attempts_repair_before_failing(self) -> None:
         _write_fake_python(Path(self.home), ok=False)
         engine = Engine(InternalSidecar(home=self.home))
         before = _child_pids()
         with patch("iris.engine.runtime.install_into") as inst:
             result = engine.ensure_ready()
-        inst.assert_not_called()
+        inst.assert_called_once_with(self.home)
         self.assertEqual(_child_pids(), before)
         self.assertIsInstance(result, EngineFailed)
         assert isinstance(result, EngineFailed)
@@ -193,7 +193,7 @@ class EnsureReadyInstallTests(TestCase):
             seen.append((dest, sha, clone))
 
         with patch(
-            "iris.system.hermes_install.install_hermes_with_system_python",
+            "iris.system.iris_agent_install.install_hermes_with_system_python",
         ) as inst:
             install_into(self.home, runner=runner, clone="repo")
         inst.assert_not_called()
@@ -202,10 +202,10 @@ class EnsureReadyInstallTests(TestCase):
     def test_install_into_without_runner_does_not_clone(self) -> None:
         with (
             patch(
-                "iris.system.hermes_install.install_hermes_with_system_python",
+                "iris.system.iris_agent_install.install_hermes_with_system_python",
                 return_value=None,
             ) as inst,
-            patch("iris.system.hermes_gateway.hermes_home") as hermes_home,
+            patch("iris.system.iris_agent_gateway.hermes_home") as hermes_home,
         ):
             install_into(self.home)
         inst.assert_called_once()
@@ -223,7 +223,7 @@ class EnsureReadyInstallTests(TestCase):
             called.append("runner")
 
         with patch(
-            "iris.system.hermes_install.install_hermes_with_system_python",
+            "iris.system.iris_agent_install.install_hermes_with_system_python",
         ) as inst:
             install_into(self.home, runner=runner)
         inst.assert_not_called()

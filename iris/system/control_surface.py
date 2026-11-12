@@ -47,6 +47,11 @@ _OFF_UI_ACTIONS = frozenset(
         "project.write_image_code",
         # 디스크 쓰기·브리지 왕복. Qt 메인에서 스트림하면 Windows "응답 없음"
         "project.write_file",
+        "attachment.copy_to",
+        "attachment.move_to",
+        "project.import_attachment",
+        "local.read_file",
+        "local.search_files",
         # rmtree·IDE unlock. Qt 메인에서 돌리면 Windows "응답 없음"
         "project.delete",
         # 요약·문단 번역 모델 호출. Qt 메인에서 돌리면 창이 멈춘다.

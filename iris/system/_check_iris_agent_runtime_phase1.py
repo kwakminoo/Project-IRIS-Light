@@ -21,10 +21,10 @@ from iris.infrastructure.agent_runtime import (
     product_agent_home,
     vendor_runtime_root,
 )
-from iris.infrastructure.hermes_credentials import hermes_home
-from iris.system import hermes_gateway as gw
-from iris.system import hermes_update as upd
-from iris.system.hermes_ollama_guard import ollama_options_guard_present
+from iris.infrastructure.iris_agent_credentials import hermes_home
+from iris.system import iris_agent_gateway as gw
+from iris.system import iris_agent_update as upd
+from iris.system.iris_agent_ollama_guard import ollama_options_guard_present
 
 
 def _main() -> None:
@@ -59,7 +59,7 @@ def _main() -> None:
             assert home != legacy_only / "hermes"
 
     # credentials 와 sync 가 같은 홈
-    from iris.system import hermes_iris_control_sync as sync
+    from iris.system import iris_agent_control_sync as sync
 
     assert hermes_home() == sync.hermes_home() == iris_agent_home()
 

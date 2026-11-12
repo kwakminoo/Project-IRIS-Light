@@ -13,17 +13,36 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from iris import __version__
+from iris.runtime.stream_usage import parse_stream_usage
+
 # 마지막 경로 조각이 이 중 하나면 사용자가 이미 버전 세그먼트까지 입력한 것으로 존중함
 _VERSION_SEGMENTS = ("v1", "v1beta", "v1alpha", "v2", "openai", "api")
 AUTH_STYLES = ("bearer", "x-api-key")
 _SMOKE_LIMIT = 8  # 등록 테스트에서 대화 스모크를 시도할 최대 모델 수
+IRIS_HTTP_USER_AGENT = f"Iris-Light/{__version__}"
+
+
+def is_cloudflare_1010(detail: str) -> bool:
+    text = (detail or "").casefold()
+    return "error 1010" in text or "access denied (error: 1010)" in text
+
+
+def _display_http_detail(status: int, detail: str) -> str:
+    if status == 403 and is_cloudflare_1010(detail):
+        return (
+            "Cloudflare Error 1010: HTTP 클라이언트 식별자가 차단되었습니다. "
+            "API 키 오류가 아닙니다. Iris User-Agent 또는 네트워크/IP 정책을 확인하세요."
+        )
+    return detail
 
 
 class HttpFail(RuntimeError):
     """HTTP 실패. status 0은 연결 자체 실패(타임아웃·DNS 등)."""
 
     def __init__(self, status: int, detail: str) -> None:
-        super().__init__(f"HTTP {status}: {detail}" if status else f"연결 실패: {detail}")
+        shown = _display_http_detail(status, detail)
+        super().__init__(f"HTTP {status}: {shown}" if status else f"연결 실패: {shown}")
         self.status = status
         self.detail = detail
 
@@ -37,6 +56,8 @@ class ProbeResult:
     auth_style: str = "bearer"
     models: list[str] = field(default_factory=list)
     detail: str = ""
+    # Raw /models item dicts when listing succeeded. Empty on chat-only resolve.
+    model_entries: list[dict] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -65,7 +86,11 @@ def base_url_candidates(raw: str) -> list[str]:
 
 
 def _auth_headers(api_key: str, auth_style: str = "bearer") -> dict[str, str]:
-    h = {"Content-Type": "application/json", "Accept": "application/json"}
+    h = {
+        "User-Agent": IRIS_HTTP_USER_AGENT,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
     key = (api_key or "").strip()
     if not key:
         return h
@@ -110,28 +135,50 @@ def _http_json(
         raise HttpFail(0, f"JSON 파싱 실패: {raw[:120]}") from exc
 
 
-def _model_ids(data: Any) -> list[str]:
-    names: list[str] = []
+def _model_entries(data: Any) -> list[dict[str, Any]]:
+    """Preserve raw /models item dicts. Drop rows without id. Dedupe by id."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     items = data.get("data") if isinstance(data, dict) else None
-    if isinstance(items, list):
-        for it in items:
-            if isinstance(it, dict):
-                mid = str(it.get("id") or "").strip()
-                if mid and mid not in names:
-                    names.append(mid)
-    return names
+    if not isinstance(items, list):
+        return out
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        mid = str(it.get("id") or "").strip()
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        row = dict(it)
+        row["id"] = mid
+        out.append(row)
+    return out
 
 
-def list_models(
+def _model_ids(data: Any) -> list[str]:
+    return [str(e["id"]) for e in _model_entries(data)]
+
+
+def list_model_entries(
     base_url: str, api_key: str, *, auth_style: str = "bearer", timeout: float = 20.0
-) -> list[str]:
+) -> list[dict[str, Any]]:
+    """GET {base}/models and return raw item dicts (description/pricing/modality kept)."""
     root = normalize_base_url(base_url)
     if not root:
         raise ValueError("base_url이 비어 있습니다")
     data = _http_json(
         "GET", f"{root}/models", api_key=api_key, auth_style=auth_style, timeout=timeout
     )
-    return _model_ids(data)
+    return _model_entries(data)
+
+
+def list_models(
+    base_url: str, api_key: str, *, auth_style: str = "bearer", timeout: float = 20.0
+) -> list[str]:
+    """Id-only wrapper for callers that do not need listing metadata."""
+    return [str(e["id"]) for e in list_model_entries(
+        base_url, api_key, auth_style=auth_style, timeout=timeout
+    )]
 
 
 def _try_candidates(
@@ -153,22 +200,26 @@ def _try_candidates(
                 return cand, style, attempt(cand, style), errors
             except HttpFail as exc:
                 errors.append(f"{cand}: {exc}")
-                if not (style == "bearer" and exc.status in (401, 403)):
+                if not (
+                    style == "bearer"
+                    and exc.status in (401, 403)
+                    and not is_cloudflare_1010(exc.detail)
+                ):
                     break
     return "", "", None, errors
 
 
-def resolve_base_url(
+def _resolve_base_url_full(
     raw: str,
     api_key: str,
     *,
     model: str = "",
     timeout: float = 6.0,
-) -> tuple[str, str, list[str], str]:
-    """(확정 base_url, auth_style, models, detail). 실패 시 base_url == ""."""
+) -> tuple[str, str, list[str], str, list[dict[str, Any]]]:
+    """(base_url, auth_style, models, detail, model_entries). 실패 시 base_url == ""."""
     candidates = base_url_candidates(raw)
     if not candidates:
-        return "", "", [], "Base URL이 비어 있습니다"
+        return "", "", [], "Base URL이 비어 있습니다", []
 
     cand, style, data, errors = _try_candidates(
         candidates,
@@ -178,7 +229,14 @@ def resolve_base_url(
         ),
     )
     if cand:
-        return cand, style, _model_ids(data), f"{cand}/models ok ({style})"
+        entries = _model_entries(data)
+        return (
+            cand,
+            style,
+            [str(e["id"]) for e in entries],
+            f"{cand}/models ok ({style})",
+            entries,
+        )
 
     # /models가 없는 게이트웨이 — 사용자가 모델을 직접 준 경우에만 chat으로 확정
     hint = (model or "").strip()
@@ -190,9 +248,23 @@ def resolve_base_url(
         )
         errors.extend(chat_errors)
         if cand:
-            return cand, style, [hint], f"{cand}/chat/completions ok ({style})"
+            return cand, style, [hint], f"{cand}/chat/completions ok ({style})", []
 
-    return "", "", [], " · ".join(errors[-3:]) or "Base URL 확정 실패"
+    return "", "", [], " · ".join(errors[-3:]) or "Base URL 확정 실패", []
+
+
+def resolve_base_url(
+    raw: str,
+    api_key: str,
+    *,
+    model: str = "",
+    timeout: float = 6.0,
+) -> tuple[str, str, list[str], str]:
+    """(확정 base_url, auth_style, models, detail). 실패 시 base_url == ""."""
+    base, style, models, detail, _entries = _resolve_base_url_full(
+        raw, api_key, model=model, timeout=timeout
+    )
+    return base, style, models, detail
 
 
 def probe(
@@ -203,7 +275,7 @@ def probe(
     timeout: float = 25.0,
 ) -> ProbeResult:
     """연결 테스트 — Base URL·인증 방식을 확정하고 chat까지 실측함."""
-    root, style, models, detail = resolve_base_url(
+    root, style, models, detail, entries = _resolve_base_url_full(
         base_url, api_key, model=model, timeout=min(timeout, 10.0)
     )
     if not root:
@@ -218,6 +290,7 @@ def probe(
             break
         if m not in tried:
             tried.append(m)
+    listing = list(entries)
     if not tried:
         return ProbeResult(
             "partial",
@@ -225,6 +298,7 @@ def probe(
             style,
             models,
             f"{detail} · 모델 0개 — 모델 id를 직접 입력하세요",
+            model_entries=listing,
         )
     errors: list[str] = []
     for cand in tried:
@@ -235,7 +309,12 @@ def probe(
             continue
         found = models or [cand]
         return ProbeResult(
-            "ok", root, style, found, f"ok · {len(found)} models · 대화 검증 {cand} ({style})"
+            "ok",
+            root,
+            style,
+            found,
+            f"ok · {len(found)} models · 대화 검증 {cand} ({style})",
+            model_entries=listing,
         )
     return ProbeResult(
         "partial",
@@ -243,6 +322,7 @@ def probe(
         style,
         models,
         "목록은 되나 대화 실패 — " + " · ".join(errors[:2]),
+        model_entries=listing,
     )
 
 
@@ -292,16 +372,19 @@ def stream_chat(
     *,
     auth_style: str = "bearer",
     timeout: float = 120.0,
+    _include_usage: bool = True,
 ) -> Iterator[dict[str, Any]]:
-    """yield {"content": str|None, "done": bool}."""
+    """Yield content, normalized token usage, and terminal state."""
     root = normalize_base_url(base_url)
     if not root:
         raise ValueError("base_url이 비어 있습니다")
-    body = {
+    body: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": True,
     }
+    if _include_usage:
+        body["stream_options"] = {"include_usage": True}
     from iris.runtime.attachment_context import trace_payload
     trace_payload("openai_compat", body)
     data = json.dumps(body).encode("utf-8")
@@ -315,6 +398,21 @@ def stream_chat(
         resp = urlopen(req, timeout=timeout)
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:400]
+        if (
+            _include_usage
+            and int(exc.code) == 400
+            and "stream_options" in detail.lower()
+        ):
+            yield from stream_chat(
+                base_url,
+                api_key,
+                model,
+                messages,
+                auth_style=auth_style,
+                timeout=timeout,
+                _include_usage=False,
+            )
+            return
         raise HttpFail(int(exc.code), detail or str(exc.reason)) from exc
     except URLError as exc:
         raise HttpFail(0, str(exc.reason)) from exc
@@ -339,6 +437,9 @@ def stream_chat(
                 obj = json.loads(payload)
             except json.JSONDecodeError:
                 continue
+            usage = parse_stream_usage(obj)
+            if usage is not None:
+                yield {"content": None, "usage": usage, "done": False}
             choices = obj.get("choices") if isinstance(obj, dict) else None
             if not isinstance(choices, list) or not choices:
                 continue
@@ -351,8 +452,7 @@ def stream_chat(
                 yield {"content": content, "done": False}
             finish = ch0.get("finish_reason") if isinstance(ch0, dict) else None
             if finish:
-                yield {"content": None, "done": True}
-                return
+                continue
     yield {"content": None, "done": True}
 
 
@@ -369,4 +469,24 @@ if __name__ == "__main__":
     assert base_url_candidates("") == []
     assert "x-api-key" in _auth_headers("k", "x-api-key")
     assert _auth_headers("k")["Authorization"] == "Bearer k"
+    assert _auth_headers("")["User-Agent"] == IRIS_HTTP_USER_AGENT
+    assert is_cloudflare_1010("Cloudflare Error 1010")
+    sample = {
+        "data": [
+            {
+                "id": "org/free-chat",
+                "description": "Official free blurb",
+                "pricing": {"prompt": "0", "completion": "0"},
+                "architecture": {"modality": "text->text"},
+            },
+            {"name": "no-id"},
+            {"id": "org/free-chat", "description": "dup drop"},
+        ]
+    }
+    entries = _model_entries(sample)
+    assert len(entries) == 1
+    assert entries[0]["id"] == "org/free-chat"
+    assert entries[0]["description"] == "Official free blurb"
+    assert entries[0]["pricing"] == {"prompt": "0", "completion": "0"}
+    assert _model_ids(sample) == ["org/free-chat"]
     print("openai_compat_client self-check ok")

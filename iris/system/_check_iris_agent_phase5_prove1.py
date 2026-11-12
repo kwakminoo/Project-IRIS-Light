@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 
 from iris.infrastructure import agent_runtime as ar
-from iris.ui.workers import hermes_workers as hw
+from iris.ui.workers import iris_agent_workers as hw
 
 
 def _silence_agent_slot_log() -> None:
@@ -103,7 +103,7 @@ def _check_bad_path_not_on_mainwindow() -> None:
     ui_root = Path(hw.__file__).resolve().parents[1]  # iris/ui
     offenders: list[str] = []
     for path in ui_root.rglob("*.py"):
-        if path.name == "hermes_workers.py":
+        if path.name == "iris_agent_workers.py":
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         if probe in text:
@@ -219,12 +219,12 @@ def _check_standin_still_off_ui_thread() -> None:
 
 
 def _check_product_8642_untouched() -> None:
+    # Unit 2: product chat is sidecar-only; HTTP :8642 branch is gone.
     chat_src = inspect.getsource(hw.HermesChatWorker)
-    assert (
-        "8642" in chat_src
-        or "ensure_hermes_gateway" in chat_src
-        or "_ensure_gateway" in chat_src
-    )
+    assert "_run_internal" in chat_src
+    assert "_run_external" not in chat_src
+    assert "shared_engine" in chat_src
+
 
 
 def main() -> None:

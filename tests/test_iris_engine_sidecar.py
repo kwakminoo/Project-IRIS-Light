@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -32,9 +33,11 @@ def _child_env(**overrides: str) -> dict[str, str]:
     return env
 
 
-def _run_sidecar_main(env: dict[str, str], *extra: str) -> subprocess.CompletedProcess[str]:
+def _run_sidecar_main(
+    env: dict[str, str], *extra: str, isolated: bool = False
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(_SIDECAR_MAIN), *extra],
+        [sys.executable, *(("-S",) if isolated else ()), str(_SIDECAR_MAIN), *extra],
         capture_output=True,
         text=True,
         input="",
@@ -99,17 +102,42 @@ class SidecarMainTests(TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         lines = [line for line in proc.stdout.splitlines() if line.strip()]
         self.assertTrue(lines, "stdout must carry the hello line")
-        first = lines[0]
-        self.assertEqual(json.loads(first), {"t": "hello", "ok": True})
+        first = json.loads(lines[0])
+        self.assertEqual(first["t"], "hello")
+        self.assertTrue(first["ok"])
+        self.assertGreater(first["pid"], 0)
+
+    def test_hello_without_site_packages(self) -> None:
+        proc = _run_sidecar_main(_child_env(), isolated=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        first = json.loads(proc.stdout.splitlines()[0])
+        self.assertEqual(first["t"], "hello")
+        self.assertTrue(first["ok"])
 
     def test_hello_when_gui_python_is_a_different_path(self) -> None:
         proc = _run_sidecar_main(_child_env(IRIS_ENGINE_GUI_PYTHON=str(_ROOT / "not-python")))
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        first = proc.stdout.splitlines()[0]
-        self.assertEqual(json.loads(first), {"t": "hello", "ok": True})
+        first = json.loads(proc.stdout.splitlines()[0])
+        self.assertEqual(first["t"], "hello")
+        self.assertTrue(first["ok"])
 
 
 class SidecarExportTests(TestCase):
+    def test_engine_tool_names_are_provider_safe_and_reversible(self) -> None:
+        from iris.infrastructure.speak_capability import (
+            PHASE4_ALLOWLIST,
+            engine_tool_action,
+            engine_tool_schemas,
+        )
+
+        schemas = engine_tool_schemas()
+        self.assertEqual(len(schemas), len(PHASE4_ALLOWLIST.grants))
+        for schema in schemas:
+            name = schema["name"]
+            self.assertRegex(name, re.compile(r"^[A-Za-z0-9_-]+$"))
+            self.assertIsNotNone(PHASE4_ALLOWLIST.grant(engine_tool_action(name)))
+        self.assertEqual(engine_tool_action("settings_get"), "settings.get")
+
     def test_private_names_stay_off_all(self) -> None:
         import iris.engine as engine
 

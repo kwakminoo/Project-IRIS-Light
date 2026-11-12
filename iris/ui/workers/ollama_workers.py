@@ -10,7 +10,13 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from iris.infrastructure.ollama_usage import poll_ollama_cloud_signed_in
 
 from iris.infrastructure.ollama_client import OllamaClient, OllamaModelInfo, host_label_for_model
-from iris.ui.workers.chat_attempt import ChatAttempt, decide_fallback, normalize_attempts
+from iris.runtime.stream_usage import TokenUsage
+from iris.ui.workers.chat_attempt import (
+    ChatAttempt,
+    decide_fallback,
+    normalize_attempts,
+    route_target_for_attempt,
+)
 from iris.system.ollama_server import ensure_ollama_running, is_ollama_running
 
 # ponytail: 클라우드 프로브가 네트워크에 묶여 인트로/상태줄을 영원히 잡지 않게.
@@ -194,6 +200,8 @@ class OllamaChatWorker(QThread):
     failed = pyqtSignal(str)
     # 모델을 갈아탔다 — (새 모델, 사유, 이미 흘려보낸 content 가 있었는지)
     switched = pyqtSignal(str, str, bool)
+    cooled = pyqtSignal(object, float)
+    usage = pyqtSignal(int, int)
 
     def __init__(
         self,
@@ -241,11 +249,15 @@ class OllamaChatWorker(QThread):
 
             content_parts: list[str] = []
             thinking_open = False
+            done_reason = ""
             try:
                 client = OllamaClient(self._base_url)
                 for ev in client.stream_chat(attempt.model, attempt.messages, think=self._think):
                     if self._cancel:
                         break
+                    token_usage = ev.get("usage")
+                    if isinstance(token_usage, TokenUsage):
+                        self.usage.emit(token_usage.tokens_in, token_usage.tokens_out)
                     th = ev.get("thinking")
                     if isinstance(th, str) and th:
                         if not thinking_open:
@@ -260,9 +272,15 @@ class OllamaChatWorker(QThread):
                         content_parts.append(ch)
                         self.content_chunk.emit(ch)
                     if ev.get("done"):
+                        done_reason = str(ev.get("done_reason") or "")
                         break
                 if thinking_open:
                     self.thinking_done.emit()
+                if done_reason.casefold() == "length":
+                    raise RuntimeError(
+                        "Ollama 응답이 모델 컨텍스트 한도에서 종료되었습니다. "
+                        "새 채팅에서 요청을 나누거나 더 큰 컨텍스트 모델을 선택하세요."
+                    )
                 self.finished_ok.emit("".join(content_parts))
                 return
             except Exception as e:  # noqa: BLE001
@@ -270,13 +288,19 @@ class OllamaChatWorker(QThread):
                     self.thinking_done.emit()
                 last_error = str(e)
 
-            has_next = index + 1 < len(self._attempts)
-            if self._cancel or not has_next:
+            if self._cancel:
                 break
 
             step = decide_fallback(last_error, index)
             if step is None:
                 # 원인을 모르는 실패로 모델을 바꾸면 사용자만 헷갈린다.
+                break
+            if step.cool_until_monotonic is not None:
+                self.cooled.emit(
+                    route_target_for_attempt(attempt, "ollama"),
+                    step.cool_until_monotonic,
+                )
+            if index + 1 >= len(self._attempts):
                 break
 
             self._sleep_ms(step.delay_ms)

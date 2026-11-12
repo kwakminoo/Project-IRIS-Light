@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def main() -> None:
-    from iris.system.hermes_iris_control_sync import (
+    from iris.system.iris_agent_control_sync import (
         _IRIS_DISABLED_TOOLSETS,
         _merge_disabled_toolsets,
         ensure_hermes_disabled_terminal,

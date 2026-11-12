@@ -4,13 +4,12 @@ CLOSED bar (honest):
 - _SEED 에 mcp_bridge 행 0
 - 모든 seed 에 native handler
 - speak / try_native_control_invoke 가 seed control_action 을 :8765 없이 호출
-- 비-seed iris_invoke 는 HTTP compat 가능 (plan B rename-only 금지)
-- 147 MCP 전체 삭제 주장 금지
+- iris-control MCP stdio 는 tombstone (TOOLS=[])
+- 비-seed 는 try_native_control_invoke None (HTTP만)
 """
 
 from __future__ import annotations
 
-import json
 import socket
 from unittest import mock
 
@@ -23,8 +22,8 @@ from iris.infrastructure.agent_tool_registry import (
     try_native_control_invoke,
 )
 from iris.mcp import iris_control_stdio
-from iris.system.hermes_iris_control_sync import project_root
-from iris.ui.workers.hermes_workers import HermesChatWorker
+from iris.system.iris_agent_control_sync import project_root
+from iris.ui.workers.iris_agent_workers import HermesChatWorker
 
 
 def _block_network(*_a: object, **_k: object) -> None:
@@ -121,38 +120,12 @@ def _main() -> None:
     assert via_proj is not None and via_proj.get("ok") is False
     assert via_proj.get("error") == "requires_iris_ui"
 
-    with mock.patch.object(
-        iris_control_stdio,
-        "_http",
-        side_effect=AssertionError(
-            "Phase 2.5 MCP iris_invoke seed tools must not hit Control HTTP"
-        ),
-    ):
-        with mock.patch("socket.socket", side_effect=_block_network):
-            for action, args in (
-                ("email.list_accounts", {}),
-                ("calendar.list_events", {"limit": 1}),
-                ("get_state", {}),
-                ("ide.open_folder", {"path": "C:\\\\"}),
-                ("project.open_similar", {"query": "x"}),
-                ("wiki.list_notes", {"limit": 1}),
-                ("wiki.search", {"query": "iris", "limit": 1}),
-            ):
-                mcp = iris_control_stdio._handle_tool(
-                    "iris_invoke",
-                    {"action": action, "args": args},
-                )
-                assert mcp.get("isError") is False, (action, mcp)
-                payload = json.loads(mcp["content"][0]["text"])
-                assert payload.get("call_path") == "native", (action, payload)
-                assert payload.get("bridge") == "none"
-
     # Non-seed still may HTTP — prove not plan B rename-only MCP.
     assert try_native_control_invoke("email.list_messages", {}, registry=reg) is None
     assert try_native_control_invoke("wiki.write_user_note", {}, registry=reg) is None
 
     workers_src = (
-        root / "iris" / "ui" / "workers" / "hermes_workers.py"
+        root / "iris" / "ui" / "workers" / "iris_agent_workers.py"
     ).read_text(encoding="utf-8")
     assert "iris.mail.list_accounts" in workers_src
     assert "iris.calendar.list_events" in workers_src
@@ -174,11 +147,12 @@ def _main() -> None:
     assert "iris_control_stdio" not in reg_src
     assert 'call_path="mcp_bridge"' not in reg_src
 
+    assert iris_control_stdio.TOOLS == []
     stdio_src = (root / "iris" / "mcp" / "iris_control_stdio.py").read_text(
         encoding="utf-8"
     )
-    assert "try_native_control_invoke" in stdio_src
-    assert '_http("POST", "/v1/invoke"' in stdio_src
+    assert "TOOLS: list = []" in stdio_src or "TOOLS = []" in stdio_src
+    assert "_handle_tool" not in stdio_src
 
     for skill_name, markers in (
         ("iris-email", ("iris.mail.list_accounts",)),
@@ -198,7 +172,7 @@ def _main() -> None:
         for marker in markers:
             assert marker in skill, (skill_name, marker)
 
-    nudge_src = (root / "iris" / "system" / "hermes_memory_nudge.py").read_text(
+    nudge_src = (root / "iris" / "system" / "iris_agent_memory_nudge.py").read_text(
         encoding="utf-8"
     )
     assert "iris.mail.list_accounts" in nudge_src

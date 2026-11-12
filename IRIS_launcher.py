@@ -31,8 +31,45 @@ def _project_root() -> Path:
 
 
 def _python_candidates(root: Path) -> list[Path]:
+    """Prefer base pythonw (no venv stub parent). Fall back to Scripts stubs."""
+    candidates: list[Path] = []
+    try:
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from iris.system.gui_python import base_pythonw, resolve_gui_pythonw
+
+        resolved = resolve_gui_pythonw(root)
+        candidates.append(resolved)
+        base = base_pythonw(root)
+        if base is not None and base.resolve() != resolved.resolve():
+            candidates.append(base)
+    except Exception:
+        pass
     scripts = root / ".venv" / "Scripts"
-    return [scripts / "pythonw.exe", scripts / "python.exe"]
+    candidates.extend([scripts / "pythonw.exe", scripts / "python.exe"])
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for path in candidates:
+        try:
+            key = path.resolve()
+        except OSError:
+            key = path
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _launch_env(root: Path) -> dict[str, str]:
+    try:
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from iris.system.gui_python import gui_launch_env
+
+        return gui_launch_env(root)
+    except Exception:
+        return os.environ.copy()
 
 
 def _log_path() -> Path:
@@ -86,9 +123,21 @@ def _run_and_watch(py: Path, root: Path) -> subprocess.Popen:
     except OSError:
         sink = None
 
+    env = _launch_env(root)
+    try:
+        boot = Path.home() / ".iris-light" / "logs" / "boot_trace.log"
+        boot.parent.mkdir(parents=True, exist_ok=True)
+        with boot.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"pid={os.getpid()} ppid={os.getppid()} "
+                f"IRIS_launcher Popen {py} -m iris\n"
+            )
+    except OSError:
+        pass
     proc = subprocess.Popen(
         [str(py), "-m", "iris", *sys.argv[1:]],
         cwd=str(root),
+        env=env,
         close_fds=True,
         stdout=sink if sink is not None else subprocess.DEVNULL,
         stderr=subprocess.STDOUT,

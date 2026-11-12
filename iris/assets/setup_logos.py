@@ -1,4 +1,4 @@
-"""설치 프로토콜 단계별 브랜드 로고 (Ollama / Hermes / IRIS)."""
+"""설치 프로토콜 단계별 브랜드 로고 (Ollama / Iris Agent / IRIS)."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ STEP_BRAND: dict[str, str] = {
 
 _BRAND_LABEL = {
     "ollama": "Ollama",
-    "hermes": "Hermes",
+    "hermes": "Iris Agent",
     "iris": "IRIS",
 }
 

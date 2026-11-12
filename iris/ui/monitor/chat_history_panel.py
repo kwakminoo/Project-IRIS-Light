@@ -416,7 +416,11 @@ class _ActivityBadge(QWidget):
             painter.drawArc(rect, start + span, int(260 * 16))
         else:
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(147, 197, 253, 210))
+            painter.setBrush(
+                QColor(248, 113, 113, 230)
+                if self._activity == ChatActivity.FAILED
+                else QColor(147, 197, 253, 210)
+            )
             painter.drawEllipse(QPointF(cx, cy), 3.2, 3.2)
         painter.end()
 

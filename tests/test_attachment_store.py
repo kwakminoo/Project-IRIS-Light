@@ -144,6 +144,37 @@ class StoreTests(unittest.TestCase):
         finally:
             db._conn.close()
 
+    def test_copy_and_move_preserve_original_bytes(self):
+        source = self.root / "original.pdf"
+        source.write_bytes(b"%PDF-1.7\x00original-bytes")
+        destination = self.root / "exports"
+        destination.mkdir()
+        store = AttachmentStore()
+        store.attach([str(source)])
+        aid = next(iter(store.roots))
+
+        copied = store.copy_to(aid, str(destination))
+        self.assertEqual(copied.read_bytes(), source.read_bytes())
+        self.assertTrue(source.exists())
+        with self.assertRaises(FileExistsError):
+            store.copy_to(aid, str(destination))
+
+        moved = store.move_to(aid, str(self.root / "moved.pdf"))
+        self.assertFalse(source.exists())
+        self.assertEqual(moved.read_bytes(), b"%PDF-1.7\x00original-bytes")
+        self.assertEqual(store._resolve(aid, "moved.pdf"), moved)
+
+    def test_transfer_rejects_relative_destination_and_folder_attachment(self):
+        source = self.root / "source.txt"
+        source.write_text("original", encoding="utf-8")
+        store = AttachmentStore()
+        store.attach([str(source), str(self.folder)])
+        file_id, folder_id = tuple(store.roots)
+        with self.assertRaises(ValueError):
+            store.copy_to(file_id, "relative.txt")
+        with self.assertRaises(ValueError):
+            store.copy_to(folder_id, str(self.root / "folder-copy"))
+
     def test_attachment_limit_keeps_successes_and_bounded_error_state(self):
         store = AttachmentStore()
         paths = []

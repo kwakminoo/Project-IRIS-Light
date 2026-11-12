@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from iris.system.hermes_iris_control_sync import iris_state_dir
+from iris.system.iris_agent_control_sync import iris_state_dir
 
 _STORE_NAME = "ide-recent-folders.json"
 

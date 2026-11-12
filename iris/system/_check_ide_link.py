@@ -435,7 +435,7 @@ def check_client_error_codes() -> None:
             bridge_text = str(exc)
         else:
             raise AssertionError("closed port")
-        from iris.mcp.iris_control_stdio import _tool_result
+        from iris.system.control_http_client import _tool_result
         from iris.system.control_surface import err_result
 
         bridge_fail = err_result("ide.open_file", bridge_text)

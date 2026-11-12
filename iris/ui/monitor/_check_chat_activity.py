@@ -45,6 +45,12 @@ def _check_map() -> None:
     m.mark_finished(99, viewing=False)
     assert m.get(99) is ChatActivity.IDLE
 
+    m.mark_working(4)
+    m.mark_failed(4, viewing=False)
+    assert m.get(4) is ChatActivity.FAILED
+    m.clear_done(4)
+    assert m.get(4) is ChatActivity.IDLE
+
 
 def _check_row_timer(app: QApplication) -> None:
     panel = ChatHistoryPanel()
@@ -70,6 +76,11 @@ def _check_row_timer(app: QApplication) -> None:
     assert row._activity is ChatActivity.DONE
     assert not row._anim_timer.isActive()
     assert row._badge is not None and not row._badge.isHidden()
+
+    panel.set_activity({7: ChatActivity.FAILED})
+    app.processEvents()
+    assert row._activity is ChatActivity.FAILED
+    assert not row._anim_timer.isActive()
 
     panel.set_activity({})
     app.processEvents()

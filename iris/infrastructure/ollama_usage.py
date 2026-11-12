@@ -16,7 +16,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from iris.infrastructure.api_quota import ApiQuota
-from iris.infrastructure.hermes_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import hermes_home
 
 _SETTINGS_URL = "https://ollama.com/settings"
 # aria-label="Session usage 0.2% used" 또는 "Session usage 4.0%"

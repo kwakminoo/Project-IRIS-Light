@@ -17,8 +17,8 @@ from iris.infrastructure.agent_tool_registry import (
     resolve_speak_tool_name,
     speak_invoke_agent_tool,
 )
-from iris.system.hermes_iris_control_sync import project_root
-from iris.ui.workers.hermes_workers import HermesChatWorker
+from iris.system.iris_agent_control_sync import project_root
+from iris.ui.workers.iris_agent_workers import HermesChatWorker
 
 
 def _block_network(*_a: object, **_k: object) -> None:
@@ -32,7 +32,7 @@ def _main() -> None:
     assert resolve_speak_tool_name("wiki.list_notes") == "iris.wiki.list_notes"
 
     workers_src = (
-        root / "iris" / "ui" / "workers" / "hermes_workers.py"
+        root / "iris" / "ui" / "workers" / "iris_agent_workers.py"
     ).read_text(encoding="utf-8")
     assert "speak_invoke_agent_tool" in workers_src
     assert "def invoke_native_tool" in workers_src

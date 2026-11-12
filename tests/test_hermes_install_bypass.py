@@ -2,7 +2,7 @@
 
 실행:
   .venv\\Scripts\\python.exe -m unittest tests.test_hermes_install_bypass -v
-  .venv\\Scripts\\python.exe -m iris.system.hermes_install
+  .venv\\Scripts\\python.exe -m iris.system.iris_agent_install
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from iris.system import hermes_install as hi
+from iris.system import iris_agent_install as hi
 from iris.system.setup_protocol import SetupProtocol
 
 
@@ -80,7 +80,7 @@ class HermesInstallBypassTests(unittest.TestCase):
                 return (3, 14) if "Scripts" in path.parts else (3, 13)
 
             with (
-                patch("iris.system.hermes_iris_control_sync.project_root", return_value=root),
+                patch("iris.system.iris_agent_control_sync.project_root", return_value=root),
                 patch.object(hi, "python_version", side_effect=version),
                 patch.object(hi.shutil, "which", return_value=None),
                 patch.object(hi.sys, "executable", ""),
@@ -109,7 +109,7 @@ class HermesInstallBypassTests(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 1, "", "")
 
             with (
-                patch("iris.system.hermes_iris_control_sync.project_root", return_value=root),
+                patch("iris.system.iris_agent_control_sync.project_root", return_value=root),
                 patch.object(hi, "python_version", side_effect=version),
                 patch.object(hi.shutil, "which", side_effect=lambda n: "py.exe" if n == "py" else None),
                 patch.object(hi, "_run", side_effect=fake_run),
@@ -265,7 +265,7 @@ class HermesInstallLogAndStagingTests(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, str(py311) + "\n", "")
 
             with (
-                patch("iris.system.hermes_iris_control_sync.project_root", return_value=root),
+                patch("iris.system.iris_agent_control_sync.project_root", return_value=root),
                 patch.object(hi.shutil, "which", side_effect=which),
                 patch.object(hi, "_run", side_effect=run),
                 patch.object(hi, "is_supported_hermes_python", return_value=True),
@@ -377,7 +377,7 @@ class HermesInstallProtocolTests(unittest.TestCase):
             patch("iris.system.setup_protocol.probe_hermes_runtime", return_value=(False, "no")),
             patch.object(proto, "_run_hermes_official_installer", return_value=proc),
             patch.object(proto, "_install_hermes_bypass", side_effect=bypass),
-            patch("iris.system.hermes_install.write_install_log", return_value=Path("C:/t.log")),
+            patch("iris.system.iris_agent_install.write_install_log", return_value=Path("C:/t.log")),
         ):
             result = proto._install_hermes()
         self.assertEqual(calls["n"], 1)
@@ -397,7 +397,7 @@ class HermesInstallProtocolTests(unittest.TestCase):
             patch("iris.system.setup_protocol.probe_hermes_runtime", return_value=(False, "import fail")),
             patch.object(proto, "_run_hermes_official_installer", return_value=proc),
             patch.object(proto, "_install_hermes_bypass", side_effect=bypass),
-            patch("iris.system.hermes_install.write_install_log", return_value=Path("C:/t.log")),
+            patch("iris.system.iris_agent_install.write_install_log", return_value=Path("C:/t.log")),
             patch.object(SetupProtocol, "_install_hermes") if False else patch("iris.system.setup_protocol.sys.platform", "win32"),
         ):
             result = proto._install_hermes()
@@ -424,7 +424,7 @@ class HermesInstallProtocolTests(unittest.TestCase):
         blob = "Obtaining file:///hermes-agent\n" + ("x\n" * 20) + "ERROR: wheel build failed\n"
         result_obj = hi.InstallResult(False, hi.format_install_failure("pip 설치 실패", blob, Path("C:/iris-install.log"), "exit"), "exit", "C:/iris-install.log")
         with (
-            patch("iris.system.hermes_install.install_hermes_with_system_python", return_value=result_obj),
+            patch("iris.system.iris_agent_install.install_hermes_with_system_python", return_value=result_obj),
             patch("iris.system.setup_protocol.refresh_process_path"),
         ):
             result = proto._install_hermes_bypass()

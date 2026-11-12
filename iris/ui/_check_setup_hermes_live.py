@@ -13,7 +13,7 @@ def _safe(s: str) -> str:
 
 
 def main() -> int:
-    from iris.system.hermes_gateway import (
+    from iris.system.iris_agent_gateway import (
         is_hermes_gateway_running,
         probe_hermes_runtime,
         resolve_hermes_api_key,

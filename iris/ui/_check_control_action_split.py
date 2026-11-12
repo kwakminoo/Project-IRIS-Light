@@ -1,6 +1,6 @@
 """연번 12 — 액션 이름·계약은 같고 등록만 기능별로 나뉘었는지.
 
-카탈로그 스냅샷은 register() 와 같다. 153건.
+카탈로그 스냅샷은 register() 와 같다. 160건.
 """
 
 from __future__ import annotations
@@ -93,6 +93,11 @@ def check_threads() -> None:
     assert runs_off_ui_thread("project.write_image_code") is True
     assert runs_off_ui_thread("project.write_file") is True
     assert runs_off_ui_thread("project.delete") is True
+    assert runs_off_ui_thread("attachment.copy_to") is True
+    assert runs_off_ui_thread("attachment.move_to") is True
+    assert runs_off_ui_thread("project.import_attachment") is True
+    assert runs_off_ui_thread("local.read_file") is True
+    assert runs_off_ui_thread("local.search_files") is True
     assert runs_off_ui_thread("emulator.tap") is True
     assert runs_off_ui_thread("email.list_messages") is True
     assert runs_off_ui_thread("ide.open_file") is False
@@ -122,8 +127,11 @@ def main() -> None:
     before = json.loads(_CATALOG.read_text(encoding="utf-8"))
     assert got == before, "action catalog drifted"
     names = [a["name"] for a in got]
-    assert len(names) == len(set(names)) == 153
+    assert len(names) == len(set(names)) == 160
     assert "project.delete" in names
+    assert reg.spec("attachment.copy_to").confirm_required is True
+    assert reg.spec("attachment.move_to").confirm_required is True
+    assert reg.spec("project.import_attachment").confirm_required is False
     assert runs_off_ui_thread("browser.click") is True
     assert runs_off_ui_thread("project.delete") is True
     check_invalid_and_write(reg, window)

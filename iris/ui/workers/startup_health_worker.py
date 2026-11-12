@@ -6,7 +6,7 @@ import threading
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-# ponytail: ensure Ollama/Hermes 기동 대기 포함 — 12s는 재부팅 직후에 부족함.
+# ponytail: ensure Ollama/Iris Agent 기동 대기 포함 — 12s는 재부팅 직후에 부족함.
 _HEALTH_PROBE_TIMEOUT_S = 90.0
 
 
@@ -19,15 +19,23 @@ class StartupHealthWorker(QThread):
         self,
         *,
         ollama_base_url: str,
-        hermes_base_url: str,
-        hermes_command: str,
+        hermes_base_url: str | None = None,
+        hermes_command: str | None = None,
+        agent_base_url: str | None = None,
+        agent_command: str | None = None,
         min_model: str = "",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._ollama_base_url = ollama_base_url
-        self._hermes_base_url = hermes_base_url
-        self._hermes_command = hermes_command
+        self._agent_base_url = (
+            agent_base_url
+            if agent_base_url is not None
+            else (hermes_base_url or "http://127.0.0.1:8642/v1")
+        )
+        self._agent_command = (
+            agent_command if agent_command is not None else hermes_command
+        ) or "hermes"
         self._min_model = min_model
 
     def _probe(self) -> bool:
@@ -39,7 +47,7 @@ class StartupHealthWorker(QThread):
 
         if is_setup_preview():
             return False
-        # ponytail: 이미 core_ready면 Hermes stop/models warm을 기다리지 않는다.
+        # ponytail: 이미 core_ready면 Iris Agent stop/models warm을 기다리지 않는다.
         # warm은 인트로 시작 후 CoreWarmWorker가 담당. 안 그러면 '환경 확인 중'에
         # 고정되고 IDE 왕복(enter_from_void)으로만 UI가 살아나는 증상이 난다.
         if is_core_ready():
@@ -47,8 +55,8 @@ class StartupHealthWorker(QThread):
         return bool(
             mark_core_ready_if_healthy(
                 ollama_base_url=self._ollama_base_url,
-                hermes_base_url=self._hermes_base_url,
-                hermes_command=self._hermes_command,
+                agent_base_url=self._agent_base_url,
+                agent_command=self._agent_command,
                 min_model=self._min_model,
             )
         )
@@ -82,20 +90,28 @@ class StartupHealthWorker(QThread):
 
 
 class CoreWarmWorker(QThread):
-    """Boot 이후 Ollama/Hermes 기동 — UI 인트로를 막지 않는다."""
+    """Boot 이후 Ollama/Iris Agent 기동 — UI 인트로를 막지 않는다."""
 
     def __init__(
         self,
         *,
         ollama_base_url: str,
-        hermes_base_url: str,
-        hermes_command: str,
+        hermes_base_url: str | None = None,
+        hermes_command: str | None = None,
+        agent_base_url: str | None = None,
+        agent_command: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._ollama_base_url = ollama_base_url
-        self._hermes_base_url = hermes_base_url
-        self._hermes_command = hermes_command
+        self._agent_base_url = (
+            agent_base_url
+            if agent_base_url is not None
+            else (hermes_base_url or "http://127.0.0.1:8642/v1")
+        )
+        self._agent_command = (
+            agent_command if agent_command is not None else hermes_command
+        ) or "hermes"
 
     def run(self) -> None:
         try:
@@ -103,8 +119,8 @@ class CoreWarmWorker(QThread):
 
             _warm_core_services(
                 ollama_base_url=self._ollama_base_url,
-                hermes_base_url=self._hermes_base_url,
-                hermes_command=self._hermes_command,
+                agent_base_url=self._agent_base_url,
+                agent_command=self._agent_command,
             )
         except Exception:
             pass
@@ -126,8 +142,8 @@ if __name__ == "__main__":
     t0 = time.monotonic()
     w = _HangWorker(
         ollama_base_url="http://127.0.0.1:1/v1",
-        hermes_base_url="http://127.0.0.1:2/v1",
-        hermes_command="hermes",
+        agent_base_url="http://127.0.0.1:2/v1",
+        agent_command="hermes",
     )
     w._timeout_s = 0.4
     got: list[bool] = []

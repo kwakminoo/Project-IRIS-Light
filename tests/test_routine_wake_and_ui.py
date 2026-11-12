@@ -93,7 +93,7 @@ class PerRoutineModelTests(TestCase):
             ollama_base_url="http://127.0.0.1:11434/v1",
         )
         with patch(
-            "iris.infrastructure.hermes_client.resolve_hermes_inference",
+            "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             side_effect=lambda m, **kw: SimpleNamespace(model=f"up/{m}", label=m),
         ):
             route = resolve_backend_route(hermes, self.db, "api:ab:remote")

@@ -39,6 +39,11 @@ class Database:
             self._conn.execute("PRAGMA busy_timeout=15000")
             self._init_schema()
 
+    def initialize(self) -> None:
+        """Idempotent schema ensure. __init__ already creates tables."""
+        with self._lock:
+            self._init_schema()
+
     def _execute(self, sql: str, params: Any = ()) -> sqlite3.Cursor:
         with self._lock:
             return self._conn.execute(sql, params)

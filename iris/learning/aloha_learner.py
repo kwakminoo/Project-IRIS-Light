@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Protocol
 
-from iris.infrastructure.hermes_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import hermes_home
 from iris.learning.models import LearningEvent, SemanticTrace, SessionManifest, TraceStep
 from iris.learning.paths import aloha_act_root, aloha_learn_root, traces_dir
 

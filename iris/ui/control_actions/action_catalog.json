@@ -6,6 +6,30 @@
     "confirm_required": false
   },
   {
+    "name": "app.demo_ping",
+    "summary": "Open the App Host demo (app_host_ping.html)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "app.directory_list",
+    "summary": "List or search App Host directory apps",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "attachment.copy_to",
+    "summary": "Copy an attached original by attachment_id to an absolute destination. The source host path is never exposed; external writes require human confirmation. overwrite defaults to false.",
+    "risk": "medium",
+    "confirm_required": true
+  },
+  {
+    "name": "attachment.move_to",
+    "summary": "Move an attached original by attachment_id to an absolute destination. Call only when the user explicitly asked to move it; source deletion requires human confirmation.",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
     "name": "browser.back",
     "summary": "Browser history back",
     "risk": "low",
@@ -528,6 +552,12 @@
     "confirm_required": false
   },
   {
+    "name": "shell.run",
+    "summary": "Run a home-surface shell command (no console window; chat Iris Shell card)",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
     "name": "learning.get",
     "summary": "Get learned workflow details",
     "risk": "low",
@@ -576,6 +606,18 @@
     "confirm_required": false
   },
   {
+    "name": "local.read_file",
+    "summary": "Read one absolute local text path within the configured System or Workspace + Attachments scope.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "local.search_files",
+    "summary": "Search filenames under one explicit absolute root within the configured local read scope.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
     "name": "note.export_pdf",
     "summary": "Make a PDF from content and/or source files. Required: content or sources. Optional path (open project, else Documents/IRIS/iris-note.pdf). Do not run PyMuPDF, reportlab, or pdf_create.py. Do not claim saved without ok and a real file.",
     "risk": "medium",
@@ -621,6 +663,12 @@
     "name": "project.find_similar",
     "summary": "Fuzzy-find project folders under configured parents by name (e.g. ai guitar tab → AI-Guitar-Tab-main)",
     "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "project.import_attachment",
+    "summary": "Copy an attached original into the bound IDE workspace. Required: attachment_id and workspace-relative rel_path; existing files are refused.",
+    "risk": "medium",
     "confirm_required": false
   },
   {

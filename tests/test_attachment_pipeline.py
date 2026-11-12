@@ -356,7 +356,7 @@ class QtAttachmentTests(FixtureCase):
 
 class WirePayloadTests(FixtureCase):
     def test_actual_hermes_http_request_contains_body_and_no_local_path(self):
-        from iris.infrastructure.hermes_client import HermesClient
+        from iris.infrastructure.iris_agent_client import HermesClient
         captured = []
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):

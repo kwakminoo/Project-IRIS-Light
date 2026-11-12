@@ -571,7 +571,7 @@ class SetupWizard(QDialog):
             self._worker = None
 
         try:
-            from iris.system.hermes_gateway import clear_last_gateway_diagnosis
+            from iris.system.iris_agent_gateway import clear_last_gateway_diagnosis
 
             clear_last_gateway_diagnosis()
         except Exception:  # noqa: BLE001
@@ -596,8 +596,8 @@ class SetupWizard(QDialog):
             reset_core_ready()
         proto = SetupProtocol(
             ollama_base_url=self._settings.ollama_base_url,
-            hermes_base_url=self._settings.hermes_base_url,
-            hermes_command=self._settings.hermes_command,
+            agent_base_url=self._settings.agent_base_url,
+            agent_command=self._settings.agent_command,
             min_model=self._settings.ollama_model or "",
             allow_core_skip=(self._mode == "repair"),
         )
@@ -775,7 +775,7 @@ class SetupWizard(QDialog):
 
     def _copy_gateway_diagnosis(self) -> None:
         try:
-            from iris.system.hermes_gateway import (
+            from iris.system.iris_agent_gateway import (
                 get_last_gateway_diagnosis,
                 gateway_diagnosis_path,
             )

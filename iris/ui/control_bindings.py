@@ -490,11 +490,14 @@ def start_control_surface(window: MainWindow) -> ControlSurface | None:
         return None
 
     # ponytail: sync는 UI 스레드에서 하지 않음 — /v1/state 프로브가 같은 스레드 invoker와
-    # 데드락 나며 Windows "응답 없음"이 됨. HermesHealthWorker가 백그라운드에서 동기화.
+    # 데드락 나며 Windows "응답 없음"이 됨. IrisAgentHealthWorker가 백그라운드에서 동기화.
     window._control_surface = surface  # type: ignore[attr-defined]
     window._control_qt_invoker = qt  # type: ignore[attr-defined]
+    from iris.infrastructure.speak_capability import bind_live_control_surface
+
+    bind_live_control_surface(surface)
     window._live_activity.append_instant_line(
-        f"Iris control: listening on http://{host}:{bound} (MCP iris-control)"
+        f"Iris control: listening on http://{host}:{bound} (SpeakTools only)"
     )
     return surface
 
@@ -507,6 +510,9 @@ def stop_control_surface(window: MainWindow) -> None:
         except Exception:
             pass
         window._control_surface = None  # type: ignore[attr-defined]
+        from iris.infrastructure.speak_capability import bind_live_control_surface
+
+        bind_live_control_surface(None)
 
 
 def mark_control_ready(window: MainWindow) -> None:
@@ -619,7 +625,7 @@ def _call_on_ui_unbounded(window: MainWindow, fn: Callable[[], Any]) -> Any:
 
 def _confirm_body(spec: Any, args: dict[str, Any]) -> str:
     bits = [spec.summary or spec.name]
-    for key in ("to", "subject", "text", "url", "value", "name"):
+    for key in ("to", "destination", "subject", "text", "url", "value", "name"):
         if args.get(key):
             bits.append(f"{key}={args[key]}")
     return "\n".join(bits)[:800]
@@ -627,23 +633,30 @@ def _confirm_body(spec: Any, args: dict[str, Any]) -> str:
 
 def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     """기능별 등록 조립. 실행은 iris.ui.control_actions."""
+    from iris.ui.control_actions.attachment import register_attachment_actions
     from iris.ui.control_actions.agent_turn import register_agent_turn_actions
+    from iris.ui.control_actions.app import register_app_actions
     from iris.ui.control_actions.chat import register_chat_actions
     from iris.ui.control_actions.email import register_email_actions
     from iris.ui.control_actions.browser import register_browser_actions
     from iris.ui.control_actions.emulator import register_emulator_actions
     from iris.ui.control_actions.ide import register_ide_actions
     from iris.ui.control_actions.learning import register_learning_actions
+    from iris.ui.control_actions.local_files import register_local_file_actions
     from iris.ui.control_actions.profile import register_profile_actions
     from iris.ui.control_actions.project import register_project_actions
     from iris.ui.control_actions.session import register_session_actions
     from iris.ui.control_actions.routine import register_routine_actions
     from iris.ui.control_actions.settings import register_settings_actions
+    from iris.ui.control_actions.shell import register_shell_actions
     from iris.ui.control_actions.wiki import register_wiki_actions
     from iris.ui.control_actions.workspace import register_workspace_actions
 
     reg = surface.registry
     register_session_actions(window, reg, surface)
+    register_attachment_actions(window, reg)
+    register_local_file_actions(window, reg)
+    register_shell_actions(window, reg)
     register_ide_actions(window, reg)
     register_project_actions(window, reg)
     register_profile_actions(window, reg)
@@ -656,6 +669,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     register_email_actions(window, reg)
     register_wiki_actions(window, reg)
     register_chat_actions(window, reg)
+    register_app_actions(window, reg)
     register_agent_turn_actions(window, reg)
     from iris.ui.settings.hud_dialog import run_hud_confirm
 

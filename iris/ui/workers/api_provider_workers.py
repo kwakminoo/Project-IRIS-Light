@@ -7,12 +7,14 @@ from urllib.parse import urlparse
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from iris.infrastructure import openai_compat_client as oai
+from iris.runtime.stream_usage import TokenUsage
 from iris.storage.api_providers import ApiProvider
 from iris.ui.workers.chat_attempt import (
     ApiCall,
     ChatAttempt,
     decide_fallback,
     normalize_attempts,
+    route_target_for_attempt,
 )
 
 
@@ -99,7 +101,7 @@ class ApiModelsVerifyWorker(QThread):
 
 
 class OpenAICompatChatWorker(QThread):
-    """직접 호출 채팅 스트림 — Ollama/Hermes 워커와 동일 시그널 계약."""
+    """직접 호출 채팅 스트림 — Ollama/Iris Agent 워커와 동일 시그널 계약."""
 
     connecting = pyqtSignal(str, str)  # model, host
     thinking_started = pyqtSignal()
@@ -111,6 +113,8 @@ class OpenAICompatChatWorker(QThread):
 
     # (새 모델, 사유, 이미 흘려보낸 content 가 있었는지)
     switched = pyqtSignal(str, str, bool)
+    cooled = pyqtSignal(object, float)
+    usage = pyqtSignal(int, int)
 
     def __init__(
         self,
@@ -186,6 +190,9 @@ class OpenAICompatChatWorker(QThread):
                 ):
                     if self._cancel:
                         break
+                    token_usage = ev.get("usage")
+                    if isinstance(token_usage, TokenUsage):
+                        self.usage.emit(token_usage.tokens_in, token_usage.tokens_out)
                     ch = ev.get("content")
                     if isinstance(ch, str) and ch:
                         parts.append(ch)
@@ -197,11 +204,17 @@ class OpenAICompatChatWorker(QThread):
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
 
-            has_next = index + 1 < len(self._attempts)
-            if self._cancel or not has_next:
+            if self._cancel:
                 break
             step = decide_fallback(last_error, index)
             if step is None:
+                break
+            if step.cool_until_monotonic is not None:
+                self.cooled.emit(
+                    route_target_for_attempt(attempt, "api"),
+                    step.cool_until_monotonic,
+                )
+            if index + 1 >= len(self._attempts):
                 break
             self._sleep_ms(step.delay_ms)
             if self._cancel:

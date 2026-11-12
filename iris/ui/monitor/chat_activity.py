@@ -10,6 +10,7 @@ class ChatActivity(str, Enum):
     IDLE = "idle"
     WORKING = "working"
     DONE = "done"
+    FAILED = "failed"
 
 
 class ChatActivityMap:
@@ -36,7 +37,14 @@ class ChatActivityMap:
         else:
             self._by_id[cid] = ChatActivity.DONE
 
+    def mark_failed(self, conversation_id: int, *, viewing: bool) -> None:
+        cid = int(conversation_id)
+        if viewing:
+            self._by_id.pop(cid, None)
+        else:
+            self._by_id[cid] = ChatActivity.FAILED
+
     def clear_done(self, conversation_id: int) -> None:
         cid = int(conversation_id)
-        if self._by_id.get(cid) == ChatActivity.DONE:
+        if self._by_id.get(cid) in (ChatActivity.DONE, ChatActivity.FAILED):
             self._by_id.pop(cid, None)

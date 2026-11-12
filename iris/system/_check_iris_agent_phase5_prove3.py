@@ -9,7 +9,7 @@ import inspect
 import sys
 
 from iris.infrastructure import agent_runtime as ar
-from iris.ui.workers import hermes_workers as hw
+from iris.ui.workers import iris_agent_workers as hw
 
 
 def _qcore_app():
@@ -129,11 +129,11 @@ def _check_api_surface_and_8642() -> None:
     assert callable(hw.reset_agent_loop)
     assert callable(hw.replace_agent_loop_worker)
     chat_src = inspect.getsource(hw.HermesChatWorker)
-    assert (
-        "8642" in chat_src
-        or "ensure_hermes_gateway" in chat_src
-        or "_ensure_gateway" in chat_src
-    )
+    # Unit 2: product chat is sidecar-only; HTTP :8642 branch is gone.
+    assert "_run_internal" in chat_src
+    assert "_run_external" not in chat_src
+    assert "shared_engine" in chat_src
+
 
 
 def main() -> None:

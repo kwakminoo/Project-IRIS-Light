@@ -1,6 +1,7 @@
-"""RunVisibility — project.run / write_file → chat ToolShellBlock fields.
+"""RunVisibility — project.run / shell.run / write_file → chat ToolShellBlock fields.
 
-No full stdout dump. Turns with zero tools insert nothing (call only after a real action).
+shell.run shows clipped stdout/stderr so the user sees the run in-chat (no console window).
+Turns with zero tools insert nothing (call only after a real action).
 """
 
 from __future__ import annotations
@@ -91,10 +92,48 @@ def write_card_from_project_write(envelope: dict[str, Any]) -> VisibilityCard | 
     )
 
 
+def shell_card_from_iris_shell(envelope: dict[str, Any]) -> VisibilityCard | None:
+    """Map shell.run envelope → Iris Shell chat card with clipped stdout/stderr."""
+    if not isinstance(envelope, dict):
+        return None
+    inner = _inner(envelope)
+    command = str(inner.get("command") or envelope.get("error") or "shell.run")
+    command = _clip(command, _MAX_COMMAND)
+    stdout = str(inner.get("stdout") or "").strip()
+    stderr = str(inner.get("stderr") or "").strip()
+    bits: list[str] = []
+    if stdout:
+        bits.append(stdout)
+    if stderr:
+        bits.append(stderr if not stdout else f"stderr:\n{stderr}")
+    summary = str(inner.get("summary") or envelope.get("error") or "").strip()
+    exit_code = inner.get("exit_code")
+    meta: list[str] = []
+    if summary:
+        meta.append(summary)
+    if exit_code is not None:
+        meta.append(f"exit={exit_code}")
+    cwd = str(inner.get("cwd") or "").strip()
+    if cwd:
+        meta.append(f"cwd={cwd}")
+    if meta:
+        bits.append(" · ".join(meta))
+    if not bits:
+        bits.append("ok" if envelope.get("ok") else "fail")
+    return VisibilityCard(
+        title="Iris Shell",
+        command=command,
+        output=_clip("\n".join(bits)),
+        status="ok" if envelope.get("ok") else "error",
+    )
+
+
 def card_from_control_result(action: str, envelope: dict[str, Any]) -> VisibilityCard | None:
     name = (action or "").strip()
     if name == "project.run":
         return shell_card_from_project_run(envelope)
+    if name == "shell.run":
+        return shell_card_from_iris_shell(envelope)
     if name == "project.write_file":
         return write_card_from_project_write(envelope)
     return None
@@ -164,4 +203,23 @@ if __name__ == "__main__":
     assert write_card_from_project_write({"ok": False, "result": {}}) is None
     assert card_from_control_result("wiki.search", run_ok) is None
     assert card_from_control_result("project.run", run_ok) is not None
+
+    shell_ok = {
+        "ok": True,
+        "action": "shell.run",
+        "result": {
+            "command": "echo hi",
+            "cwd": "C:/Users/x",
+            "exit_code": 0,
+            "stdout": "hi\n",
+            "stderr": "",
+            "summary": "exit 0 · ok",
+            "via": "iris_shell",
+        },
+    }
+    sc = shell_card_from_iris_shell(shell_ok)
+    assert sc is not None and sc.title == "Iris Shell" and sc.status == "ok"
+    assert sc.command == "echo hi"
+    assert "hi" in sc.output and "exit=0" in sc.output
+    assert card_from_control_result("shell.run", shell_ok) is not None
     print("run_visibility ok")

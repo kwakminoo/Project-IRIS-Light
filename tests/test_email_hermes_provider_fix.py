@@ -7,7 +7,7 @@ from iris.infrastructure.email_client import (
     build_agent_context,
     filter_summaries_since,
 )
-from iris.infrastructure.hermes_client import (
+from iris.infrastructure.iris_agent_client import (
     infer_hermes_provider,
     is_hermes_syncable_model,
     is_iris_api_runtime_model,
@@ -35,7 +35,7 @@ def test_agent_context_includes_inbox() -> None:
 
 
 def test_iris_email_skill_exists() -> None:
-    from iris.system.hermes_iris_control_sync import SKILL_NAMES, repo_skills_iris_control_dir
+    from iris.system.iris_agent_control_sync import SKILL_NAMES, repo_skills_iris_control_dir
 
     assert "iris-email" in SKILL_NAMES
     skill = repo_skills_iris_control_dir() / "iris-email" / "SKILL.md"

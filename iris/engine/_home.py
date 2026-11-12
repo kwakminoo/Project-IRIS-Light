@@ -134,7 +134,7 @@ def install_into(
     if runner is not None:
         runner(dest, sha=_engine_pin_sha(), clone=clone)
         return
-    from iris.system.hermes_install import install_hermes_with_system_python
+    from iris.system.iris_agent_install import install_hermes_with_system_python
 
     result = install_hermes_with_system_python(
         home=Path(home), sha=_engine_pin_sha()

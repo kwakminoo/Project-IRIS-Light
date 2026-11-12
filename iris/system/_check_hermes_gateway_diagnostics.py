@@ -11,8 +11,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from iris.infrastructure.hermes_client import HealthProbeResult, parse_health_payload
-from iris.system import hermes_gateway as gw
+from iris.infrastructure.iris_agent_client import HealthProbeResult, parse_health_payload
+from iris.system import iris_agent_gateway as gw
 
 
 def _main() -> None:

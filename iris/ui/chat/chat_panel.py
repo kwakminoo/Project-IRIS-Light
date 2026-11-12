@@ -91,12 +91,19 @@ from iris.ui.chat.message_regions import speaker_prefix_html
 from iris.knowledge.wiki_quote import format_quotes_for_model
 from iris.ui.chat.composer_attachments import ComposerAttachmentStrip
 from iris.ui.chat.composer_plus_menu import ComposerPlusButton, ComposerPlusMenu, ComposerSendButton
+from iris.ui.chat.app_directory_dialog import AppDirectoryDialog
+from iris.ui.chat.app_mention_popup import AppMentionPopup
 from iris.ui.knowledge.wiki_study_widgets import ComposerWikiQuoteStrip, parse_wiki_quote_from_mime
+from iris.infrastructure.model_roster import sort_key as roster_sort_key
 from iris.ui.chat.model_picker_menu import (
     ModelBrandDialog,
     ModelPickerMenu,
     PickerModel,
+    _api_blurb,
+    _roster_aware,
     brand_label,
+    picker_entry_from_model,
+    picker_tier_color,
     split_picker_groups,
 )
 from iris.ui.chat.skill_mcp_dialogs import McpDialog, SkillsDialog
@@ -106,6 +113,7 @@ from iris.ui.widgets.context_ring import ContextRingWidget
 from iris.ui.widgets.mic_waveform_bar import MicWaveformBar
 
 if TYPE_CHECKING:
+    from iris.engine.app_ui import AppUiResourceResolver
     from iris.infrastructure.ollama_client import OllamaModelInfo
 
 
@@ -431,6 +439,7 @@ class ChatComposerInput(QPlainTextEdit):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.document().setDocumentMargin(2)
         self._adjusting_height = False
+        self._key_interceptor = None
         self.document().contentsChanged.connect(self._adjust_height)
         self._adjust_height()
 
@@ -450,6 +459,10 @@ class ChatComposerInput(QPlainTextEdit):
         self._adjust_height()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        interceptor = self._key_interceptor
+        if callable(interceptor) and interceptor(event):
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 super().keyPressEvent(event)
@@ -941,6 +954,7 @@ class _ChatInputBar(QWidget):
     wiki_quote_pasted = pyqtSignal(object)
     skill_inserted = pyqtSignal(str)
     mcp_inserted = pyqtSignal(str)
+    app_chosen = pyqtSignal(object)
     mic_clicked = pyqtSignal()
 
     _ICON_PX = 28
@@ -1190,6 +1204,7 @@ class _ChatInputBar(QWidget):
         menu.add_folder.connect(self._pick_folder)
         menu.skill_chosen.connect(self._on_skill)
         menu.mcp_chosen.connect(self._on_mcp)
+        menu.open_apps_panel.connect(self._open_apps_dialog)
         menu.open_skills_panel.connect(self._open_skills_dialog)
         menu.open_mcp_panel.connect(self._open_mcp_dialog)
 
@@ -1202,6 +1217,15 @@ class _ChatInputBar(QWidget):
         self._plus_menu = ComposerPlusMenu(self)
         self._wire_plus_menu(self._plus_menu)
         self._plus_menu.popup_above(self.plus_button)
+
+    def _open_apps_dialog(self) -> None:
+        QTimer.singleShot(0, self._show_apps_dialog)
+
+    def _show_apps_dialog(self) -> None:
+        context = self._input.toPlainText() if self._input is not None else ""
+        dlg = AppDirectoryDialog(self.window(), context=context)
+        dlg.app_chosen.connect(self.app_chosen.emit)
+        dlg.exec()
 
     def _open_skills_dialog(self) -> None:
         # Popup 포커스 해제 후 다이얼로그 (한 틱 지연)
@@ -1502,6 +1526,11 @@ class ChatPanel(QWidget):
         bar.files_attached.connect(self._on_composer_drop_paths)
         bar.skill_inserted.connect(self.skill_inserted.emit)
         bar.mcp_inserted.connect(self.mcp_inserted.emit)
+        bar.app_chosen.connect(self._open_directory_app)
+        self._app_mention_popup = AppMentionPopup(self)
+        self._app_mention_popup.chosen.connect(self._on_app_mention_chosen)
+        self._input._key_interceptor = self._app_mention_popup.handle_key
+        self._app_directory = None
         self._input_area.attachment_strip.changed.connect(self._on_input_changed)
         self._input_area.wiki_quote_strip.changed.connect(self._on_input_changed)
         bar.wiki_quote_pasted.connect(self._on_wiki_quote_pasted)
@@ -1913,6 +1942,7 @@ class ChatPanel(QWidget):
             if self._extra_h > cap:
                 self._apply_chat_extra(cap)
         self._sync_diagram_card_height()
+        self._sync_app_host_card_height()
         self._sync_orb_fade()
 
     def get_tts_text(self, token: str) -> str:
@@ -2092,11 +2122,10 @@ class ChatPanel(QWidget):
             return
 
         from iris.infrastructure.model_descriptions import describe_model
+        from iris.infrastructure.ollama_client import model_list_tier
         from iris.storage.api_providers import is_api_runtime_model
 
-        # label, runtime, supports_tools, requires_subscription, provider_name, tool_support, availability
-        entries: list[tuple[str, str, bool, bool, str, str, str]] = []
-        endpoints: dict[str, str] = {}
+        built: list[PickerModel] = []
         for item in models:
             if isinstance(item, OllamaModelInfo):
                 label = item.catalog_name or display_name_from_runtime(item.name)
@@ -2111,84 +2140,75 @@ class ChatPanel(QWidget):
                         label = display_name_from_runtime(item.name)
                 elif not item.catalog_name or label == item.name:
                     label = display_name_from_runtime(item.name)
-                entries.append(
-                    (
-                        label,
-                        item.name,
-                        bool(item.supports_tools),
-                        bool(item.requires_subscription),
-                        provider,
-                        item.tool_support,
-                        item.availability,
+                built.append(
+                    PickerModel(
+                        runtime=item.name,
+                        label=label,
+                        supports_tools=bool(item.supports_tools),
+                        requires_subscription=bool(item.requires_subscription),
+                        provider_name=provider,
+                        provider_base=(item.endpoint or "").strip(),
+                        is_api=is_api_runtime_model(item.name),
+                        tool_support=item.tool_support,
+                        availability=item.availability,
+                        listing_description=item.listing_description or "",
+                        price_class=item.price_class or "unknown",
+                        modality=item.modality or "unknown",
+                        retired=bool(item.retired),
                     )
                 )
-                if (item.endpoint or "").strip():
-                    endpoints[item.name] = item.endpoint.strip()
             else:
                 runtime = str(item).strip()
                 if runtime:
-                    entries.append(
-                        (display_name_from_runtime(runtime), runtime, True, False, "", "", "")
+                    built.append(
+                        PickerModel(
+                            runtime=runtime,
+                            label=display_name_from_runtime(runtime),
+                        )
                     )
 
-        if selected and not any(selected in (entry[0], entry[1]) for entry in entries):
-            entries.append((display_name_from_runtime(selected), selected, True, False, "", "", ""))
+        if selected and not any(selected in (m.label, m.runtime) for m in built):
+            built.append(
+                PickerModel(runtime=selected, label=display_name_from_runtime(selected))
+            )
 
-        from iris.infrastructure.ollama_client import model_list_tier
+        def _picker_sort_key(m: PickerModel) -> tuple:
+            if _roster_aware(m):
+                return roster_sort_key(picker_entry_from_model(m))
+            tool = m.tool_support or ("no" if not m.supports_tools else "")
+            rank, _ = model_list_tier(m.runtime, state=m.availability, tool=tool)
+            return (rank, m.label.lower())
 
-        def _tier(entry: tuple[str, str, bool, bool, str, str, str]) -> tuple[int, str]:
-            tool = entry[5] or ("no" if not entry[2] else "")
-            return model_list_tier(entry[1], state=entry[6], tool=tool)
-
-        entries.sort(key=lambda entry: (_tier(entry)[0], entry[0].lower()))
+        built.sort(key=_picker_sort_key)
 
         self._picker_models = []
-        for i, (label, runtime, supports_tools, requires_sub, provider, tool_state, availability) in enumerate(
-            entries
-        ):
-            self._model_combo.addItem(label, runtime)
-            self._model_combo.setItemData(i, supports_tools, _ROLE_SUPPORTS_TOOLS)
-            self._model_combo.setItemData(i, requires_sub, _ROLE_REQUIRES_SUB)
-            self._model_combo.setItemData(i, provider, _ROLE_PROVIDER_NAME)
-            color = _COLOR_MODEL_DEFAULT
+        for i, pm in enumerate(built):
+            self._model_combo.addItem(pm.label, pm.runtime)
+            self._model_combo.setItemData(i, pm.supports_tools, _ROLE_SUPPORTS_TOOLS)
+            self._model_combo.setItemData(i, pm.requires_subscription, _ROLE_REQUIRES_SUB)
+            self._model_combo.setItemData(i, pm.provider_name, _ROLE_PROVIDER_NAME)
+            color_hex = picker_tier_color(pm)
             tip_extra = ""
-            if requires_sub:
-                color = _COLOR_MODEL_PRO
+            if pm.requires_subscription or pm.price_class == "paid":
                 tip_extra = " (Pro/구독 전용)"
-            elif not supports_tools:
-                color = _COLOR_MODEL_NO_TOOLS
+            elif not pm.supports_tools:
                 tip_extra = " (도구 호출 미지원)"
-            self._model_combo.setItemData(i, QBrush(color), Qt.ItemDataRole.ForegroundRole)
-            if is_api_runtime_model(runtime):
-                from iris.infrastructure.api_model_meta import tool_support_label
-
-                tip = (
-                    f"{provider or 'API'} · {label} · {tool_support_label(tool_state)}"
-                    + tip_extra
-                )
-            else:
-                desc = describe_model(runtime)
-                tip = (desc or runtime) + tip_extra
-            self._model_combo.setItemData(i, tip, Qt.ItemDataRole.ToolTipRole)
-            self._picker_models.append(
-                PickerModel(
-                    runtime=runtime,
-                    label=label,
-                    supports_tools=supports_tools,
-                    requires_subscription=requires_sub,
-                    provider_name=provider,
-                    provider_base=endpoints.get(runtime, ""),
-                    is_api=is_api_runtime_model(runtime),
-                    tool_support=tool_state,
-                    availability=availability,
-                )
+            self._model_combo.setItemData(
+                i, QBrush(QColor(color_hex)), Qt.ItemDataRole.ForegroundRole
             )
+            if pm.is_api:
+                tip = _api_blurb(pm) + tip_extra
+            else:
+                desc = describe_model(pm.runtime)
+                tip = (desc or pm.runtime) + tip_extra
+            self._model_combo.setItemData(i, tip, Qt.ItemDataRole.ToolTipRole)
+            self._picker_models.append(pm)
 
         pick = selected.strip()
         idx = 0
         if pick:
-            for i, (label, runtime, _t, _s, _p, _ts, _av) in enumerate(entries):
-                if pick in (runtime, label):
+            for i, pm in enumerate(built):
+                if pick in (pm.runtime, pm.label):
                     idx = i
                     break
         self._model_combo.setCurrentIndex(idx)
@@ -2677,6 +2697,155 @@ class ChatPanel(QWidget):
         card.show()
         return True
 
+    def set_mcp_app_resource_resolver(
+        self, resolver: AppUiResourceResolver | None
+    ) -> None:
+        """Attach the existing MCP transport's synchronous resources/read hook."""
+        self._mcp_app_resource_resolver = resolver
+
+    def _app_consent_store_path(self):
+        return getattr(self, "_app_consent_path", None)
+
+    def _ask_app_consent(
+        self,
+        *,
+        app_id: str,
+        title: str = "",
+        resource_uri: str = "",
+        server_name: str = "",
+    ) -> bool:
+        hook = getattr(self, "_ask_app_consent_hook", None)
+        if callable(hook):
+            try:
+                return bool(
+                    hook(
+                        app_id=app_id,
+                        title=title,
+                        resource_uri=resource_uri,
+                        server_name=server_name,
+                    )
+                )
+            except TypeError:
+                return bool(hook())
+        # parent=None: frameless MainWindow must not own modal children.
+        dialog = QMessageBox(None)
+        dialog.setWindowTitle("외부 앱 허용")
+        label = (title or "").strip() or app_id
+        lines = [f"‘{label}’ ({app_id})을(를) 열까요?"]
+        uri = (resource_uri or "").strip()
+        if uri:
+            lines.append(uri)
+        server = (server_name or "").strip()
+        if server:
+            lines.append(f"서버: {server}")
+        dialog.setText("\n".join(lines))
+        dialog.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        yes = dialog.button(QMessageBox.StandardButton.Yes)
+        no = dialog.button(QMessageBox.StandardButton.No)
+        if yes is not None:
+            yes.setText("허용")
+        if no is not None:
+            no.setText("취소")
+        dialog.setDefaultButton(QMessageBox.StandardButton.No)
+        return dialog.exec() == QMessageBox.StandardButton.Yes
+
+    def _ensure_app_open_consent(self, entry: object) -> bool:
+        from iris.apps.consent import decide_consent
+
+        app_id = str(getattr(entry, "id", "") or "").strip()
+        source = str(getattr(entry, "source", "") or "").strip()
+        title = str(getattr(entry, "title", "") or "").strip()
+        resource_uri = str(getattr(entry, "resource_uri", "") or "").strip()
+        server_name = str(getattr(entry, "server_name", "") or "").strip()
+        decision = decide_consent(
+            app_id,
+            source=source,
+            path=self._app_consent_store_path(),
+            ask_consent=self._ask_app_consent,
+            title=title,
+            resource_uri=resource_uri,
+            server_name=server_name,
+        )
+        return bool(decision.allowed)
+
+    def _open_directory_app(self, entry: object) -> bool:
+        from iris.engine.app_ui import app_ui_from_tool_meta
+
+        if not self._ensure_app_open_consent(entry):
+            return False
+        title = str(getattr(entry, "title", "") or "앱")
+        resource_uri = str(getattr(entry, "resource_uri", "") or "")
+        resolver = getattr(self, "_mcp_app_resource_resolver", None)
+        server_name = str(getattr(entry, "server_name", "") or "").strip()
+        if resolver is None and server_name and resource_uri.lower().startswith("ui://"):
+            from iris.apps.mcp_resource import read_configured_mcp_resource
+
+            def configured_resolver(uri: str) -> object:
+                return read_configured_mcp_resource(server_name, uri)
+
+            resolver = configured_resolver
+        offer = app_ui_from_tool_meta(
+            {"ui": {"resourceUri": resource_uri}},
+            default_title=title,
+            resolver=resolver,
+        )
+        if offer is None or not (offer.html_path or "").strip():
+            self.show_attach_notice("이 앱 리소스는 아직 열 수 없습니다.")
+            return False
+        return self.show_app_host(offer.html_path, title=offer.title)
+
+    def open_ui_resource(self, resource_uri: str, title: str = "앱") -> bool:
+        """Host-side resolve for sidecar ui:// offers that arrived without html_path."""
+        from urllib.parse import urlparse
+
+        from iris.apps.directory import SOURCE_INSTALLED, AppDirectoryEntry
+        from iris.apps.mcp_resource import resolve_ui_resource
+        from iris.engine.app_ui import materialize_mcp_app_resource
+
+        uri = (resource_uri or "").strip()
+        if not uri.lower().startswith("ui://"):
+            return False
+        label = (title or "앱").strip() or "앱"
+        matched = None
+        for candidate in self._app_directory_store().list():
+            if str(getattr(candidate, "resource_uri", "") or "").strip() == uri:
+                matched = candidate
+                break
+        if matched is None:
+            host = (urlparse(uri).netloc or "").strip() or uri
+            matched = AppDirectoryEntry(
+                id=host,
+                title=label,
+                summary="",
+                resource_uri=uri,
+                source=SOURCE_INSTALLED,
+            )
+        if not self._ensure_app_open_consent(matched):
+            return False
+        response = resolve_ui_resource(uri)
+        if response is None:
+            self.show_attach_notice("이 앱 리소스는 아직 열 수 없습니다.")
+            return False
+        path = materialize_mcp_app_resource(uri, response)
+        if path is None:
+            self.show_attach_notice("이 앱 리소스는 아직 열 수 없습니다.")
+            return False
+        return self.show_app_host(str(path), title=label)
+
+    def show_app_host(self, html_path: str, title: str = "앱") -> bool:
+        """로그와 입력창 사이 별도 슬롯에 App Host 카드를 연다. 파일이 없으면 False."""
+        from iris.ui.chat.app_host_bridge import AppHostOffer
+
+        path = Path(html_path)
+        if not path.is_file():
+            return False
+        card = self._ensure_app_host_card()
+        card.setFixedHeight(self._app_host_card_height())
+        offer = AppHostOffer(title=(title or "앱").strip() or "앱", html_path=str(path))
+        return bool(card.show_offer(offer))
+
     def append_diagram_note(self, html_path: str, title: str = "") -> None:
         """구조도 한 줄. 다시 보기가 카드를 연다. TTS 본문으로 등록하지 않는다."""
         from iris.ui.chat.diagram_card import diagram_href
@@ -2707,15 +2876,39 @@ class ChatPanel(QWidget):
         from iris.ui.chat.diagram_card import DiagramCard
 
         card = DiagramCard(self)
-        # handle, log, [card], spacing, input
+        # handle, log, [diagram], [app_host?], spacing, input
         self.layout().insertWidget(2, card, 0)
         self._diagram_card = card
+        return card
+
+    def _app_host_card_height(self) -> int:
+        from iris.ui.chat.diagram_card import card_height_px
+
+        return card_height_px(self.height())
+
+    def _ensure_app_host_card(self):
+        card = getattr(self, "_app_host_card", None)
+        if card is not None:
+            return card
+        from iris.ui.chat.app_host_card import AppHostCard
+
+        card = AppHostCard(self)
+        # Separate slot from DiagramCard: after diagram when present, else index 2.
+        # handle, log, [diagram?], [app_host], spacing, input
+        idx = 3 if getattr(self, "_diagram_card", None) is not None else 2
+        self.layout().insertWidget(idx, card, 0)
+        self._app_host_card = card
         return card
 
     def _sync_diagram_card_height(self) -> None:
         card = getattr(self, "_diagram_card", None)
         if card is not None and card.isVisible():
             card.setFixedHeight(self._diagram_card_height())
+
+    def _sync_app_host_card_height(self) -> None:
+        card = getattr(self, "_app_host_card", None)
+        if card is not None and card.isVisible():
+            card.setFixedHeight(self._app_host_card_height())
 
     def append_note(self, text: str) -> None:
         """앱이 붙이는 작은 안내 줄(참고한 이전 대화, 모델 전환 등).
@@ -3166,8 +3359,72 @@ class ChatPanel(QWidget):
     def _on_input_changed(self) -> None:
         self._input_area.sync_height_to_contents()
         self._input_area.input_bar.send_button.setEnabled(self._composer_can_send())
+        self._refresh_app_mention_popup()
         if self._input.toPlainText().strip():
             self.composing.emit()
+
+    def _app_directory_store(self):
+        from iris.apps.directory import AppDirectory
+
+        store = getattr(self, "_app_directory", None)
+        if store is None:
+            store = AppDirectory()
+            self._app_directory = store
+        return store
+
+    def _refresh_app_mention_popup(self) -> None:
+        from iris.apps.mention import active_app_mention_span, mention_candidates
+
+        popup = getattr(self, "_app_mention_popup", None)
+        if popup is None:
+            return
+        text = self._input.toPlainText()
+        cursor = self._input.textCursor().position()
+        span = active_app_mention_span(text, cursor)
+        if span is None:
+            popup.hide()
+            return
+        _start, _end, query = span
+        entries = mention_candidates(self._app_directory_store(), query)
+        if not entries:
+            popup.hide()
+            return
+        popup.set_entries(entries)
+        popup.place_above(self._input)
+
+    def insert_app_mention(self, app_id: str) -> str:
+        """Replace the active `@app` span with `@app:<id> `. Returns the inserted token."""
+        from iris.apps.mention import apply_app_mention
+
+        clean_id = (app_id or "").strip()
+        token = f"@app:{clean_id} "
+        text = self._input.toPlainText()
+        cursor = self._input.textCursor().position()
+        new_text, new_cursor = apply_app_mention(text, cursor, clean_id)
+        self._input.setPlainText(new_text)
+        cur = self._input.textCursor()
+        cur.setPosition(new_cursor)
+        self._input.setTextCursor(cur)
+        self._input.setFocus()
+        popup = getattr(self, "_app_mention_popup", None)
+        if popup is not None:
+            popup.hide()
+        self._on_input_changed()
+        return token
+
+    def _on_app_mention_chosen(self, entry: object) -> None:
+        app_id = str(getattr(entry, "id", "") or "").strip()
+        if app_id:
+            self.insert_app_mention(app_id)
+
+    def _open_app_mentions_from_text(self, text: str) -> bool:
+        """On send: open the first resolved `@app:<id>` via the directory host path."""
+        from iris.apps.mention import resolve_app_mentions
+
+        entries = resolve_app_mentions(text, self._app_directory_store())
+        if not entries:
+            return False
+        return bool(self._open_directory_app(entries[0]))
 
     def _refresh_stop_mode(self) -> None:
         """생성 중 또는 타이핑 제시 중이면 정지 버튼."""
@@ -3204,6 +3461,8 @@ class ChatPanel(QWidget):
         t = self._input.text().strip()
         if not t and not paths and not quotes:
             return
+        if t:
+            self._open_app_mentions_from_text(t)
         from iris.ui.chat.composer_attachments import chip_fs_path
 
         attachments = [str(chip_fs_path(p, workspace_root=self._workspace_root) or p) for p in paths]
@@ -3215,6 +3474,9 @@ class ChatPanel(QWidget):
             text_chars=len(payload),
             wiki_quotes=len(quotes),
         )
+        popup = getattr(self, "_app_mention_popup", None)
+        if popup is not None:
+            popup.hide()
         self._input.clear()
         self._input_area.sync_height_to_contents()
         self.send_clicked.emit(payload, attachments)
