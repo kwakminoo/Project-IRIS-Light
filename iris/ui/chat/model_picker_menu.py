@@ -67,6 +67,18 @@ def _roster_aware(m: PickerModel) -> bool:
     )
 
 
+def picker_sort_key(m: PickerModel) -> tuple:
+    """Homogeneous picker order key: (retired, unavailable, tier|rank, id)."""
+    from iris.infrastructure.model_roster import sort_key as roster_sort_key
+    from iris.infrastructure.ollama_client import model_list_tier
+
+    if _roster_aware(m):
+        return roster_sort_key(picker_entry_from_model(m))
+    tool = m.tool_support or ("no" if not m.supports_tools else "")
+    rank, _ = model_list_tier(m.runtime, state=m.availability, tool=tool)
+    return (rank, m.label.lower())
+
+
 def picker_entry_from_model(m: PickerModel):
     """Build RosterEntry for color/sort. Rules stay in model_roster."""
     from iris.infrastructure.model_roster import RosterEntry

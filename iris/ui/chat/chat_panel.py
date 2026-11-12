@@ -94,15 +94,13 @@ from iris.ui.chat.composer_plus_menu import ComposerPlusButton, ComposerPlusMenu
 from iris.ui.chat.app_directory_dialog import AppDirectoryDialog
 from iris.ui.chat.app_mention_popup import AppMentionPopup
 from iris.ui.knowledge.wiki_study_widgets import ComposerWikiQuoteStrip, parse_wiki_quote_from_mime
-from iris.infrastructure.model_roster import sort_key as roster_sort_key
 from iris.ui.chat.model_picker_menu import (
     ModelBrandDialog,
     ModelPickerMenu,
     PickerModel,
     _api_blurb,
-    _roster_aware,
     brand_label,
-    picker_entry_from_model,
+    picker_sort_key,
     picker_tier_color,
     split_picker_groups,
 )
@@ -2122,7 +2120,6 @@ class ChatPanel(QWidget):
             return
 
         from iris.infrastructure.model_descriptions import describe_model
-        from iris.infrastructure.ollama_client import model_list_tier
         from iris.storage.api_providers import is_api_runtime_model
 
         built: list[PickerModel] = []
@@ -2172,14 +2169,7 @@ class ChatPanel(QWidget):
                 PickerModel(runtime=selected, label=display_name_from_runtime(selected))
             )
 
-        def _picker_sort_key(m: PickerModel) -> tuple:
-            if _roster_aware(m):
-                return roster_sort_key(picker_entry_from_model(m))
-            tool = m.tool_support or ("no" if not m.supports_tools else "")
-            rank, _ = model_list_tier(m.runtime, state=m.availability, tool=tool)
-            return (rank, m.label.lower())
-
-        built.sort(key=_picker_sort_key)
+        built.sort(key=picker_sort_key)
 
         self._picker_models = []
         for i, pm in enumerate(built):

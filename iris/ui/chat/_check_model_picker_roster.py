@@ -12,6 +12,8 @@ def main() -> None:
         _COLOR_MODEL_PRO,
         _COLOR_MODEL_UNKNOWN,
         _api_blurb,
+        _roster_aware,
+        picker_sort_key,
         picker_tier_color,
     )
 
@@ -88,6 +90,24 @@ def main() -> None:
     )
     ordered = sorted([a, c, b], key=sort_key)
     assert [e.model_id for e in ordered] == ["a-free", "z-unknown", "b-free-dead"]
+
+    # Boot mixes roster-aware API rows with legacy Ollama rows; sort must not TypeError.
+    api_row = PickerModel(
+        "api:x:free-chat",
+        "free-chat",
+        is_api=True,
+        price_class="free",
+        modality="chat",
+    )
+    legacy_ollama = PickerModel("gemma4:latest", "gemma4:latest")
+    assert _roster_aware(api_row) and not _roster_aware(legacy_ollama)
+    mixed = [api_row, legacy_ollama]
+    mixed.sort(key=picker_sort_key)
+    for m in mixed:
+        key = picker_sort_key(m)
+        assert len(key) == 4, key
+        assert all(isinstance(key[i], int) for i in (0, 1, 2)), key
+        assert isinstance(key[3], str), key
 
     from iris.infrastructure.ollama_client import OllamaModelInfo
 
