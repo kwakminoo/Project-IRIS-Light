@@ -1,3 +1,5 @@
+"""Live Activity / Internal Log — 실제 파이프라인 이벤트 스트림 (English only)."""
+
 from __future__ import annotations
 
 from collections import deque
@@ -19,6 +21,8 @@ from iris.ui.shared.theme_tokens import TOKENS
 
 
 class UiActivityRelay(QObject):
+    """push_activity_line 싱크를 Qt 메인 스레드로 안전하게 넘김."""
+
     line = pyqtSignal(str)
 
     def push(self, message: str) -> None:
@@ -47,6 +51,11 @@ class _LiveActivityLogEdit(QPlainTextEdit):
 
 
 class LiveActivityPanel(QWidget):
+    """
+    Visualizer(구체)와 채팅 패널 사이 — Ollama thinking / 연결 로그.
+    줄 단위 큐 + 문자 단위 타핑, thinking 청크는 즉시 삽입.
+    """
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("LiveActivityPanel")
@@ -193,18 +202,21 @@ class LiveActivityPanel(QWidget):
             self._timer.start()
 
     def append_instant_line(self, line: str) -> None:
+        """한 줄을 즉시 추가 (줄바꿈 포함)."""
         safe = prepare_activity_line(line) if line else ""
         if not safe:
             return
         self._insert_at_end(safe if safe.endswith("\n") else safe + "\n")
 
     def append_instant_chunk(self, text: str) -> None:
+        """thinking 스트림 청크 — 줄바꿈 없이 이어붙임."""
         safe = strip_emoji(text) if text else ""
         if not safe:
             return
         self._insert_at_end(safe)
 
     def append_reasoning(self, chunk: str) -> None:
+        """Model reasoning stream — preview button + expandable body."""
         safe = strip_emoji(chunk) if chunk else ""
         if not safe:
             return
@@ -237,8 +249,7 @@ class LiveActivityPanel(QWidget):
             self._scroll_programmatic += 1
             try:
                 if self._scroll_user_hold and self._scroll_hold_value is not None:
-                    if bar.value() >= bar.maximum() - 2:
-                        bar.setValue(min(self._scroll_hold_value, bar.maximum()))
+                    bar.setValue(min(self._scroll_hold_value, bar.maximum()))
                 elif self._scroll_follow_tail:
                     bar.setValue(bar.maximum())
             finally:
@@ -273,8 +284,7 @@ class LiveActivityPanel(QWidget):
         self._scroll_programmatic += 1
         try:
             if self._scroll_user_hold and self._scroll_hold_value is not None:
-                if bar.value() >= maximum - 2:
-                    bar.setValue(min(self._scroll_hold_value, maximum))
+                bar.setValue(min(self._scroll_hold_value, maximum))
             elif self._scroll_follow_tail:
                 bar.setValue(maximum)
         finally:
@@ -308,6 +318,7 @@ class LiveActivityPanel(QWidget):
         self._scroll_log_to_bottom()
 
     def clear_for_idle(self) -> None:
+        """Idle 복귀 시 과한 잔상을 줄이고 placeholder에 맡김."""
         self._queue.clear()
         self._current_line = ""
         self._cursor_pos = 0
