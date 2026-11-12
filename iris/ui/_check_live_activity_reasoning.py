@@ -1,8 +1,3 @@
-"""Live Activity reasoning button, begin_turn header, and scroll hold.
-
-Run: .venv\\Scripts\\python.exe -m iris.ui._check_live_activity_reasoning
-"""
-
 from __future__ import annotations
 
 import os
