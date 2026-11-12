@@ -54,7 +54,7 @@ def load_hermes_sync_status_text() -> str:
     try:
         import json
 
-        from iris.system.hermes_iris_control_sync import sync_state_path
+        from iris.system.iris_agent_control_sync import sync_state_path
 
         path = sync_state_path()
         if not path.is_file():

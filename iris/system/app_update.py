@@ -18,7 +18,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from iris.system.hermes_iris_control_sync import iris_state_dir, project_root
+from iris.system.iris_agent_control_sync import iris_state_dir, project_root
 
 GITHUB_OWNER = "kwakminoo"
 GITHUB_REPO = "Project-IRIS-Light"

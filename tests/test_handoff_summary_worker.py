@@ -152,7 +152,7 @@ class HermesSummaryTests(TestCase):
         )
         worker = HandoffSummaryWorker(route, MESSAGES, archive_id="a2")
         out = _Collector(worker)
-        with patch("iris.infrastructure.hermes_client.HermesClient", _Client):
+        with patch("iris.infrastructure.iris_agent_client.HermesClient", _Client):
             worker.run()
 
         self.assertEqual(out.ok, [("허메스 요약", "a2")])
@@ -180,7 +180,7 @@ class HermesSummaryTests(TestCase):
         worker = HandoffSummaryWorker(
             SummaryRoute(backend="hermes", model="gemma4:cloud"), MESSAGES
         )
-        with patch("iris.infrastructure.hermes_client.HermesClient", _Client):
+        with patch("iris.infrastructure.iris_agent_client.HermesClient", _Client):
             worker.run()
         self.assertNotIn("inference", seen)
         self.assertEqual(seen["model"], "gemma4:cloud")

@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from iris.infrastructure.hermes_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import hermes_home
 
 
 def _hermes_root() -> Path:
@@ -194,6 +194,7 @@ class ComposerPlusMenu(QFrame):
     add_folder = pyqtSignal()
     skill_chosen = pyqtSignal(str)
     mcp_chosen = pyqtSignal(str)
+    open_apps_panel = pyqtSignal()
     open_skills_panel = pyqtSignal()
     open_mcp_panel = pyqtSignal()
 
@@ -250,6 +251,10 @@ class ComposerPlusMenu(QFrame):
         folder.clicked.connect(self._on_folder)
         root.addWidget(folder)
 
+        apps = _MenuRow("APP", "Apps", "browse directory", show_arrow=True)
+        apps.clicked.connect(self._on_open_apps)
+        root.addWidget(apps)
+
         sep1 = QFrame()
         sep1.setObjectName("ComposerPlusSep")
         sep1.setFixedHeight(1)
@@ -297,6 +302,10 @@ class ComposerPlusMenu(QFrame):
     def _on_open_skills(self) -> None:
         self.hide()
         self.open_skills_panel.emit()
+
+    def _on_open_apps(self) -> None:
+        self.hide()
+        self.open_apps_panel.emit()
 
     def _on_open_mcp(self) -> None:
         self.hide()

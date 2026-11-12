@@ -5,7 +5,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal, NewType, Union
 
-from iris.infrastructure.hermes_client import HermesInferenceTarget
+from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
+from iris.infrastructure.speak_capability import (
+    PHASE4_ALLOWLIST,
+    SpeakSurface,
+    assert_engine_tools_match_allowlist,
+)
 
 
 class Role(Enum):
@@ -35,6 +40,7 @@ class EngineErrorCode(Enum):
     CANCELLED = "cancelled"
     NO_USER_UTTERANCE = "no_user_utterance"
     TOOL_TRANSPORT = "tool_transport"
+    TOOL_ERROR_BUDGET = "tool_error_budget"
     BILLING = "billing"
     UNKNOWN = "unknown"
 
@@ -50,12 +56,18 @@ _USER_MESSAGES = {
     EngineErrorCode.CANCELLED: "요청이 취소되었습니다.",
     EngineErrorCode.NO_USER_UTTERANCE: "보낼 사용자 메시지가 없습니다.",
     EngineErrorCode.TOOL_TRANSPORT: "도구 호출에 실패했습니다.",
+    EngineErrorCode.TOOL_ERROR_BUDGET: "도구 오류가 안전 제한을 넘어 작업을 중단했습니다.",
     EngineErrorCode.BILLING: (
         "Ollama 클라우드 크레딧이 부족합니다. "
         "요금을 충전하거나 다른 모델로 바꾸세요."
     ),
     EngineErrorCode.UNKNOWN: "엔진에서 알 수 없는 오류가 났습니다.",
 }
+
+
+def engine_user_messages() -> frozenset[str]:
+    """Chat UI strings already authored for EngineErrorCode. Pass through explain_chat_error."""
+    return frozenset(_USER_MESSAGES.values())
 
 
 @dataclass(frozen=True)
@@ -140,8 +152,9 @@ class CancelToken:
 @dataclass(frozen=True)
 class StatelessTurn:
     transcript: ChatTranscript
-    model: HermesInferenceTarget
+    model: IrisAgentInferenceTarget
     cancel: CancelToken
+    speak_surface: SpeakSurface = "home"
 
 
 @dataclass(frozen=True)
@@ -152,6 +165,13 @@ class ContentDelta:
 @dataclass(frozen=True)
 class ToolProgress:
     label: str
+
+
+@dataclass(frozen=True)
+class AppUiOfferEvent:
+    title: str
+    html_path: str  # local filesystem path for Phase 2
+    resource_uri: str = ""  # optional raw _meta.ui.resourceUri for later
 
 
 @dataclass(frozen=True)
@@ -177,6 +197,7 @@ class TurnCancelled:
 TurnEvent = Union[
     ContentDelta,
     ToolProgress,
+    AppUiOfferEvent,
     ReasoningDelta,
     TurnFinished,
     TurnFailed,
@@ -185,7 +206,7 @@ TurnEvent = Union[
 
 
 EngineHome = NewType("EngineHome", Path)
-# Directory IRIS owns. Default ~/.iris-light/engine. Not %LOCALAPPDATA%\\hermes.
+# Directory IRIS owns. Default iris_agent_home() (~/.iris-light/agent).
 
 HermesHome = NewType("HermesHome", Path)
 EnginePython = NewType("EnginePython", Path)
@@ -194,22 +215,14 @@ GuiPython = NewType("GuiPython", Path)
 
 @dataclass(frozen=True)
 class InternalSidecar:
-    """Default source. shutdown() kills the child."""
+    """Product source. shutdown() kills the child."""
 
     home: EngineHome
     kill_on_shutdown: Literal[True] = True
 
 
-@dataclass(frozen=True)
-class ExternalGateway:
-    """Compatibility only. shutdown() disconnects and does not kill."""
-
-    base_url: str
-    api_key: str
-    kill_on_shutdown: Literal[False] = False
-
-
-EngineSource = Union[InternalSidecar, ExternalGateway]
+# Unit 2: product EngineSource is sidecar-only (HTTP gateway union arm removed).
+EngineSource = InternalSidecar
 
 
 def _default_engine_home() -> EngineHome:
@@ -219,24 +232,14 @@ def _default_engine_home() -> EngineHome:
     return EngineHome(iris_agent_home())
 
 
-def _settings_flag(settings: object, name: str) -> bool:
-    value = getattr(settings, name, False)
-    if isinstance(value, str):
-        return value.strip().lower() not in {"", "0", "false", "no"}
-    return bool(value)
-
-
 def parse_engine_source(settings: object) -> EngineSource:
-    """Settings boundary. Default InternalSidecar.
+    """Settings boundary. Product path is always InternalSidecar.
 
-    ExternalGateway only when settings.hermes_external_gateway is true.
-    hermes_enabled stays the 'use the engine' flag. It does not mean ':8642 is up'.
+    agent_enabled (alias hermes_enabled) is the 'use the engine' flag.
+    It does not mean ':8642 is up'. hermes_external_gateway / IRIS_HERMES_EXTERNAL_GATEWAY
+    no longer select a product source.
     """
-    if _settings_flag(settings, "hermes_external_gateway"):
-        return ExternalGateway(
-            base_url=str(getattr(settings, "hermes_base_url", "") or ""),
-            api_key=str(getattr(settings, "hermes_api_key", "") or ""),
-        )
+    _ = settings
     return InternalSidecar(home=_default_engine_home())
 
 
@@ -258,7 +261,8 @@ class EngineFailed:
 EngineEnsureResult = Union[EngineReady, EngineFailed]
 
 
-IRIS_ENGINE_TOOLS = ("iris_get_state", "iris_get_catalog", "iris_invoke")
+# Product engine catalog == SpeakTools allowlist (not MCP iris-control triple).
+IRIS_ENGINE_TOOLS = PHASE4_ALLOWLIST.names()
 
 DANGEROUS_ACTIONS = frozenset(
     {
@@ -271,10 +275,14 @@ DANGEROUS_ACTIONS = frozenset(
 
 
 def assert_iris_engine_tools_catalog(tools: tuple[str, ...] | None = None) -> None:
-    """Boot check. Engine-facing tool names stay one unique list."""
+    """Boot check. Engine-facing tool names stay one unique SpeakTools list."""
     names = IRIS_ENGINE_TOOLS if tools is None else tools
     if len(names) != len(set(names)):
         raise AssertionError("IRIS_ENGINE_TOOLS has duplicate names")
+    mcp_triple = ("iris_get_state", "iris_get_catalog", "iris_invoke")
+    if tuple(names) == mcp_triple:
+        raise AssertionError("IRIS_ENGINE_TOOLS must not be the MCP triple")
+    assert_engine_tools_match_allowlist(tuple(names))
 
 
 def assert_dangerous_actions_confirm(registry: object) -> None:

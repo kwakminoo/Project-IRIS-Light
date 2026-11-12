@@ -1,6 +1,6 @@
-"""검색·캘린더 외부 API 키 — Hermes/Iris .env 읽기·저장 + 발급 링크.
+"""검색·캘린더 외부 API 키 — Iris Agent .env 읽기·저장 + 발급 링크.
 
-검색은 프리셋 여러 개 + 키. Hermes가 아는 백엔드는 그중 마지막 Hermes 연동 항목을
+검색은 프리셋 여러 개 + 키. Iris Agent가 아는 백엔드는 그중 마지막 연동 항목을
 config.yaml web.search_backend 에 반영한다.
 캘린더: data.go.kr 특일정보 (IRIS_DATA_GO_KR_SERVICE_KEY)
 """
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from iris.config.settings import default_env_path
-from iris.infrastructure.hermes_credentials import hermes_home, load_hermes_dotenv
+from iris.infrastructure.iris_agent_credentials import hermes_home, load_hermes_dotenv
 
 SEARCH_PRESET_ENV = "IRIS_SEARCH_PRESET"
 SEARCH_ENTRIES_ENV = "IRIS_SEARCH_ENTRIES"
@@ -58,7 +58,7 @@ SEARCH_PRESETS: tuple[SearchPreset, ...] = (
         "Brave Search",
         "BRAVE_SEARCH_API_KEY",
         "https://api-dashboard.search.brave.com/app/keys",
-        "무료 월 2,000회. Hermes 웹검색에 연결.",
+        "무료 월 2,000회. Iris Agent 웹검색에 연결.",
         hermes_backend="brave-free",
     ),
     SearchPreset(
@@ -66,7 +66,7 @@ SEARCH_PRESETS: tuple[SearchPreset, ...] = (
         "Tavily",
         "TAVILY_API_KEY",
         "https://app.tavily.com/home",
-        "무료 월 1,000 크레딧. Hermes 웹검색에 연결.",
+        "무료 월 1,000 크레딧. Iris Agent 웹검색에 연결.",
         hermes_backend="tavily",
     ),
     SearchPreset(
@@ -74,7 +74,7 @@ SEARCH_PRESETS: tuple[SearchPreset, ...] = (
         "Exa",
         "EXA_API_KEY",
         "https://dashboard.exa.ai/api-keys",
-        "시맨틱 검색·본문 추출. 무료 티어. Hermes 웹검색에 연결.",
+        "시맨틱 검색·본문 추출. 무료 티어. Iris Agent 웹검색에 연결.",
         hermes_backend="exa",
     ),
     SearchPreset(
@@ -82,7 +82,7 @@ SEARCH_PRESETS: tuple[SearchPreset, ...] = (
         "Firecrawl",
         "FIRECRAWL_API_KEY",
         "https://www.firecrawl.dev/app/api-keys",
-        "검색·스크랩. 무료 크레딧. Hermes 웹검색에 연결.",
+        "검색·스크랩. 무료 크레딧. Iris Agent 웹검색에 연결.",
         hermes_backend="firecrawl",
     ),
     SearchPreset(
@@ -90,7 +90,7 @@ SEARCH_PRESETS: tuple[SearchPreset, ...] = (
         "Parallel",
         "PARALLEL_API_KEY",
         "https://platform.parallel.ai/",
-        "검색·페이지 추출. 무료 티어. Hermes 웹검색에 연결.",
+        "검색·페이지 추출. 무료 티어. Iris Agent 웹검색에 연결.",
         hermes_backend="parallel",
     ),
     SearchPreset(
@@ -98,7 +98,7 @@ SEARCH_PRESETS: tuple[SearchPreset, ...] = (
         "Keenable",
         "KEENABLE_API_KEY",
         "https://keenable.ai",
-        "검색·페이지 fetch. 무료 티어. Hermes 웹검색에 연결.",
+        "검색·페이지 fetch. 무료 티어. Iris Agent 웹검색에 연결.",
         hermes_backend="keenable",
         key_optional=True,
     ),
@@ -107,7 +107,7 @@ SEARCH_PRESETS: tuple[SearchPreset, ...] = (
         "DuckDuckGo",
         "",
         "",
-        "키 없이 사용. Hermes 웹검색에 연결.",
+        "키 없이 사용. Iris Agent 웹검색에 연결.",
         hermes_backend="ddgs",
         key_optional=True,
     ),
@@ -116,7 +116,7 @@ SEARCH_PRESETS: tuple[SearchPreset, ...] = (
         "SearXNG",
         "SEARXNG_URL",
         "https://docs.searxng.org/",
-        "자체 호스트. 키 칸에 인스턴스 URL. Hermes 웹검색에 연결.",
+        "자체 호스트. 키 칸에 인스턴스 URL. Iris Agent 웹검색에 연결.",
         hermes_backend="searxng",
     ),
     SearchPreset(
@@ -220,7 +220,7 @@ def parse_search_entry_ids(raw: str) -> list[str]:
 
 
 def active_search_preset_id(entry_ids: list[str]) -> str:
-    """Hermes 웹검색은 백엔드가 하나다. 목록에서 Hermes 연동인 마지막 항목을 쓴다."""
+    """Iris Agent 웹검색은 백엔드가 하나다. 목록에서 에이전트 연동인 마지막 항목을 쓴다."""
     last_hermes = ""
     last_any = "none"
     for pid in entry_ids:
@@ -269,7 +269,7 @@ def upsert_dotenv(path: Path, updates: dict[str, str]) -> None:
 
 
 def load_search_api_keys() -> dict[str, str]:
-    """Hermes .env → 검색 관련 키만."""
+    """Iris Agent .env → 검색 관련 키만."""
     env = load_hermes_dotenv()
     out: dict[str, str] = {}
     for key in search_env_keys():
@@ -315,7 +315,7 @@ def save_search_api_keys(
     preset_id: str = "",
     entry_ids: list[str] | None = None,
 ) -> Path:
-    """검색 키와 선택 프리셋을 Hermes .env에 저장하고 프로세스 환경에도 반영."""
+    """검색 키와 선택 프리셋을 Iris Agent .env에 저장하고 프로세스 환경에도 반영."""
     existing = load_hermes_dotenv()
     updates: dict[str, str] = {}
     for key in search_env_keys():

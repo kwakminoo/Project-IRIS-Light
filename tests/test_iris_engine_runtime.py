@@ -15,7 +15,6 @@ from iris.engine import (
     EngineFailed,
     EngineHome,
     EngineReady,
-    ExternalGateway,
     InternalSidecar,
     StatelessTurn,
     TurnCancelled,
@@ -24,7 +23,7 @@ from iris.engine import (
     shared_engine,
 )
 from iris.engine.runtime import _turn_api_key, reset_shared_engine
-from iris.infrastructure.hermes_client import HermesInferenceTarget
+from iris.infrastructure.iris_agent_client import HermesInferenceTarget
 
 
 def _turn(*, cancelled: bool = False) -> StatelessTurn:
@@ -64,13 +63,21 @@ class SharedEngineTests(TestCase):
         engine.shutdown()
         engine.shutdown()
 
+    def test_fork_keeps_source_but_owns_an_independent_sidecar(self) -> None:
+        engine = shared_engine()
+        fork = engine.fork()
+        self.assertIsNot(fork, engine)
+        self.assertIs(fork.source, engine.source)
+        self.assertIsNone(fork._child)
+        self.assertIsNone(engine._child)
+
 
 class EngineReadyStubTests(TestCase):
     def setUp(self) -> None:
         self._tmp = TemporaryDirectory()
         self.home = EngineHome(Path(self._tmp.name))
         self._install = patch("iris.engine.runtime.install_into")
-        self._install.start()
+        self.install = self._install.start()
         self.addCleanup(self._install.stop)
 
     def tearDown(self) -> None:
@@ -93,6 +100,22 @@ class EngineReadyStubTests(TestCase):
         self.assertIsInstance(events[0], TurnFailed)
         assert isinstance(events[0], TurnFailed)
         self.assertEqual(events[0].error.code, EngineErrorCode.NOT_INSTALLED)
+
+    def test_wrong_python_requests_one_repair_before_failing(self) -> None:
+        wrong = EngineError(EngineErrorCode.WRONG_PYTHON, "base interpreter removed")
+        spawn_fail = EngineFailed(EngineError(EngineErrorCode.SPAWN_FAILED, "probe"))
+        engine = Engine(self._internal())
+        probes = iter((wrong, None))
+        with (
+            patch(
+                "iris.engine.runtime.probe_engine_python",
+                side_effect=lambda _home: next(probes),
+            ),
+            patch("iris.engine.runtime._spawn_sidecar", return_value=spawn_fail),
+        ):
+            result = engine.ensure_ready()
+        self.install.assert_called_once_with(self.home)
+        self.assertIs(result, spawn_fail)
 
     def test_cancelled_turn_yields_turn_cancelled(self) -> None:
         engine = Engine(self._internal())
@@ -117,6 +140,8 @@ class EngineReadyStubTests(TestCase):
             token.cancel()
             return ""
 
+        fake.stdout.readline.side_effect = read
+
         order: list[str] = []
 
         def on_stop(*_a, **_k):
@@ -132,7 +157,6 @@ class EngineReadyStubTests(TestCase):
                 return_value=EngineReady(self._internal(), "ready"),
             ),
             patch.object(engine, "_write_turn"),
-            patch("iris.engine.runtime._readline_timeout", side_effect=read),
             patch("iris.engine.runtime._send_stop", side_effect=on_stop),
             patch.object(engine, "_forget_child", side_effect=on_forget),
         ):
@@ -174,7 +198,7 @@ class ParseEngineSourceTests(TestCase):
         self.assertEqual(source.home, iris_agent_home())
         self.assertTrue(source.kill_on_shutdown)
 
-    def test_external_flag_yields_gateway_that_does_not_kill(self) -> None:
+    def test_external_flag_no_longer_selects_gateway(self) -> None:
         source = parse_engine_source(
             SimpleNamespace(
                 hermes_external_gateway=True,
@@ -182,11 +206,9 @@ class ParseEngineSourceTests(TestCase):
                 hermes_api_key="k",
             )
         )
-        self.assertIsInstance(source, ExternalGateway)
-        assert isinstance(source, ExternalGateway)
-        self.assertEqual(source.base_url, "http://127.0.0.1:8642/v1")
-        self.assertEqual(source.api_key, "k")
-        self.assertFalse(source.kill_on_shutdown)
+        self.assertIsInstance(source, InternalSidecar)
+        assert isinstance(source, InternalSidecar)
+        self.assertTrue(source.kill_on_shutdown)
         Engine(source).shutdown()
 
     def test_user_message_covers_each_code(self) -> None:

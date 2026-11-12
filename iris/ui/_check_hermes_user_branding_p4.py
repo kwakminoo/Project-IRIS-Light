@@ -15,14 +15,14 @@ ROOT = Path(__file__).resolve().parents[2]
 # 일상 UI·live activity·에러 안내·스킬 힌트에 남아 있으면 안 되는 문구.
 HOT_PATH_FILES = (
     "iris/ui/window/main_window.py",
-    "iris/ui/workers/hermes_workers.py",
+    "iris/ui/workers/iris_agent_workers.py",
     "iris/ui/chat/chat_panel.py",
     "iris/ui/chat/skill_mcp_dialogs.py",
     "iris/ui/settings/update_notify_box.py",
     "iris/ui/settings/settings_dialog.py",
     "iris/audio/text_normalizer.py",
-    "iris/infrastructure/hermes_errors.py",
-    "iris/system/hermes_memory_nudge.py",
+    "iris/infrastructure/iris_agent_errors.py",
+    "iris/system/iris_agent_memory_nudge.py",
     "integrations/hermes-skills/iris-control/iris-vibe-code/SKILL.md",
     "integrations/hermes-skills/iris-control/iris-mobile-mcp/SKILL.md",
 )
@@ -56,7 +56,7 @@ BANNED = (
 
 
 def main() -> None:
-    from iris.infrastructure.hermes_errors import (
+    from iris.infrastructure.iris_agent_errors import (
         explain_chat_error,
         scrub_upstream_hermes_cli_hints,
     )

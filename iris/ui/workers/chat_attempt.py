@@ -9,10 +9,13 @@ claude-code-router 이슈 #1615(프로토콜이 바뀌었는데 body를 재사�
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from iris.runtime.model_failover import (
+    CLASS_RATE_LIMIT,
+    RouteTarget,
     classify_failure,
     retry_delay_after_status,
     status_for_error,
@@ -28,8 +31,9 @@ class ChatAttempt:
     label: str = ""
     free: bool = False
     reason_hint: str = ""
-    # Hermes 전용 — resolve_hermes_inference() 결과. UI 스레드에서 미리 푼다.
+    # Hermes 전용 — resolve_iris_agent_inference() 결과. UI 스레드에서 미리 푼다.
     target: Any = None
+    route_target: RouteTarget | None = None
 
     def __post_init__(self) -> None:
         self.model = str(self.model or "")
@@ -57,9 +61,16 @@ class FallbackStep:
     reason: str
     delay_ms: int
     status: int
+    cool_until_monotonic: float | None = None
 
 
-def decide_fallback(error: str, failed_attempt_index: int) -> FallbackStep | None:
+def decide_fallback(
+    error: str,
+    failed_attempt_index: int,
+    *,
+    retry_after: str | None = None,
+    now_monotonic: float | None = None,
+) -> FallbackStep | None:
     """실패 문구를 보고 다음 후보로 넘어갈지 정한다. 안 넘어가면 None.
 
     원인을 못 읽은 실패(status 0)는 넘어가지 않는다 — 이유도 모른 채 모델만
@@ -71,10 +82,17 @@ def decide_fallback(error: str, failed_attempt_index: int) -> FallbackStep | Non
     decision = classify_failure(status)
     if not decision.should_fallback:
         return None
+    delay_ms = retry_delay_after_status(retry_after, failed_attempt_index)
     return FallbackStep(
         reason=decision.reason,
-        delay_ms=retry_delay_after_status(None, failed_attempt_index),
+        delay_ms=delay_ms,
         status=status,
+        cool_until_monotonic=(
+            (time.monotonic() if now_monotonic is None else float(now_monotonic))
+            + delay_ms / 1000.0
+            if decision.failure_class == CLASS_RATE_LIMIT
+            else None
+        ),
     )
 
 
@@ -89,6 +107,15 @@ def normalize_attempts(
     return items or [ChatAttempt(model, messages)]
 
 
+def route_target_for_attempt(attempt: ChatAttempt, backend: str) -> RouteTarget:
+    return attempt.route_target or RouteTarget(
+        model=attempt.model,
+        backend=backend,
+        label=attempt.label,
+        free=attempt.free,
+    )
+
+
 if __name__ == "__main__":
     a = ChatAttempt("m", [{"role": "user", "content": "x"}])
     assert a.label == "m" and a.target is None and a.free is False
@@ -98,7 +125,7 @@ if __name__ == "__main__":
     assert step is not None and step.reason == "할당량 소진" and step.delay_ms == 1000
     assert decide_fallback("Hermes HTTP 503: upstream", 2).delay_ms == 4000
     assert decide_fallback("You exceeded your current quota", 0).status == 429
-    assert decide_fallback("Hermes 연결 실패: refused", 0).status == 503
+    assert decide_fallback("Iris Agent 연결 실패: refused", 0).status == 503
     # 원인을 모르면 넘어가지 않는다
     assert decide_fallback("알 수 없는 문제", 0) is None
     assert decide_fallback("", 0) is None

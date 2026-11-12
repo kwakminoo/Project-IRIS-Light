@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import yaml
 
-from iris.infrastructure.hermes_client import HermesClient
-from iris.system.hermes_ollama_guard import (
+from iris.infrastructure.iris_agent_client import HermesClient
+from iris.system.iris_agent_ollama_guard import (
     apply_ollama_options_guard,
     looks_like_ollama_endpoint,
     sync_model_ollama_num_ctx,
@@ -100,7 +100,7 @@ class OllamaNumCtxSyncTests(unittest.TestCase):
         self.home = Path(self._td.name)
         self.path = self.home / "config.yaml"
         self._patch = patch(
-            "iris.infrastructure.hermes_credentials.hermes_home",
+            "iris.infrastructure.iris_agent_credentials.hermes_home",
             lambda: self.home,
         )
         self._patch.start()
@@ -158,7 +158,7 @@ class SetInferenceModelSyncTests(unittest.TestCase):
             client = HermesClient("http://127.0.0.1:8642/v1")
             with (
                 patch(
-                    "iris.infrastructure.hermes_credentials.hermes_home",
+                    "iris.infrastructure.iris_agent_credentials.hermes_home",
                     lambda: home,
                 ),
                 patch.object(client, "_set_model_via_api", return_value=True),

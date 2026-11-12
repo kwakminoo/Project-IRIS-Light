@@ -13,9 +13,11 @@ import json
 from collections.abc import Callable
 
 from iris.engine.types import (
+    AppUiOfferEvent,
     ContentDelta,
     EngineError,
     EngineErrorCode,
+    ReasoningDelta,
     ToolProgress,
     TurnCancelled,
     TurnEvent,
@@ -46,8 +48,20 @@ def _parse_delta(raw: dict) -> TurnEvent:
     return ContentDelta(text=_text(raw, "text"))
 
 
+def _parse_think(raw: dict) -> TurnEvent:
+    return ReasoningDelta(text=_text(raw, "text"))
+
+
 def _parse_tool(raw: dict) -> TurnEvent:
     return ToolProgress(label=_text(raw, "label"))
+
+
+def _parse_app_ui(raw: dict) -> TurnEvent:
+    return AppUiOfferEvent(
+        title=_text(raw, "title") or "앱",
+        html_path=_text(raw, "html_path"),
+        resource_uri=_text(raw, "resource_uri"),
+    )
 
 
 def _parse_done(raw: dict) -> TurnEvent:
@@ -64,8 +78,10 @@ def _parse_cancel(_raw: dict) -> TurnEvent:
 
 _PARSERS: dict[str, Callable[[dict], TurnEvent]] = {
     "delta": _parse_delta,
+    "think": _parse_think,
     "tool": _parse_tool,
     "tool_progress": _parse_tool,
+    "app_ui": _parse_app_ui,
     "done": _parse_done,
     "fail": _parse_fail,
     "cancel": _parse_cancel,

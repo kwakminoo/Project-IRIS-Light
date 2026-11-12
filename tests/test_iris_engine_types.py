@@ -5,7 +5,7 @@ from unittest import TestCase
 
 from iris.engine import ChatTranscript, EngineError, EngineErrorCode, Role
 from iris.engine.types import DANGEROUS_ACTIONS, IRIS_ENGINE_TOOLS
-from iris.infrastructure.hermes_client import HermesInferenceTarget
+from iris.infrastructure.iris_agent_client import HermesInferenceTarget
 
 
 def _send_payload() -> list[dict[str, str]]:

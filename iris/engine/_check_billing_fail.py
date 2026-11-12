@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from iris.engine._sidecar_main import agent_result_fail
 from iris.engine.types import EngineError, EngineErrorCode
-from iris.infrastructure.hermes_errors import explain_chat_error
+from iris.infrastructure.iris_agent_errors import explain_chat_error
 
 
 def main() -> None:

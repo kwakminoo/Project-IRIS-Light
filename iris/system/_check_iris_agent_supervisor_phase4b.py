@@ -11,7 +11,7 @@ from iris.infrastructure.agent_runtime import (
     ensure_iris_agent_home,
     ensure_iris_agent_runtime,
 )
-from iris.ui.workers import hermes_workers as hw
+from iris.ui.workers import iris_agent_workers as hw
 
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -34,11 +34,11 @@ def _check_public_ensure_symbol() -> None:
 
 def _check_three_entry_points_call_supervisor() -> None:
     health_src = inspect.getsource(hw.HermesHealthWorker.run)
-    assert "ensure_iris_agent_runtime" in health_src
-    # Final gateway bring-up must go through supervisor, not a bare gateway start.
+    # Health path went through Engine.ensure_ready (sidecar); not a bare gateway start.
+    assert "ensure_ready" in health_src
     assert "ensure_hermes_gateway_running" not in health_src
 
-    warm_cli = (_ROOT / "iris" / "hermes_login_warm_cli.py").read_text(encoding="utf-8")
+    warm_cli = (_ROOT / "iris" / "iris_agent_login_warm_cli.py").read_text(encoding="utf-8")
     assert "ensure_iris_agent_runtime" in warm_cli
     assert "ensure_hermes_gateway_running" not in warm_cli
 

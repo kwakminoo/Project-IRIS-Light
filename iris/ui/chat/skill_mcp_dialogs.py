@@ -1,4 +1,4 @@
-"""Hermes Skills / MCP 관리 창 — 목록·설명·추가·채팅 삽입."""
+"""Iris Skills / MCP 관리 창 — 목록·설명·추가·채팅 삽입."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from iris.infrastructure.hermes_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import hermes_home
 from iris.ui.settings.hud_dialog import (
     configure_hud_dialog,
     make_hint,
@@ -248,7 +248,7 @@ def _card_qss() -> str:
 def probe_mcp_ok(name: str) -> bool:
     """등록 MCP가 사용 가능·정상 연결 가능하면 True (stdio 커맨드/HTTP 사전점검)."""
     try:
-        from iris.system.hermes_iris_control_sync import (
+        from iris.system.iris_agent_control_sync import (
             load_mcp_servers_config,
             probe_mcp_server,
         )

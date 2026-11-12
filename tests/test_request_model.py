@@ -11,12 +11,17 @@ from PyQt6.QtWidgets import QApplication
 
 _APP = QApplication.instance() or QApplication(sys.argv)
 
-from iris.engine.types import ExternalGateway  # noqa: E402
-from iris.infrastructure.hermes_client import HermesClient, HermesInferenceTarget  # noqa: E402
-from iris.runtime.chat_run_slot import ChatRunSlot, choose_turn_model  # noqa: E402
-from iris.ui.workers.hermes_workers import HermesChatWorker  # noqa: E402
+from pathlib import Path  # noqa: E402
 
-_EXTERNAL = ExternalGateway(base_url="http://127.0.0.1:8642/v1", api_key="")
+from iris.engine import (  # noqa: E402
+    ContentDelta,
+    EngineHome,
+    InternalSidecar,
+    TurnFinished,
+)
+from iris.infrastructure.iris_agent_client import HermesClient, HermesInferenceTarget  # noqa: E402
+from iris.runtime.chat_run_slot import ChatRunSlot, choose_turn_model  # noqa: E402
+from iris.ui.workers.iris_agent_workers import HermesChatWorker  # noqa: E402
 
 
 def _slot() -> ChatRunSlot:
@@ -73,7 +78,7 @@ class StreamChatProviderTests(TestCase):
 
         with (
             patch.object(client, "list_models", return_value=["hermes-agent"]) as listed,
-            patch("iris.infrastructure.hermes_client.urlopen", fake_open),
+            patch("iris.infrastructure.iris_agent_client.urlopen", fake_open),
         ):
             list(client.stream_chat("gemma-a", [{"role": "user", "content": "hi"}], provider=provider))
         captured["listed"] = listed.call_count
@@ -111,23 +116,38 @@ class _FakeClient:
         yield {"content": "ok", "tool_progress": None, "done": True}
 
 
+class _RecordingEngine:
+    def __init__(self) -> None:
+        self.source = InternalSidecar(
+            home=EngineHome(Path.home() / ".iris-light" / "engine")
+        )
+        self.seen: list[tuple[str, str]] = []
+
+    def fork(self):
+        return self
+
+    def bind_tool_handler(self, _handler) -> None:
+        return None
+
+    def shutdown(self) -> None:
+        return None
+
+    def run_turn(self, turn):
+        model = str(getattr(turn.model, "model", "") or "")
+        provider = str(getattr(turn.model, "provider", "") or "")
+        self.seen.append((model, provider))
+        yield ContentDelta("ok")
+        yield TurnFinished("ok")
+
+
 class ChatWorkerModelTests(TestCase):
-    def test_two_targets_skip_global_model_write(self) -> None:
-        client = _FakeClient()
+    def test_two_targets_keep_requested_model_on_sidecar(self) -> None:
+        engine = _RecordingEngine()
         targets = (
             HermesInferenceTarget(model="gemma-a", provider="custom", display="A"),
             HermesInferenceTarget(model="gemma-b", provider="openrouter", display="B"),
         )
-        with (
-            patch(
-                "iris.ui.workers.hermes_workers._engine_source",
-                return_value=ExternalGateway(
-                    base_url="http://127.0.0.1:8642/v1", api_key=""
-                ),
-            ),
-            patch("iris.ui.workers.hermes_workers.HermesClient", return_value=client),
-            patch("iris.ui.workers.hermes_workers.is_hermes_gateway_running", return_value=True),
-        ):
+        with patch("iris.ui.workers.iris_agent_workers.shared_engine", return_value=engine):
             for target in targets:
                 worker = HermesChatWorker(
                     target.label,
@@ -135,8 +155,7 @@ class ChatWorkerModelTests(TestCase):
                     target=target,
                 )
                 worker.run()
-        self.assertEqual(client.set_calls, 0)
-        self.assertEqual(client.seen, [("gemma-a", "custom"), ("gemma-b", "openrouter")])
+        self.assertEqual(engine.seen, [("gemma-a", "custom"), ("gemma-b", "openrouter")])
 
 
 class SideCallHermesTests(TestCase):
@@ -153,7 +172,7 @@ class SideCallHermesTests(TestCase):
             api_key="gateway-auth",
             target=target,
         )
-        with patch("iris.infrastructure.hermes_client.HermesClient", return_value=client):
+        with patch("iris.infrastructure.iris_agent_client.HermesClient", return_value=client):
             text = _hermes(route, [{"role": "user", "content": "제목"}], lambda: False)
         self.assertEqual(text, "ok")
         self.assertEqual(client.set_calls, 0)

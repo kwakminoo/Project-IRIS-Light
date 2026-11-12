@@ -17,7 +17,7 @@ from typing import Any, Callable
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from iris.system.hermes_iris_control_sync import iris_state_dir, project_root
+from iris.system.iris_agent_control_sync import iris_state_dir, project_root
 from iris.system.node_runtime import (
     NODE_DOWNLOAD_URL,
     install_node_winget,

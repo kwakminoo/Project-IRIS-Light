@@ -225,6 +225,7 @@ class DragTab(QWidget):
     """Frameless title bar with drag handling and window controls."""
 
     profile_clicked = pyqtSignal()
+    ai_hub_clicked = pyqtSignal()
     settings_clicked = pyqtSignal()
     minimize_clicked = pyqtSignal()
     maximize_clicked = pyqtSignal()
@@ -310,6 +311,7 @@ class DragTab(QWidget):
         self._btn_tts.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._btn_tts.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._btn_profile = _win_ctrl_button("👤", "사용자 프로필")
+        self._btn_ai = _win_ctrl_button("AI", "AI Hub")
         self._btn_settings = _win_ctrl_button("⚙", "설정")
         self._btn_min = _win_ctrl_button("−", "창 내리기")
         self._btn_max = _win_ctrl_button("□", "전체 화면")
@@ -321,6 +323,7 @@ class DragTab(QWidget):
             self._btn_mic,
             self._btn_tts,
             self._btn_profile,
+            self._btn_ai,
             self._btn_settings,
             self._btn_min,
             self._btn_max,
@@ -345,6 +348,7 @@ class DragTab(QWidget):
         self._btn_max.clicked.connect(self.maximize_clicked.emit)
         self._btn_close.clicked.connect(parent_window.close)
         self._btn_profile.clicked.connect(self.profile_clicked.emit)
+        self._btn_ai.clicked.connect(self.ai_hub_clicked.emit)
         self._btn_settings.clicked.connect(self.settings_clicked.emit)
         self._drag_pos = None
 

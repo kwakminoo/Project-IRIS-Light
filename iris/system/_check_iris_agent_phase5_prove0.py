@@ -97,16 +97,18 @@ def _check_standin_on_worker_thread() -> AgentLoopStandinResult:
 
 
 def _check_qthread_worker_contract() -> None:
-    from iris.ui.workers import hermes_workers as hw
+    from iris.ui.workers import iris_agent_workers as hw
 
     assert hasattr(hw, "IrisAgentLoopStandinWorker")
     run_src = inspect.getsource(hw.IrisAgentLoopStandinWorker.run)
     assert "run_agent_loop_standin" in run_src
     assert "QWidget" not in run_src
     assert "QtWidgets" not in run_src
-    # Product speak still owns :8642 via HermesChatWorker — Prove 0 must not delete it.
+    # Unit 2: product chat is InternalSidecar only (HTTP :8642 path retired).
     chat_src = inspect.getsource(hw.HermesChatWorker)
-    assert "8642" in chat_src or "ensure_hermes_gateway" in chat_src or "_ensure_gateway" in chat_src
+    assert "_run_internal" in chat_src
+    assert "_run_external" not in chat_src
+    assert "shared_engine" in chat_src
 
 
 def main() -> None:

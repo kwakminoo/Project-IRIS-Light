@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>Iris App Host Ping</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b1220; color: #e2e8f0;
+      font: 13px/1.4 system-ui, sans-serif; }
+    #status { padding: 12px 14px; }
+  </style>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+</head>
+<body>
+  <div id="status">connecting…</div>
+  <script>
+(function () {
+  var statusEl = document.getElementById("status");
+  function setStatus(text) {
+    statusEl.textContent = text;
+  }
+
+  window.__irisOnHostMessage = function (msg) {
+    var method = (msg && msg.method) || "";
+    if (method === "iris.app/pong") {
+      setStatus("pong ok");
+      document.title = "iris-app-pong";
+    }
+  };
+
+  function sendPing(host) {
+    var payload = JSON.stringify({
+      method: "iris.app/ping",
+      params: { from: "fixture" },
+      id: 1
+    });
+    host.postMessage(payload);
+    setStatus("ping sent");
+  }
+
+  if (typeof qt === "undefined" || !qt.webChannelTransport) {
+    setStatus("no webChannelTransport");
+    return;
+  }
+  new QWebChannel(qt.webChannelTransport, function (channel) {
+    var host = channel.objects.irisHost;
+    if (!host || typeof host.postMessage !== "function") {
+      setStatus("no irisHost");
+      return;
+    }
+    window.__irisHost = host;
+    sendPing(host);
+  });
+})();
+  </script>
+</body>
+</html>

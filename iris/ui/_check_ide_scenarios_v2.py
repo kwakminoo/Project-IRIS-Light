@@ -56,7 +56,7 @@ def state() -> dict:
 
 def main() -> int:
     sys.path.insert(0, str(ROOT))
-    from iris.system.hermes_iris_control_sync import sync_iris_control
+    from iris.system.iris_agent_control_sync import sync_iris_control
     from iris.system.project_ops import find_similar_projects
 
     sync_iris_control()  # skills update

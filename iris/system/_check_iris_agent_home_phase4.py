@@ -18,14 +18,14 @@ from iris.infrastructure.agent_runtime import (
     product_agent_home,
     vendor_runtime_root,
 )
-from iris.infrastructure.hermes_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import hermes_home
 from iris.runtime.chat_canonical import (
     AGENT_SESSION_DB_ROLE,
     CHAT_PRODUCT_OF_RECORD,
     is_chat_product_of_record,
 )
-from iris.system import hermes_install as install
-from iris.system import hermes_update as upd
+from iris.system import iris_agent_install as install
+from iris.system import iris_agent_update as upd
 
 
 def _check_pin_contract() -> None:
@@ -103,7 +103,7 @@ def _check_chat_canonical() -> None:
 
 
 def _check_ensure_wired() -> None:
-    from iris.system import hermes_gateway as gw
+    from iris.system import iris_agent_gateway as gw
 
     src = inspect.getsource(gw.ensure_hermes_gateway_running)
     assert "ensure_iris_agent_home" in src

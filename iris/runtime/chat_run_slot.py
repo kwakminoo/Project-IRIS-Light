@@ -27,6 +27,7 @@ class ChatRunSlot:
     turn_is_followthrough: bool = False
     pending_partial: str = ""
     away_reply: str = ""
+    away_error: str = ""
     wiki_turn_moved: bool = False
     wiki_turn_moved_folder: bool = False
     wiki_list_truncated: bool = False

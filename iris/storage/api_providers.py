@@ -4,13 +4,29 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import asdict, dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
+from iris.infrastructure.model_roster import (
+    RosterEntry,
+    SyncResult,
+    mark_price_refetch_done,
+    needs_price_refetch,
+    parse_listing,
+    retire_on_http,
+    sync_from_listing,
+)
 from iris.storage.database import Database
+from iris.storage.secret_store import decrypt_secret, encrypt_secret
 
 API_PROVIDERS_KEY = "api_providers_v1"
 STATUS_VALUES = ("unknown", "ok", "partial", "error")
+_AVAILABILITY = ("ok", "unverified", "unavailable", "")
+_TOOL_SUPPORT = ("yes", "no", "unknown", "")
+_PRICE_CLASS = ("free", "paid", "unknown")
+_MODALITY = ("chat", "image", "audio", "video", "embedding", "other", "unknown")
 
 # 설정 화면 콤보를 채우는 편의 목록 — 추정이 아니라 사용자가 고르는 값임.
 # 확정값은 언제나 openai_compat_client.resolve_base_url의 프로브 결과임.
@@ -168,6 +184,8 @@ class ApiProvider:
     model_states: dict[str, str] = field(default_factory=dict)  # ok|unverified|unavailable
     tool_support: dict[str, str] = field(default_factory=dict)  # yes|no|unknown
     probed_at: str = ""
+    # listing roster persist (description/price/modality/retired + round-trip fields)
+    model_meta: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -182,6 +200,7 @@ class ApiProvider:
             if s and s not in cleaned:
                 cleaned.append(s)
         self.models = cleaned
+        self.model_meta = sanitize_model_meta(self.model_meta)
 
 
 def preset_index_for_base_url(url: str) -> int:
@@ -239,6 +258,193 @@ def is_api_runtime_model(runtime: str) -> bool:
     return parse_runtime_model_id(runtime) is not None
 
 
+def empty_model_meta_row() -> dict:
+    return {
+        "description": "",
+        "price_class": "unknown",
+        "modality": "unknown",
+        "retired": False,
+        "retired_at": "",
+        "retire_evidence": "",
+        "listing_seen_at": "",
+        "price_refetch_done": False,
+    }
+
+
+def sanitize_model_meta(raw: object) -> dict[str, dict]:
+    """Legacy JSON without model_meta → {}. Invalid rows get defaults."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for key, value in raw.items():
+        mid = str(key).strip()
+        if not mid:
+            continue
+        row = value if isinstance(value, dict) else {}
+        price = str(row.get("price_class") or "unknown").strip().lower()
+        if price not in _PRICE_CLASS:
+            price = "unknown"
+        modality = str(row.get("modality") or "unknown").strip().lower()
+        if modality not in _MODALITY:
+            modality = "unknown"
+        out[mid] = {
+            "description": str(row.get("description") or ""),
+            "price_class": price,
+            "modality": modality,
+            "retired": bool(row.get("retired", False)),
+            "retired_at": str(row.get("retired_at") or ""),
+            "retire_evidence": str(row.get("retire_evidence") or ""),
+            "listing_seen_at": str(row.get("listing_seen_at") or ""),
+            "price_refetch_done": bool(row.get("price_refetch_done", False)),
+        }
+    return out
+
+
+def roster_from_provider(provider: ApiProvider) -> list[RosterEntry]:
+    """Compose RosterEntry views from models + model_states + tool_support + model_meta."""
+    out: list[RosterEntry] = []
+    for mid in provider.models:
+        meta = provider.model_meta.get(mid) or empty_model_meta_row()
+        avail = str(provider.model_states.get(mid) or "unverified")
+        if avail not in _AVAILABILITY:
+            avail = "unverified"
+        tools = str(provider.tool_support.get(mid) or "unknown")
+        if tools not in _TOOL_SUPPORT:
+            tools = "unknown"
+        price = str(meta.get("price_class") or "unknown")
+        if price not in _PRICE_CLASS:
+            price = "unknown"
+        modality = str(meta.get("modality") or "unknown")
+        if modality not in _MODALITY:
+            modality = "unknown"
+        out.append(
+            RosterEntry(
+                model_id=mid,
+                description=str(meta.get("description") or ""),
+                price_class=price,  # type: ignore[arg-type]
+                modality=modality,  # type: ignore[arg-type]
+                availability=avail,  # type: ignore[arg-type]
+                tool_support=tools,  # type: ignore[arg-type]
+                retired=bool(meta.get("retired", False)),
+                retired_at=str(meta.get("retired_at") or ""),
+                retire_evidence=str(meta.get("retire_evidence") or ""),
+                listing_seen_at=str(meta.get("listing_seen_at") or ""),
+                price_refetch_done=bool(meta.get("price_refetch_done", False)),
+            )
+        )
+    return out
+
+
+def apply_roster_to_provider(
+    provider: ApiProvider, entries: Sequence[RosterEntry]
+) -> None:
+    """Write roster maps onto provider. Never remove ids from models[]."""
+    known = set(provider.models)
+    for entry in entries:
+        mid = (entry.model_id or "").strip()
+        if not mid:
+            continue
+        if mid not in known:
+            provider.models.append(mid)
+            known.add(mid)
+        avail = entry.availability if entry.availability in _AVAILABILITY else "unverified"
+        if avail == "":
+            avail = "unverified"
+        tools = entry.tool_support if entry.tool_support in _TOOL_SUPPORT else "unknown"
+        if tools == "":
+            tools = "unknown"
+        provider.model_states[mid] = avail
+        provider.tool_support[mid] = tools
+        price = entry.price_class if entry.price_class in _PRICE_CLASS else "unknown"
+        modality = entry.modality if entry.modality in _MODALITY else "unknown"
+        provider.model_meta[mid] = {
+            "description": entry.description or "",
+            "price_class": price,
+            "modality": modality,
+            "retired": bool(entry.retired),
+            "retired_at": entry.retired_at or "",
+            "retire_evidence": entry.retire_evidence or "",
+            "listing_seen_at": entry.listing_seen_at or "",
+            "price_refetch_done": bool(entry.price_refetch_done),
+        }
+    provider.model_meta = sanitize_model_meta(provider.model_meta)
+
+
+def sync_provider_listing(
+    provider: ApiProvider,
+    raw_entries: Sequence[Mapping[str, Any] | object],
+    *,
+    confirm_missing: bool,
+    refetch_entries: Callable[[], Sequence[Mapping[str, Any] | object]] | None = None,
+    now_iso: str = "",
+) -> SyncResult:
+    """Merge one brand `/models` listing into provider roster maps.
+
+    Policy and price mid-change (FreeLLMAPI-style, no signed feed) are applied by
+    the same brand re-sync on the next probe or refresh that calls this helper with
+    a fresh listing. Do not invent a signed catalog.
+
+    Pass confirm_missing=True only when a full `/models` listing succeeded. Partial
+    or empty evidence must use confirm_missing=False so rows are not retired.
+    Roster ids are never deleted from provider.models[].
+    """
+    listings = [parse_listing(e) for e in raw_entries]
+    listings = [m for m in listings if m.id]
+    current = roster_from_provider(provider)
+    result = sync_from_listing(
+        current,
+        listings,
+        brand_id=provider.id,
+        confirm_missing=confirm_missing,
+        now_iso=now_iso,
+    )
+    if result.needs_price_refetch and refetch_entries is not None:
+        try:
+            second_raw = list(refetch_entries() or [])
+        except Exception:
+            second_raw = []
+        second = [m for m in (parse_listing(e) for e in second_raw) if m.id]
+        # Empty second listing must not confirm_missing-retire the whole brand.
+        if second:
+            result = sync_from_listing(
+                result.entries,
+                second,
+                brand_id=provider.id,
+                confirm_missing=confirm_missing,
+                now_iso=now_iso,
+            )
+        marked = mark_price_refetch_done(result.entries)
+        result = SyncResult(
+            entries=tuple(marked),
+            added=result.added,
+            updated=result.updated,
+            retired_ids=result.retired_ids,
+            needs_price_refetch=needs_price_refetch(marked),
+        )
+    apply_roster_to_provider(provider, result.entries)
+    return result
+
+
+def retire_provider_on_http(
+    provider: ApiProvider,
+    model_id: str,
+    *,
+    status: int = 410,
+    evidence: str = "",
+    now_iso: str = "",
+) -> list[RosterEntry]:
+    """Mark a model retired+unavailable on HTTP EOL evidence. Never drop the id."""
+    roster = retire_on_http(
+        roster_from_provider(provider),
+        model_id=model_id,
+        status=status,
+        evidence=evidence,
+        now_iso=now_iso,
+    )
+    apply_roster_to_provider(provider, roster)
+    return roster
+
+
 def _from_dict(data: dict) -> ApiProvider:
     models_raw = data.get("models") or []
     if isinstance(models_raw, str):
@@ -261,7 +467,10 @@ def _from_dict(data: dict) -> ApiProvider:
         id=str(data.get("id") or "").strip() or uuid.uuid4().hex[:12],
         name=str(data.get("name") or "").strip(),
         base_url=str(data.get("base_url") or "").strip().rstrip("/"),
-        api_key=str(data.get("api_key") or ""),
+        api_key=(
+            decrypt_secret(str(data.get("api_key_enc") or ""))
+            or str(data.get("api_key") or "")
+        ),
         models=models,
         status=status,
         last_error=str(data.get("last_error") or ""),
@@ -272,6 +481,7 @@ def _from_dict(data: dict) -> ApiProvider:
         model_states=_str_map("model_states"),
         tool_support=_str_map("tool_support"),
         probed_at=str(data.get("probed_at") or ""),
+        model_meta=sanitize_model_meta(data.get("model_meta")),
     )
 
 
@@ -288,15 +498,36 @@ def load_api_providers(db: Database | None) -> list[ApiProvider]:
     if not isinstance(data, list):
         return []
     out: list[ApiProvider] = []
+    migrate_plaintext = False
     for item in data:
         if isinstance(item, dict):
             out.append(_from_dict(item))
+            migrate_plaintext = migrate_plaintext or "api_key" in item
+    if migrate_plaintext:
+        save_api_providers(db, out)
     return out
 
 
 def save_api_providers(db: Database, providers: list[ApiProvider]) -> None:
-    payload = [asdict(p) for p in providers]
+    payload = []
+    for provider in providers:
+        row = {
+            key: value
+            for key, value in vars(provider).items()
+            if key != "api_key"
+        }
+        row["api_key_enc"] = encrypt_secret(provider.api_key)
+        payload.append(row)
     db.set_preference(API_PROVIDERS_KEY, json.dumps(payload, ensure_ascii=False))
+
+
+def provider_is_selectable(provider: ApiProvider) -> bool:
+    return bool(
+        provider.enabled
+        and provider.base_url
+        and provider.models
+        and provider.status in ("ok", "partial")
+    )
 
 
 def get_api_provider(db: Database | None, provider_id: str) -> ApiProvider | None:
@@ -392,11 +623,8 @@ def usable_models(provider: ApiProvider) -> list[str]:
 
 
 def ok_providers_for_picker(db: Database | None) -> list[ApiProvider]:
-    return [
-        p
-        for p in load_api_providers(db)
-        if p.enabled and p.status == "ok" and p.base_url and (p.models or True)
-    ]
+    """Picker providers use the same ok/partial readiness predicate everywhere."""
+    return [p for p in load_api_providers(db) if provider_is_selectable(p)]
 
 
 if __name__ == "__main__":
@@ -422,6 +650,7 @@ if __name__ == "__main__":
     assert legacy.auth_style == "bearer"
     assert legacy.resolved_base_url == "" and legacy.probed_at == ""
     assert legacy.model_states == {} and legacy.tool_support == {}
+    assert legacy.model_meta == {}
     marked = ApiProvider(
         name="P",
         base_url="https://x/v1",
@@ -429,4 +658,48 @@ if __name__ == "__main__":
         model_states={"dead": "unavailable"},
     )
     assert usable_models(marked) == ["good", "dead"]
+    loaded_meta = _from_dict(
+        {
+            "id": "m1",
+            "name": "Meta",
+            "base_url": "https://x/v1",
+            "models": ["keep-me", "alive"],
+            "model_meta": {
+                "keep-me": {
+                    "description": "Official only",
+                    "price_class": "free",
+                    "modality": "chat",
+                    "retired": True,
+                    "retired_at": "2026-11-12T00:00:00Z",
+                    "retire_evidence": "listing-missing",
+                    "listing_seen_at": "2026-11-01T00:00:00Z",
+                    "price_refetch_done": True,
+                }
+            },
+            "model_states": {"keep-me": "unavailable"},
+            "tool_support": {"keep-me": "no"},
+        }
+    )
+    assert loaded_meta.model_meta["keep-me"]["description"] == "Official only"
+    assert loaded_meta.model_meta["keep-me"]["retired"] is True
+    round_trip = roster_from_provider(loaded_meta)
+    assert [e.model_id for e in round_trip] == ["keep-me", "alive"]
+    assert round_trip[0].retired is True and round_trip[0].price_class == "free"
+    apply_roster_to_provider(
+        loaded_meta,
+        [
+            RosterEntry(
+                model_id="alive",
+                description="Still listed",
+                price_class="paid",
+                modality="chat",
+                availability="ok",
+                tool_support="yes",
+            )
+        ],
+    )
+    assert "keep-me" in loaded_meta.models
+    assert loaded_meta.models == ["keep-me", "alive"]
+    assert loaded_meta.model_meta["keep-me"]["retired"] is True
+    assert loaded_meta.model_meta["alive"]["price_class"] == "paid"
     print("api_providers self-check ok")

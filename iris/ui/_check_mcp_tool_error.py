@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from iris.mcp.iris_control_stdio import _tool_result
+from iris.system.control_http_client import _tool_result
 from iris.system.control_surface import ActionRegistry
 from iris.ui.control_bindings import _register_actions
 

@@ -12,6 +12,18 @@ from typing import Any
 
 from iris.ui.workers.backend_call import BackendRoute
 
+AGENT_BACKEND = "agent"
+LEGACY_HERMES_BACKEND = "hermes"
+
+
+def is_agent_backend(route_or_backend: Any) -> bool:
+    """True for canonical ``agent`` and legacy ``hermes`` chat-route ids."""
+    if hasattr(route_or_backend, "backend"):
+        raw = getattr(route_or_backend, "backend", "")
+    else:
+        raw = route_or_backend
+    return str(raw or "").strip().lower() in (AGENT_BACKEND, LEGACY_HERMES_BACKEND)
+
 
 def resolve_backend_route(
     settings: Any,
@@ -29,9 +41,9 @@ def resolve_backend_route(
 
     if bool(getattr(settings, "hermes_enabled", False)):
         try:
-            from iris.infrastructure.hermes_client import resolve_hermes_inference
+            from iris.infrastructure.iris_agent_client import resolve_iris_agent_inference
 
-            target = resolve_hermes_inference(
+            target = resolve_iris_agent_inference(
                 name,
                 db=db,
                 ollama_base_url=getattr(settings, "ollama_base_url", ""),
@@ -39,7 +51,7 @@ def resolve_backend_route(
         except Exception:  # noqa: BLE001
             return None
         return BackendRoute(
-            backend="hermes",
+            backend=AGENT_BACKEND,
             model=name,
             base_url=getattr(settings, "hermes_base_url", ""),
             api_key=getattr(settings, "hermes_api_key", ""),
@@ -238,19 +250,24 @@ if __name__ == "__main__":
         ollama_base_url="http://127.0.0.1:11434/v1",
     )
 
-    import iris.infrastructure.hermes_client as hc
+    import iris.infrastructure.iris_agent_client as hc
 
-    original = hc.resolve_hermes_inference
-    hc.resolve_hermes_inference = lambda m, **kw: SimpleNamespace(model=f"up/{m}", label=m)
+    original = hc.resolve_iris_agent_inference
+    hc.resolve_iris_agent_inference = lambda m, **kw: SimpleNamespace(model=f"up/{m}", label=m)
+    hc.resolve_hermes_inference = hc.resolve_iris_agent_inference
     try:
         route = resolve_backend_route(hermes_on, None, "qwen3:8b")
-        assert route.backend == "hermes" and route.target.model == "up/qwen3:8b"
+        assert route.backend == AGENT_BACKEND and route.target.model == "up/qwen3:8b"
+        assert is_agent_backend(route)
+        assert is_agent_backend(LEGACY_HERMES_BACKEND)
         assert route.api_key == "k"
 
         # 해석이 실패하면 None
-        hc.resolve_hermes_inference = lambda m, **kw: (_ for _ in ()).throw(ValueError("없음"))
+        hc.resolve_iris_agent_inference = lambda m, **kw: (_ for _ in ()).throw(ValueError("없음"))
+        hc.resolve_hermes_inference = hc.resolve_iris_agent_inference
         assert resolve_backend_route(hermes_on, None, "api:gone:x") is None
     finally:
+        hc.resolve_iris_agent_inference = original
         hc.resolve_hermes_inference = original
 
     # 루틴 고정 모델

@@ -16,7 +16,12 @@ UPDATE_NOTIFY_KEY = "update_notify_v1"
 @dataclass
 class UpdateNotifyPrefs:
     iris: bool = False
-    hermes: bool = False
+    agent: bool = False
+
+    @property
+    def hermes(self) -> bool:
+        """Read-compat for pre-Wave-E callers."""
+        return self.agent
 
 
 def should_show_update_prompt(*, allowed: bool, same_chat: bool, available: bool) -> bool:
@@ -36,16 +41,20 @@ def load_update_notify(db: Database | None) -> UpdateNotifyPrefs:
         return UpdateNotifyPrefs()
     if not isinstance(data, dict):
         return UpdateNotifyPrefs()
+    if "agent" in data:
+        agent = bool(data.get("agent"))
+    else:
+        agent = bool(data.get("hermes"))
     return UpdateNotifyPrefs(
         iris=bool(data.get("iris")),
-        hermes=bool(data.get("hermes")),
+        agent=agent,
     )
 
 
 def save_update_notify(db: Database, prefs: UpdateNotifyPrefs) -> None:
     db.set_preference(
         UPDATE_NOTIFY_KEY,
-        json.dumps({"iris": bool(prefs.iris), "hermes": bool(prefs.hermes)}),
+        json.dumps({"iris": bool(prefs.iris), "agent": bool(prefs.agent)}),
     )
 
 
@@ -60,9 +69,13 @@ def _self_check() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         db = Database(Path(tmp) / "t.db")
         assert load_update_notify(db) == UpdateNotifyPrefs()
-        save_update_notify(db, UpdateNotifyPrefs(iris=True, hermes=False))
+        save_update_notify(db, UpdateNotifyPrefs(iris=True, agent=False))
         got = load_update_notify(db)
-        assert got.iris is True and got.hermes is False
+        assert got.iris is True and got.agent is False and got.hermes is False
+        # legacy JSON key "hermes" still loads
+        db.set_preference(UPDATE_NOTIFY_KEY, json.dumps({"iris": False, "hermes": True}))
+        legacy = load_update_notify(db)
+        assert legacy.agent is True and legacy.hermes is True
         db.close()
     print("update_notify_prefs ok")
 

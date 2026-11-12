@@ -35,6 +35,7 @@ from iris.runtime.past_chats import (  # noqa: E402
     MAX_PAST_HITS,
     find_past_chats,
     format_past_chats_for_prompt,
+    should_search,
     sources_note,
 )
 from iris.storage.database import Database  # noqa: E402
@@ -68,10 +69,27 @@ class _Base(TestCase):
         save_history_settings(self.db, settings)
 
 
+class ShouldSearchLengthTests(TestCase):
+    def test_should_search_is_length_only(self) -> None:
+        self.assertFalse(should_search("고마워"))
+        self.assertFalse(should_search("저번"))
+        self.assertTrue(should_search("날씨 어때"))
+        self.assertTrue(should_search("설치 프로그램 권한 오류"))
+        self.assertTrue(should_search("저번에 설치 오류 어떻게 고쳤지"))
+
+
 class FindPastChatsTests(_Base):
+    def test_topic_query_searches_without_intent_phrase(self) -> None:
+        self._say(1, "user", "설치 프로그램 권한 오류는 venv 소유권 문제였어요")
+        self._say(1, "assistant", "venv 소유권을 고치면 됩니다")
+        hits = find_past_chats(self.svc, "설치 프로그램 권한 오류", 2)
+        self.assertTrue(hits)
+        self.assertTrue(all(h.entry.conversation_id == 1 for h in hits))
+
     def test_current_conversation_is_left_out(self) -> None:
         """방금 보낸 질문이 자기 자신을 찾아오면 안 된다."""
         self._say(1, "user", "설치 프로그램 권한 오류는 venv 소유권 문제였어요")
+        self._say(1, "assistant", "venv 소유권을 고치면 됩니다")
         self._say(2, "user", "설치 프로그램 권한 오류 또 났어")
         hits = find_past_chats(self.svc, "설치 프로그램 권한 오류", 2)
         self.assertTrue(hits)
@@ -96,7 +114,9 @@ class FindPastChatsTests(_Base):
 
     def test_prompt_block_tells_the_model_it_is_another_conversation(self) -> None:
         self._say(1, "user", "설치 프로그램 권한 오류")
-        block = format_past_chats_for_prompt(find_past_chats(self.svc, "설치 프로그램", 2))
+        block = format_past_chats_for_prompt(
+            find_past_chats(self.svc, "설치 프로그램", 2)
+        )
         self.assertIn("예전 대화", block)
         self.assertIn("관련 없으면 무시", block)
         self.assertIn("설치 프로그램 권한 오류", block)
@@ -107,6 +127,145 @@ class FindPastChatsTests(_Base):
         self.assertIn("이전 대화 1건 참고", note)
         self.assertIn("설치 프로그램 권한", note)
         self.assertEqual(sources_note([]), "")
+
+
+class ChatSearchPastActionTests(_Base):
+    def _window(self):
+        return SimpleNamespace(
+            _model_switch=self.svc,
+            _conversation_id=2,
+            _db=self.db,
+            _settings=SimpleNamespace(ollama_base_url="http://127.0.0.1:11434"),
+        )
+
+    def test_handler_returns_hits_via_embed_path(self) -> None:
+        from iris.system.control_surface import ActionRegistry
+        from iris.ui.control_actions.chat import register_chat_actions
+
+        self._say(1, "user", "설치 프로그램 권한 오류는 venv 소유권 문제였어요")
+        self._say(1, "assistant", "venv 소유권을 고치면 됩니다")
+        seeded = find_past_chats(self.svc, "설치 프로그램 권한 오류", 2, None)
+        self.assertTrue(seeded, "fixture chats must exist for fake embed path")
+        window = self._window()
+        reg = ActionRegistry()
+        register_chat_actions(window, reg)
+        with patch(
+            "iris.ui.workers.past_chats_worker.semantic_past_chats",
+            return_value=(seeded, None),
+        ) as semantic:
+            with patch(
+                "iris.runtime.past_chats.find_past_chats"
+            ) as find_mock:
+                out = reg.invoke(
+                    "chat.search_past", {"query": "설치 프로그램 권한 오류"}
+                )
+        self.assertTrue(out["ok"], out)
+        result = out["result"]
+        self.assertGreaterEqual(result["count"], 1)
+        self.assertTrue(result["hits"])
+        self.assertIn("예전 대화", result["prompt_block"])
+        self.assertIn("이전 대화", result["sources_note"])
+        self.assertEqual(result["hits"][0]["role"], "user")
+        semantic.assert_called()
+        client = semantic.call_args[0][3]
+        self.assertIsNotNone(client)
+        # Tool must not take the keyword-only None-client happy path.
+        for call in find_mock.call_args_list:
+            args = call.args if call.args else ()
+            kwargs = call.kwargs or {}
+            if len(args) >= 4:
+                self.assertIsNotNone(args[3])
+            if "ollama_client" in kwargs:
+                self.assertIsNotNone(kwargs["ollama_client"])
+
+    def test_handler_no_embedder_returns_empty_message(self) -> None:
+        from iris.runtime.past_chats import SEMANTIC_UNAVAILABLE_MSG
+        from iris.system.control_surface import ActionRegistry
+        from iris.ui.control_actions.chat import register_chat_actions
+
+        self._say(1, "user", "설치 프로그램 권한 오류는 venv 소유권 문제였어요")
+        window = self._window()
+        reg = ActionRegistry()
+        register_chat_actions(window, reg)
+        with patch(
+            "iris.ui.workers.past_chats_worker.semantic_past_chats",
+            return_value=([], SEMANTIC_UNAVAILABLE_MSG),
+        ):
+            out = reg.invoke(
+                "chat.search_past", {"query": "설치 프로그램 권한 오류"}
+            )
+        self.assertTrue(out["ok"], out)
+        result = out["result"]
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["hits"], [])
+        self.assertIn("semantic search unavailable", result["message"])
+
+    def test_handler_embed_disabled_returns_message(self) -> None:
+        from iris.system.control_surface import ActionRegistry
+        from iris.ui.control_actions.chat import register_chat_actions
+
+        self._say(1, "user", "설치 프로그램 권한 오류")
+        self._set(embed_enabled=False)
+        window = self._window()
+        reg = ActionRegistry()
+        register_chat_actions(window, reg)
+        with patch(
+            "iris.ui.workers.past_chats_worker.run_semantic_past_search_off_ui"
+        ) as off_ui:
+            out = reg.invoke(
+                "chat.search_past", {"query": "설치 프로그램 권한"}
+            )
+        off_ui.assert_not_called()
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["result"]["count"], 0)
+        self.assertEqual(out["result"]["hits"], [])
+        self.assertIn("semantic search unavailable", out["result"]["message"])
+
+    def test_handler_respects_disabled_setting(self) -> None:
+        from iris.system.control_surface import ActionRegistry
+        from iris.ui.control_actions.chat import register_chat_actions
+
+        self._say(1, "user", "설치 프로그램 권한 오류")
+        self._set(reference_past_chats=False)
+        window = self._window()
+        reg = ActionRegistry()
+        register_chat_actions(window, reg)
+        out = reg.invoke("chat.search_past", {"query": "설치 프로그램 권한"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["result"]["count"], 0)
+        self.assertEqual(out["result"]["hits"], [])
+        self.assertIn("disabled", out["result"]["message"])
+
+    def test_handler_requires_query(self) -> None:
+        from iris.system.control_surface import ActionRegistry
+        from iris.ui.control_actions.chat import register_chat_actions
+
+        window = self._window()
+        reg = ActionRegistry()
+        register_chat_actions(window, reg)
+        out = reg.invoke("chat.search_past", {})
+        self.assertFalse(out["ok"])
+
+    def test_semantic_past_chats_rejects_none_client_path(self) -> None:
+        """Gate refuses keyword-only: no embedder → message, never silent keyword."""
+        from iris.runtime.past_chats import (
+            SEMANTIC_UNAVAILABLE_MSG,
+            semantic_past_chats,
+        )
+
+        self._say(1, "user", "설치 프로그램 권한 오류는 venv 소유권 문제였어요")
+        with patch(
+            "iris.runtime.model_switch.resolve_embedder", return_value=None
+        ):
+            with patch(
+                "iris.runtime.past_chats.find_past_chats"
+            ) as find_mock:
+                chats, msg = semantic_past_chats(
+                    self.svc, "설치 프로그램 권한 오류", 2, object()
+                )
+        self.assertEqual(chats, [])
+        self.assertEqual(msg, SEMANTIC_UNAVAILABLE_MSG)
+        find_mock.assert_not_called()
 
 
 class RelevanceGateTests(TestCase):
@@ -273,42 +432,22 @@ class MainWindowPastChatsTests(_Base):
             p.stop()
         super().tearDown()
 
-    def _go(self, text: str = "설치 프로그램 권한 오류 또 났어") -> None:
+    def _go(self, text: str = "저번에 설치 프로그램 권한 오류 또 났어") -> None:
         MainWindow._with_past_chats(
             self.win, self.turn, text, lambda: self.launched.append(self.win._pending_past_chats)
         )
 
-    def test_semantic_result_is_attached_and_shown(self) -> None:
+    def test_normal_turn_does_not_auto_search_past(self) -> None:
+        """SpeakTool 경로만 past를 찾는다 — MainWindow는 자동 검색하지 않는다."""
         _SyncWorker.emit_hits = find_past_chats(self.svc, "설치 프로그램 권한", 2)
-        self._go()
-        self.assertEqual(len(self.launched), 1)
-        self.assertIn("venv 소유권", self.launched[0])
-        self.assertEqual(self.chat.messages[0][0], "note")  # Iris 답변이 아니다
-        self.assertIn("이전 대화 1건 참고", self.chat.messages[0][1])
-        self.assertTrue(_FakeTimer.last.stopped)
-
-    def test_slow_embedding_falls_back_to_keywords_once(self) -> None:
-        self._go()
-        self.assertEqual(self.launched, [])  # 아직 기다리는 중
-        _FakeTimer.last.fire()
-        self.assertEqual(len(self.launched), 1)
-        self.assertIn("venv 소유권", self.launched[0])
-        _FakeTimer.last.fire()  # 두 번 보내면 안 된다
-        self.assertEqual(len(self.launched), 1)
-
-    def test_stopped_turn_is_not_sent(self) -> None:
-        self._go()
-        self.win._runs.slot(2).gate.finish("t1")
-        _FakeTimer.last.fire()
-        self.assertEqual(self.launched, [])
-
-    def test_nothing_found_sends_without_a_note(self) -> None:
-        _SyncWorker.emit_hits = []
+        _FakeTimer.last = None
         self._go()
         self.assertEqual(self.launched, [""])
         self.assertEqual(self.chat.messages, [])
+        self.assertIsNone(_FakeTimer.last)
+        self.assertEqual(self.win._pending_past_chats, "")
 
-    def test_setting_off_sends_immediately(self) -> None:
+    def test_setting_off_still_sends_immediately(self) -> None:
         self._set(reference_past_chats=False)
         _FakeTimer.last = None
         self._go()
@@ -329,7 +468,13 @@ class MainWindowPastChatsTests(_Base):
         )
         payload = MainWindow._chat_messages_with_project_context(win)
         self.assertEqual(payload[-1]["content"], "지금 질문")
-        self.assertEqual(payload[-2], {"role": "system", "content": "# 이전 대화에서 찾은 기록"})
+        past_at = next(
+            i
+            for i, m in enumerate(payload)
+            if m.get("role") == "system" and m.get("content") == "# 이전 대화에서 찾은 기록"
+        )
+        # browser page_text 등이 past 뒤에 더 붙을 수 있다 — user 앞이면 된다.
+        self.assertLess(past_at, len(payload) - 1)
         self.assertEqual(payload[0]["role"], "system")
 
 
@@ -536,7 +681,7 @@ class QuestionAnswerPairTests(_Base):
     def test_question_brings_its_answer(self) -> None:
         self._say(1, "user", "설치 프로그램이 Access Denied 로 죽어요")
         self._say(1, "assistant", "python.exe 가 잠겨 있으니 robocopy 로 폴더를 비우세요")
-        chats = find_past_chats(self.svc, "설치 프로그램 Access Denied", 9)
+        chats = find_past_chats(self.svc, "저번에 설치 프로그램 Access Denied", 9)
         self.assertEqual(len(chats), 1)
         block = format_past_chats_for_prompt(chats)
         self.assertIn("사용자: 설치 프로그램이 Access Denied", block)
@@ -545,7 +690,7 @@ class QuestionAnswerPairTests(_Base):
     def test_answer_brings_its_question_and_pairs_are_not_doubled(self) -> None:
         self._say(1, "user", "설치 프로그램 권한 문제 어떻게 해")
         self._say(1, "assistant", "설치 프로그램 권한은 venv 소유권을 고치면 됩니다")
-        chats = find_past_chats(self.svc, "설치 프로그램 권한", 9)
+        chats = find_past_chats(self.svc, "저번에 설치 프로그램 권한", 9)
         self.assertEqual(len(chats), 1)  # 질문·답이 둘 다 걸려도 한 쌍
         self.assertIsNotNone(chats[0].question)
         self.assertIsNotNone(chats[0].answer)
@@ -554,7 +699,7 @@ class QuestionAnswerPairTests(_Base):
     def test_informative_user_line_without_answer_is_kept(self) -> None:
         """답이 없어도 정보가 있는 사용자 말은 남긴다(질문을 품고 있어도)."""
         self._say(1, "user", "설치 프로그램 권한 오류는 robocopy 로 바꾸니까 해결됐어요")
-        chats = find_past_chats(self.svc, "설치 프로그램 권한 오류", 9)
+        chats = find_past_chats(self.svc, "저번에 설치 프로그램 권한 오류", 9)
         self.assertEqual(len(chats), 1)
         self.assertIsNone(chats[0].answer)
 
@@ -563,7 +708,7 @@ class QuestionAnswerPairTests(_Base):
 
         self._say(1, "user", "설치 프로그램 권한 오류는 venv 문제였나")
         self._say(1, "assistant", INTERRUPTED_NOTE)
-        chats = find_past_chats(self.svc, "설치 프로그램 권한 오류", 9)
+        chats = find_past_chats(self.svc, "저번에 설치 프로그램 권한 오류", 9)
         for chat in chats:
             self.assertIsNone(chat.answer)
         self.assertNotIn(INTERRUPTED_NOTE, format_past_chats_for_prompt(chats))
@@ -575,7 +720,7 @@ class SurroundingTurnTests(_Base):
         self._say(1, "user", "Access Denied 로 죽어요")
         self._say(1, "assistant", "python.exe 가 잠겨 있으니 폴더 삭제를 바꾸세요")
         self._say(1, "user", "robocopy 로 바꾸니까 설치 됐어요")
-        chats = find_past_chats(self.svc, "robocopy 설치 됐어요", 9)
+        chats = find_past_chats(self.svc, "예전에 robocopy 설치 됐어요", 9)
         self.assertEqual(len(chats), 1)
         block = format_past_chats_for_prompt(chats)
         self.assertLess(block.index("python.exe 가 잠겨"), block.index("robocopy 로 바꾸니까"))
@@ -584,6 +729,6 @@ class SurroundingTurnTests(_Base):
         self._say(1, "user", "설치 프로그램 권한 오류 어떻게 해")
         self._say(1, "assistant", "설치 프로그램 권한은 venv 소유권 문제")
         self._say(1, "user", "설치 프로그램 권한 고쳤더니 됐어요")
-        chats = find_past_chats(self.svc, "설치 프로그램 권한", 9)
+        chats = find_past_chats(self.svc, "저번에 설치 프로그램 권한", 9)
         ids = [t.id for c in chats for t in c.turns]
         self.assertEqual(len(ids), len(set(ids)))

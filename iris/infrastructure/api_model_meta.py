@@ -59,10 +59,10 @@ def model_is_gone(detail: str) -> bool:
 
 
 def state_from_http(status: int, detail: str = "") -> str:
-    """401/403/429/5xx·형식 400은 미확정(목록 유지). 404·비채팅 본문만 제외."""
+    """401/403/429/5xx·형식 400은 미확정(목록 유지). 404/410·비채팅 본문만 제외."""
     if status in (401, 403, 429) or status == 0 or status >= 500:
         return "unverified"
-    if status == 404 or model_is_gone(detail):
+    if status in (404, 410) or model_is_gone(detail):
         return "unavailable"
     if status in (400, 422):
         return "unverified"
@@ -75,7 +75,15 @@ def chat_error_hides_model(err: str) -> bool:
     Hermes options 400·파라미터 거부는 숨기지 않는다.
     """
     text = err or ""
-    if "HTTP 404" in text or model_is_gone(text):
+    if "HTTP 404" in text or "HTTP 410" in text or model_is_gone(text):
+        return True
+    return False
+
+
+def should_skip_api_model_verify(state: str, tool_support: str) -> bool:
+    if state == "unavailable":
+        return True
+    if state == "ok" and tool_support in ("yes", "no"):
         return True
     return False
 
@@ -121,6 +129,10 @@ if __name__ == "__main__":
     assert tool_support_from_listing({"id": "x"}) == "unknown"
     assert tool_support_from_listing(None) == "unknown"
     assert state_from_http(404, "") == "unavailable"
+    assert state_from_http(410, "") == "unavailable"
+    assert (
+        state_from_http(410, "end of life and no longer available") == "unavailable"
+    )
     assert state_from_http(429, "rate limit") == "unverified"
     assert state_from_http(0, "") == "unverified"
     assert state_from_http(503, "overloaded") == "unverified"
@@ -128,6 +140,13 @@ if __name__ == "__main__":
     assert state_from_http(400, "input must be text embedding") == "unavailable"
     assert chat_error_hides_model("Hermes: HTTP 400 Unsupported parameter(s): options") is False
     assert chat_error_hides_model("HTTP 404 model not found") is True
+    assert chat_error_hides_model(
+        "HTTP 410: The model is end of life and no longer available."
+    )
+    assert should_skip_api_model_verify("unavailable", "unknown") is True
+    assert should_skip_api_model_verify("", "unknown") is False
+    assert should_skip_api_model_verify("ok", "yes") is True
+    assert should_skip_api_model_verify("ok", "unknown") is False
     assert _mentions_tools('{"error":"Function calling is not enabled"}')
     assert not _mentions_tools('{"error":"quota exceeded"}')
     assert tool_support_label("unknown") == "도구 미확인"

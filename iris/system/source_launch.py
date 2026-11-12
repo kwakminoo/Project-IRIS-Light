@@ -40,7 +40,14 @@ def resolve_repo_root_from_frozen() -> Path | None:
 
 
 def resolve_venv_python(root: Path) -> Path | None:
-    """소스 실행용 인터프리터 (.venv 우선)."""
+    """소스 실행용 인터프리터 — Windows는 base pythonw(스텁 아님) 우선."""
+    if sys.platform == "win32":
+        try:
+            from iris.system.gui_python import resolve_gui_pythonw
+
+            return resolve_gui_pythonw(root)
+        except Exception:
+            pass
     win = [
         root / ".venv" / "Scripts" / "pythonw.exe",
         root / ".venv" / "Scripts" / "python.exe",
@@ -74,7 +81,12 @@ def reexec_to_source_if_available() -> bool:
     py = resolve_venv_python(root)
     if py is None:
         return False
-    env = os.environ.copy()
+    try:
+        from iris.system.gui_python import gui_launch_env
+
+        env = gui_launch_env(root)
+    except Exception:
+        env = os.environ.copy()
     env["IRIS_LAUNCHED_FROM_EXE"] = "1"
     # hop 루프 방지 — 자식은 non-frozen
     env.pop("IRIS_FORCE_FROZEN", None)
@@ -85,6 +97,16 @@ def reexec_to_source_if_available() -> bool:
     }
     if sys.platform == "win32" and py.name.lower() == "python.exe":
         kwargs["creationflags"] = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        boot = Path.home() / ".iris-light" / "logs" / "boot_trace.log"
+        boot.parent.mkdir(parents=True, exist_ok=True)
+        with boot.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"pid={os.getpid()} ppid={os.getppid()} "
+                f"source_launch Popen {py} -m iris\n"
+            )
+    except OSError:
+        pass
     try:
         subprocess.Popen([str(py), "-m", "iris", *sys.argv[1:]], **kwargs)
     except OSError:

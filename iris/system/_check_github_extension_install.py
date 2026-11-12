@@ -343,7 +343,7 @@ def _check_live() -> None:
 
 
 def _check_hermes_sees_it(home: Path) -> None:
-    from iris.system.hermes_gateway import hermes_executable
+    from iris.system.iris_agent_gateway import hermes_executable
     from iris.system.github_extension_install import hermes_home
 
     exe = hermes_executable("hermes")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 
-from iris.system.hermes_gateway import (
+from iris.system.iris_agent_gateway import (
     ensure_hermes_gateway_running,
     is_hermes_gateway_running,
     resolve_hermes_api_key,

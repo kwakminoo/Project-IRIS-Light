@@ -61,7 +61,7 @@ def register_email_actions(window: EmailHost, reg: ActionRegistry) -> None:
         return ok_result("email.refresh_inbox", {})
 
     def email_list_messages(args: dict[str, Any]) -> dict[str, Any]:
-        """IMAP에서 목록을 가져와 Hermes가 요약할 수 있게 반환.
+        """IMAP에서 목록을 가져와 Iris Agent가 요약할 수 있게 반환.
 
         ponytail: IMAP은 HTTP 워커(오프-UI)에서. UI 갱신만 _call_on_ui.
         기본은 화면 캐시 우선(응답 없음 방지). 강제 갱신은 refresh=true.

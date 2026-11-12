@@ -29,7 +29,7 @@ from iris.ui.shared.theme_tokens import TOKENS
 _COLOR_MODEL_DEFAULT = "#38bdf8"
 _COLOR_MODEL_NO_TOOLS = "#9ca3af"
 _COLOR_MODEL_PRO = "#fca5a5"
-_COLOR_MODEL_UNKNOWN = "#fbbf24"  # 도구지원 미확인 — 선택 시 1회 프로브함
+_COLOR_MODEL_UNKNOWN = "#fbbf24"  # roster off_domain, or Ollama tool-unknown
 
 # 이 수 이상 모델을 가진 원격 제공자는 하위 목록 창으로 묶음 (제공자 이름과 무관).
 # 로컬은 개수와 상관없이 LOCAL MODEL 한 항목으로만 연다.
@@ -48,10 +48,63 @@ class PickerModel:
     is_api: bool = False
     tool_support: str = ""  # 커스텀 API 전용 — yes | no | unknown
     availability: str = ""  # ok | unverified | unavailable | ""
+    listing_description: str = ""
+    price_class: str = "unknown"  # free|paid|unknown
+    modality: str = "unknown"
+    retired: bool = False
+
+
+def _roster_aware(m: PickerModel) -> bool:
+    if m.is_api:
+        return True
+    pc = (m.price_class or "").strip()
+    mod = (m.modality or "").strip()
+    return (
+        (pc not in ("", "unknown"))
+        or (mod not in ("", "unknown"))
+        or bool((m.listing_description or "").strip())
+        or m.retired
+    )
+
+
+def picker_entry_from_model(m: PickerModel):
+    """Build RosterEntry for color/sort. Rules stay in model_roster."""
+    from iris.infrastructure.model_roster import RosterEntry
+
+    price = m.price_class if m.price_class in ("free", "paid", "unknown") else "unknown"
+    modality = (
+        m.modality
+        if m.modality
+        in ("chat", "image", "audio", "video", "embedding", "other", "unknown")
+        else "unknown"
+    )
+    avail = m.availability if m.availability in ("ok", "unverified", "unavailable", "") else ""
+    tools = m.tool_support if m.tool_support in ("yes", "no", "unknown", "") else "unknown"
+    return RosterEntry(
+        model_id=m.runtime,
+        description=m.listing_description or "",
+        price_class=price,  # type: ignore[arg-type]
+        modality=modality,  # type: ignore[arg-type]
+        availability=avail,  # type: ignore[arg-type]
+        tool_support=tools,  # type: ignore[arg-type]
+        retired=bool(m.retired),
+    )
 
 
 def picker_tier_color(m: PickerModel) -> str:
-    """유료=빨강, 도구 미지원=회색, 도구 미확인=주황, 그 외=시안."""
+    """Roster path: free=cyan, off_domain=orange, paid=red, unknown=gray.
+    Ollama legacy: subscription=red, no-tools=gray, tool-unknown=orange.
+    """
+    if _roster_aware(m):
+        from iris.infrastructure.model_roster import DisplayTier, display_tier
+
+        tier = display_tier(picker_entry_from_model(m))
+        return {
+            DisplayTier.FREE: _COLOR_MODEL_DEFAULT,
+            DisplayTier.OFF_DOMAIN: _COLOR_MODEL_UNKNOWN,
+            DisplayTier.PAID: _COLOR_MODEL_PRO,
+            DisplayTier.UNKNOWN: _COLOR_MODEL_NO_TOOLS,
+        }[tier]
     if m.requires_subscription:
         return _COLOR_MODEL_PRO
     if not m.supports_tools:
@@ -76,6 +129,9 @@ def _ollama_blurb(m: PickerModel) -> str:
 def _api_blurb(m: PickerModel) -> str:
     from iris.infrastructure.ollama_client import display_name_from_runtime
 
+    official = (m.listing_description or "").strip()
+    if official:
+        return official
     bits = [m.label or display_name_from_runtime(m.runtime), tool_support_label(m.tool_support)]
     if m.tool_support == "unknown":
         bits.append("선택하면 1회 확인함")
@@ -443,7 +499,19 @@ if __name__ == "__main__":
     assert si == []
     assert brand_label(brands["gm"]) == "Gemini"
     assert is_api_runtime_model(n.runtime)
-    assert picker_tier_color(n) == _COLOR_MODEL_DEFAULT
+    # API without roster price → unknown gray (tools no longer paint primary)
+    assert picker_tier_color(n) == _COLOR_MODEL_NO_TOOLS
     assert picker_tier_color(no_tools) == _COLOR_MODEL_NO_TOOLS
+    free_api = PickerModel(
+        "api:nv:free",
+        "free",
+        supports_tools=False,
+        tool_support="no",
+        provider_name="NVIDIA",
+        is_api=True,
+        price_class="free",
+        modality="chat",
+    )
+    assert picker_tier_color(free_api) == _COLOR_MODEL_DEFAULT
     assert picker_tier_color(pro) == _COLOR_MODEL_PRO
     print("model_picker_menu self-check ok")

@@ -22,7 +22,7 @@ from iris.browser.types import (
 )
 from iris.runtime.agent_local_gate import hermes_owns_local_intents
 from iris.system.control_surface import ActionRegistry
-from iris.system.hermes_iris_control_sync import _merge_disabled_toolsets
+from iris.system.iris_agent_control_sync import _merge_disabled_toolsets
 from iris.ui.window.main_window import MainWindow
 
 
@@ -210,10 +210,8 @@ def main() -> int:
     kept_web = _merge_disabled_toolsets(["web"])
     assert "web" in kept_web and "browser" in kept_web and "terminal" in kept_web
 
-    from iris.mcp.iris_control_stdio import TOOLS
-
-    invoke = next(item for item in TOOLS if item["name"] == "iris_invoke")
-    assert "browser.search" in invoke["description"]
+    # iris-control MCP TOOLS are gone; browser teaching lives in SpeakTools/skills.
+    assert "browser.search" in browser_teaching_block()
 
     skill = (
         Path(__file__).resolve().parents[2]

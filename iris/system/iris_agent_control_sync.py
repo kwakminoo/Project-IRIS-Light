@@ -1,0 +1,1242 @@
+"""Hermes에 Iris Control 스킬·MCP 자세를 자동 설치·검증.
+
+제품 경로의 SpeakTools다. iris-control MCP는 완전 제거(동기화 시 항상 scrub).
+mobile-mcp와 skills는 계속 sync한다.
+ponytail: PyYAML로 mcp_servers만 upsert. 최초 변경 전 config.yaml.bak-iris 1회.
+천장: 게이트웨이 이미 떠 있으면 MCP 반영을 위해 --replace 재기동.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import sys
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+from iris.infrastructure.iris_agent_credentials import hermes_home as _product_hermes_home
+
+
+SKILL_NAMES = (
+    "iris-work-start",
+    "iris-work-end",
+    "iris-session-status",
+    "iris-vibe-code",
+    "iris-emulator",
+    "iris-mobile-mcp",
+    "iris-browser",
+    "iris-learning",
+    "iris-calendar",
+    "iris-wiki",
+    "iris-past-chats",
+    "iris-email",
+)
+
+
+def iris_state_dir() -> Path:
+    d = Path.home() / ".iris-light"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def sync_state_path() -> Path:
+    return iris_state_dir() / "hermes_iris_control_sync.json"
+
+
+def _project_root_marker() -> Path:
+    return iris_state_dir() / "project_root.txt"
+
+
+def _looks_like_repo(path: Path) -> bool:
+    return (path / "iris").is_dir() and (
+        (path / "integrations" / "hermes-mcp").is_dir()
+        or (path / "iris" / "mcp").is_dir()
+    )
+
+
+def _remember_project_root(repo: Path) -> None:
+    if not _looks_like_repo(repo):
+        return
+    try:
+        _project_root_marker().write_text(str(repo.resolve()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _load_remembered_project_root() -> Path | None:
+    marker = _project_root_marker()
+    if not marker.is_file():
+        return None
+    try:
+        raw = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if _looks_like_repo(path) else None
+
+
+def project_root() -> Path:
+    """저장소 루트. frozen(IRIS.exe)에서는 dist/ 상위·기억된 경로를 쓴다.
+
+    ponytail: PyInstaller one-file의 __file__은 _MEI 임시폴더라서 parents[2]가
+    망가진다. 그 경로로 MCP command를 쓰면 gateway가 죽은 _MEI 스크립트를 붙잡고
+    Offline이 된다.
+    """
+    if getattr(sys, "frozen", False):
+        exe = Path(sys.executable).resolve()
+        if exe.parent.name.lower() == "dist" and _looks_like_repo(exe.parent.parent):
+            root = exe.parent.parent
+            _remember_project_root(root)
+            return root
+        remembered = _load_remembered_project_root()
+        if remembered is not None:
+            return remembered
+        cwd = Path.cwd()
+        if _looks_like_repo(cwd):
+            _remember_project_root(cwd)
+            return cwd
+        return exe.parent
+    root = Path(__file__).resolve().parents[2]
+    _remember_project_root(root)
+    return root
+
+
+def hermes_home() -> Path:
+    """제품 런타임 홈. credentials / agent_runtime 과 동일 경로."""
+    return _product_hermes_home()
+
+
+def _resolved_home(home: Path | None = None) -> Path:
+    return Path(home) if home is not None else hermes_home()
+
+
+def hermes_config_path(home: Path | None = None) -> Path:
+    return _resolved_home(home) / "config.yaml"
+
+
+def hermes_skills_iris_control_dir(home: Path | None = None) -> Path:
+    return _resolved_home(home) / "skills" / "iris-control"
+
+
+def repo_skills_iris_control_dir() -> Path:
+    return project_root() / "integrations" / "hermes-skills" / "iris-control"
+
+
+@dataclass
+class SyncReport:
+    ok: bool = True
+    config_path: str = ""
+    mcp_installed: bool = False
+    mcp_changed: bool = False
+    mobile_mcp_installed: bool = False
+    mobile_mcp_changed: bool = False
+    skills_copied: list[str] = field(default_factory=list)
+    skills_ok: list[str] = field(default_factory=list)
+    skills_missing: list[str] = field(default_factory=list)
+    skills_stale: list[str] = field(default_factory=list)
+    messages: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    needs_gateway_reload: bool = False
+    # 설정에 등록된 모든 MCP 점검 결과
+    mcp_servers: list[dict[str, Any]] = field(default_factory=list)
+    mcp_ok_count: int = 0
+    mcp_fail_count: int = 0
+
+    def summary_line(self) -> str:
+        if self.errors and not self.mcp_installed:
+            return f"Iris↔Hermes control sync fail: {self.errors[0][:100]}"
+        bits = []
+        if self.mcp_installed:
+            bits.append(
+                "SpeakTools ok" + (" (updated)" if self.mcp_changed else "")
+            )
+        else:
+            bits.append("SpeakTools missing")
+        if self.mobile_mcp_installed:
+            bits.append("MCP mobile-mcp ok" + (" (updated)" if self.mobile_mcp_changed else ""))
+        else:
+            bits.append("MCP mobile-mcp missing")
+        bits.append(f"skills {len(self.skills_ok)}/{len(SKILL_NAMES)}")
+        if self.mcp_servers:
+            bits.append(f"mcp {self.mcp_ok_count}/{len(self.mcp_servers)} healthy")
+        return "Iris↔Hermes: " + ", ".join(bits)
+
+
+def _is_gui_frozen_exe(path: str | Path) -> bool:
+    stem = Path(path).stem.lower()
+    return stem in {"iris", "irisw"} or "iris.exe" in str(path).lower()
+
+
+def _python_cmd(repo: Path) -> str:
+    """Hermes MCP용 인터프리터 — IRIS.exe(frozen)는 절대 쓰지 않는다.
+
+    Windows는 pythonw.exe 우선 — Hermes가 stdio MCP를 띄울 때 콘솔 서브시스템
+    python.exe 창이 깜빡이지 않게 한다(파이프 stdio는 pythonw에서도 동작).
+    """
+    # Prefer Iris project venv so Hermes always spawns the same interpreter.
+    win_w = repo / ".venv" / "Scripts" / "pythonw.exe"
+    win = repo / ".venv" / "Scripts" / "python.exe"
+    unix = repo / ".venv" / "bin" / "python"
+    if sys.platform == "win32" and win_w.is_file():
+        return str(win_w.resolve())
+    if win.is_file():
+        return str(win.resolve())
+    if unix.is_file():
+        return str(unix.resolve())
+    if getattr(sys, "frozen", False) or _is_gui_frozen_exe(sys.executable or ""):
+        for name in ("pythonw.exe", "python.exe", "python", "py"):
+            found = shutil.which(name)
+            if found and not _is_gui_frozen_exe(found):
+                return found
+        return "python"
+    exe = sys.executable or "py"
+    if _is_gui_frozen_exe(exe):
+        if sys.platform == "win32":
+            return shutil.which("pythonw") or shutil.which("python") or "python"
+        return shutil.which("python") or "python"
+    # 실행 중 인터프리터가 python.exe면 같은 폴더의 pythonw를 선호
+    if sys.platform == "win32":
+        sibling = Path(exe).with_name("pythonw.exe")
+        if sibling.is_file():
+            return str(sibling.resolve())
+    return exe
+
+
+def _install_stable_mcp_entry(repo: Path) -> Path:
+    """~/.iris-light/hermes-mcp 에 고정 entry 설치 — _MEI/temp 경로 금지."""
+    dest_dir = iris_state_dir() / "hermes-mcp"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / "iris_control_stdio_entry.py"
+    root = str(repo.resolve())
+    dest.write_text(
+        "# auto-generated by iris.system.iris_agent_control_sync — do not edit\n"
+        "from __future__ import annotations\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"_ROOT = Path(r'''{root}''')\n"
+        "_root_s = str(_ROOT)\n"
+        "if _root_s not in sys.path:\n"
+        "    sys.path.insert(0, _root_s)\n"
+        "from iris.mcp.iris_control_stdio import main  # noqa: E402\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n",
+        encoding="utf-8",
+    )
+    return dest.resolve()
+
+
+def _mcp_launch_is_unsafe(block: dict[str, Any]) -> bool:
+    cmd = str(block.get("command") or "")
+    args = " ".join(str(a) for a in (block.get("args") or []))
+    blob = f"{cmd}\n{args}".lower()
+    if _is_gui_frozen_exe(cmd):
+        return True
+    if "_mei" in blob or "\\_mei" in blob:
+        return True
+    entry = ""
+    raw_args = block.get("args") or []
+    if isinstance(raw_args, list) and len(raw_args) >= 2:
+        entry = str(raw_args[1])
+    if entry and not Path(entry).is_file():
+        return True
+    return False
+
+
+def desired_mcp_block(repo: Path) -> dict[str, Any]:
+    root = repo.resolve()
+    _remember_project_root(root)
+    entry = _install_stable_mcp_entry(root)
+    # Absolute entry script — Hermes does not pass mcp cwd to StdioServerParameters.
+    # -u: unbuffered stdout (Hermes MCP SDK handshake times out if Python buffers stdio)
+    block = {
+        "command": _python_cmd(root),
+        "args": ["-u", str(entry)],
+        "env": {
+            "PYTHONUNBUFFERED": "1",
+            # Windows cp949 콘솔/파이프에서 MCP NDJSON 한글 깨짐·크래시 방지
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+        },
+        "timeout": 120,
+        "connect_timeout": 60,
+        "enabled": True,
+    }
+    if _mcp_launch_is_unsafe(block):
+        raise RuntimeError(
+            "unsafe iris-control MCP launch blocked "
+            f"(command={block['command']!r} entry={entry})"
+        )
+    return block
+
+
+def _hermes_mcp_tool_candidates(home: Path | None = None) -> list[Path]:
+    agent = _resolved_home(home) / "hermes-agent"
+    found = [
+        agent / "tools" / "mcp_tool.py",
+        agent / "hermes_cli" / "tools" / "mcp_tool.py",
+    ]
+    site = agent / "venv" / "Lib" / "site-packages"
+    if site.is_dir():
+        found.extend(p for p in site.glob("*/mcp_tool.py") if p.is_file())
+        found.extend(p for p in site.glob("*/tools/mcp_tool.py") if p.is_file())
+    return found
+
+
+def _hermes_mcp_tool_path(home: Path | None = None) -> Path | None:
+    for path in _hermes_mcp_tool_candidates(home):
+        if path.is_file():
+            return path
+    return None
+
+
+_DEAD_CHECK_BROKEN = (
+    "if not psutil.pid_exists(pid):\n"
+    "                continue  # this one is dead\n"
+    "            return True  # alive (signal permission irrelevant for liveness)\n"
+    "            return False  # at least one child alive"
+)
+_DEAD_CHECK_FIXED = (
+    "if psutil.pid_exists(pid):\n"
+    "                return False  # at least one child alive"
+)
+
+
+def _mcp_tool_path_for_agent(agent_root: Path | None) -> Path | None:
+    if agent_root is None:
+        return _hermes_mcp_tool_path()
+    root = Path(agent_root)
+    candidates = [
+        root / "tools" / "mcp_tool.py",
+        root / "hermes_cli" / "tools" / "mcp_tool.py",
+    ]
+    site = root / "venv" / "Lib" / "site-packages"
+    if site.is_dir():
+        candidates.extend(p for p in site.glob("*/mcp_tool.py") if p.is_file())
+        candidates.extend(p for p in site.glob("*/tools/mcp_tool.py") if p.is_file())
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def verify_hermes_stdio_dead_check(*, agent_root: Path | None = None) -> str:
+    """dead-check 상태만 보고한다. 디스크를 쓰지 않는다."""
+    path = _mcp_tool_path_for_agent(agent_root)
+    if path is None:
+        return "hermes dead-check: mcp_tool.py missing"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"hermes dead-check read fail: {exc}"
+    if _DEAD_CHECK_BROKEN in text:
+        return "hermes dead-check: broken pattern present"
+    if (
+        _DEAD_CHECK_FIXED in text
+        or "return False  # at least one child alive" in text
+    ):
+        return "hermes dead-check: ok (fixed/upstream)"
+    return "hermes dead-check: pattern unknown — ok at pin (upstream polarity fix)"
+
+
+def ensure_hermes_stdio_dead_check_patch(
+    home: Path | None = None, *, agent_root: Path | None = None, mutate: bool | None = None
+) -> str:
+    """stdio dead-check. home= 이면 그 트리에 패치. mutate 기본은 install baseline 만.
+
+    자식 PID가 살아 있는데 True(dead)를 반환해 iris-control 도구가
+    'has exited' TimeoutError로 즉시 실패하던 회귀를 고친다.
+    pin 업스트림이 이미 고쳤으면 쓰기를 하지 않는다.
+    """
+    if mutate is None:
+        mutate = home is not None
+    if agent_root is None and home is not None:
+        agent_root = _resolved_home(home) / "hermes-agent"
+    status = verify_hermes_stdio_dead_check(agent_root=agent_root)
+    if not mutate:
+        return status
+    if "broken pattern" not in status:
+        return status
+    path = _mcp_tool_path_for_agent(agent_root)
+    if path is None:
+        agent = _resolved_home(home) / "hermes-agent"
+        checked = "\n".join(f"  - {p}" for p in _hermes_mcp_tool_candidates(home))
+        if not agent.is_dir():
+            return (
+                "hermes mcp_tool.py missing — "
+                f"설치 디렉터리 없음: {agent}\n확인한 경로:\n{checked}"
+            )
+        return f"hermes mcp_tool.py missing\n확인한 경로:\n{checked}"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"hermes dead-check patch read fail: {exc}"
+    if _DEAD_CHECK_BROKEN not in text:
+        return verify_hermes_stdio_dead_check(agent_root=agent_root)
+    bak = path.with_suffix(path.suffix + ".bak-iris-deadcheck")
+    try:
+        if not bak.is_file():
+            bak.write_text(text, encoding="utf-8")
+        path.write_text(text.replace(_DEAD_CHECK_BROKEN, _DEAD_CHECK_FIXED, 1), encoding="utf-8")
+    except OSError as exc:
+        return f"hermes dead-check patch write fail: {exc}"
+    return "hermes dead-check patched (stdio has-exited false positive)"
+
+
+def desired_mobile_mcp_block() -> dict[str, Any]:
+    """Hermes MCP: @mobilenext/mobile-mcp — same SDK root as Iris android_emulator."""
+    from iris.system.android_emulator import _sdk_root
+
+    sdk = str(_sdk_root().resolve())
+    platform_tools = str((_sdk_root() / "platform-tools").resolve())
+    sep = ";" if sys.platform == "win32" else ":"
+    old_path = os.environ.get("PATH", "")
+    path = f"{platform_tools}{sep}{old_path}" if old_path else platform_tools
+    return {
+        "command": "npx",
+        "args": ["-y", "@mobilenext/mobile-mcp@latest"],
+        "env": {
+            "ANDROID_HOME": sdk,
+            "ANDROID_SDK_ROOT": sdk,
+            "PATH": path,
+        },
+        "timeout": 120,
+        "connect_timeout": 60,
+        "enabled": True,
+    }
+
+
+def _path_prefix(path_env: str) -> str:
+    """PATH 첫 항목만 — 시스템 PATH 꼬리 변화는 MCP churn으로 치지 않음."""
+    raw = (path_env or "").strip()
+    if not raw:
+        return ""
+    sep = ";" if ";" in raw else ":"
+    return raw.split(sep, 1)[0].rstrip("\\/").lower()
+
+
+def _mcp_equivalent(a: Any, b: Any) -> bool:
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return False
+    for key in ("command", "args", "timeout", "connect_timeout"):
+        if a.get(key) != b.get(key):
+            return False
+    # enabled: missing == True
+    if bool(a.get("enabled", True)) != bool(b.get("enabled", True)):
+        return False
+    a_env = a.get("env") if isinstance(a.get("env"), dict) else {}
+    b_env = b.get("env") if isinstance(b.get("env"), dict) else {}
+    # ignore empty env noise
+    a_filt = {k: v for k, v in a_env.items() if v not in (None, "")}
+    b_filt = {k: v for k, v in b_env.items() if v not in (None, "")}
+    keys = set(a_filt) | set(b_filt)
+    for key in keys:
+        if str(key).upper() == "PATH":
+            # ponytail: mobile-mcp PATH = platform-tools + 전체 PATH.
+            # 꼬리가 매 기동마다 달라지면 gateway 강제 재기동 → iris-control 일시 끊김.
+            if _path_prefix(str(a_filt.get(key) or "")) != _path_prefix(
+                str(b_filt.get(key) or "")
+            ):
+                return False
+            continue
+        if a_filt.get(key) != b_filt.get(key):
+            return False
+    return True
+
+
+def ensure_mcp_in_config(
+    repo: Path | None = None, *, home: Path | None = None
+) -> tuple[bool, bool, str]:
+    """Upsert mobile-mcp; always scrub mcp_servers.iris-control.
+
+    Returns (posture_ok, any_changed, message). posture_ok means iris-control
+    is absent and SpeakTools owns the speak path.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return (
+            False,
+            False,
+            "PyYAML 패키지(모듈) 없음 — `.venv`에서 `pip install PyYAML` 후 다시 시도",
+        )
+
+    repo = repo or project_root()
+    path = hermes_config_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    desired_mobile = desired_mobile_mcp_block()
+
+    if path.is_file():
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            data = yaml.safe_load(raw) or {}
+        except Exception as exc:  # noqa: BLE001
+            return False, False, f"config.yaml parse error: {exc}"
+        if not isinstance(data, dict):
+            data = {}
+    else:
+        data = {}
+
+    servers = data.get("mcp_servers")
+    if not isinstance(servers, dict):
+        servers = {}
+        data["mcp_servers"] = servers
+
+    current_iris = servers.get("iris-control")
+    iris_absent = current_iris is None
+    mobile_same = _mcp_equivalent(servers.get("mobile-mcp"), desired_mobile)
+    _ = repo
+    if iris_absent and mobile_same:
+        msg = "SpeakTools product path; mobile-mcp already installed"
+        if not shutil.which("npx"):
+            msg += "; warning: npx not found (Node 20+ required for mobile-mcp)"
+        return True, False, msg
+
+    bak = path.with_name("config.yaml.bak-iris")
+    if path.is_file() and not bak.is_file():
+        try:
+            shutil.copy2(path, bak)
+        except OSError:
+            pass
+
+    updated: list[str] = []
+    if current_iris is not None:
+        servers.pop("iris-control", None)
+        updated.append("iris-control-removed")
+    if not mobile_same:
+        servers["mobile-mcp"] = desired_mobile
+        updated.append("mobile-mcp")
+    data["mcp_servers"] = servers
+    try:
+        path.write_text(
+            yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return False, False, f"config.yaml write failed: {exc}"
+    msg = "SpeakTools product sync: " + ", ".join(updated)
+    if not shutil.which("npx"):
+        msg += "; warning: npx not found (Node 20+ required for mobile-mcp)"
+    return True, True, msg
+
+
+_IRIS_DISABLED_TOOLSETS = ("terminal", "browser")
+# hermes-api-server composite drops computer_use; Iris chat is api_server — pin both.
+_IRIS_API_SERVER_TOOLSETS = ("hermes-api-server", "computer_use")
+
+
+def _merge_disabled_toolsets(existing: list[object]) -> list[str]:
+    merged = [str(x).strip() for x in existing if str(x).strip()]
+    for name in _IRIS_DISABLED_TOOLSETS:
+        if name not in merged:
+            merged.append(name)
+    return merged
+
+
+def _merge_api_server_toolsets(existing: list[object]) -> list[str]:
+    merged = [str(x).strip() for x in existing if str(x).strip()]
+    for name in _IRIS_API_SERVER_TOOLSETS:
+        if name not in merged:
+            merged.append(name)
+    return merged
+
+
+def ensure_hermes_disabled_terminal(*, home: Path | None = None) -> tuple[bool, str]:
+    """Keep today's name. Merge terminal and the Hermes page-driving browser toolset.
+
+    Do not disable the `web` toolset (web_search / web_extract).
+    """
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return False, "PyYAML missing — cannot set agent.disabled_toolsets"
+
+    path = hermes_config_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+        except Exception as exc:  # noqa: BLE001
+            return False, f"config.yaml parse error: {exc}"
+        if not isinstance(data, dict):
+            data = {}
+    else:
+        data = {}
+
+    agent = data.get("agent")
+    if not isinstance(agent, dict):
+        agent = {}
+    disabled = agent.get("disabled_toolsets")
+    if not isinstance(disabled, list):
+        disabled = []
+    merged = _merge_disabled_toolsets(disabled)
+    already = all(name in [str(x).strip() for x in disabled] for name in _IRIS_DISABLED_TOOLSETS)
+    if already:
+        return False, "hermes disabled_toolsets already includes terminal and browser"
+    agent["disabled_toolsets"] = merged
+    data["agent"] = agent
+
+    bak = path.with_name("config.yaml.bak-iris-terminal")
+    if path.is_file() and not bak.is_file():
+        try:
+            shutil.copy2(path, bak)
+        except OSError:
+            pass
+    try:
+        path.write_text(
+            yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return False, f"config.yaml write failed: {exc}"
+    written = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    written_disabled = (written.get("agent") or {}).get("disabled_toolsets") or []
+    written_names = [str(x).strip() for x in written_disabled]
+    if "terminal" not in written_names or "browser" not in written_names:
+        return False, "hermes disabled_toolsets write missing terminal or browser"
+    return True, "hermes disabled_toolsets: terminal, browser (IDE terminal via project.run; Iris QWebEngine for pages)"
+
+
+def read_hermes_disabled_toolsets() -> list[str]:
+    """Product Hermes config.yaml 의 agent.disabled_toolsets (없으면 빈 목록)."""
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return []
+    path = hermes_config_path()
+    if not path.is_file():
+        return []
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    agent = data.get("agent")
+    if not isinstance(agent, dict):
+        return []
+    disabled = agent.get("disabled_toolsets")
+    if not isinstance(disabled, list):
+        return []
+    return [str(x).strip() for x in disabled if str(x).strip()]
+
+
+def verify_hermes_terminal_disabled() -> tuple[bool, str]:
+    """Ensure write 직후·기동 시 terminal+browser 가 실제로 disabled 목록에 있다."""
+    names = read_hermes_disabled_toolsets()
+    missing = [n for n in _IRIS_DISABLED_TOOLSETS if n not in names]
+    if missing:
+        return False, f"hermes disabled_toolsets missing {missing}; have={names}"
+    return True, "hermes disabled_toolsets verified: terminal, browser"
+
+
+def ensure_hermes_api_server_computer_use(*, home: Path | None = None) -> tuple[bool, str]:
+    """Upsert platform_toolsets.api_server to include hermes-api-server + computer_use."""
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return False, "PyYAML missing — cannot set platform_toolsets.api_server"
+
+    path = hermes_config_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+        except Exception as exc:  # noqa: BLE001
+            return False, f"config.yaml parse error: {exc}"
+        if not isinstance(data, dict):
+            data = {}
+    else:
+        data = {}
+
+    pts = data.get("platform_toolsets")
+    if not isinstance(pts, dict):
+        pts = {}
+    existing = pts.get("api_server")
+    if not isinstance(existing, list):
+        existing = []
+    merged = _merge_api_server_toolsets(existing)
+    already = all(name in [str(x).strip() for x in existing] for name in _IRIS_API_SERVER_TOOLSETS)
+    if already:
+        return False, "hermes platform_toolsets.api_server already includes hermes-api-server + computer_use"
+    pts["api_server"] = merged
+    data["platform_toolsets"] = pts
+
+    bak = path.with_name("config.yaml.bak-iris-computer-use")
+    if path.is_file() and not bak.is_file():
+        try:
+            shutil.copy2(path, bak)
+        except OSError:
+            pass
+    try:
+        path.write_text(
+            yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return False, f"config.yaml write failed: {exc}"
+    written = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    written_pts = (written.get("platform_toolsets") or {}).get("api_server") or []
+    written_names = [str(x).strip() for x in written_pts]
+    missing = [n for n in _IRIS_API_SERVER_TOOLSETS if n not in written_names]
+    if missing:
+        return False, f"hermes platform_toolsets.api_server write missing {missing}"
+    return True, "hermes platform_toolsets.api_server: hermes-api-server + computer_use"
+
+
+def read_hermes_api_server_toolsets(*, home: Path | None = None) -> list[str]:
+    """Product Hermes config.yaml 의 platform_toolsets.api_server (없으면 빈 목록)."""
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return []
+    path = hermes_config_path(home)
+    if not path.is_file():
+        return []
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    pts = data.get("platform_toolsets")
+    if not isinstance(pts, dict):
+        return []
+    raw = pts.get("api_server")
+    if not isinstance(raw, list):
+        return []
+    return [str(x).strip() for x in raw if str(x).strip()]
+
+
+def verify_hermes_api_server_computer_use(*, home: Path | None = None) -> tuple[bool, str]:
+    """api_server list must include hermes-api-server and computer_use."""
+    names = read_hermes_api_server_toolsets(home=home)
+    missing = [n for n in _IRIS_API_SERVER_TOOLSETS if n not in names]
+    if missing:
+        return False, f"hermes platform_toolsets.api_server missing {missing}; have={names}"
+    return True, "hermes platform_toolsets.api_server verified: hermes-api-server, computer_use"
+
+
+def _skill_md_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def skills_content_stale(repo: Path | None = None, *, home: Path | None = None) -> list[str]:
+    """SKILL.md bytes/hash differ from repo (presence alone is not enough)."""
+    repo = repo or project_root()
+    src_root = repo / "integrations" / "hermes-skills" / "iris-control"
+    dst_root = hermes_skills_iris_control_dir(home)
+    stale: list[str] = []
+    if not src_root.is_dir():
+        return list(SKILL_NAMES)
+    for name in SKILL_NAMES:
+        src_md = src_root / name / "SKILL.md"
+        dst_md = dst_root / name / "SKILL.md"
+        if not src_md.is_file():
+            continue
+        if not dst_md.is_file():
+            stale.append(name)
+            continue
+        try:
+            if _skill_md_sha256(src_md) != _skill_md_sha256(dst_md):
+                stale.append(name)
+        except OSError:
+            stale.append(name)
+    return stale
+
+
+def ensure_skills_installed(
+    repo: Path | None = None, *, home: Path | None = None
+) -> tuple[list[str], list[str], list[str]]:
+    """Returns (copied, ok, missing). Force re-copy when SKILL.md hash differs."""
+    repo = repo or project_root()
+    src_root = repo / "integrations" / "hermes-skills" / "iris-control"
+    dst_root = hermes_skills_iris_control_dir(home)
+    copied: list[str] = []
+    ok: list[str] = []
+    missing: list[str] = []
+
+    if not src_root.is_dir():
+        return [], [], list(SKILL_NAMES)
+
+    dst_root.mkdir(parents=True, exist_ok=True)
+    for name in SKILL_NAMES:
+        src = src_root / name
+        dst = dst_root / name
+        skill_md = src / "SKILL.md"
+        if not skill_md.is_file():
+            missing.append(name)
+            continue
+        need = True
+        dst_md = dst / "SKILL.md"
+        if dst_md.is_file():
+            try:
+                # Hash compare — presence-only "skills_ok" used to hide MCP-only drift.
+                if _skill_md_sha256(dst_md) == _skill_md_sha256(skill_md):
+                    need = False
+            except OSError:
+                need = True
+        if need:
+            if dst.exists():
+                shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(src, dst)
+            copied.append(name)
+        ok.append(name)
+    return copied, ok, missing
+
+
+def load_mcp_servers_config(home: Path | None = None) -> dict[str, Any]:
+    try:
+        import yaml
+    except ImportError:
+        return {}
+    path = hermes_config_path(home)
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    except Exception:
+        return {}
+    servers = data.get("mcp_servers") if isinstance(data, dict) else None
+    return servers if isinstance(servers, dict) else {}
+
+
+def _resolve_command(command: str) -> str | None:
+    raw = (command or "").strip().strip('"')
+    if not raw:
+        return None
+    p = Path(raw)
+    if p.is_file():
+        return str(p.resolve())
+    found = shutil.which(raw)
+    return found
+
+
+def _probe_iris_control_http() -> tuple[bool, str]:
+    """Iris Control Surface가 떠 있으면 live OK."""
+    host = "127.0.0.1"
+    port = "8765"
+    token = ""
+    state = Path.home() / ".iris-light"
+    try:
+        if (state / "control_host").is_file():
+            host = (state / "control_host").read_text(encoding="utf-8").strip() or host
+        if (state / "control_port").is_file():
+            port = (state / "control_port").read_text(encoding="utf-8").strip() or port
+        if (state / "control_token").is_file():
+            token = (state / "control_token").read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    if not token:
+        return False, "control_token missing (Iris not ready?)"
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        # /v1/ping 은 UI invoker 없이 응답 — /v1/state 프로브는 UI 스레드 동기화와 데드락
+        f"http://{host}:{port}/v1/ping",
+        method="GET",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            if 200 <= int(resp.status) < 300:
+                return True, "control surface reachable"
+            return False, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"unreachable: {exc}"
+
+
+def probe_mcp_server(name: str, cfg: Any) -> dict[str, Any]:
+    """설정에 등록된 단일 MCP 서버 사전 점검 (프로세스 장기 기동 없음)."""
+    out: dict[str, Any] = {
+        "name": name,
+        "ok": False,
+        "enabled": True,
+        "kind": "unknown",
+        "detail": "",
+    }
+    if not isinstance(cfg, dict):
+        out["detail"] = "invalid config (not a mapping)"
+        return out
+    if cfg.get("enabled") is False:
+        out["enabled"] = False
+        out["ok"] = True
+        out["kind"] = "disabled"
+        out["detail"] = "disabled in config"
+        return out
+
+    url = str(cfg.get("url") or "").strip()
+    command = str(cfg.get("command") or "").strip()
+    if url:
+        out["kind"] = "http"
+        import urllib.error
+        import urllib.request
+
+        try:
+            req = urllib.request.Request(url, method="GET")
+            headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {}
+            for hk, hv in headers.items():
+                req.add_header(str(hk), str(hv))
+            with urllib.request.urlopen(req, timeout=float(cfg.get("connect_timeout") or 5)) as resp:
+                out["ok"] = True
+                out["detail"] = f"HTTP {resp.status}"
+        except urllib.error.HTTPError as exc:
+            # 401/404 등도 서버가 응답하면 연결은 됨
+            if int(exc.code) < 500:
+                out["ok"] = True
+                out["detail"] = f"HTTP {exc.code} (reachable)"
+            else:
+                out["detail"] = f"HTTP {exc.code}"
+        except Exception as exc:  # noqa: BLE001
+            out["detail"] = f"http error: {exc}"
+        return out
+
+    if command:
+        out["kind"] = "stdio"
+        resolved = _resolve_command(command)
+        if not resolved:
+            out["detail"] = f"command not found: {command}"
+            return out
+        cwd = str(cfg.get("cwd") or "").strip()
+        if cwd:
+            try:
+                if not Path(cwd).expanduser().is_dir():
+                    out["detail"] = f"cwd missing: {cwd}"
+                    return out
+            except OSError:
+                out["detail"] = f"cwd invalid: {cwd}"
+                return out
+        # iris-control: 바이너리 + Control Surface live 필수 (꺼져 있으면 ok=False)
+        if name == "iris-control":
+            live_ok, live_detail = _probe_iris_control_http()
+            if live_ok:
+                out["ok"] = True
+                out["detail"] = f"command ok; live: {live_detail}"
+            else:
+                out["ok"] = False
+                out["detail"] = f"command ok but Iris control not live ({live_detail})"
+            return out
+        out["ok"] = True
+        out["detail"] = f"command ok ({Path(resolved).name})"
+        return out
+
+    out["detail"] = "no command/url in config"
+    return out
+
+
+def audit_all_mcp_servers(home: Path | None = None) -> list[dict[str, Any]]:
+    servers = load_mcp_servers_config(home)
+    return [probe_mcp_server(str(name), cfg) for name, cfg in servers.items()]
+
+
+def verify_install(repo: Path | None = None, *, home: Path | None = None) -> SyncReport:
+    try:
+        import yaml
+    except ImportError:
+        report = SyncReport(config_path=str(hermes_config_path(home)), ok=False)
+        report.errors.append(
+            "PyYAML 패키지(모듈) 없음 — `.venv`에서 `pip install PyYAML` 후 다시 시도"
+        )
+        return report
+
+    repo = repo or project_root()
+    report = SyncReport(config_path=str(hermes_config_path(home)))
+    path = hermes_config_path(home)
+    if not path.is_file():
+        report.ok = False
+        report.errors.append("Hermes config.yaml missing")
+        return report
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    except Exception as exc:  # noqa: BLE001
+        report.ok = False
+        report.errors.append(f"config parse: {exc}")
+        return report
+    servers = data.get("mcp_servers") if isinstance(data, dict) else None
+    block = servers.get("iris-control") if isinstance(servers, dict) else None
+    # SpeakTools owns speak. iris-control must stay out of config.
+    report.mcp_installed = block is None
+    if block is not None:
+        report.ok = False
+        report.errors.append(
+            "iris-control MCP still listed on SpeakTools path (sync should scrub it)"
+        )
+    mobile_block = servers.get("mobile-mcp") if isinstance(servers, dict) else None
+    report.mobile_mcp_installed = _mcp_equivalent(mobile_block, desired_mobile_mcp_block())
+    if not report.mobile_mcp_installed:
+        report.ok = False
+        report.errors.append("mcp mobile-mcp not present or stale")
+    if not shutil.which("npx"):
+        report.messages.append(
+            "npx not found - install Node 20+ so Hermes can spawn mobile-mcp"
+        )
+
+    dst = hermes_skills_iris_control_dir(home)
+    for name in SKILL_NAMES:
+        if (dst / name / "SKILL.md").is_file():
+            report.skills_ok.append(name)
+        else:
+            report.skills_missing.append(name)
+            report.ok = False
+    if report.skills_missing:
+        report.errors.append("skills missing: " + ", ".join(report.skills_missing))
+    stale = skills_content_stale(repo, home=home)
+    report.skills_stale = stale
+    if stale:
+        report.ok = False
+        report.errors.append("skills stale (hash != repo): " + ", ".join(stale))
+        # Presence without matching bytes must not count as ok.
+        report.skills_ok = [n for n in report.skills_ok if n not in stale]
+    return report
+
+
+def sync_iris_control(
+    *,
+    repo: Path | None = None,
+    reconnect_gateway: bool = False,
+    home: Path | None = None,
+) -> SyncReport:
+    """스킬·MCP 자세 설치 후 검증. Hermes 디스크에 남겨 Iris 재시작에도 유지.
+
+    - iris-control 항상 scrub, SpeakTools 자세
+    - mobile-mcp upsert (이미 동일하면 유지)
+    - 등록된 모든 mcp_servers 사전 점검
+    - reconnect_gateway=True 이면 gateway가 MCP를 다시 붙이도록 표시
+    - home=None 이면 hermes_home(). Internal sidecar passes EngineHome.
+    """
+    repo = repo or project_root()
+    target = _resolved_home(home)
+    report = SyncReport(config_path=str(hermes_config_path(target)))
+
+    try:
+        installed, changed, msg = ensure_mcp_in_config(repo, home=target)
+        report.mcp_installed = installed
+        report.mcp_changed = changed
+        report.messages.append(msg)
+        if "mobile-mcp" in msg and ("updated" in msg or "installed/updated" in msg):
+            report.mobile_mcp_changed = True
+        if not installed:
+            report.ok = False
+            report.errors.append(msg)
+        if changed:
+            report.needs_gateway_reload = True
+        # npx 없으면 probe/audit가 잡음 — config upsert는 유지 (Node 설치 후 바로 동작)
+    except Exception as exc:  # noqa: BLE001
+        report.ok = False
+        report.errors.append(f"mcp sync: {exc}")
+
+    try:
+        term_changed, term_msg = ensure_hermes_disabled_terminal(home=target)
+        report.messages.append(term_msg)
+        if term_changed:
+            report.needs_gateway_reload = True
+        ok_term, verify_msg = verify_hermes_terminal_disabled()
+        report.messages.append(verify_msg)
+        if not ok_term:
+            report.ok = False
+            report.errors.append(verify_msg)
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"terminal policy skip: {exc}")
+
+    try:
+        cu_changed, cu_msg = ensure_hermes_api_server_computer_use(home=target)
+        report.messages.append(cu_msg)
+        if cu_changed:
+            report.needs_gateway_reload = True
+        ok_cu, verify_cu = verify_hermes_api_server_computer_use(home=target)
+        report.messages.append(verify_cu)
+        if not ok_cu:
+            report.ok = False
+            report.errors.append(verify_cu)
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"computer_use policy skip: {exc}")
+
+    try:
+        dead_patch = ensure_hermes_stdio_dead_check_patch(home=target)
+        report.messages.append(dead_patch)
+        if "patched" in dead_patch and "already" not in dead_patch:
+            report.needs_gateway_reload = True
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"hermes dead-check patch skip: {exc}")
+
+    try:
+        from iris.system.iris_agent_tool_choice import (
+            apply_hermes_tool_choice_overlay,
+            load_hermes_tool_choice,
+            tool_choice_overlay_present,
+        )
+
+        # hermes_home() already product agent home; avoid agent_runtime import cycle.
+        agent_root = hermes_home() / "hermes-agent"
+        if agent_root.is_dir() and not tool_choice_overlay_present(agent_root):
+            for line in apply_hermes_tool_choice_overlay(agent_root):
+                report.messages.append(line)
+                if "patched" in line or "installed" in line:
+                    report.needs_gateway_reload = True
+        elif agent_root.is_dir():
+            report.messages.append("hermes tool_choice overlay present")
+        report.messages.append(
+            f"hermes agent.tool_choice: {load_hermes_tool_choice(home=target)}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"hermes tool_choice skip: {exc}")
+
+    try:
+        copied, ok, missing = ensure_skills_installed(repo, home=target)
+        report.skills_copied = copied
+        report.skills_ok = ok
+        report.skills_missing = missing
+        if copied:
+            report.messages.append("skills copied: " + ", ".join(copied))
+            report.needs_gateway_reload = True
+        if missing:
+            report.ok = False
+            report.errors.append("skills missing in repo: " + ", ".join(missing))
+    except Exception as exc:  # noqa: BLE001
+        report.ok = False
+        report.errors.append(f"skills sync: {exc}")
+
+    try:
+        from iris.system.iris_agent_memory_nudge import ensure_memory_nudge
+
+        nudge = ensure_memory_nudge(home=target)
+        report.messages.append(nudge)
+        if "updated" in nudge:
+            report.needs_gateway_reload = True
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"memory nudge skip: {exc}")
+
+    try:
+        from iris.system.iris_agent_soul_sync import ensure_soul
+
+        soul = ensure_soul(home=target)
+        report.messages.append(soul)
+        if "updated" in soul:
+            report.needs_gateway_reload = True
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"soul sync skip: {exc}")
+
+    verified = verify_install(repo, home=target)
+    if not verified.ok:
+        report.ok = False
+        for e in verified.errors:
+            if e not in report.errors:
+                report.errors.append(e)
+    report.mcp_installed = verified.mcp_installed
+    report.mobile_mcp_installed = verified.mobile_mcp_installed
+    report.skills_ok = verified.skills_ok
+    report.skills_missing = verified.skills_missing
+    report.skills_stale = verified.skills_stale
+    for m in verified.messages:
+        if m not in report.messages:
+            report.messages.append(m)
+
+    # 등록된 모든 MCP 점검 (다른 서버 설정은 건드리지 않고 상태만 확인·기록)
+    try:
+        audited = audit_all_mcp_servers(home=target)
+        report.mcp_servers = audited
+        report.mcp_ok_count = sum(1 for s in audited if s.get("ok"))
+        report.mcp_fail_count = sum(
+            1 for s in audited if s.get("enabled", True) and not s.get("ok")
+        )
+        if audited:
+            report.messages.append(
+                f"mcp audit: {report.mcp_ok_count}/{len(audited)} ok"
+            )
+        for s in audited:
+            if s.get("enabled", True) and not s.get("ok"):
+                report.messages.append(
+                    f"mcp fail: {s.get('name')}: {s.get('detail')}"
+                )
+                report.needs_gateway_reload = True
+    except Exception as exc:  # noqa: BLE001
+        report.messages.append(f"mcp audit skip: {exc}")
+
+    if reconnect_gateway and report.mcp_installed:
+        # SpeakTools path has no iris-control server; hard-reload only when
+        # config/skills/mobile-mcp actually changed.
+        hard = (
+            report.mcp_changed
+            or report.mobile_mcp_changed
+            or bool(report.skills_copied)
+        )
+        if hard:
+            report.needs_gateway_reload = True
+            report.messages.append(
+                "reconnect_gateway: hard — config/skills changed (SpeakTools path)"
+            )
+        else:
+            report.messages.append(
+                "reconnect_gateway: soft — SpeakTools + config OK (verify only)"
+            )
+
+    try:
+        sync_state_path().write_text(
+            json.dumps(asdict(report), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    return report
+
+
+def _self_check() -> None:
+    root = project_root()
+    assert (root / "iris" / "mcp" / "iris_control_stdio.py").is_file()
+    entry = root / "integrations" / "hermes-mcp" / "iris_control_stdio_entry.py"
+    assert entry.is_file(), entry
+    src = repo_skills_iris_control_dir()
+    assert src.is_dir(), src
+    for name in SKILL_NAMES:
+        assert (src / name / "SKILL.md").is_file(), name
+    block = desired_mcp_block(root)
+    assert Path(block["args"][-1]).is_file(), block["args"]
+    assert "-u" in block["args"]
+    assert block["env"].get("PYTHONUTF8") == "1"
+    assert block["env"].get("PYTHONIOENCODING") == "utf-8"
+    if sys.platform == "win32" and (root / ".venv" / "Scripts" / "pythonw.exe").is_file():
+        assert str(block["command"]).lower().endswith("pythonw.exe"), block["command"]
+    assert _mcp_equivalent(block, block)
+    # ponytail: dead-check 는 verify-only (install baseline 에서만 mutate)
+    patch_msg = ensure_hermes_stdio_dead_check_patch()
+    assert "fail" not in patch_msg.lower() or "missing" in patch_msg, patch_msg
+    assert "patched (" not in patch_msg, patch_msg
+    mobile = desired_mobile_mcp_block()
+    assert mobile["command"] == "npx"
+    assert mobile["args"] == ["-y", "@mobilenext/mobile-mcp@latest"]
+    assert mobile["env"]["ANDROID_HOME"] == mobile["env"]["ANDROID_SDK_ROOT"]
+    assert "platform-tools" in str(mobile["env"].get("PATH") or "")
+    assert _mcp_equivalent(mobile, mobile)
+    # PATH 꼬리만 달라도 equivalent
+    mobile_noisy = dict(mobile)
+    mobile_noisy["env"] = dict(mobile["env"])
+    mobile_noisy["env"]["PATH"] = (
+        str(mobile["env"]["PATH"]).split(";" if ";" in str(mobile["env"]["PATH"]) else ":", 1)[0]
+        + (";C:\\Windows\\System32;C:\\ExtraNoise" if sys.platform == "win32" else ":/usr/bin:/noise")
+    )
+    assert _mcp_equivalent(mobile, mobile_noisy)
+    # live npx spawn skipped when Node missing
+    if not shutil.which("npx"):
+        print("hermes_iris_control_sync self-check: npx missing (mobile-mcp spawn skipped)")
+    audited = audit_all_mcp_servers()
+    assert isinstance(audited, list)
+    print("hermes_iris_control_sync self-check ok", root, "mcp", len(audited))
+
+
+if __name__ == "__main__":
+    if "--apply" in sys.argv:
+        r = sync_iris_control(reconnect_gateway=True)
+        payload = json.dumps(asdict(r), ensure_ascii=False, indent=2)
+        try:
+            print(payload)
+        except UnicodeEncodeError:
+            sys.stdout.buffer.write((payload + "\n").encode("utf-8", errors="replace"))
+        raise SystemExit(0 if r.ok else 1)
+    _self_check()

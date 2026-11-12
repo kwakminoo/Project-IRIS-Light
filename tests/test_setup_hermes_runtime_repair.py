@@ -11,8 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from iris.system import hermes_gateway as gw
-from iris.system import hermes_install as hi
+from iris.system import iris_agent_gateway as gw
+from iris.system import iris_agent_install as hi
 from iris.system.setup_protocol import SetupProtocol
 
 
@@ -100,19 +100,19 @@ class SetupHermesRuntimeRepairTests(unittest.TestCase):
 
         with (
             patch(
-                "iris.system.hermes_gateway.is_hermes_gateway_running",
+                "iris.system.iris_agent_gateway.is_hermes_gateway_running",
                 return_value=False,
             ),
             patch(
-                "iris.system.hermes_gateway.ensure_hermes_gateway_running",
+                "iris.system.iris_agent_gateway.ensure_hermes_gateway_running",
                 side_effect=_ensure,
             ),
             patch(
-                "iris.system.hermes_gateway.restart_hermes_gateway",
+                "iris.system.iris_agent_gateway.restart_hermes_gateway",
                 return_value=True,
             ),
             patch(
-                "iris.system.hermes_gateway.get_last_gateway_diagnosis",
+                "iris.system.iris_agent_gateway.get_last_gateway_diagnosis",
                 side_effect=lambda: gw._LAST_DIAGNOSIS,
             ),
             patch.object(proto, "_install_hermes", side_effect=_install),
@@ -163,19 +163,19 @@ class SetupHermesRuntimeRepairTests(unittest.TestCase):
 
         with (
             patch(
-                "iris.system.hermes_gateway.is_hermes_gateway_running",
+                "iris.system.iris_agent_gateway.is_hermes_gateway_running",
                 return_value=False,
             ),
             patch(
-                "iris.system.hermes_gateway.ensure_hermes_gateway_running",
+                "iris.system.iris_agent_gateway.ensure_hermes_gateway_running",
                 side_effect=_ensure,
             ),
             patch(
-                "iris.system.hermes_gateway.restart_hermes_gateway",
+                "iris.system.iris_agent_gateway.restart_hermes_gateway",
                 return_value=True,
             ),
             patch(
-                "iris.system.hermes_gateway.get_last_gateway_diagnosis",
+                "iris.system.iris_agent_gateway.get_last_gateway_diagnosis",
                 side_effect=lambda: gw._LAST_DIAGNOSIS,
             ),
             patch.object(proto, "_install_hermes", side_effect=_install),

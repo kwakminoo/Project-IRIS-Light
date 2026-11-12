@@ -32,10 +32,10 @@ click the sidebar — do not open `:8765` yourself.
 4. Else if user gave an absolute path:
    `iris.ide.open_folder` args=`{path}`
 5. Else if user only asked to open IDE / Companion (no folder):
-   `iris_invoke` → action=`ide.enter_companion`
+   Control action `ide.enter_companion` (Speak/Control product path; MCP `iris_invoke` only if listed under IRIS_CONTROL_MCP_COMPAT)
    (Iris opens IDE first, then tiles IDE 70% + Iris 30% companion — do not use terminal `cursor`)
 6. Else if creating new work / a folder on Desktop / 바탕화면에 폴더 만들어 / 새 프로젝트 폴더:
-   `iris_invoke` → action=`project.create_scaffold` with `name`, `parent` (Desktop / 바탕화면 when the user said so; else first `project.list_parents` entry), `template` (`empty`|`gugudan`|`python-hello`), `open=true`
+   Control action `project.create_scaffold` with `name`, `parent` (Desktop / 바탕화면 when the user said so; else first `project.list_parents` entry), `template` (`empty`|`gugudan`|`python-hello`), `open=true`
    (creates a real disk folder, opens it in Companion via ide.open_folder, reveals the first source file). Do not refuse as "physical folders unavailable".
 7. If `project.open_similar` fails with `reason=ambiguous` or `low_score`:
    show `matches` to the user → then `iris.ide.open_folder` with the chosen `path`

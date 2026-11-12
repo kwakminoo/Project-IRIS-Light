@@ -11,18 +11,23 @@ description: >
 
 ## Steps
 
-1. `iris_get_state` — need `project_root` and preferably `ui_mode=ide_companion`.
+1. SpeakTools `get_state` (alias `iris.session.get_state`) — need `project_root` and preferably `ui_mode=ide_companion`.
    If no project / not companion: follow **iris-work-start** first (`project.open_similar` / `ide.open_folder` / `project.create_scaffold`).
    If `work_root` and the bound IDE folder differ, Iris aligns via `ide.open_folder` before write/run; on failure the tool error names the needed folder — do not silently skip.
 2. **Write + reveal live:**
-   `mcp__iris_control__iris_invoke` → action=`project.write_file` with
+   Control action `project.write_file` with
    `args`: `{ project_root?, rel_path, content, open: true }`
+   Prefer Iris Speak/Control product path. Use `mcp__iris_control__iris_invoke` only when that MCP tool is listed (IRIS_CONTROL_MCP_COMPAT).
    `rel_path` is the file the user named. If they did not name one, ask before writing. Do not invent `iris_generated.py`. Never claim 생성·작성 without ok and a disk path.
    → Iris opens an empty tab, waits until the filename is visible in the IDE title, then streams small chunks into the file so the IDE file watcher shows the code growing. Do not set `typewriter:false` unless the user wants an instant dump.
 2b. **Rename:**
-   `mcp__iris_control__iris_invoke` → action=`project.rename_file` with
+   Control action `project.rename_file` with
    `args`: `{ path, new_path }`
    `path` is the current file (from `project.list_files` or the open editor). `new_path` is the name the user asked for. If either is unknown, ask. Do not rename by matching words in the sentence inside the app.
+2c. **Read body before edit:**
+   Control action `project.read_file` with
+   `args`: `{ rel_path }` (or `path`; use `project.list_files` if unknown).
+   Disk UTF-8 only — not the unsaved Monaco buffer. Dirty tabs need `ide.save` / `ide.edit` first. Missing/escape/binary/too-large fail — never invent content without ok.
 3. Optional speed: `chunk_delay_ms` and `chunk_chars`. `typewriter:false` / `stream:false` = write all at once after open.
 4. **Run:**
    - **Scripts (.py / .js / …):** `project.run` with `{ file: "…" }` or `{ command: "…" }`

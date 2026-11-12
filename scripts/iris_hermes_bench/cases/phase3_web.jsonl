@@ -1,0 +1,6 @@
+{"id":"p3-web-whois-python","phase":3,"axis":"web","prompt":"Who created the Python programming language? Short answer (person name). Use tools if needed.","grade":{"kind":"contains","needles":["Guido","van Rossum","귀도"]}}
+{"id":"p3-web-rfc-http","phase":3,"axis":"web","prompt":"Which RFC number defines HTTP/1.1 semantics commonly cited (not HTTP/2)? Reply with RFC #### only if sure.","grade":{"kind":"contains","needles":["9110","7230","2616"]}}
+{"id":"p3-web-ollama","phase":3,"axis":"web","prompt":"What is the default local HTTP port for the Ollama API? Number only.","grade":{"kind":"contains","needles":["11434"]}}
+{"id":"p3-web-swebench","phase":3,"axis":"web","prompt":"In one sentence: what does SWE-bench evaluate for coding agents?","grade":{"kind":"contains","needles":["GitHub","issue","patch","test"]}}
+{"id":"p3-web-gaia-note","phase":3,"axis":"web","prompt":"PLACEHOLDER: Official GAIA tasks require HF gated dataset.","grade":{"kind":"gaia_placeholder"},"notes":"Skipped until GAIA access configured"}
+{"id":"p3-web-cite","phase":3,"axis":"web","prompt":"Find the official website domain for the Python language (python.org). Reply with the domain only.","grade":{"kind":"contains","needles":["python.org"]}}

@@ -102,6 +102,17 @@ class ChatConversationTests(TestCase):
         assert reloaded is not None
         self.assertEqual(reloaded.title, DEFAULT_TITLE)
 
+    def test_heuristic_title_waits_for_completed_reply(self) -> None:
+        from iris.storage.chat_title import apply_heuristic_title
+
+        conv = create_conversation(self.db)
+        append_message(self.db, conv.id, "user", "PDF 저장 오류를 수정해줘")
+        self.assertEqual(apply_heuristic_title(self.db, conv.id), DEFAULT_TITLE)
+        append_message(self.db, conv.id, "assistant", "PDF 저장 오류를 수정했습니다.")
+        self.assertEqual(
+            apply_heuristic_title(self.db, conv.id), "PDF 저장 오류를 수정했습니다."
+        )
+
     def test_first_basis_keeps_first_model_title(self) -> None:
         from iris.storage.chat_title import apply_generated_title
 

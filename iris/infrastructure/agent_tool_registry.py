@@ -473,17 +473,38 @@ def try_native_control_invoke(
 ) -> dict[str, Any] | None:
     """If ``action`` is already native, invoke in-process and shape Control result.
 
-    Used by MCP ``iris_invoke`` to shrink the Control HTTP product path for
-    seed tools. Returns ``None`` when the action is not a native seed mapping
+    Product path (registry is None): SpeakTools PHASE4 allowlist first.
+    Explicit registry: seed catalog only (tests / MCP shrink helpers).
+    Returns ``None`` when the action is not a native mapping
     (compat HTTP may still apply for non-seed Control actions).
     """
+    key = (action or "").strip()
+    if registry is None:
+        from iris.infrastructure.speak_capability import (
+            PHASE4_ALLOWLIST,
+            default_speak_tools,
+            resolve_legacy_name,
+        )
+
+        resolved = resolve_legacy_name(key)
+        if PHASE4_ALLOWLIST.grant(resolved) is not None:
+            out = default_speak_tools().invoke(resolved, args or {}).as_dict()
+            return {
+                "ok": bool(out.get("ok")),
+                "action": resolved or key,
+                "result": out.get("data") if isinstance(out.get("data"), dict) else {},
+                "error": "" if out.get("ok") else str(out.get("error") or "native invoke failed"),
+                "call_path": "native",
+                "tool": resolved or key,
+                "bridge": str(out.get("bridge") or "none"),
+            }
     native = native_tool_for_control_action(action, registry=registry)
     if native is None:
         return None
     out = invoke_agent_tool(native, args, registry=registry)
     return {
         "ok": bool(out.get("ok")),
-        "action": (action or "").strip() or native,
+        "action": key or native,
         "result": out.get("data") if isinstance(out.get("data"), dict) else {},
         "error": "" if out.get("ok") else str(out.get("error") or "native invoke failed"),
         "call_path": "native",
@@ -498,11 +519,20 @@ def speak_invoke_agent_tool(
     *,
     registry: IrisAgentToolRegistry | None = None,
 ) -> dict[str, Any]:
-    """Speak/chat worker entry for native seed tools (Phase 2.5).
+    """Speak/chat worker entry via SpeakTools (PHASE4), else seed registry.
 
     HermesChatWorker calls this instead of MCP stdio → Control HTTP for
-    product-owned seed tools.
+    product-owned tools.
     """
+    from iris.infrastructure.speak_capability import (
+        PHASE4_ALLOWLIST,
+        default_speak_tools,
+        resolve_legacy_name,
+    )
+
+    resolved = resolve_legacy_name((name or "").strip())
+    if registry is None and PHASE4_ALLOWLIST.grant(resolved) is not None:
+        return default_speak_tools().invoke(resolved, args or {}).as_dict()
     return invoke_agent_tool(
         resolve_speak_tool_name(name),
         args,

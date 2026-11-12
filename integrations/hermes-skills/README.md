@@ -1,12 +1,12 @@
 ﻿# Hermes ↔ Iris Control Surface
 
-Iris가 떠 있을 때만 동작한다. Hermes가 Iris UI를 **tool-calling**으로 조작한다.
+Iris가 떠 있을 때만 동작한다. 제품 채팅 경로는 **SpeakTools**(native). MCP iris-control은 `IRIS_CONTROL_MCP_COMPAT=1`일 때만 config에 남는다.
 
 ## 자동 설치 (Iris 기동 시)
 
 Iris 시작 시 `iris.system.hermes_iris_control_sync`가:
 
-1. `%LOCALAPPDATA%\hermes\config.yaml`에 `mcp_servers.iris-control` upsert  
+1. 제품 기본: `mcp_servers.iris-control` **제거**(SpeakTools). compat env면 upsert  
 2. 같은 config에 `mcp_servers.mobile-mcp` upsert  
    (`npx -y @mobilenext/mobile-mcp@latest`, `ANDROID_HOME`/`ANDROID_SDK_ROOT`/`PATH`=Iris SDK)  
 3. `skills/iris-control/{iris-work-*,iris-vibe-code,iris-emulator,iris-mobile-mcp,iris-calendar,iris-wiki,iris-email,iris-learning}` 복사  
@@ -25,7 +25,8 @@ py -3 -m iris.system.hermes_iris_control_sync --apply
 
 ## 도구
 
-- iris-control: `iris_get_state` / `iris_get_catalog` / `iris_invoke` (`emulator.*`, `calendar.*`, `wiki.write_user_note`, `workspace.open_calendar` 포함)
+- SpeakTools (제품): `get_state`, `get_catalog`, `wiki.*`, `project.run`, `chat.set_title`, … (`PHASE4_ALLOWLIST`)
+- iris-control MCP (compat only): `iris_get_state` / `iris_get_catalog` / `iris_invoke`
 - mobile-mcp: `mobile_list_available_devices`, `mobile_take_screenshot`, `mobile_list_elements_on_screen`, `mobile_click_on_screen_at_coordinates`, … (스킬 `iris-mobile-mcp` 참고)
 
 라우팅: 에뮬 기동/종료/AVD → `emulator.*` · UI 탐색·탭·입력 → mobile-mcp.

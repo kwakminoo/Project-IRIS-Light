@@ -156,7 +156,7 @@ class PinnedStatusQuestionTests(TestCase):
 
 class HermesRangeTests(TestCase):
     def _range(self, requires: str, floor: str = ""):
-        from iris.system import hermes_install as hi
+        from iris.system import iris_agent_install as hi
 
         d = Path(tempfile.mkdtemp())
         (d / "pyproject.toml").write_text(f'[project]\nrequires-python = "{requires}"\n', encoding="utf-8")

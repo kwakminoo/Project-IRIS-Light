@@ -22,7 +22,7 @@ from iris.engine import (
 )
 from iris.engine._sidecar import encode_host_command, parse_turn_event
 from iris.engine.runtime import _sidecar_env
-from iris.infrastructure.hermes_client import HermesInferenceTarget
+from iris.infrastructure.iris_agent_client import HermesInferenceTarget
 from iris.system.win_subprocess import no_window_kwargs
 
 _ROOT = Path(__file__).resolve().parents[1]

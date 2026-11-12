@@ -15,7 +15,7 @@ def wiki_requests_go_to_hermes() -> bool:
 
 
 def local_document_wiki_save_enabled() -> bool:
-    """PDF·URL·파일 위키 저장은 Hermes를 건너뛰고 Iris가 import_to_wiki 한다."""
+    """PDF·URL·파일 위키 저장은 Iris Agent를 건너뛰고 Iris가 import_to_wiki 한다."""
     return True
 
 

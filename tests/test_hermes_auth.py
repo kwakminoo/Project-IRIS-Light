@@ -9,8 +9,8 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from iris.infrastructure.hermes_client import HermesClient
-from iris.infrastructure.hermes_credentials import (
+from iris.infrastructure.iris_agent_client import HermesClient
+from iris.infrastructure.iris_agent_credentials import (
     is_weak_hermes_api_key,
     resolve_hermes_api_key,
 )
@@ -81,7 +81,7 @@ class HermesEnvRotateTests(TestCase):
         self._patches = [
             patch("iris.system.setup_protocol.hermes_home", lambda: self.home),
             patch(
-                "iris.infrastructure.hermes_credentials.hermes_home",
+                "iris.infrastructure.iris_agent_credentials.hermes_home",
                 lambda: self.home,
             ),
             patch(
@@ -147,15 +147,15 @@ class HermesGatewayForceRestartTests(TestCase):
 
         with (
             patch(
-                "iris.system.hermes_gateway.is_hermes_gateway_running",
+                "iris.system.iris_agent_gateway.is_hermes_gateway_running",
                 return_value=True,
             ),
             patch(
-                "iris.system.hermes_gateway.restart_hermes_gateway",
+                "iris.system.iris_agent_gateway.restart_hermes_gateway",
                 side_effect=_restart,
             ),
             patch(
-                "iris.system.hermes_gateway.ensure_hermes_gateway_running",
+                "iris.system.iris_agent_gateway.ensure_hermes_gateway_running",
                 return_value=True,
             ),
             patch(
@@ -179,15 +179,15 @@ class HermesGatewayForceRestartTests(TestCase):
 
         with (
             patch(
-                "iris.system.hermes_gateway.is_hermes_gateway_running",
+                "iris.system.iris_agent_gateway.is_hermes_gateway_running",
                 return_value=True,
             ),
             patch(
-                "iris.system.hermes_gateway.restart_hermes_gateway",
+                "iris.system.iris_agent_gateway.restart_hermes_gateway",
                 side_effect=lambda *_a, **_k: restart_calls.append(True) or True,
             ),
             patch(
-                "iris.system.hermes_gateway.mark_gateway_already_running",
+                "iris.system.iris_agent_gateway.mark_gateway_already_running",
             ),
             patch(
                 "iris.system.setup_protocol.verify_iris_mcp_tools",
@@ -232,7 +232,7 @@ class HermesGatewayForceRestartTests(TestCase):
 class HermesApiKeyResolveTests(TestCase):
     def test_empty_iris_key_uses_gateway_env(self) -> None:
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
             self.assertEqual(resolve_hermes_api_key(""), "gateway-secret")
@@ -241,14 +241,14 @@ class HermesApiKeyResolveTests(TestCase):
     def test_stale_iris_key_does_not_override_gateway_env(self) -> None:
         """설정창에 남은 잘못된 키로 401이 나던 경로."""
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
             self.assertEqual(resolve_hermes_api_key("wrong-from-settings"), "gateway-secret")
 
     def test_iris_key_used_when_gateway_env_missing(self) -> None:
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={},
         ):
             self.assertEqual(resolve_hermes_api_key("iris-only"), "iris-only")
@@ -258,7 +258,7 @@ class HermesApiKeyResolveTests(TestCase):
 class HermesClientAuthTests(TestCase):
     def test_chat_client_sends_bearer_even_if_caller_passes_empty_key(self) -> None:
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
             client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
@@ -268,7 +268,7 @@ class HermesClientAuthTests(TestCase):
 
     def test_gateway_ready_false_without_key(self) -> None:
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={},
         ):
             client = HermesClient("http://127.0.0.1:1/v1", api_key="")
@@ -281,10 +281,10 @@ class HermesClientAuthTests(TestCase):
         from io import BytesIO
         from urllib.error import HTTPError
 
-        from iris.infrastructure.hermes_client import HealthProbeResult
+        from iris.infrastructure.iris_agent_client import HealthProbeResult
 
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "x" * 40},
         ):
             client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
@@ -301,7 +301,7 @@ class HermesClientAuthTests(TestCase):
             with (
                 patch.object(client, "probe_health", return_value=healthy),
                 patch(
-                    "iris.infrastructure.hermes_client.urlopen", side_effect=err
+                    "iris.infrastructure.iris_agent_client.urlopen", side_effect=err
                 ),
             ):
                 ready = client.probe_gateway_ready()
@@ -311,19 +311,19 @@ class HermesClientAuthTests(TestCase):
             self.assertEqual(ready.http_status, 401)
             self.assertIn("401", ready.detail)
 
-    def test_normalize_hermes_openai_base_url(self) -> None:
-        from iris.infrastructure.hermes_client import normalize_hermes_openai_base_url
+    def test_normalize_iris_agent_openai_base_url(self) -> None:
+        from iris.infrastructure.iris_agent_client import normalize_iris_agent_openai_base_url
 
         self.assertEqual(
-            normalize_hermes_openai_base_url("http://127.0.0.1:8642"),
+            normalize_iris_agent_openai_base_url("http://127.0.0.1:8642"),
             "http://127.0.0.1:8642/v1",
         )
         self.assertEqual(
-            normalize_hermes_openai_base_url("http://127.0.0.1:8642/v1/"),
+            normalize_iris_agent_openai_base_url("http://127.0.0.1:8642/v1/"),
             "http://127.0.0.1:8642/v1",
         )
         self.assertEqual(
-            normalize_hermes_openai_base_url("http://127.0.0.1:8642/v1/v1"),
+            normalize_iris_agent_openai_base_url("http://127.0.0.1:8642/v1/v1"),
             "http://127.0.0.1:8642/v1",
         )
         client = HermesClient("http://127.0.0.1:8642", api_key="x" * 40)
@@ -333,10 +333,10 @@ class HermesClientAuthTests(TestCase):
         from io import BytesIO
         from urllib.error import HTTPError
 
-        from iris.infrastructure.hermes_client import HealthProbeResult
+        from iris.infrastructure.iris_agent_client import HealthProbeResult
 
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "x" * 40},
         ):
             client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
@@ -353,7 +353,7 @@ class HermesClientAuthTests(TestCase):
             with (
                 patch.object(client, "probe_health", return_value=healthy),
                 patch(
-                    "iris.infrastructure.hermes_client.urlopen", side_effect=err
+                    "iris.infrastructure.iris_agent_client.urlopen", side_effect=err
                 ),
             ):
                 ready = client.probe_gateway_ready()
@@ -377,11 +377,11 @@ class HermesGatewayStepReadyTests(TestCase):
 
         with (
             patch(
-                "iris.system.hermes_gateway.is_hermes_gateway_running",
+                "iris.system.iris_agent_gateway.is_hermes_gateway_running",
                 side_effect=[True, False],  # health_up, ready_up
             ),
             patch(
-                "iris.system.hermes_gateway.probe_gateway_ready",
+                "iris.system.iris_agent_gateway.probe_gateway_ready",
                 return_value=type(
                     "R",
                     (),
@@ -397,11 +397,11 @@ class HermesGatewayStepReadyTests(TestCase):
                 )(),
             ),
             patch(
-                "iris.system.hermes_gateway.restart_hermes_gateway",
+                "iris.system.iris_agent_gateway.restart_hermes_gateway",
                 side_effect=_restart,
             ),
             patch(
-                "iris.system.hermes_gateway.ensure_hermes_gateway_running",
+                "iris.system.iris_agent_gateway.ensure_hermes_gateway_running",
                 return_value=True,
             ),
             patch(
@@ -446,7 +446,7 @@ class HermesGatewayStepReadyTests(TestCase):
             patch.object(proto, "_step_hermes_env", side_effect=_env),
             patch.object(proto, "_step_hermes_gateway", side_effect=_gw),
             patch(
-                "iris.system.hermes_gateway.probe_gateway_ready",
+                "iris.system.iris_agent_gateway.probe_gateway_ready",
                 return_value=type(
                     "R",
                     (),
@@ -493,7 +493,7 @@ class HermesGatewayStepReadyTests(TestCase):
             patch.object(proto, "_step_hermes_env", side_effect=_env),
             patch.object(proto, "_step_hermes_gateway", side_effect=_gw),
             patch(
-                "iris.system.hermes_gateway.probe_gateway_ready",
+                "iris.system.iris_agent_gateway.probe_gateway_ready",
                 return_value=type(
                     "R",
                     (),
@@ -523,7 +523,7 @@ class HermesGatewayStepReadyTests(TestCase):
         self.assertFalse(any(calls["env"]))
     def test_probe_unauthorized_without_key(self) -> None:
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={},
         ):
             client = HermesClient("http://127.0.0.1:1/v1", api_key="")
@@ -534,7 +534,7 @@ class HermesGatewayStepReadyTests(TestCase):
         from urllib.error import HTTPError
 
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
             client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
@@ -545,7 +545,7 @@ class HermesGatewayStepReadyTests(TestCase):
                 None,
                 BytesIO(b"Unauthorized"),
             )
-            with patch("iris.infrastructure.hermes_client.urlopen", side_effect=err):
+            with patch("iris.infrastructure.iris_agent_client.urlopen", side_effect=err):
                 self.assertEqual(client.probe_chat_auth(), "unauthorized")
 
     def test_probe_http_400_means_bearer_accepted(self) -> None:
@@ -553,7 +553,7 @@ class HermesGatewayStepReadyTests(TestCase):
         from urllib.error import HTTPError
 
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
             client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
@@ -564,13 +564,13 @@ class HermesGatewayStepReadyTests(TestCase):
                 None,
                 BytesIO(b"messages required"),
             )
-            with patch("iris.infrastructure.hermes_client.urlopen", side_effect=err):
+            with patch("iris.infrastructure.iris_agent_client.urlopen", side_effect=err):
                 self.assertEqual(client.probe_chat_auth(), "ok")
 
 
 class HermesCloudAuthErrorTests(TestCase):
     def test_sse_cloud_401_message(self) -> None:
-        from iris.infrastructure.hermes_errors import (
+        from iris.infrastructure.iris_agent_errors import (
             CLOUD_AUTH_ERROR_PREFIX,
             GATEWAY_AUTH_ERROR_PREFIX,
             format_hermes_http_401,
@@ -587,7 +587,7 @@ class HermesCloudAuthErrorTests(TestCase):
         self.assertNotIn(CLOUD_AUTH_ERROR_PREFIX, gw)
 
     def test_tools_error_soft_message(self) -> None:
-        from iris.infrastructure.hermes_errors import format_hermes_sse_error
+        from iris.infrastructure.iris_agent_errors import format_hermes_sse_error
 
         msg = format_hermes_sse_error(
             "registry.ollama.ai/library/exaone3.5:2.4b does not support tools"

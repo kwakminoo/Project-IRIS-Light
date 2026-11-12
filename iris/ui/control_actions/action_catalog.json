@@ -6,6 +6,30 @@
     "confirm_required": false
   },
   {
+    "name": "app.demo_ping",
+    "summary": "Open the App Host demo (app_host_ping.html)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "app.directory_list",
+    "summary": "List or search App Host directory apps",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "attachment.copy_to",
+    "summary": "Copy an attached original by attachment_id to an absolute destination. The source host path is never exposed; external writes require human confirmation. overwrite defaults to false.",
+    "risk": "medium",
+    "confirm_required": true
+  },
+  {
+    "name": "attachment.move_to",
+    "summary": "Move an attached original by attachment_id to an absolute destination. Call only when the user explicitly asked to move it; source deletion requires human confirmation.",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
     "name": "browser.back",
     "summary": "Browser history back",
     "risk": "low",
@@ -198,15 +222,15 @@
     "confirm_required": false
   },
   {
-    "name": "content.extract",
-    "summary": "Extract text from PDF (scanned image pages included), Office, text, image, or http(s) URL. Chat already attaches [자료 본문] before the answer.",
-    "risk": "low",
-    "confirm_required": false
-  },
-  {
     "name": "content.dump_lab_scripts",
     "summary": "From a lecture PDF path, parse every practice/lab program label and write source files under the project (default labs/). Returns written paths and labels only — not PDF text. Prefer this over content.extract + project.write_file when the user wants all labs as files. Pass Attachment absolute path.",
     "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "content.extract",
+    "summary": "Extract text from PDF (scanned image pages included), Office, text, image, or http(s) URL. Chat already attaches [자료 본문] before the answer.",
+    "risk": "low",
     "confirm_required": false
   },
   {
@@ -528,6 +552,12 @@
     "confirm_required": false
   },
   {
+    "name": "shell.run",
+    "summary": "Run a home-surface shell command (no console window; chat Iris Shell card)",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
     "name": "learning.get",
     "summary": "Get learned workflow details",
     "risk": "low",
@@ -573,6 +603,18 @@
     "name": "learning.toggle",
     "summary": "Toggle learning record (same as titlebar learning icon)",
     "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "local.read_file",
+    "summary": "Read one absolute local text path within the configured System or Workspace + Attachments scope.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "local.search_files",
+    "summary": "Search filenames under one explicit absolute root within the configured local read scope.",
+    "risk": "low",
     "confirm_required": false
   },
   {
@@ -624,6 +666,12 @@
     "confirm_required": false
   },
   {
+    "name": "project.import_attachment",
+    "summary": "Copy an attached original into the bound IDE workspace. Required: attachment_id and workspace-relative rel_path; existing files are refused.",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
     "name": "project.list_files",
     "summary": "List files in the bound IDE workspace (query = case-insensitive substring) — use this before open_file/run when the path is unknown",
     "risk": "low",
@@ -639,6 +687,12 @@
     "name": "project.open_similar",
     "summary": "Fuzzy-find best matching project and open in Companion; on ambiguous/low_score returns matches (use force=true to override)",
     "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "project.read_file",
+    "summary": "Read a UTF-8 file body from the bound IDE workspace disk (rel_path or path; optional max_bytes). Missing, escape, directory, binary/NUL, or too-large fail — never invent content. Disk bytes only; dirty Monaco buffers need ide.save / ide.edit first.",
+    "risk": "low",
     "confirm_required": false
   },
   {

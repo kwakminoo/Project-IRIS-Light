@@ -16,7 +16,7 @@ import subprocess
 import unittest
 from unittest.mock import MagicMock, patch
 
-from iris.system.hermes_iris_control_sync import project_root
+from iris.system.iris_agent_control_sync import project_root
 from iris.system.iris_ide_runtime import IrisIdeRuntimeManager
 
 _REAL_POPEN = subprocess.Popen
