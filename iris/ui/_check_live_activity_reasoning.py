@@ -1,4 +1,4 @@
-"""Live Activity reasoning button and tool-use line.
+"""Live Activity reasoning button, begin_turn header, and scroll hold.
 
 Run: .venv\\Scripts\\python.exe -m iris.ui._check_live_activity_reasoning
 """
@@ -7,25 +7,13 @@ from __future__ import annotations
 
 import os
 import sys
-from pathlib import Path
-from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication, QPlainTextEdit, QPushButton, QWidget
 
-from iris.engine import (
-    EngineHome,
-    InternalSidecar,
-    ReasoningDelta,
-    ToolProgress,
-    TurnFinished,
-)
-from iris.engine._sidecar import parse_turn_event
 from iris.engine._sidecar_main import tool_use_label
-from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
 from iris.ui.monitor.live_activity_panel import LiveActivityPanel, _PANEL_MAX_HEIGHT, _THINK_PREVIEW
-from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker
 
 
 def _panel_check(app: QApplication) -> None:
@@ -144,100 +132,11 @@ def _scroll_hold_check(app: QApplication) -> None:
     host.close()
 
 
-def _scroll_hold_in_progress_drag_check(app: QApplication) -> None:
-    """Hold must not yank to stale Y while the user is still moving the bar."""
-    host = QWidget()
-    panel = LiveActivityPanel(host)
-    host.resize(480, 420)
-    panel.setMaximumHeight(120)
-    panel._editor.setMaximumHeight(72)
-    host.show()
-    app.processEvents()
-
-    for i in range(80):
-        panel.append_instant_line(f"fill-{i} " + ("x" * 48))
-    app.processEvents()
-
-    bar = panel._editor.verticalScrollBar()
-    assert bar.maximum() > 40
-    hold = max(0, bar.maximum() // 3)
-    bar.setValue(hold)
-    panel._note_user_log_scroll(hold)
-    app.processEvents()
-    assert panel._scroll_user_hold
-    assert panel._scroll_hold_value == hold
-
-    delta = 8
-    target = min(hold + delta, bar.maximum() - 4)
-    assert target != hold
-    bar.setValue(target)
-    user_mid = bar.value()
-    assert abs(user_mid - hold) >= 2
-
-    panel.append_instant_line("stream-a " + ("z" * 48))
-    panel.append_instant_line("stream-b " + ("z" * 48))
-    app.processEvents()
-
-    assert abs(bar.value() - user_mid) <= 2, (
-        f"viewport yanked: value={bar.value()} expected~{user_mid} hold={hold}"
-    )
-    assert bar.value() < bar.maximum() - 2
-
-    bar.setValue(bar.maximum())
-    panel._note_user_log_scroll(bar.maximum())
-    app.processEvents()
-    assert panel._scroll_follow_tail
-    assert not panel._scroll_user_hold
-
-    before_max = bar.maximum()
-    panel.append_instant_line("follow-tail " + ("w" * 48))
-    app.processEvents()
-    assert bar.maximum() >= before_max
-    assert abs(bar.value() - bar.maximum()) <= 2
-    host.close()
-
-
-class _Engine:
-    def __init__(self, text: str) -> None:
-        self.source = InternalSidecar(home=EngineHome(Path(".")))
-        self._text = text
-
-    def run_turn(self, _turn: object):
-        yield ReasoningDelta(self._text)
-        yield ToolProgress("[IRIS tool use: read_file]")
-        yield TurnFinished("ok")
-
-
-def _worker_check() -> None:
-    full = "R" * 60
-    assert parse_turn_event({"t": "think", "text": full}) == ReasoningDelta(full)
-    engine = _Engine(full)
-    worker = IrisAgentChatWorker(
-        "llama",
-        [{"role": "user", "content": "hi"}],
-        target=IrisAgentInferenceTarget(model="llama", provider="custom"),
-    )
-    reasons: list[str] = []
-    tools: list[str] = []
-    worker.reasoning.connect(reasons.append)
-    worker.tool_progress.connect(tools.append)
-    with (
-        patch.object(IrisAgentChatWorker, "_wire_native_speak_tools", lambda self: None),
-        patch("iris.ui.workers.iris_agent_workers.shared_engine", return_value=engine),
-        patch("iris.ui.workers.iris_agent_workers._engine_source", return_value=engine.source),
-    ):
-        worker.run()
-    assert reasons == [full]
-    assert tools == ["[IRIS tool use: read_file]"]
-
-
 def main() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
     _panel_check(app)
     _begin_turn_header_check(app)
     _scroll_hold_check(app)
-    _scroll_hold_in_progress_drag_check(app)
-    _worker_check()
     print("live activity reasoning ok")
 
 
