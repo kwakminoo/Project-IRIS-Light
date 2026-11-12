@@ -5451,6 +5451,7 @@ class MainWindow(QMainWindow):
             self._leave_owning()
 
     def _launch_chat_turn_bound(self, turn: UserTurn, model: str) -> None:
+        self._live_activity.begin_turn(turn.text or "")
         messages = self._chat_messages_with_project_context()
 
         def _fail(message: str) -> None:
