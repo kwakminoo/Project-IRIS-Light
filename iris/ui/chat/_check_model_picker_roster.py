@@ -91,7 +91,6 @@ def main() -> None:
     ordered = sorted([a, c, b], key=sort_key)
     assert [e.model_id for e in ordered] == ["a-free", "z-unknown", "b-free-dead"]
 
-    # Boot mixes roster-aware API rows with legacy Ollama rows; sort must not TypeError.
     api_row = PickerModel(
         "api:x:free-chat",
         "free-chat",

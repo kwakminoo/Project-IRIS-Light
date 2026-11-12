@@ -76,8 +76,9 @@ def picker_sort_key(m: PickerModel) -> tuple:
         return roster_sort_key(picker_entry_from_model(m))
     tool = m.tool_support or ("no" if not m.supports_tools else "")
     rank, _ = model_list_tier(m.runtime, state=m.availability, tool=tool)
-    # Pad to roster arity so mixed boot lists compare as (int,int,int,str).
-    return (0, 0, rank, m.label.lower())
+    retired = 0
+    unavailable = 0
+    return (retired, unavailable, rank, m.label.lower())
 
 
 def picker_entry_from_model(m: PickerModel):
