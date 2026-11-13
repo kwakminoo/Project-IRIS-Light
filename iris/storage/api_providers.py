@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from iris.infrastructure.model_roster import (
+    ListingModel,
     RosterEntry,
     SyncResult,
     mark_price_refetch_done,
@@ -370,6 +372,22 @@ def apply_roster_to_provider(
     provider.model_meta = sanitize_model_meta(provider.model_meta)
 
 
+def is_nvidia_integrate_base(url: str) -> bool:
+    host = (urlparse((url or "").strip()).hostname or "").lower()
+    return host == "integrate.api.nvidia.com"
+
+
+def _nvidia_integrate_free_hint(listings: Sequence[ListingModel]) -> list[ListingModel]:
+    """Integrate listing presence means Free Available for this account → paint free."""
+    out: list[ListingModel] = []
+    for m in listings:
+        if m.price_class == "unknown":
+            out.append(replace(m, price_class="free"))
+        else:
+            out.append(m)
+    return out
+
+
 def sync_provider_listing(
     provider: ApiProvider,
     raw_entries: Sequence[Mapping[str, Any] | object],
@@ -390,6 +408,8 @@ def sync_provider_listing(
     """
     listings = [parse_listing(e) for e in raw_entries]
     listings = [m for m in listings if m.id]
+    if is_nvidia_integrate_base(provider.base_url):
+        listings = _nvidia_integrate_free_hint(listings)
     current = roster_from_provider(provider)
     result = sync_from_listing(
         current,
@@ -404,6 +424,8 @@ def sync_provider_listing(
         except Exception:
             second_raw = []
         second = [m for m in (parse_listing(e) for e in second_raw) if m.id]
+        if is_nvidia_integrate_base(provider.base_url):
+            second = _nvidia_integrate_free_hint(second)
         # Empty second listing must not confirm_missing-retire the whole brand.
         if second:
             result = sync_from_listing(
@@ -702,4 +724,6 @@ if __name__ == "__main__":
     assert loaded_meta.models == ["keep-me", "alive"]
     assert loaded_meta.model_meta["keep-me"]["retired"] is True
     assert loaded_meta.model_meta["alive"]["price_class"] == "paid"
+    assert is_nvidia_integrate_base("https://integrate.api.nvidia.com/v1")
+    assert not is_nvidia_integrate_base("https://api.openai.com/v1")
     print("api_providers self-check ok")
