@@ -3854,15 +3854,11 @@ class MainWindow(QMainWindow):
     def _drag_companion_hdrop(self, paths: list[str]) -> None:
         if self._pending_ide_drag != paths:
             return
-        from iris.ui.window.win_ole_drop import drag_hdrop_while_button
+        # OLE DoDragDrop on the UI thread hangs (PDF/ipynb shell preview). Attach is
+        # pending + chat.drag_end / MouseButtonRelease only.
+        from iris.ui.window.win_ole_drop import _log
 
-        effect = drag_hdrop_while_button(paths)
-        if effect == 0:
-            return
-        if self._pending_ide_drag != paths:
-            return
-        self._attach_os_drop_paths(paths)
-        self._pending_ide_drag = []
+        _log("skip DoDragDrop — companion pending attach only")
 
     def _expire_ide_companion_drag(self, expected: list[str]) -> None:
         if self._pending_ide_drag == expected:
