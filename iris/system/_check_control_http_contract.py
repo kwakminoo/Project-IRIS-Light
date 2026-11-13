@@ -6,6 +6,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 os.environ["IRIS_CONTROL_TOKEN"] = "contract-check-token"
 os.environ.pop("IRIS_CONTROL_URL", None)
@@ -149,6 +150,11 @@ def main() -> None:
         assert down["isError"] is True
     finally:
         surface.stop()
+
+    src = Path(cs.__file__).read_text(encoding="utf-8")
+    pick = src[src.index("elif action in (\"ide.pick_open_file\"") : src.index("elif action == \"project.write_file\"")]
+    assert "ide.pick_open_folder" in pick
+    assert "timeout = None" in pick
     print("control http contract ok")
 
 
