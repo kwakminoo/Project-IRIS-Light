@@ -26,6 +26,30 @@ def main() -> None:
     assert bare.price_class == "unknown"
     assert bare.modality == "unknown"
 
+    partner_only = parse_listing(
+        {"id": "nvidia/partner-only", "partner_endpoint": True}
+    )
+    assert partner_only.price_class == "paid"
+    partner_nested = parse_listing(
+        {
+            "id": "nvidia/partner-nested",
+            "endpoint": {"partnerEndpoint": True, "freeEndpoint": False},
+        }
+    )
+    assert partner_nested.price_class == "paid"
+    free_endpoint = parse_listing(
+        {"id": "nvidia/free-ep", "free_endpoint": True}
+    )
+    assert free_endpoint.price_class == "free"
+    # OpenRouter :free / pricing still win over partner flags
+    free_beats_partner = parse_listing(
+        {
+            "id": "org/model:free",
+            "partner_endpoint": True,
+        }
+    )
+    assert free_beats_partner.price_class == "free"
+
     free_suffix = parse_listing(
         {
             "id": "meta-llama/llama-3.1-8b-instruct:free",

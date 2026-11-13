@@ -104,6 +104,41 @@ def _price_positive(val: object) -> bool:
         return False
 
 
+def _flag_bool(item: Mapping[str, object], *keys: str) -> bool | None:
+    for key in keys:
+        if key not in item:
+            continue
+        val = item.get(key)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)) and val in (0, 1):
+            return bool(val)
+        if isinstance(val, str):
+            low = val.strip().lower()
+            if low in ("1", "true", "yes"):
+                return True
+            if low in ("0", "false", "no"):
+                return False
+    return None
+
+
+def _endpoint_price_flags(item: Mapping[str, object]) -> tuple[bool | None, bool | None]:
+    """Return (free_endpoint, partner_endpoint) from flat or one nested mapping."""
+    free_ep = _flag_bool(item, "free_endpoint", "freeEndpoint")
+    partner_ep = _flag_bool(item, "partner_endpoint", "partnerEndpoint")
+    if free_ep is not None or partner_ep is not None:
+        return free_ep, partner_ep
+    for nest_key in ("endpoint", "endpoints", "availability", "meta"):
+        nested = item.get(nest_key)
+        if not isinstance(nested, Mapping):
+            continue
+        free_ep = _flag_bool(nested, "free_endpoint", "freeEndpoint")
+        partner_ep = _flag_bool(nested, "partner_endpoint", "partnerEndpoint")
+        if free_ep is not None or partner_ep is not None:
+            return free_ep, partner_ep
+    return None, None
+
+
 def _infer_price_class(model_id: str, item: Mapping[str, object]) -> PriceClass:
     mid = (model_id or "").strip().lower()
     if mid.endswith(":free"):
@@ -122,6 +157,11 @@ def _infer_price_class(model_id: str, item: Mapping[str, object]) -> PriceClass:
             if not _price_positive(prompt) and not _price_positive(completion):
                 if prompt is not None or completion is not None:
                     return "free"
+    free_ep, partner_ep = _endpoint_price_flags(item)
+    if free_ep is True:
+        return "free"
+    if partner_ep is True:
+        return "paid"
     return "unknown"
 
 
