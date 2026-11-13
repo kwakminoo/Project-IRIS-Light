@@ -137,6 +137,7 @@ def main() -> None:
     check_chat_drag_actions()
     check_finish_keeps_pending_outside()
     check_companion_drag_race()
+    check_companion_skips_ole_dodragdrop()
     check_pdf_skips_ole_hdrop()
     check_ole_drag_enter_skips_getdata()
     check_win_shell_drop_arm()
@@ -280,8 +281,35 @@ def check_companion_drag_race() -> None:
     inst._attach_os_drop_paths.assert_called_with([r"C:\proj\late.py"])
 
 
+def check_companion_skips_ole_dodragdrop() -> None:
+    """구조창 companion 첨부는 DoDragDrop 금지 — pending + drag_end/release만."""
+    from unittest.mock import MagicMock, patch
+
+    root = Path(__file__).resolve().parents[3]
+    text = (root / "iris/ui/window/main_window.py").read_text(encoding="utf-8")
+    start = text.index("def _drag_companion_hdrop")
+    end = text.index("\n    def ", start + 1)
+    body = text[start:end]
+    assert "drag_hdrop_while_button" not in body, (
+        "companion _drag_companion_hdrop must not call drag_hdrop_while_button"
+    )
+    assert "DoDragDrop(" not in body, "companion path must not invoke DoDragDrop("
+    assert "skip DoDragDrop" in body, "companion skip log missing"
+
+    from iris.ui.window.main_window import MainWindow
+
+    inst = MagicMock(spec=MainWindow)
+    inst._pending_ide_drag = [r"C:\proj\a.ipynb"]
+    bound = MainWindow._drag_companion_hdrop.__get__(inst, MainWindow)
+    with patch("iris.ui.window.win_ole_drop.drag_hdrop_while_button") as drag:
+        bound([r"C:\proj\a.ipynb"])
+    drag.assert_not_called()
+    assert inst._pending_ide_drag == [r"C:\proj\a.ipynb"], "pending must survive for drag_end/release"
+    print("companion_skips_ole_dodragdrop ok")
+
+
 def check_pdf_skips_ole_hdrop() -> None:
-    """PDF 경로는 DoDragDrop를 돌리지 않는다 — 셸 미리보기 영구 블록 방지."""
+    """PDF·ipynb 경로는 DoDragDrop를 돌리지 않는다 — 셸 미리보기 영구 블록 방지."""
     import time
 
     from iris.ui.window.win_ole_drop import drag_hdrop_while_button, ole_hdrop_paths_safe
@@ -289,10 +317,14 @@ def check_pdf_skips_ole_hdrop() -> None:
     assert ole_hdrop_paths_safe([r"C:\proj\a.py"]) is True
     assert ole_hdrop_paths_safe([r"C:\proj\doc.PDF"]) is False
     assert ole_hdrop_paths_safe([r"C:\proj\a.py", r"C:\proj\doc.pdf"]) is False
+    assert ole_hdrop_paths_safe([r"C:\proj\note.ipynb"]) is False
+    assert ole_hdrop_paths_safe([r"C:\proj\Note.IPYNB"]) is False
+    assert ole_hdrop_paths_safe([r"C:\proj\a.py", r"C:\proj\n.ipynb"]) is False
 
     t0 = time.perf_counter()
     assert drag_hdrop_while_button([r"C:\proj\doc.pdf"], button_down=lambda: True) == 0
-    assert time.perf_counter() - t0 < 1.0, "PDF DoDragDrop skip must return immediately"
+    assert drag_hdrop_while_button([r"C:\proj\a.ipynb"], button_down=lambda: True) == 0
+    assert time.perf_counter() - t0 < 1.0, "PDF/ipynb DoDragDrop skip must return immediately"
     print("pdf_skips_ole_hdrop ok")
 
 
