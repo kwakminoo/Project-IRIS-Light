@@ -3836,14 +3836,13 @@ class MainWindow(QMainWindow):
             _log("[ERROR] reason=chat panel missing or empty paths")
 
     def _begin_ide_companion_drag(self, paths: list[str]) -> None:
-        """Theia dragstart — 경로는 보관하고, OLE 드래그는 다음 틱에 넘긴다."""
+        """Theia dragstart — 경로를 pending에 두고 drag_end/release로 첨부한다."""
         clean = [str(p).strip() for p in paths if str(p).strip()]
         self._pending_ide_drag = clean
         # 탭 제스처: WebEngine 밖 pointerup이 유실되므로 앱 전역 release로 첨부.
         app = QApplication.instance()
         if app is not None and app != self:
             app.installEventFilter(self)
-        # chat.drag_start가 반환된 뒤에 DoDragDrop. 같은 스택에서 돌리면 HTTP가 막힌다.
         if app is not None:
             queued = list(clean)
             QTimer.singleShot(0, lambda p=queued: self._drag_companion_hdrop(p))
@@ -3854,15 +3853,10 @@ class MainWindow(QMainWindow):
     def _drag_companion_hdrop(self, paths: list[str]) -> None:
         if self._pending_ide_drag != paths:
             return
-        from iris.ui.window.win_ole_drop import drag_hdrop_while_button
+        # DoDragDrop on the UI thread hangs on PDF/ipynb shell preview.
+        from iris.ui.window.win_ole_drop import _log
 
-        effect = drag_hdrop_while_button(paths)
-        if effect == 0:
-            return
-        if self._pending_ide_drag != paths:
-            return
-        self._attach_os_drop_paths(paths)
-        self._pending_ide_drag = []
+        _log("skip DoDragDrop — companion pending attach only")
 
     def _expire_ide_companion_drag(self, expected: list[str]) -> None:
         if self._pending_ide_drag == expected:

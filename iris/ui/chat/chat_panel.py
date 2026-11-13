@@ -1243,8 +1243,9 @@ class _ChatInputBar(QWidget):
         dlg.exec()
 
     def _pick_photos(self) -> None:
+        # frameless MainWindow의 modal 자식이면 닫힌 뒤 0xC0000409.
         paths, _ = QFileDialog.getOpenFileNames(
-            self,
+            None,
             "Add Photos & Videos",
             "",
             _IMAGE_FILTER,
@@ -1253,8 +1254,9 @@ class _ChatInputBar(QWidget):
             self._on_paths_attached(paths)
 
     def _pick_files(self) -> None:
+        # frameless MainWindow의 modal 자식이면 닫힌 뒤 0xC0000409.
         paths, _ = QFileDialog.getOpenFileNames(
-            self,
+            None,
             "Add Files",
             "",
             _FILE_FILTER,
@@ -1269,7 +1271,8 @@ class _ChatInputBar(QWidget):
         self.files_attached.emit(clean)
 
     def _pick_folder(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Add Folder")
+        # frameless MainWindow의 modal 자식이면 닫힌 뒤 0xC0000409.
+        path = QFileDialog.getExistingDirectory(None, "Add Folder")
         if path:
             self._on_paths_attached([path])
 

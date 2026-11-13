@@ -18,12 +18,23 @@ def _check_folder_open_avoids_frameless_modal() -> None:
     welcome = (root / "iris/ui/ide/iris_ide_welcome_layer.py").read_text(encoding="utf-8")
     ide = (root / "iris/ui/control_actions/ide.py").read_text(encoding="utf-8")
     main_src = (root / "iris/ui/window/main_window.py").read_text(encoding="utf-8")
+    chat = (root / "iris/ui/chat/chat_panel.py").read_text(encoding="utf-8")
     for label, src in (("hero", hero), ("welcome", welcome)):
         assert "getExistingDirectory(self" not in src, label
         assert "getExistingDirectory(None" in src, label
     assert "getExistingDirectory(window" not in ide
     assert "getOpenFileNames(window" not in ide
     assert "getExistingDirectory(None" in ide
+    photos = chat[chat.index("def _pick_photos") : chat.index("def _pick_files")]
+    files = chat[chat.index("def _pick_files") : chat.index("def _on_paths_attached")]
+    folder = chat[chat.index("def _pick_folder") : chat.index("def _on_skill")]
+    for label, body in (("photos", photos), ("files", files)):
+        assert "getOpenFileNames(" in body, label
+        assert "None," in body.split("getOpenFileNames(", 1)[1], label
+        assert "getOpenFileNames(self" not in body, label
+        assert "\n            self," not in body.split("getOpenFileNames(", 1)[1].split(")", 1)[0], label
+    assert "getExistingDirectory(None" in folder
+    assert "getExistingDirectory(self" not in folder
     start = main_src.index("def _open_iris_ide_folder")
     body = main_src[start : main_src.index("\n    def _activate_companion_tile")]
     assert "apply_frameless_chrome()" not in body
