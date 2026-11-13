@@ -565,13 +565,13 @@ def _run_hdrop_drag(paths: list[str], query_continue) -> tuple[int, int, list[in
 def ole_hdrop_paths_safe(paths: list[str]) -> bool:
     """False면 DoDragDrop를 돌리지 않는다.
 
-    일부 PDF에서 Windows 셸 썸네일/미리보기가 DoDragDrop 초기화에
+    일부 PDF·ipynb에서 Windows 셸 썸네일/미리보기가 DoDragDrop 초기화에
     끼어 QueryContinue 전에 UI 스레드가 영구 블록된다 (응답 없음).
     Companion 첨부는 pending + chat.drag_end / 마우스 릴리즈로 충분하다.
     """
     for raw in paths:
-        name = Path(str(raw).strip()).name
-        if name.lower().endswith(".pdf"):
+        name = Path(str(raw).strip()).name.lower()
+        if name.endswith((".pdf", ".ipynb")):
             return False
     return True
 
