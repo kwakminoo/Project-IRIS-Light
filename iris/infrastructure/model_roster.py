@@ -129,16 +129,22 @@ def _modality_from_token(token: str) -> Modality | None:
     t = token.strip().lower()
     if not t:
         return None
+    # a->b: classify by output side (text+image->text is chat, text->image is image)
+    if "->" in t:
+        t = t.rsplit("->", 1)[-1].strip()
+        if not t:
+            return None
     if "embed" in t:
         return "embedding"
+    # text before image: output "text+image" (or mixed token) stays chat-capable
+    if "chat" in t or "text" in t or t in ("llm", "language"):
+        return "chat"
     if "image" in t or t in ("vision", "img"):
         return "image"
     if "audio" in t or "speech" in t or "tts" in t or "asr" in t:
         return "audio"
     if "video" in t:
         return "video"
-    if "chat" in t or t in ("text", "text->text", "llm", "language"):
-        return "chat"
     return None
 
 
@@ -167,10 +173,16 @@ def _collect_modality_tokens(item: Mapping[str, object]) -> list[str]:
 
 
 def _infer_modality(model_id: str, item: Mapping[str, object]) -> Modality:
+    hits: list[Modality] = []
     for token in _collect_modality_tokens(item):
         hit = _modality_from_token(token)
         if hit is not None:
-            return hit
+            hits.append(hit)
+    # any text/chat output => chat (e.g. output_modalities ["image","text"])
+    if "chat" in hits:
+        return "chat"
+    if hits:
+        return hits[0]
     mid = (model_id or "").lower()
     if any(m in mid for m in _EMBED_ID_MARKERS):
         return "embedding"
