@@ -39,6 +39,7 @@ TYMED_HGLOBAL = 1
 DVASPECT_CONTENT = 1
 
 _DATA_GET = WINFUNCTYPE(c_ulong, c_void_p, c_void_p, c_void_p)
+_DATA_QUERY = WINFUNCTYPE(c_ulong, c_void_p, c_void_p)
 
 
 def _log(line: str) -> None:
@@ -71,21 +72,39 @@ def _ole_prop(hwnd: int) -> int:
         return 0
 
 
+def _hdrop_formatetc():
+    class FORMATETC(ctypes.Structure):
+        _fields_ = [
+            ("cfFormat", wintypes.WORD),
+            ("ptd", c_void_p),
+            ("dwAspect", wintypes.DWORD),
+            ("lindex", c_long),
+            ("tymed", wintypes.DWORD),
+        ]
+
+    return FORMATETC(CF_HDROP, None, DVASPECT_CONTENT, -1, TYMED_HGLOBAL)
+
+
+def _data_object_has_hdrop(data: int) -> bool:
+    """IDataObject::QueryGetData(CF_HDROP). GetData는 호출하지 않는다."""
+    if not data:
+        return False
+    try:
+        vtbl = cast(data, POINTER(POINTER(c_void_p)))
+        query = cast(vtbl[0][5], _DATA_QUERY)
+        fmt = _hdrop_formatetc()
+        return int(query(c_void_p(data), byref(fmt))) == S_OK
+    except Exception as exc:
+        _log(f"query hdrop failed {exc!r}")
+        return False
+
+
 def _paths_from_data_object(data: int) -> list[str]:
     """IDataObject에서 CF_HDROP 로컬 경로. 없으면 빈 목록."""
     if not data:
         return []
     try:
         import ctypes
-
-        class FORMATETC(ctypes.Structure):
-            _fields_ = [
-                ("cfFormat", wintypes.WORD),
-                ("ptd", c_void_p),
-                ("dwAspect", wintypes.DWORD),
-                ("lindex", c_long),
-                ("tymed", wintypes.DWORD),
-            ]
 
         class STGMEDIUM(ctypes.Structure):
             _fields_ = [
@@ -96,7 +115,7 @@ def _paths_from_data_object(data: int) -> list[str]:
 
         vtbl = cast(data, POINTER(POINTER(c_void_p)))
         get_data = cast(vtbl[0][3], _DATA_GET)
-        fmt = FORMATETC(CF_HDROP, None, DVASPECT_CONTENT, -1, TYMED_HGLOBAL)
+        fmt = _hdrop_formatetc()
         medium = STGMEDIUM()
         hr = get_data(c_void_p(data), byref(fmt), byref(medium))
         paths: list[str] = []
@@ -122,7 +141,7 @@ def _paths_from_data_object(data: int) -> list[str]:
         cf = int(user32.RegisterClipboardFormatW("FileNameW") or 0)
         if not cf:
             return []
-        fmt2 = FORMATETC(cf, None, DVASPECT_CONTENT, -1, TYMED_HGLOBAL)
+        fmt2 = type(fmt)(cf, None, DVASPECT_CONTENT, -1, TYMED_HGLOBAL)
         medium2 = STGMEDIUM()
         if get_data(c_void_p(data), byref(fmt2), byref(medium2)) != S_OK or not medium2.hGlobal:
             return []
@@ -226,8 +245,7 @@ class _ExplorerDropTarget:
 
     def _enter_raw(self, this, data, key, pt, effect):
         _log("callback DragEnter")
-        paths = _paths_from_data_object(int(data or 0))
-        if not paths:
+        if not _data_object_has_hdrop(int(data or 0)):
             _log("OS drag entered window urls=0")
             _log("[ERROR] stage=drag_enter")
             _log("[ERROR] reason=cf_hdrop empty")
@@ -235,8 +253,7 @@ class _ExplorerDropTarget:
             return S_OK
         self._write_effect(effect, DROPEFFECT_COPY)
         self._entered = True
-        self._log_files(paths)
-        self._notify("enter", paths)
+        self._notify("enter", [])
         return S_OK
 
     def _over_raw(self, this, key, pt, effect):
@@ -355,6 +372,9 @@ def ensure_explorer_drop_targets(hwnd: int, host: object, *, target: str = "main
         return False
     try:
         drop = _owned_target(host, target)
+        if getattr(drop, "_entered", False):
+            drop.target_name = target
+            return True
         ours = int(getattr(drop, "addr", 0) or 0)
         hwnds = [int(hwnd)]
         hwnds.extend(h for h in _child_hwnds_with_drop(int(hwnd)) if h not in hwnds)

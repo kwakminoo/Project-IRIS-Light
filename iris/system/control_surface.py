@@ -180,7 +180,9 @@ def parse_invoke_body(raw: bytes) -> tuple[dict[str, Any] | None, str | None]:
     return data, None
 
 
-def call_registered(surface: ControlSurface, action: str, args: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+def call_registered(
+    surface: ControlSurface, action: str, args: dict[str, Any], *, timeout: float | None
+) -> dict[str, Any]:
     """레지스트리 호출.
 
     status=timeout은 UiThreadTimeout이다. 대기 포기일 뿐 큐를 취소하지 않는다.
@@ -329,12 +331,12 @@ class MainThreadInvoker:
     """
 
     def __init__(self) -> None:
-        self._fn: Callable[[Callable[[], Any], float], Any] | None = None
+        self._fn: Callable[[Callable[[], Any], float | None], Any] | None = None
 
-    def bind(self, runner: Callable[[Callable[[], Any], float], Any]) -> None:
+    def bind(self, runner: Callable[[Callable[[], Any], float | None], Any]) -> None:
         self._fn = runner
 
-    def run(self, fn: Callable[[], Any], timeout: float = 15.0) -> Any:
+    def run(self, fn: Callable[[], Any], timeout: float | None = 15.0) -> Any:
         if self._fn is None:
             raise RuntimeError("MainThreadInvoker not bound to Qt")
         return self._fn(fn, timeout)
@@ -475,12 +477,14 @@ class ControlSurface:
                         args = {k: v for k, v in payload.items() if k not in ("action", "args")}
 
                     # ponytail: live file stream 은 메인스레드에서 길어질 수 있음
-                    timeout = 15.0
+                    timeout: float | None = 15.0
                     if action == "ide.marketplace_install":
                         # VSIX 받기 + 켜진 Theia 재기동(health 대기 최대 120초)
                         timeout = 180.0
                     elif action in ("ide.debug", "ide.task", "ide.edit", "ide.save"):
                         timeout = 45.0
+                    elif action in ("ide.pick_open_file", "ide.pick_open_folder"):
+                        timeout = None
                     elif action == "project.write_file":
                         # open+live stream 기본 — 작성 연출 대기
                         if bool(args.get("open", True)) and bool(
