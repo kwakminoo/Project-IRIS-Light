@@ -173,6 +173,37 @@ def main() -> None:
     assert gone3.description == "back"
     assert gone3.listing_seen_at == "2026-11-12T03:00:00+09:00"
 
+    stale_unavail = RosterEntry(
+        model_id="listed-stale",
+        price_class="free",
+        modality="chat",
+        availability="unavailable",
+        retired=False,
+    )
+    unblocked = sync_from_listing(
+        [stale_unavail],
+        [ListingModel(id="listed-stale", price_class="free", modality="chat")],
+        brand_id="brand",
+        confirm_missing=False,
+        now_iso="2026-11-13T00:00:00+09:00",
+    )
+    listed_stale = unblocked.entries[0]
+    assert listed_stale.availability == "unverified"
+
+    still_ok = RosterEntry(
+        model_id="listed-ok",
+        price_class="paid",
+        modality="chat",
+        availability="ok",
+    )
+    kept_ok = sync_from_listing(
+        [still_ok],
+        [ListingModel(id="listed-ok", price_class="paid", modality="chat")],
+        brand_id="brand",
+        confirm_missing=False,
+    )
+    assert kept_ok.entries[0].availability == "ok"
+
     httped = retire_on_http(
         [RosterEntry(model_id="eol", price_class="paid", modality="chat", availability="ok")],
         model_id="eol",

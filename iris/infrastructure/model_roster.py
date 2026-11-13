@@ -309,12 +309,16 @@ def sync_from_listing(
             added.append(mid)
             continue
         revived = existing.retired
+        availability = existing.availability
+        if existing.availability == "unavailable":
+            availability = "unverified"
         out.append(
             _copy_entry(
                 existing,
                 description=listing.description if listing.description else existing.description,
                 price_class=listing.price_class,
                 modality=listing.modality if listing.modality != "unknown" else existing.modality,
+                availability=availability,
                 retired=False,
                 retired_at="" if revived else existing.retired_at,
                 retire_evidence="" if revived else existing.retire_evidence,
