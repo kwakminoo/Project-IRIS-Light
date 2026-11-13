@@ -121,6 +121,10 @@ def sorted_picker_models(
     return sorted(models, key=lambda m: picker_sort_key(m, favorites=favorites))
 
 
+def sorted_picker_models(models: list[PickerModel]) -> list[PickerModel]:
+    return sorted(models, key=picker_sort_key)
+
+
 def picker_entry_from_model(m: PickerModel):
     """Build RosterEntry for color/sort. Rules stay in model_roster."""
     from iris.infrastructure.model_roster import RosterEntry
