@@ -380,7 +380,7 @@ def check_companion_skips_ole_dodragdrop() -> None:
 
 
 def check_pdf_skips_ole_hdrop() -> None:
-    """PDF 경로는 DoDragDrop를 돌리지 않는다 — 셸 미리보기 영구 블록 방지."""
+    """PDF·ipynb 경로는 DoDragDrop를 돌리지 않는다 — 셸 미리보기 영구 블록 방지."""
     import time
 
     from iris.ui.window.win_ole_drop import drag_hdrop_while_button, ole_hdrop_paths_safe
@@ -388,10 +388,14 @@ def check_pdf_skips_ole_hdrop() -> None:
     assert ole_hdrop_paths_safe([r"C:\proj\a.py"]) is True
     assert ole_hdrop_paths_safe([r"C:\proj\doc.PDF"]) is False
     assert ole_hdrop_paths_safe([r"C:\proj\a.py", r"C:\proj\doc.pdf"]) is False
+    assert ole_hdrop_paths_safe([r"C:\proj\note.ipynb"]) is False
+    assert ole_hdrop_paths_safe([r"C:\proj\Note.IPYNB"]) is False
+    assert ole_hdrop_paths_safe([r"C:\proj\a.py", r"C:\proj\n.ipynb"]) is False
 
     t0 = time.perf_counter()
     assert drag_hdrop_while_button([r"C:\proj\doc.pdf"], button_down=lambda: True) == 0
-    assert time.perf_counter() - t0 < 1.0, "PDF DoDragDrop skip must return immediately"
+    assert drag_hdrop_while_button([r"C:\proj\a.ipynb"], button_down=lambda: True) == 0
+    assert time.perf_counter() - t0 < 1.0, "PDF/ipynb DoDragDrop skip must return immediately"
     print("pdf_skips_ole_hdrop ok")
 
 
