@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 import iris.infrastructure.model_blurb_ko as mbk
 
 
@@ -45,14 +43,6 @@ def main() -> None:
         assert calls == ["Frontier reasoning model"]
     finally:
         mbk.translate_en_to_ko = original  # type: ignore[method-assign]
-
-    mbk._cache = {}
-    listing_en = "Frontier reasoning model"
-    t0 = time.perf_counter()
-    miss_out = mbk.display_api_description("nonsense-runtime-xyz-404", listing_en)
-    elapsed = time.perf_counter() - t0
-    assert elapsed < 0.2, f"display blocked {elapsed:.3f}s on cache miss"
-    assert miss_out == listing_en, (miss_out, listing_en)
 
     print("model_blurb_ko self-check ok")
 

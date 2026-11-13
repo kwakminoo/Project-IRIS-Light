@@ -172,13 +172,8 @@ def main() -> None:
         ),
     ]
     singles_tiered = list(tier_models)
-    _local, _ol, brands_tier, singles_out = split_picker_groups(singles_tiered)
-    # BRAND_MIN_MODELS may be 1 — same-provider APIs land in brands, not singles.
-    if brands_tier:
-        got = [m.runtime for m in next(iter(brands_tier.values()))]
-    else:
-        got = [m.runtime for m in singles_out]
-    assert got == [m.runtime for m in sorted(tier_models, key=picker_sort_key)]
+    _local, _ol, _br, singles_out = split_picker_groups(singles_tiered)
+    assert [m.runtime for m in singles_out] == [m.runtime for m in sorted(tier_models, key=picker_sort_key)]
 
     _labels = ["z-unk", "d-paid", "c-paid2", "b-embed", "a-free2", "a-free"]
     _pcs = ["unknown", "paid", "paid", "free", "free", "free"]
