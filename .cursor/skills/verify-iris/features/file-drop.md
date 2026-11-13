@@ -25,4 +25,6 @@ Preconditions:
 ## Gotchas
 
 - Editing `integrations/iris-ide/lib/browser/*.js` alone does not update `~/.iris-light/runtimes/iris-ide/.../bundle.js`. Sync with `IrisIdeRuntimeManager.sync_workspace_build` before trusting live IDE.
-- `QFileDialog` parents must stay `None` on frameless MainWindow paths or Qt can abort.
+- `QFileDialog` parents must stay `None` on frameless MainWindow paths (hero, welcome, `ide.pick_open_*`, Composer `_pick_*`) or Qt can abort / hang.
+- OLE `IDropTarget` DragEnter must not call `GetData`. Path extract only on Drop. Companion structure/tab→chat must not call `DoDragDrop` (pending + `chat.drag_end` only). `.pdf` / `.ipynb` stay in `ole_hdrop_paths_safe` reject list. See `.cursor/rules/ide-file-attach-hang.mdc`.
+- If live Iris still hangs after a fix, confirm thin launcher loads this workspace (not an old worktree-only branch). `dnd.log` Enter-with-paths means GetData-on-enter code is still running.

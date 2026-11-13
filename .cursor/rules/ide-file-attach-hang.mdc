@@ -1,0 +1,41 @@
+---
+description: IDE·Explorer 파일 첨부 시 Windows 「응답없음」재발 금지 (OLE DragEnter GetData / companion DoDragDrop)
+alwaysApply: true
+---
+
+# IDE 파일 첨부 = UI 스레드 OLE 금지 (응답없음)
+
+증상: IRIS IDE companion에서 Explorer 드롭 또는 구조창→채팅 드래그 직후 Iris/IDE가 **응답없음**. `dnd.log`에 `callback DragEnter`만 있고 Drop/`attach_success`가 없다. PDF·ipynb 등 셸 미리보기 핸들러가 UI 스레드를 영구 블록한다.
+
+측정 기준 사례: 2026-11-13 `11_BERT_GPT_….ipynb` — Enter 후 Drop 없음. PR #31.
+
+## 계약 (깨면 회귀)
+
+1. **IDropTarget DragEnter** — `IDataObject::QueryGetData(CF_HDROP)`만. 경로 추출(`GetData` / `_paths_from_data_object`)은 **Drop에서만**.
+2. **Companion(구조창·탭→채팅)** — UI에서 `DoDragDrop` / `drag_hdrop_while_button` **호출 금지**. 첨부는 `_pending_ide_drag` + `chat.drag_end` / `MouseButtonRelease`만.
+3. **`ole_hdrop_paths_safe`** — `.pdf`·`.ipynb`는 False (다른 호출자가 DoDragDrop를 돌려도 스킵).
+4. **Composer `+` 첨부** — `QFileDialog` 부모는 **`None`** (frameless MainWindow 자식에 붙이지 않음). `qt-slot-abort`와 동일.
+5. **`ide.pick_open_file` / `ide.pick_open_folder`** — control HTTP invoke **`timeout=None`** (15s 마샬 컷 금지).
+
+## 금지
+
+- `_enter_raw`에서 `_paths_from_data_object` / `GetData`
+- `_drag_companion_hdrop` → `drag_hdrop_while_button` / `DoDragDrop`
+- Composer `_pick_photos` / `_pick_files` / `_pick_folder`에 `parent=self`
+- pick_open_* 를 기본 15s UI timeout에 방치
+
+## 재발 시 순서
+
+1. `%USERPROFILE%\.iris-light\logs\dnd.log` — Enter만 있는지, `skip DoDragDrop — companion pending` 인지.
+2. 실행 소스가 이 계약을 담은 브랜치인지 (thin launcher = 워크스페이스 루트).
+3. 아래 자검을 돌린다.
+
+## 검증
+
+```powershell
+.venv\Scripts\python.exe -m iris.ui.window._check_file_drop
+.venv\Scripts\python.exe -m iris.ui._check_iris_ide_window
+.venv\Scripts\python.exe -m iris.system._check_control_http_contract
+```
+
+잠금: `check_ole_drag_enter_skips_getdata`, `check_companion_skips_ole_dodragdrop`, `check_pdf_skips_ole_hdrop`, composer `parent=None` assert, pick_open `timeout = None` scrape.
