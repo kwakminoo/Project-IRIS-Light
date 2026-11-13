@@ -54,6 +54,48 @@ def main() -> None:
     )
     assert paid.price_class == "paid"
     assert paid.modality == "chat"
+    assert display_tier(
+        RosterEntry(
+            model_id=paid.id,
+            price_class=paid.price_class,
+            modality=paid.modality,
+        )
+    ) == DisplayTier.PAID
+
+    # VLM / multimodal chat: input may include image; output text => chat, not off_domain
+    vlm = parse_listing(
+        {
+            "id": "anthropic/claude-opus-4",
+            "pricing": {"prompt": "0.000015", "completion": "0.000075"},
+            "architecture": {"modality": "text+image->text"},
+        }
+    )
+    assert vlm.modality == "chat"
+    assert vlm.price_class == "paid"
+    assert display_tier(
+        RosterEntry(
+            model_id=vlm.id,
+            price_class=vlm.price_class,
+            modality=vlm.modality,
+        )
+    ) == DisplayTier.PAID
+
+    gpt4o = parse_listing(
+        {
+            "id": "openai/gpt-4o",
+            "pricing": {"prompt": "0.0000025", "completion": "0.00001"},
+            "architecture": {"modality": "text+image->text"},
+            "output_modalities": ["text", "image"],
+        }
+    )
+    assert gpt4o.modality == "chat"
+    assert display_tier(
+        RosterEntry(
+            model_id=gpt4o.id,
+            price_class=gpt4o.price_class,
+            modality=gpt4o.modality,
+        )
+    ) == DisplayTier.PAID
 
     embed = parse_listing(
         {
@@ -64,6 +106,13 @@ def main() -> None:
     )
     assert embed.modality == "embedding"
     assert embed.price_class == "free"
+    assert display_tier(
+        RosterEntry(
+            model_id=embed.id,
+            price_class=embed.price_class,
+            modality=embed.modality,
+        )
+    ) == DisplayTier.OFF_DOMAIN
 
     image = parse_listing(
         {
@@ -72,6 +121,29 @@ def main() -> None:
         }
     )
     assert image.modality == "image"
+    assert display_tier(
+        RosterEntry(
+            model_id=image.id,
+            price_class=image.price_class,
+            modality=image.modality,
+        )
+    ) == DisplayTier.OFF_DOMAIN
+
+    text_to_image = parse_listing(
+        {
+            "id": "provider/flux",
+            "architecture": {"modality": "text->image"},
+            "pricing": {"prompt": "0.0001", "completion": "0"},
+        }
+    )
+    assert text_to_image.modality == "image"
+    assert display_tier(
+        RosterEntry(
+            model_id=text_to_image.id,
+            price_class=text_to_image.price_class,
+            modality=text_to_image.modality,
+        )
+    ) == DisplayTier.OFF_DOMAIN
 
     listings = parse_listings(
         {
