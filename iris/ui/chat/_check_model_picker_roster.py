@@ -59,7 +59,38 @@ def main() -> None:
     assert display_tier(
         RosterEntry(model_id="f", price_class="free", modality="chat")
     ) == DisplayTier.FREE
-    assert _api_blurb(free) == "Official free chat"
+
+    from iris.infrastructure import model_blurb_ko as mbk
+
+    catalog_row = PickerModel(
+        "api:x:nvidia/nemotron-3-ultra",
+        "Nemotron Ultra",
+        is_api=True,
+        price_class="paid",
+        modality="chat",
+        listing_description="High-throughput English blurb from API listing",
+    )
+    catalog_blurb = _api_blurb(catalog_row)
+    assert catalog_blurb.startswith("NVIDIA Nemotron 3 Ultra")
+    assert mbk.has_hangul(catalog_blurb)
+    assert "High-throughput" not in catalog_blurb
+
+    _KO_STUB = "번역된 공식 무료 채팅"
+    _original_translate = mbk.translate_en_to_ko
+    mbk.translate_en_to_ko = lambda _text: _KO_STUB  # type: ignore[method-assign, return-value]
+    try:
+        translated_row = PickerModel(
+            "api:x:nonsense-no-catalog",
+            "weird",
+            is_api=True,
+            price_class="free",
+            modality="chat",
+            listing_description="Official free chat",
+        )
+        assert _api_blurb(translated_row) == _KO_STUB
+    finally:
+        mbk.translate_en_to_ko = _original_translate  # type: ignore[method-assign]
+
     empty_desc = PickerModel(
         "api:x:bare",
         "bare",
@@ -107,6 +138,67 @@ def main() -> None:
         assert len(key) == 4, key
         assert all(isinstance(key[i], int) for i in (0, 1, 2)), key
         assert isinstance(key[3], str), key
+
+    from iris.ui.chat.model_picker_menu import BRAND_MIN_MODELS, split_picker_groups, sorted_picker_models
+
+    tier_models = [
+        PickerModel(
+            f"api:t:mystery",
+            "z-mystery",
+            is_api=True,
+            price_class="unknown",
+            modality="chat",
+        ),
+        PickerModel(
+            "api:t:paid-chat",
+            "c-paid",
+            is_api=True,
+            price_class="paid",
+            modality="chat",
+        ),
+        PickerModel(
+            "api:t:embed",
+            "b-embed",
+            is_api=True,
+            price_class="free",
+            modality="embedding",
+        ),
+        PickerModel(
+            "api:t:free-chat",
+            "a-free",
+            is_api=True,
+            price_class="free",
+            modality="chat",
+        ),
+    ]
+    singles_tiered = list(tier_models)
+    _local, _ol, _br, singles_out = split_picker_groups(singles_tiered)
+    assert [m.runtime for m in singles_out] == [m.runtime for m in sorted(tier_models, key=picker_sort_key)]
+
+    _labels = ["z-unk", "d-paid", "c-paid2", "b-embed", "a-free2", "a-free"]
+    _pcs = ["unknown", "paid", "paid", "free", "free", "free"]
+    _mods = ["chat", "chat", "chat", "embedding", "chat", "chat"]
+    many_tier = [
+        PickerModel(
+            f"api:br:m-{i}",
+            _labels[i],
+            is_api=True,
+            price_class=_pcs[i],
+            modality=_mods[i],
+            provider_name="BrandCo",
+            provider_base="https://api.example/v1",
+        )
+        for i in range(BRAND_MIN_MODELS)
+    ]
+    assert len(many_tier) >= BRAND_MIN_MODELS
+    _, _, brands_out, _ = split_picker_groups(many_tier)
+    assert "br" in brands_out
+    brand_order = [m.runtime for m in brands_out["br"]]
+    expect = [m.runtime for m in sorted(many_tier, key=picker_sort_key)]
+    assert brand_order == expect, (brand_order, expect)
+
+    dialog_order = [m.runtime for m in sorted_picker_models(list(reversed(many_tier)))]
+    assert dialog_order == expect
 
     from iris.infrastructure.ollama_client import OllamaModelInfo
 

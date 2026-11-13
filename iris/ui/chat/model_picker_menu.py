@@ -19,7 +19,9 @@ from PyQt6.QtWidgets import (
 )
 
 from iris.infrastructure.api_model_meta import tool_support_label
+from iris.infrastructure.model_blurb_ko import display_api_description
 from iris.infrastructure.model_descriptions import describe_model
+from iris.infrastructure.ollama_client import display_name_from_runtime
 from iris.storage.api_providers import is_api_runtime_model, parse_runtime_model_id
 from iris.ui.chat.composer_plus_menu import _MenuRow
 from iris.ui.chat.skill_mcp_dialogs import _ItemCard, _card_qss
@@ -111,6 +113,14 @@ def _favorite_button(runtime: str, favorites: set[str], toggle) -> QToolButton:
     return button
 
 
+def sorted_picker_models(
+    models: list[PickerModel],
+    *,
+    favorites: set[str] | None = None,
+) -> list[PickerModel]:
+    return sorted(models, key=lambda m: picker_sort_key(m, favorites=favorites))
+
+
 def picker_entry_from_model(m: PickerModel):
     """Build RosterEntry for color/sort. Rules stay in model_roster."""
     from iris.infrastructure.model_roster import RosterEntry
@@ -171,11 +181,9 @@ def _ollama_blurb(m: PickerModel) -> str:
 
 
 def _api_blurb(m: PickerModel) -> str:
-    from iris.infrastructure.ollama_client import display_name_from_runtime
-
-    official = (m.listing_description or "").strip()
-    if official:
-        return official
+    ko = display_api_description(m.runtime, m.listing_description or "")
+    if ko:
+        return ko
     bits = [m.label or display_name_from_runtime(m.runtime), tool_support_label(m.tool_support)]
     if m.tool_support == "unknown":
         bits.append("선택하면 1회 확인함")
@@ -258,21 +266,7 @@ class ModelBrandDialog(QDialog):
             empty.setObjectName("HudDialogHint")
             self._list_lay.addWidget(empty)
         else:
-            from iris.infrastructure.ollama_client import model_list_tier
-
-            ordered = sorted(
-                models,
-                key=lambda m: (
-                    0 if m.runtime in self._favorites else 1,
-                    model_list_tier(
-                        m.runtime,
-                        state=m.availability,
-                        tool=m.tool_support or ("no" if not m.supports_tools else ""),
-                    )[0],
-                    m.label.lower(),
-                ),
-            )
-            for m in ordered:
+            for m in sorted_picker_models(models, favorites=self._favorites):
                 self._add_card(m)
         self._list_lay.addStretch(1)
 
@@ -489,18 +483,15 @@ def split_picker_groups(
     brands: dict[str, list[PickerModel]] = {}
     singles: list[PickerModel] = []
 
-    def group_key(model: PickerModel) -> tuple[int, str]:
-        return (0 if favorites and model.runtime in favorites else 1, model.label.lower())
-
     for pid, items in by_pid.items():
         if len(items) >= BRAND_MIN_MODELS:
-            brands[pid] = sorted(items, key=group_key)
+            brands[pid] = sorted_picker_models(items, favorites=favorites)
         else:
             singles.extend(items)
 
-    local.sort(key=group_key)
-    ollama.sort(key=group_key)
-    singles.sort(key=group_key)
+    local = sorted_picker_models(local, favorites=favorites)
+    ollama = sorted_picker_models(ollama, favorites=favorites)
+    singles = sorted_picker_models(singles, favorites=favorites)
     return local, ollama, brands, singles
 
 
