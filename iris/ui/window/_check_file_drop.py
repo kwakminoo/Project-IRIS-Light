@@ -138,6 +138,7 @@ def main() -> None:
     check_finish_keeps_pending_outside()
     check_companion_drag_race()
     check_pdf_skips_ole_hdrop()
+    check_ole_drag_enter_skips_getdata()
     check_win_shell_drop_arm()
     check_explorer_overlay_drop()
     check_ole_explorer_drop()
@@ -293,6 +294,21 @@ def check_pdf_skips_ole_hdrop() -> None:
     assert drag_hdrop_while_button([r"C:\proj\doc.pdf"], button_down=lambda: True) == 0
     assert time.perf_counter() - t0 < 1.0, "PDF DoDragDrop skip must return immediately"
     print("pdf_skips_ole_hdrop ok")
+
+
+def check_ole_drag_enter_skips_getdata() -> None:
+    """DragEnter는 QueryGetData만. GetData(경로 추출)는 Drop에서만 — Enter GetData는 UI 응답없음."""
+    root = Path(__file__).resolve().parents[3]
+    text = (root / "iris/ui/window/win_ole_drop.py").read_text(encoding="utf-8")
+    assert "def _data_object_has_hdrop(" in text, "QueryGetData helper _data_object_has_hdrop missing"
+    enter = text[text.index("def _enter_raw") : text.index("def _over_raw")]
+    assert "_paths_from_data_object" not in enter, (
+        "DragEnter must not call _paths_from_data_object (IDataObject::GetData)"
+    )
+    assert "_data_object_has_hdrop" in enter, "DragEnter must probe CF_HDROP via _data_object_has_hdrop"
+    drop = text[text.index("def _drop_raw") : text.index("_DRAGDROP_E_ALREADYREGISTERED")]
+    assert "_paths_from_data_object" in drop, "Drop must still materialize paths via _paths_from_data_object"
+    print("ole_drag_enter_skips_getdata ok")
 
 
 def check_ole_explorer_drop() -> None:
