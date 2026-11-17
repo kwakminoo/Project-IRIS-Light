@@ -34,16 +34,17 @@ from iris.infrastructure.agent_runtime import (
     load_pinned_sha,
     load_upstream_url,
 )
-from iris.system import hermes_gateway as gw
+from iris.system import iris_agent_gateway as gw
 
 HERMES_REPO_HTTPS = load_upstream_url()
 StreamFn = Callable[[str], None]
 _HERMES_PYTHON_MIN = (3, 11)
 _HERMES_PYTHON_MAX_EXCLUSIVE = (3, 14)
 _PY_LAUNCHER_FLAGS = ("-3.11", "-3.12", "-3.13")
+_WANTED_EXTRAS = ("homeassistant", "mcp")
 _PIP_FALLBACK_LIMIT = (
     "pip 폴백은 uv.lock pin을 재현하지 않습니다. "
-    "extras mcp,messaging 만 설치하며 requirements.txt 는 사용하지 않습니다."
+    "선언된 extras 만 설치하며 requirements.txt 는 사용하지 않습니다."
 )
 _ERROR_LINE = re.compile(
     r"(?i)\b(error|exception|traceback|failed|winerror|timeout|permissionerror)\b"
@@ -192,7 +193,7 @@ def find_bootstrap_python(want: PyRange | None = None) -> Path | None:
     if launched is not None:
         return launched
     try:
-        from iris.system.hermes_iris_control_sync import project_root
+        from iris.system.iris_agent_control_sync import project_root
 
         root = project_root()
     except Exception:  # noqa: BLE001
@@ -466,9 +467,7 @@ def _redact(text: str) -> str:
     return redact_secrets(text or "")
 
 
-def write_install_log(
-    body: str, *, prefix: str = "iris-install", home: Path | None = None
-) -> Path:
+def write_install_log(body: str, *, prefix: str = "iris-install", home: Path | None = None) -> Path:
     log_dir = (home if home is not None else gw.hermes_home()) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -532,6 +531,53 @@ def _timeout_kind(exc: BaseException) -> str:
     return str(kind) if kind in ("idle", "hard") else "hard"
 
 
+def _declared_optional_extras(pyproject: Path) -> frozenset[str]:
+    if not pyproject.is_file():
+        return frozenset()
+    try:
+        import tomllib
+
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    optional = data.get("project", {}).get("optional-dependencies")
+    if not isinstance(optional, dict):
+        return frozenset()
+    return frozenset(str(name) for name in optional)
+
+
+def _wanted_extras(agent: Path) -> tuple[str, ...]:
+    declared = _declared_optional_extras(agent / "pyproject.toml")
+    return tuple(name for name in _WANTED_EXTRAS if name in declared)
+
+
+def _uv_extra_args(extras: tuple[str, ...]) -> list[str]:
+    args: list[str] = []
+    for name in extras:
+        args.extend(("--extra", name))
+    return args
+
+
+def _pip_editable_spec(extras: tuple[str, ...]) -> str:
+    if not extras:
+        return "."
+    return ".[" + ",".join(extras) + "]"
+
+
+_PROBE_PINS = (
+    "aiohttp==3.14.3",
+    "mcp==2.0.0",
+    "httpx2==2.7.0",
+    "starlette==1.3.1",
+    "python-dotenv==1.2.2",
+    "ruamel.yaml==0.18.16",
+)
+
+
+def _boost_probe_deps(venv_py: Path) -> subprocess.CompletedProcess[str]:
+    return _run([str(venv_py), "-m", "pip", "install", *_PROBE_PINS], timeout=300.0)
+
+
 def _probe_venv(venv_py: Path) -> tuple[bool, str]:
     try:
         proc = _run(
@@ -544,51 +590,6 @@ def _probe_venv(venv_py: Path) -> tuple[bool, str]:
     if proc.returncode != 0 or "ok" not in (proc.stdout or ""):
         return False, blob or f"exit {proc.returncode}"
     return True, f"venv import ok ({venv_py})"
-
-
-_PROBE_GATEWAY_PINS = (
-    "aiohttp==3.14.3",
-    "mcp==2.0.0",
-    "httpx2==2.7.0",
-    "starlette==1.3.1",
-    "python-dotenv==1.2.2",
-    "ruamel.yaml==0.18.16",
-)
-
-
-def _recover_probe_pins_before_editable(
-    venv_py: Path,
-    staging: Path,
-    *,
-    first_detail: str,
-    log: list[str],
-    emit: Callable[[str], None],
-) -> tuple[bool, str, str | None]:
-    emit("probe 실패 — aiohttp/mcp pin…")
-    log.append(first_detail)
-    boost = _run(
-        [str(venv_py), "-m", "pip", "install", *_PROBE_GATEWAY_PINS],
-        timeout=300.0,
-    )
-    log.append(boost.stdout or "")
-    log.append(boost.stderr or "")
-    if boost.returncode != 0:
-        return False, first_detail, "gateway/mcp 의존성 보강 실패"
-    ok, detail = _probe_venv(venv_py)
-    if ok:
-        return True, detail, None
-    emit("probe pin 후 editable 재설치…")
-    edit = _run(
-        [str(venv_py), "-m", "pip", "install", "-e", "."],
-        cwd=str(staging),
-        timeout=300.0,
-    )
-    log.append(edit.stdout or "")
-    log.append(edit.stderr or "")
-    if edit.returncode != 0:
-        return False, detail, "editable 재설치 실패"
-    ok, detail = _probe_venv(venv_py)
-    return ok, detail, None
 
 
 def _discard_tree(path: Path) -> None:
@@ -673,9 +674,7 @@ def _activate_staged(
     if probe_gateway:
         ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
     else:
-        venv_py = live / (
-            "venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python"
-        )
+        venv_py = live / ("venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python")
         ok, detail = _probe_venv(venv_py)
     if not ok:
         _restore_backup(home, stamp)
@@ -711,11 +710,14 @@ def _run_dep(
     cwd: str,
     run_streamed: Callable[..., subprocess.CompletedProcess[str]] | None,
     hard: float,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """pip/uv 는 무출력만으로 죽이지 않는다. 전체 시간 제한과 취소는 유지."""
     if run_streamed is not None:
-        return run_streamed(cmd, cwd=cwd, timeout=None, hard_timeout=hard, hidden=True)
-    return _run(cmd, cwd=cwd, timeout=hard)
+        return run_streamed(
+            cmd, cwd=cwd, timeout=None, hard_timeout=hard, hidden=True, env=env
+        )
+    return _run(cmd, cwd=cwd, timeout=hard, env=env)
 
 
 def _pip_unmarked_core_deps(venv_py: Path, agent: Path) -> subprocess.CompletedProcess[str]:
@@ -772,25 +774,26 @@ def _finish_staged_install(
         _discard_tree(staging)
         return InstallResult(False, "사용자가 중단함", "cancel")
 
+    extras = _wanted_extras(staging)
     lock = staging / "uv.lock"
     installed = False
     if uv and lock.is_file():
-        # Pin dropped `homeassistant`. mcp = control tools; messaging pulls aiohttp.
         # UV_PROJECT_ENVIRONMENT must be staging/venv — bare uv sync creates .venv and
         # probe (venv/Scripts/python) then fails with ModuleNotFoundError: hermes_cli.
-        emit("uv sync --frozen (mcp, messaging)…")
+        extra_note = ",".join(extras) if extras else "no extras"
+        emit(f"uv sync --frozen ({extra_note})…")
         env = os.environ.copy()
         env["VIRTUAL_ENV"] = str(venv_dir)
         env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
         cmd = [
             uv, "sync", "--frozen", "--no-dev", "--active",
-            "--extra", "mcp", "--extra", "messaging",
+            *_uv_extra_args(extras),
             "--python", str(venv_py),
         ]
         started = time.monotonic()
         try:
-            proc = _run_pkg_install(
-                cmd, cwd=str(staging), run_streamed=run_streamed, env=env
+            proc = _run_dep(
+                cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0, env=env
             )
         except subprocess.TimeoutExpired as exc:
             log.append(str(exc))
@@ -808,8 +811,9 @@ def _finish_staged_install(
         emit(_PIP_FALLBACK_LIMIT)
 
     if not installed:
-        emit("pip install -e .[mcp,messaging]…")
-        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", ".[mcp,messaging]"]
+        spec = _pip_editable_spec(extras)
+        emit(f"pip install -e {spec}…")
+        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", spec]
         started = time.monotonic()
         try:
             pip = _run_dep(pip_cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0)
@@ -837,14 +841,7 @@ def _finish_staged_install(
             log.append(pip.stdout or "")
             log.append(pip.stderr or "")
             if pip.returncode == 0:
-                boost = _run(
-                    [
-                        str(venv_py), "-m", "pip", "install",
-                        "aiohttp==3.14.3", "mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1",
-                        "python-dotenv==1.2.2", "ruamel.yaml==0.18.16",
-                    ],
-                    timeout=300.0,
-                )
+                boost = _boost_probe_deps(venv_py)
                 log.append(boost.stdout or "")
                 log.append(boost.stderr or "")
                 if boost.returncode != 0:
@@ -866,16 +863,28 @@ def _finish_staged_install(
 
     ok, detail = _probe_venv(venv_py)
     if not ok:
-        ok, detail, err = _recover_probe_pins_before_editable(
-            venv_py,
-            staging,
-            first_detail=detail,
-            log=log,
-            emit=emit,
-        )
-        if err is not None:
+        emit("probe 실패 — aiohttp/mcp pin…")
+        log.append(detail)
+        boost = _boost_probe_deps(venv_py)
+        log.append(boost.stdout or "")
+        log.append(boost.stderr or "")
+        if boost.returncode != 0:
             _discard_tree(staging)
-            return fail("exit", err, "\n".join(log))
+            return fail("exit", "gateway/mcp 의존성 보강 실패", "\n".join(log))
+        # uv sync 성공 뒤에는 pip editable 금지 — Pillow override 를 pip 가 깨뜨림.
+        if not installed:
+            emit("probe pin 후 editable 재설치…")
+            edit = _run(
+                [str(venv_py), "-m", "pip", "install", "-e", "."],
+                cwd=str(staging),
+                timeout=300.0,
+            )
+            log.append(edit.stdout or "")
+            log.append(edit.stderr or "")
+            if edit.returncode != 0:
+                _discard_tree(staging)
+                return fail("exit", "editable 재설치 실패", "\n".join(log))
+        ok, detail = _probe_venv(venv_py)
     log.append(f"probe={ok} {detail}")
     if not ok:
         _discard_tree(staging)
@@ -1003,6 +1012,7 @@ def _try_uv_sync(
     env = os.environ.copy()
     env["VIRTUAL_ENV"] = str(venv_dir)
     env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
+    extras = _wanted_extras(agent)
     cmd = [
         uv,
         "sync",
@@ -1010,10 +1020,7 @@ def _try_uv_sync(
         "--active",
         "--python",
         str(venv_py),
-        "--extra",
-        "mcp",
-        "--extra",
-        "messaging",
+        *_uv_extra_args(extras),
     ]
     try:
         return _run_pkg_install(cmd, cwd=str(agent), run_streamed=run_streamed, env=env)
