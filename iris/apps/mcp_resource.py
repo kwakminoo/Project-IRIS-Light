@@ -1,4 +1,4 @@
-"""Read one MCP App resource from an explicitly named Hermes stdio server."""
+"""Read one MCP App resource from an explicitly named Iris Agent stdio server."""
 
 from __future__ import annotations
 

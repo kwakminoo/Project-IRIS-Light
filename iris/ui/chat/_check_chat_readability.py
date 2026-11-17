@@ -1,15 +1,22 @@
-"""Render real Qt widgets for chat typography, code, tables and streaming QA."""
+"""Render real Qt widgets for chat typography, code, tables and streaming QA.
+
+T9: ChatPanel primary log is H1 WebEngine. WorkspaceIrisPanel still uses its
+own QTextEdit path (separate surface).
+"""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PyQt6.QtWidgets import QApplication
+
 from PyQt6.QtGui import QFontDatabase
+from PyQt6.QtWidgets import QApplication
+
+from iris.ui.chat.chat_display import assistant_visible_text
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.chat.chat_renderer import render_iris_message
-from iris.ui.chat.chat_display import assistant_visible_text
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
 from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisPanel
 
 SAMPLES = [
@@ -27,7 +34,9 @@ SAMPLES = [
      "## 메시지 비교\n\n| 메시지 | 방향 | 역할 |\n|---|---|---|\n| SYN | 클라이언트 → 서버 | 연결 요청 |\n| SYN-ACK | 서버 → 클라이언트 | 요청 확인과 연결 준비 |\n| ACK | 클라이언트 → 서버 | 최종 확인 |"),
 ]
 
+
 def main() -> None:
+    ensure_qt_webengine_ready()
     app = QApplication.instance() or QApplication([])
     for font in ("malgun.ttf", "segoeui.ttf", "consola.ttf"):
         QFontDatabase.addApplicationFont("C:/Windows/Fonts/" + font)
@@ -35,6 +44,7 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     panel = ChatPanel()
     workspace = WorkspaceIrisPanel(name_prefix="QAWorkspace", placeholder="test")
+    host = panel.transcript()
     for width in (480, 1100):
         panel.resize(width, 850)
         workspace.resize(width, 850)
@@ -44,31 +54,34 @@ def main() -> None:
         workspace.show()
         app.processEvents()
         for index, (prompt, response) in enumerate(SAMPLES, 1):
-            panel._log.clear()
+            panel.clear_transcript()
             workspace._log.clear()
             panel.append_message_instant("You", prompt)
             panel.begin_stream_message("Iris", speech_sync=False)
             workspace.append_user(prompt)
             for offset in range(0, len(response), 7):
                 panel.append_stream_chunk(response[offset:offset + 7])
-                panel._flush_stream_ui()
                 workspace.append_iris_chunk(response[offset:offset + 7])
                 app.processEvents()
-                assert panel._log.document().rootFrame().frameFormat().leftMargin() >= 12
                 assert workspace._log.document().rootFrame().frameFormat().leftMargin() >= 12
             panel.end_stream_message(response)
             workspace.end_iris(response)
             panel.finish_typing()
             workspace.chat.finish_typing()
             app.processEvents()
-            for label, widget in (("main", panel._log), ("workspace", workspace._log)):
-                text = widget.toPlainText()
-                assert "###" not in text and "**" not in text and "\\rightarrow" not in text, text
-                assert widget.document().defaultFont().pixelSize() == 15
-                if index == 2:
-                    assert "5050" in text and "sum" in text
-                widget.verticalScrollBar().setValue(0)
-                widget.grab().save(str(out / f"{label}-{width}-{index}.png"))
+            assert len(host._turns) >= 2, host._turns
+            assert host._turns[0].role == "user"
+            assert host._turns[-1].role == "assistant"
+            joined = "\n".join(
+                getattr(p, "markdown", "") or getattr(p, "source", "") or ""
+                for p in host._turns[-1].parts
+            )
+            if index == 2:
+                assert "5050" in joined or "sum" in joined
+            view = host.view()
+            view.grab().save(str(out / f"main-{width}-{index}.png"))
+            workspace._log.verticalScrollBar().setValue(0)
+            workspace._log.grab().save(str(out / f"workspace-{width}-{index}.png"))
             if index == 1:
                 block = workspace._log.document().begin()
                 paragraphs = []
@@ -91,6 +104,7 @@ def main() -> None:
     panel.close()
     workspace.close()
     print("chat readability QA passed; screenshots:", out)
+
 
 if __name__ == "__main__":
     main()

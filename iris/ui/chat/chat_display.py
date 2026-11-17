@@ -116,6 +116,11 @@ def _token_is_url(text: str, start: int) -> bool:
     return token.startswith("http://") or token.startswith("https://")
 
 
+def mask_unnecessary_chat_paths(text: str) -> str:
+    """절대·다단 경로는 파일 이름만 남긴다. URL 은 그대로."""
+    return _replace_unnecessary_paths(text)
+
+
 def _replace_unnecessary_paths(text: str) -> str:
     """절대·다단 경로는 파일 이름만 남긴다. URL 은 그대로."""
     from iris.ui.chat.chat_renderer import _FILE_EXT

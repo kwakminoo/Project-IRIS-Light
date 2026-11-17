@@ -21,9 +21,11 @@ from PyQt6.QtWidgets import (
 
 from iris.ui.chat.app_host_bridge import (
     METHOD_PING,
+    METHOD_UI_INITIALIZED,
     AppHostMessage,
     AppHostOffer,
     AppHostPhase,
+    host_info_message,
     parse_message,
     pong_for,
     serialize_message,
@@ -107,6 +109,11 @@ class AppHostCard(QFrame):
         self._phase = AppHostPhase.IDLE
         self._last_ping: AppHostMessage | None = None
         self._pong_delivered = False
+        self._ui_initialized = False
+        self._handshake_emitted = False
+        self._offer_id = ""
+        self._offer_title = ""
+        self._offer_count = 0
         self.hide()
 
     @property
@@ -115,7 +122,9 @@ class AppHostCard(QFrame):
 
     @property
     def handshake_complete(self) -> bool:
-        return self._phase is AppHostPhase.READY and self._pong_delivered
+        return self._phase is AppHostPhase.READY and (
+            self._pong_delivered or self._ui_initialized
+        )
 
     def show_offer(self, offer: AppHostOffer) -> bool:
         path = Path(offer.html_path)
@@ -123,7 +132,12 @@ class AppHostCard(QFrame):
             return False
         label = (offer.title or path.stem or "앱").strip() or "앱"
         self._title.setText(label)
+        self._offer_title = label
+        self._offer_id = str(offer.offer_id or "").strip()
+        self._offer_count = max(0, int(getattr(offer, "offer_count", 0) or 0))
         self._pong_delivered = False
+        self._ui_initialized = False
+        self._handshake_emitted = False
         self._last_ping = None
         self._set_phase(AppHostPhase.LOADING)
         view = self._ensure_view()
@@ -140,6 +154,21 @@ class AppHostCard(QFrame):
             return
         raw = serialize_message(msg)
         self._view.page().runJavaScript(f"{_DELIVER_JS}({json_quote(raw)})")
+
+    def _post_host_info(self) -> None:
+        self.post_to_page(
+            host_info_message(
+                title=self._offer_title,
+                offer_id=self._offer_id,
+                offer_count=self._offer_count,
+            )
+        )
+
+    def _emit_handshake_once(self) -> None:
+        if self._handshake_emitted:
+            return
+        self._handshake_emitted = True
+        self.handshake_ok.emit()
 
     def _set_phase(self, phase: AppHostPhase) -> None:
         if self._phase is phase:
@@ -182,19 +211,27 @@ class AppHostCard(QFrame):
     def _on_load_finished(self, ok: bool) -> None:
         if not ok:
             self._set_phase(AppHostPhase.IDLE)
+            return
+        self._post_host_info()
 
     def _on_page_raw(self, raw: str) -> None:
         msg = parse_message(raw)
         if msg is None:
+            return
+        if msg.method == METHOD_UI_INITIALIZED:
+            self._ui_initialized = True
+            self._set_phase(AppHostPhase.READY)
+            self._emit_handshake_once()
             return
         if msg.method != METHOD_PING:
             return
         self._last_ping = msg
         pong = pong_for(msg)
         self.post_to_page(pong)
+        self._post_host_info()
         self._pong_delivered = True
         self._set_phase(AppHostPhase.READY)
-        self.handshake_ok.emit()
+        self._emit_handshake_once()
 
 
 def json_quote(raw: str) -> str:
