@@ -75,13 +75,6 @@ from iris.core.message_parts import DiagramPart, TextPart
 from iris.core.part_contract import parts_from_assistant_payload
 from iris.core.part_stream import PartStreamBuffer
 from iris.storage.conversations import message_parts as conversation_message_parts
-from iris.ui.chat.chat_notices import (
-    ChatNotice,
-    ChatNoticeAction,
-    notice_markdown,
-    notice_role,
-    strip_action_links,
-)
 from iris.ui.chat.chat_image_view import (
     attach_image_loader,
     handle_chat_anchor_click,
@@ -122,10 +115,6 @@ from iris.ui.chat.model_picker_menu import (
     picker_sort_key,
     picker_tier_color,
     split_picker_groups,
-)
-from iris.ui.chat.no_toolcalls_gate import (
-    selection_gate_copy,
-    selection_gate_required,
 )
 from iris.ui.chat.skill_mcp_dialogs import McpDialog, SkillsDialog
 from iris.ui.settings.hud_dialog import run_hud_confirm
@@ -681,7 +670,7 @@ class _ChatTopFade(QGraphicsEffect):
 class ChatLogTextEdit(QTextEdit):
     speaker_clicked = pyqtSignal(str)
     update_action_clicked = pyqtSignal(str)  # apply | later
-    iris_agent_update_action_clicked = pyqtSignal(str)  # apply | later
+    hermes_update_action_clicked = pyqtSignal(str)  # apply | later
     ollama_login_clicked = pyqtSignal()
     files_attached = pyqtSignal(list)
     scrolled_by_user = pyqtSignal()
@@ -820,15 +809,10 @@ class ChatLogTextEdit(QTextEdit):
             self.speaker_clicked.emit(anchor.removeprefix("iris-tts://"))
             event.accept()
             return
-        if anchor.startswith(("iris-agent-update://", "iris-hermes-update://")):
-            prefix = (
-                "iris-agent-update://"
-                if anchor.startswith("iris-agent-update://")
-                else "iris-hermes-update://"
-            )
-            action = anchor.removeprefix(prefix).strip().lower()
+        if anchor.startswith("iris-hermes-update://"):
+            action = anchor.removeprefix("iris-hermes-update://").strip().lower()
             if action in ("apply", "later"):
-                self.iris_agent_update_action_clicked.emit(action)
+                self.hermes_update_action_clicked.emit(action)
             event.accept()
             return
         if anchor.startswith("iris-update://"):
@@ -1446,14 +1430,13 @@ class ChatPanel(QWidget):
     # 타이핑 효과가 끝났을 때 — 정지 버튼(presenting) 해제용
     typing_finished = pyqtSignal()
     model_changed = pyqtSignal(str)
-    model_favorite_toggled = pyqtSignal(str)
     files_attached = pyqtSignal(list)
     skill_inserted = pyqtSignal(str)
     mcp_inserted = pyqtSignal(str)
     mic_clicked = pyqtSignal()
     speaker_clicked = pyqtSignal(str)
     update_action_clicked = pyqtSignal(str)
-    iris_agent_update_action_clicked = pyqtSignal(str)
+    hermes_update_action_clicked = pyqtSignal(str)
     ollama_login_clicked = pyqtSignal()
     # 입력창에 뭔가 쓰기 시작했다 — 보내기 전에 준비할 일(임베딩 모델 깨우기)용
     composing = pyqtSignal()
@@ -1489,9 +1472,9 @@ class ChatPanel(QWidget):
                 min-height: 0; max-height: 16777215px;
             }
             QScrollBar::handle:vertical {
-                background: transparent; min-height: 28px; border-radius: 4px;
+                background: rgba(148, 163, 184, 100); min-height: 28px; border-radius: 4px;
             }
-            QScrollBar::handle:vertical:hover { background: transparent; }
+            QScrollBar::handle:vertical:hover { background: rgba(148, 163, 184, 170); }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
         """)
@@ -1519,8 +1502,6 @@ class ChatPanel(QWidget):
         self._typing_timer.timeout.connect(self._type_next_chunk)
         self._typing_text = ""
         self._typing_index = 0
-        # Raw chars of `_typing_text` already pushed to H1 PartStream (drip cursor).
-        self._typing_h1_pushed = 0
         self._typing_speech_sync = False
         self._typing_speech_duration_ms: float | None = None
         self._typing_speech_start: float | None = None
@@ -1540,8 +1521,6 @@ class ChatPanel(QWidget):
         self._typing_wait_for_tts_completion = False
         self._user_listening_active = False
         self._stt_pending = False
-        self._stt_pending_msg_id = ""
-        self._notice_msg_ids: dict[str, str] = {}
         self._tts_texts: dict[str, str] = {}
         self._tts_seq = 0
         self._last_tts_id = ""
@@ -1570,7 +1549,6 @@ class ChatPanel(QWidget):
         self._model_guard_prev_index = 0
         self._model_guard_silent = False
         self._picker_models: list[PickerModel] = []
-        self._model_favorites: set[str] = set()
         self._model_picker_menu: ModelPickerMenu | None = None
         self._input.submit_requested.connect(self._on_submit_or_stop)
         self._input.textChanged.connect(self._on_input_changed)
@@ -1591,7 +1569,7 @@ class ChatPanel(QWidget):
         bar.wiki_quote_pasted.connect(self._on_wiki_quote_pasted)
         self._log.speaker_clicked.connect(self.speaker_clicked.emit)
         self._log.update_action_clicked.connect(self.update_action_clicked.emit)
-        self._log.iris_agent_update_action_clicked.connect(self.iris_agent_update_action_clicked.emit)
+        self._log.hermes_update_action_clicked.connect(self.hermes_update_action_clicked.emit)
         self._log.ollama_login_clicked.connect(self.ollama_login_clicked.emit)
         self._log.files_attached.connect(self._on_composer_drop_paths)
         self._log.scrolled_by_user.connect(self._note_user_log_scroll)
@@ -1877,15 +1855,6 @@ class ChatPanel(QWidget):
         # Hermes X-Hermes-Model 헤더가 latin-1로 터진다. data 없으면 미선택.
         return ""
 
-    def current_supports_tools(self) -> bool:
-        """피커 메타. None(미기록)은 unknown → True (TurnNotice 대상)."""
-        val = self._model_combo.itemData(
-            self._model_combo.currentIndex(), _ROLE_SUPPORTS_TOOLS
-        )
-        if val is None:
-            return True
-        return bool(val)
-
     def current_input_text(self) -> str:
         return self._input.text()
 
@@ -2146,84 +2115,40 @@ class ChatPanel(QWidget):
             f'style="color:#7dd3fc;text-decoration:none;">[재생]</a></p>'
         )
 
-    def present_notice(self, notice: ChatNotice) -> str:
-        """Land one system notice on H1. Returns notice-* msg_id (no TTS)."""
-        self.finish_typing()
-        body_md = notice_markdown(notice)
-        if not body_md.strip():
-            return ""
-        mid = f"notice-{self._allocate_message_id()}"
-        role = notice_role(notice.kind)
-        self.transcript().append_turn(
-            role, [TextPart(markdown=body_md)], msg_id=mid
-        )
-        self._notice_msg_ids[str(notice.kind)] = mid
-        return mid
-
-    def _dismiss_notice_actions(self, kind: str, href_prefix: str) -> None:
-        mid = self._notice_msg_ids.get(kind, "")
-        host = self.transcript()
-        target_i = -1
-        if mid:
-            for i, turn in enumerate(host._turns):
-                if turn.msg_id == mid:
-                    target_i = i
-                    break
-        if target_i < 0:
-            for i, turn in enumerate(host._turns):
-                for part in turn.parts:
-                    if isinstance(part, TextPart) and href_prefix in (part.markdown or ""):
-                        target_i = i
-                        mid = turn.msg_id
-                        break
-                if target_i >= 0:
-                    break
-        if target_i < 0:
-            return
-        turn = host._turns[target_i]
-        new_parts: list = []
-        for part in turn.parts:
-            if isinstance(part, TextPart):
-                cleaned = strip_action_links(part.markdown, href_prefix)
-                if cleaned:
-                    new_parts.append(TextPart(markdown=cleaned))
-            else:
-                new_parts.append(part)
-        if not new_parts:
-            new_parts = [TextPart(markdown="")]
-        host.replace_turn(mid or turn.msg_id, turn.role, new_parts)
-
     def append_update_prompt(self, *, detail: str = "") -> None:
         """GitHub 업데이트 안내 + Update / Late 링크."""
+        self.finish_typing()
         text = "업데이트가 가능합니다. 업데이트를 하시겠습니까?"
         extra = (detail or "").strip()
         if extra:
             text = f"{text} ({extra})"
-        self.present_notice(
-            ChatNotice(
-                kind="update",
-                body=text,
-                actions=(
-                    ChatNoticeAction("iris-update://apply", "[Update]"),
-                    ChatNoticeAction("iris-update://later", "[Late]"),
-                ),
-            )
+        link = 'style="color:#38bdf8;text-decoration:none;"'
+        buttons = (
+            f' <a href="iris-update://apply" {link}>[Update]</a>'
+            f' <a href="iris-update://later" {link}>[Late]</a>'
         )
+        cursor = self._begin_chat_message_cursor()
+        cursor.insertHtml(f"<b>Iris</b>: {html.escape(text)}{buttons}")
+        self._log.setTextCursor(cursor)
+        self._append_trailing_blank_line()
+        self._scroll_log_to_bottom()
 
     def append_ollama_cloud_login_prompt(self, text: str) -> None:
-        """클라우드 미로그인 안내 + [로그인] 링크."""
+        """클라우드 미로그인 안내 + [로그인] 링크 (푸른색)."""
+        self.finish_typing()
         body = (text or "").strip() or (
             "Ollama 클라우드 미로그인입니다. Ollama 앱에서 로그인하거나 로컬 모델로 바꾸세요."
         )
-        self.present_notice(
-            ChatNotice(
-                kind="ollama_login",
-                body=body,
-                actions=(
-                    ChatNoticeAction("iris-ollama-login://open", "[로그인]"),
-                ),
-            )
+        # [재생]과 동일 패턴 — QTextEdit이 복잡한 button style을 깨뜨리는 경우 대비
+        button = (
+            ' <a href="iris-ollama-login://open" '
+            'style="color:#38bdf8;text-decoration:none;">[로그인]</a>'
         )
+        cursor = self._begin_chat_message_cursor()
+        cursor.insertHtml(f"<b>Iris</b>: {html.escape(body)}{button}")
+        self._log.setTextCursor(cursor)
+        self._append_trailing_blank_line()
+        self._scroll_log_to_bottom()
 
     def select_model_silent(self, runtime: str) -> bool:
         """시그널 없이 콤보 선택 변경. 해당 runtime이 없으면 False."""
@@ -2243,47 +2168,80 @@ class ChatPanel(QWidget):
                 return True
         return False
 
-    def append_iris_agent_update_prompt(self, *, detail: str = "") -> None:
-        """Iris Agent 업데이트 안내 + 업데이트 / 나중에 링크."""
+    def append_hermes_update_prompt(self, *, detail: str = "") -> None:
+        """Hermes 업데이트 안내 + 업데이트 / 나중에 링크."""
+        self.finish_typing()
         text = "Iris Agent 업데이트가 가능합니다. 업데이트를 하시겠습니까?"
         extra = (detail or "").strip()
         if extra:
             text = f"{text} ({extra})"
-        self.present_notice(
-            ChatNotice(
-                kind="iris_agent_update",
-                body=text,
-                actions=(
-                    ChatNoticeAction("iris-agent-update://apply", "[업데이트]"),
-                    ChatNoticeAction("iris-agent-update://later", "[나중에]"),
-                ),
-            )
+        link = 'style="color:#38bdf8;text-decoration:none;"'
+        buttons = (
+            f' <a href="iris-hermes-update://apply" {link}>[업데이트]</a>'
+            f' <a href="iris-hermes-update://later" {link}>[나중에]</a>'
         )
+        cursor = self._begin_chat_message_cursor()
+        cursor.insertHtml(f"<b>Iris</b>: {html.escape(text)}{buttons}")
+        self._log.setTextCursor(cursor)
+        self._append_trailing_blank_line()
+        self._scroll_log_to_bottom()
 
-    def dismiss_iris_agent_update_prompt(self, note: str = "") -> None:
-        """Iris Agent 업데이트 버튼 제거. 구 URI iris-hermes-update:// 도 dismiss."""
-        self._dismiss_notice_actions("iris_agent_update", "iris-agent-update://")
-        self._dismiss_notice_actions("iris_agent_update", "iris-hermes-update://")
+    def dismiss_hermes_update_prompt(self, note: str = "") -> None:
+        """Hermes 업데이트 버튼 제거."""
+        import re
+
+        html_doc = self._log.toHtml()
+        if "iris-hermes-update://" in html_doc:
+            updated = re.sub(
+                r'\s*<a[^>]*href="iris-hermes-update://(?:apply|later)"[^>]*>.*?</a>',
+                "",
+                html_doc,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            bar = self._log.verticalScrollBar()
+            pos = bar.value()
+            self._log.setHtml(updated)
+            bar.setValue(pos)
         if (note or "").strip():
             self.append_message_instant("Iris", note.strip())
 
     def dismiss_update_prompt(self, note: str = "") -> None:
         """Update/Late 클릭 후 버튼 제거."""
-        self._dismiss_notice_actions("update", "iris-update://")
+        import re
+
+        html_doc = self._log.toHtml()
+        if "iris-update://" in html_doc:
+            # Qt가 <a> 안에 style span을 넣으므로 중첩 태그까지 허용
+            updated = re.sub(
+                r'\s*<a[^>]*href="iris-update://(?:apply|later)"[^>]*>.*?</a>',
+                "",
+                html_doc,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            bar = self._log.verticalScrollBar()
+            pos = bar.value()
+            self._log.setHtml(updated)
+            bar.setValue(pos)
         if (note or "").strip():
             self.append_message_instant("Iris", note.strip())
 
     def set_mic_recording(self, recording: bool) -> None:
         self._waveform.set_listening(recording)
 
-    def set_model_favorites(self, runtimes) -> None:
-        self._model_favorites = {
-            value.strip() for value in runtimes if isinstance(value, str) and value.strip()
-        }
+    def set_model_favorites(self, runtimes: Iterable[str]) -> None:
+        """DB(또는 테스트)에서 읽은 즐겨찾기 runtime 집합으로 피커 정렬·별 표시를 맞춘다."""
+        cleaned: set[str] = set()
+        for raw in runtimes:
+            key = (raw or "").strip()
+            if key:
+                cleaned.add(key)
+        self._model_favorites = cleaned
 
     def _on_model_favorite_toggled(self, runtime: str) -> None:
-        if runtime.strip():
-            self.model_favorite_toggled.emit(runtime.strip())
+        key = (runtime or "").strip()
+        if not key:
+            return
+        self.model_favorite_toggled.emit(key)
 
     def set_models(
         self,
@@ -2369,7 +2327,7 @@ class ChatPanel(QWidget):
             if pm.requires_subscription or pm.price_class == "paid":
                 tip_extra = " (Pro/구독 전용)"
             elif not pm.supports_tools:
-                tip_extra = " (도구 호출 미지원 — 파일·검색·위키 도구 불가)"
+                tip_extra = " (도구 호출 미지원)"
             self._model_combo.setItemData(
                 i, QBrush(QColor(color_hex)), Qt.ItemDataRole.ForegroundRole
             )
@@ -2444,15 +2402,17 @@ class ChatPanel(QWidget):
                 ok_text="선택",
                 cancel_text="취소",
             )
-        if selection_gate_required(supports_tools):
-            copy = selection_gate_copy()
+        if not supports_tools:
             return run_hud_confirm(
                 self,
-                title=copy["title"],
-                badge=copy["badge"],
+                title="도구 호출 미지원",
+                badge="NO TOOLS",
                 accent=TOKENS.text_muted,
-                body=copy["body"],
-                hint=copy["hint"],
+                body="이 모델은 도구 호출을 지원하지 않습니다.",
+                hint=(
+                    "에이전트 사용(웹검색·스킬·MCP 등)에 어려움이 있을 수 있습니다. "
+                    "그래도 선택하시겠습니까?"
+                ),
                 ok_text="선택",
                 cancel_text="취소",
             )
@@ -2464,8 +2424,9 @@ class ChatPanel(QWidget):
             self._model_picker_menu.hide()
             self._model_picker_menu.deleteLater()
             self._model_picker_menu = None
+        favs = self._model_favorites
         local, ollama, brands, singles = split_picker_groups(
-            self._picker_models, favorites=self._model_favorites
+            self._picker_models, favorites=favs
         )
         brand_rows = [
             (pid, brand_label(items, pid), len(items)) for pid, items in brands.items()
@@ -2475,7 +2436,7 @@ class ChatPanel(QWidget):
             has_ollama=bool(ollama),
             brands=brand_rows,
             singles=singles,
-            favorites=self._model_favorites,
+            favorites=favs,
             parent=self,
         )
         menu.open_local.connect(
@@ -2645,52 +2606,90 @@ class ChatPanel(QWidget):
         self._input.setPalette(pal)
 
     def begin_stt_pending(self) -> None:
-        """STT 대기 — H1에 You: ··· 플레이스홀더."""
+        """STT 대기 — 채팅에 You: ··· 플레이스홀더."""
         if self._stt_pending:
             return
-        mid = self.present_notice(
-            ChatNotice(
-                kind="stt_pending",
-                body="",
-                actions=(ChatNoticeAction("iris-stt://pending", "···"),),
-            )
+        self.finish_typing()
+        cursor = self._begin_chat_message_cursor()
+        cursor.insertHtml(
+            f'<b>You</b>: <a href="iris-stt://pending" '
+            f'style="color:{TOKENS.text_muted};text-decoration:none;">···</a>'
         )
-        self._stt_pending_msg_id = mid
-        self._stt_pending = bool(mid)
+        self._log.setTextCursor(cursor)
+        self._append_trailing_blank_line()
+        self._stt_pending = True
+        self._scroll_log_to_bottom()
 
     def complete_stt_pending(self, text: str) -> bool:
         """플레이스홀더를 인식 텍스트로 교체. pending 없으면 False."""
         body = normalize_chat_body("You", prepare_chat_text(text))
         if not self._stt_pending:
             return False
-        mid = self._stt_pending_msg_id
         if not body:
             self.cancel_stt_pending()
             return True
-        host = self.transcript()
-        md = mask_unnecessary_chat_paths(body)
-        if mid and host.replace_turn(mid, "user", [TextPart(markdown=md)]):
-            pass
-        else:
-            host.append_turn("user", [TextPart(markdown=md)], msg_id=mid or "")
+        import re
+
+        html_doc = self._log.toHtml()
+        needle = 'href="iris-stt://pending"'
+        if needle not in html_doc:
+            self._stt_pending = False
+            return False
+        body_html = render_user_message(body)
+        # QTextEdit가 <a> 안을 <span>으로 감싸므로 non-greedy DOTALL 필요
+        updated = re.sub(
+            r'<a href="iris-stt://pending"[^>]*>.*?</a>',
+            body_html,
+            html_doc,
+            count=1,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if updated == html_doc:
+            self._stt_pending = False
+            self.append_message_instant("You", body)
+            return True
+        bar = self._log.verticalScrollBar()
+        pos = bar.value()
+        self._log.setHtml(updated)
+        bar.setValue(pos)
+        self._scroll_log_to_bottom()
         self._stt_pending = False
-        self._stt_pending_msg_id = ""
-        self._notice_msg_ids.pop("stt_pending", None)
         self.cancel_user_listening()
         return True
 
     def cancel_stt_pending(self, *, notice: str = "") -> None:
-        """STT 실패/무시 — H1 플레이스홀더 턴 제거."""
+        """STT 실패/무시 — 플레이스홀더 제거."""
         if not self._stt_pending:
             if notice:
                 self.set_user_listening_status(notice)
             return
-        mid = self._stt_pending_msg_id
-        if mid:
-            self.transcript().remove_turn(mid)
+        import re
+
+        html_doc = self._log.toHtml()
+        needle = 'href="iris-stt://pending"'
+        if needle in html_doc:
+            # ponytail: DOTALL로 <p>…pending…</p>를 잡으면 문서 첫 <p>부터
+            # pending까지 통째로 지워 채팅이 증발한다. 앵커만 제거.
+            updated = re.sub(
+                r'<a href="iris-stt://pending"[^>]*>.*?</a>',
+                "",
+                html_doc,
+                count=1,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            if updated != html_doc:
+                updated = re.sub(
+                    r'<p[^>]*>\s*(?:<span[^>]*>)?(?:<[^>]+>)*You(?:</[^>]+>)*:\s*(?:</span>)?\s*</p>',
+                    "",
+                    updated,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+                bar = self._log.verticalScrollBar()
+                pos = bar.value()
+                self._log.setHtml(updated)
+                bar.setValue(pos)
         self._stt_pending = False
-        self._stt_pending_msg_id = ""
-        self._notice_msg_ids.pop("stt_pending", None)
         if notice:
             self.set_user_listening_status(notice)
 
@@ -2720,7 +2719,6 @@ class ChatPanel(QWidget):
         self._typing_body_start = None
         self._typing_text = ""
         self._typing_index = 0
-        self._typing_h1_pushed = 0
         self._typing_wait_for_tts_completion = False
         self._scroll_user_hold = False
         self._scroll_follow_tail = True
@@ -2807,20 +2805,17 @@ class ChatPanel(QWidget):
     def append_error_message(self, summary: str, detail: str) -> None:
         """Separate operational diagnostics from ordinary assistant prose."""
         from iris.core.activity_privacy import redact_secrets
+        from iris.ui.chat.chat_renderer import render_error_inline
 
+        self.finish_typing()
         key = str(len(self._log._error_details) + 1)
         self._log._error_details[key] = redact_secrets(detail)
-        body = (summary or "").strip() or "오류가 발생했습니다."
-        self.present_notice(
-            ChatNotice(
-                kind="error",
-                body=body,
-                actions=(
-                    ChatNoticeAction(f"iris-error://{key}", "자세히 보기"),
-                ),
-                meta={"error_key": key},
-            )
-        )
+        cursor = self._begin_chat_message_cursor()
+        cursor.insertHtml(render_error_inline(summary))
+        cursor.insertHtml(f'<a href="iris-error://{key}">자세히 보기</a>')
+        self._log.setTextCursor(cursor)
+        self._append_trailing_blank_line()
+        self._scroll_log_to_bottom()
 
     def show_diagram(self, html_path: str, title: str = "") -> bool:
         """로그와 입력창 사이 카드에 archify HTML을 연다. 파일이 없으면 False."""
@@ -3043,15 +3038,18 @@ class ChatPanel(QWidget):
     def append_app_note(self, offer: ChatAppOffer) -> None:
         """앱 한 줄. 다시 보기가 App Host를 다시 연다. TTS 본문으로 등록하지 않는다."""
         label = (offer.title or "앱").strip() or "앱"
-        href = app_href(offer.offer_id)
-        self.present_notice(
-            ChatNotice(
-                kind="app_note",
-                body=f"{label} ·",
-                actions=(ChatNoticeAction(href, "다시 보기"),),
-                meta={"offer_id": offer.offer_id},
-            )
+        href = html.escape(app_href(offer.offer_id), quote=True)
+        self.finish_typing()
+        cursor = self._begin_chat_message_cursor()
+        cursor.insertHtml(
+            f'<span style="color:{TOKENS.text_secondary};font-size:12px;">'
+            f"{html.escape(label)} · "
+            f'<a href="{href}" style="color:{TOKENS.neon_cyan};text-decoration:none;">다시 보기</a>'
+            f"</span>"
         )
+        self._log.setTextCursor(cursor)
+        self._append_trailing_blank_line()
+        self._scroll_log_to_bottom()
 
     def reopen_chat_app_offer(self, offer_id: str) -> bool:
         oid = str(offer_id or "").strip()
@@ -3144,7 +3142,15 @@ class ChatPanel(QWidget):
         body = " ".join((text or "").split())
         if not body:
             return
-        self.present_notice(ChatNotice(kind="note", body=body))
+        self.finish_typing()
+        cursor = self._begin_chat_message_cursor()
+        cursor.insertHtml(
+            f'<span style="color:{TOKENS.text_secondary};font-size:12px;">'
+            f"{html.escape(body)}</span>"
+        )
+        self._log.setTextCursor(cursor)
+        self._append_trailing_blank_line()
+        self._scroll_log_to_bottom()
 
     def insert_tool_block(
         self,
@@ -3154,8 +3160,6 @@ class ChatPanel(QWidget):
         output: str = "",
         status: str = "ok",
         block_id: str | None = None,
-        phase: str | None = None,
-        **_kwargs,
     ) -> str:
         """Cursor식 도구/셸 실행 카드를 채팅 로그에 인라인 삽입."""
         self.finish_typing()
@@ -3168,7 +3172,6 @@ class ChatPanel(QWidget):
             status=status or "ok",
             block_id=bid,
             collapsed=False,
-            phase=(phase or "done").strip() or "done",
         )
         self._log._tool_blocks[bid] = block
         cursor = self._log.textCursor()
@@ -3180,7 +3183,6 @@ class ChatPanel(QWidget):
                 block.output,
                 block.status,
                 block.block_id,
-                phase=block.phase,
             )
         )
         self._log.setTextCursor(cursor)
@@ -3206,7 +3208,6 @@ class ChatPanel(QWidget):
         self._typing_render_markdown = who.strip().lower() == "iris"
         self._typing_text = ""
         self._typing_index = 0
-        self._typing_h1_pushed = 0
         self._typing_speech_sync = speech_sync
         self._typing_speech_duration_ms = None
         self._typing_speech_start = None
@@ -3219,21 +3220,19 @@ class ChatPanel(QWidget):
         )
 
     def append_stream_chunk(self, text: str) -> None:
-        """스트리밍 청크 — 버퍼 후 plain typing이 H1로 한 글자씩 밀어 넣음."""
+        """스트리밍 청크 — H1 PartStream + TTS 버퍼."""
         if not text:
             return
         if not self._stream_active:
             self.begin_stream_message("Iris", speech_sync=self._typing_speech_sync)
         self._append_typing_buffer(text)
+        self.push_transcript_chunk(text)
         self._block_buffer.feed(text)
-        if self._typing_speech_sync:
-            # TTS 경로: 즉시 덤프하지 않고 sync_typing_to_speech 틱이 H1에 드립.
-            return
-        # speech_sync=False: mid-stream에도 plain typing 타이머로 H1 drip.
-        self._start_plain_typing_timer()
+        if not self._typing_speech_sync:
+            self._start_plain_typing_timer()
 
     def _flush_stream_ui(self) -> None:
-        """Legacy `_log` paint no-op — H1 stream updates via typing drip / PartStream."""
+        """Legacy `_log` paint no-op — H1 stream updates live via PartStream."""
         return
 
     def end_stream_message(self, final_text: str | None = None) -> None:
@@ -3249,9 +3248,6 @@ class ChatPanel(QWidget):
             who, final_text if final_text is not None else self._typing_text
         )
         self._block_buffer.set_final(self._typing_text)
-        # Catch up any unpushed drip once, then land (stop-button clear after land).
-        if not self._typing_speech_sync:
-            self._flush_typing_h1_remainder()
         self.finish_transcript_stream()
         mid = self._pending_iris_msg_id or ""
         host = self.transcript()
@@ -3264,12 +3260,12 @@ class ChatPanel(QWidget):
             self._land_turn_on_h1(who, self._typing_text, msg_id=mid)
         self._stream_active = False
         self._stream_block_start = None
-        # Plain stream: full body landed — clear leftover buffer (sticky stop / scroll yank).
-        # speech_sync keeps TTS wait / buffered typing fallback.
+        self._ensure_buffered_typing_fallback()
         if not self._typing_speech_sync:
-            self.finish_typing()
-        else:
-            self._ensure_buffered_typing_fallback()
+            if self._typing_index >= prose_char_count(self._typing_text):
+                self.finish_typing()
+            else:
+                self._start_plain_typing_timer()
 
     def append_message_typed(
         self,
@@ -3287,8 +3283,6 @@ class ChatPanel(QWidget):
         self._typing_render_markdown = who.strip().lower() == "iris"
         self._typing_text = body
         self._typing_index = prose_char_count(body) if not speech_sync else 0
-        # Instant land already painted full body on H1.
-        self._typing_h1_pushed = len(body) if not speech_sync else 0
         self._typing_speech_sync = speech_sync
         self._typing_speech_duration_ms = None
         self._typing_speech_start = None
@@ -3298,7 +3292,6 @@ class ChatPanel(QWidget):
             # Already landed on H1 — no per-char paint; clear typing state.
             self._typing_text = ""
             self._typing_index = 0
-            self._typing_h1_pushed = 0
             self._pending_iris_msg_id = ""
             self.typing_finished.emit()
 
@@ -3379,8 +3372,8 @@ class ChatPanel(QWidget):
             return True
         if self._typing_timer.isActive():
             return True
-        limit = self._typing_reveal_limit()
-        if limit > 0 and self._typing_index < limit:
+        prose = prose_char_count(self._typing_text)
+        if prose > 0 and self._typing_index < prose:
             return True
         return bool(self._typing_text) and self._typing_body_start is not None
 
@@ -3391,15 +3384,12 @@ class ChatPanel(QWidget):
         self._typing_timer.stop()
         if self._typing_render_markdown and self._typing_body_start is not None:
             self._render_markdown_body()
-        elif self._typing_index < self._typing_reveal_limit():
-            self._typing_index = self._typing_reveal_limit()
-            self._push_typing_h1_delta()
+        elif self._typing_index < prose_char_count(self._typing_text):
+            self._typing_index = prose_char_count(self._typing_text)
             self._replace_typing_body()
         had_body = bool(self._typing_text) or self._typing_body_start is not None
-        legacy_log = self._typing_body_start is not None
         self._typing_text = ""
         self._typing_index = 0
-        self._typing_h1_pushed = 0
         self._typing_speech_sync = False
         self._typing_wait_for_tts_completion = False
         self._typing_speech_duration_ms = None
@@ -3408,9 +3398,9 @@ class ChatPanel(QWidget):
         self._typing_render_markdown = False
         self._pending_iris_msg_id = ""
         self._block_buffer.reset()
-        if legacy_log:
+        if had_body:
             self._append_trailing_blank_line()
-            self._scroll_log_to_bottom()
+        self._scroll_log_to_bottom()
         if had_body:
             self.typing_finished.emit()
 
@@ -3459,54 +3449,11 @@ class ChatPanel(QWidget):
 
     def _start_plain_typing_timer(self) -> None:
         """TTS 속도가 없을 때 한 글자씩 연다. 이미 따라잡았으면 그대로 둔다."""
-        if self._typing_index >= self._typing_reveal_limit():
+        if self._typing_index >= prose_char_count(self._typing_text):
             return
         if not self._typing_timer.isActive():
             self._typing_timer.setInterval(plain_typing_step()[0])
             self._typing_timer.start()
-
-    def _typing_reveal_limit(self) -> int:
-        """How far `_typing_index` may advance.
-
-        Plain H1 drip uses raw code units of `_typing_text`. Speech sync keeps
-        prose-based pacing (code fences excluded from the clock).
-        """
-        if self._typing_speech_sync:
-            return prose_char_count(self._typing_text)
-        return len(self._typing_text or "")
-
-    def _typing_h1_reveal_end(self) -> int:
-        """Raw end index in `_typing_text` that H1 should show for `_typing_index`."""
-        raw = self._typing_text or ""
-        raw_len = len(raw)
-        idx = max(0, int(self._typing_index))
-        if not self._typing_speech_sync:
-            return min(idx, raw_len)
-        prose_len = prose_char_count(raw)
-        if idx <= 0:
-            return 0
-        if prose_len <= 0 or idx >= prose_len:
-            return raw_len
-        return min(raw_len, (idx * raw_len) // prose_len)
-
-    def _push_typing_h1_delta(self) -> None:
-        """Push newly revealed raw slice to H1 PartStream."""
-        end = self._typing_h1_reveal_end()
-        start = max(0, int(self._typing_h1_pushed))
-        if end <= start:
-            return
-        delta = (self._typing_text or "")[start:end]
-        if delta:
-            self.push_transcript_chunk(delta)
-        self._typing_h1_pushed = end
-
-    def _flush_typing_h1_remainder(self) -> None:
-        """Push any still-buffered chars to H1 once (stream end catch-up)."""
-        raw_len = len(self._typing_text or "")
-        if self._typing_h1_pushed >= raw_len:
-            return
-        self._typing_index = self._typing_reveal_limit()
-        self._push_typing_h1_delta()
 
     def fallback_typing_if_waiting_for_tts(self) -> None:
         """TTS 시작/합성이 실패한 경우만 타이핑 대기를 해제하고 폴백 시작."""
@@ -3539,7 +3486,7 @@ class ChatPanel(QWidget):
         return render_iris_message(visible) if visible.strip() else ""
 
     def _replace_typing_body(self) -> None:
-        """타이핑 본문 — H1 drip가 보이는 경로이면 `_log`는 건드리지 않는다."""
+        """타이핑 본문 — Iris 는 요약 정책, 그 외는 기존 세그먼트 표시."""
         if self._typing_body_start is None:
             return
         start = self._stream_block_start or self._typing_body_start
@@ -3577,26 +3524,23 @@ class ChatPanel(QWidget):
         self._insert_iris_body(cursor, body, self._take_pending_iris_id())
 
     def _type_next_chunk(self) -> None:
-        limit = self._typing_reveal_limit()
-        if self._typing_index >= limit:
+        prose_len = prose_char_count(self._typing_text)
+        if self._typing_index >= prose_len:
             self._typing_timer.stop()
             if self._stream_active:
                 return
             if self._typing_render_markdown and self._typing_body_start is not None:
                 self._render_markdown_body()
             had_body = bool(self._typing_text) or self._typing_body_start is not None
-            legacy_log = self._typing_body_start is not None
             self._typing_text = ""
             self._typing_index = 0
-            self._typing_h1_pushed = 0
             self._typing_speech_sync = False
             self._typing_speech_duration_ms = None
             self._typing_speech_start = None
             self._typing_body_start = None
             self._typing_render_markdown = False
-            if legacy_log:
-                self._append_trailing_blank_line()
-                self._scroll_log_to_bottom()
+            self._append_trailing_blank_line()
+            self._scroll_log_to_bottom()
             if had_body:
                 self.typing_finished.emit()
             return
@@ -3606,7 +3550,7 @@ class ChatPanel(QWidget):
                 self._typing_speech_start = time.monotonic()
             elapsed_ms = (time.monotonic() - self._typing_speech_start) * 1000.0
             target_index = typing_target_index(
-                limit,
+                prose_len,
                 elapsed_ms,
                 self._typing_speech_duration_ms,
             )
@@ -3622,14 +3566,12 @@ class ChatPanel(QWidget):
             if self._typing_timer.interval() != interval:
                 self._typing_timer.setInterval(interval)
             self._typing_index = min(
-                limit,
+                prose_len,
                 self._typing_index + chars,
             )
 
-        self._push_typing_h1_delta()
-        if self._typing_body_start is not None:
-            self._replace_typing_body()
-            self._scroll_log_to_bottom()
+        self._replace_typing_body()
+        self._scroll_log_to_bottom()
 
     def _on_wiki_quote_pasted(self, quote: object) -> None:
         from iris.knowledge.wiki_quote import WikiQuote

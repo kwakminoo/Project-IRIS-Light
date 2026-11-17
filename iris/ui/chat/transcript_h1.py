@@ -106,12 +106,12 @@ body {{
   background: transparent;
 }}
 ::-webkit-scrollbar-thumb {{
-  background: transparent;
+  background: rgba(148, 163, 184, 0.39);
   border-radius: 4px;
   min-height: 28px;
 }}
 ::-webkit-scrollbar-thumb:hover {{
-  background: transparent;
+  background: rgba(148, 163, 184, 0.67);
 }}
 ::selection {{
   background: {t.chat_selection_bg};
@@ -127,7 +127,7 @@ body {{
 }}
 .turn[data-role="user"] .turn-body {{
   max-width: 100%;
-  margin-left: 0;
+  margin-left: 24px;
   margin-right: 12px;
   padding: 0;
   border-radius: 0;
@@ -447,41 +447,6 @@ class H1TranscriptHost(QWidget):
         )
         self._render()
 
-    def replace_turn(
-        self,
-        msg_id: str,
-        role: str,
-        parts: Sequence[MessagePart],
-    ) -> bool:
-        """Replace the turn with msg_id (STT complete / notice dismiss)."""
-        mid = str(msg_id or "").strip()
-        if not mid:
-            return False
-        for i, turn in enumerate(self._turns):
-            if turn.msg_id != mid:
-                continue
-            self._turns[i] = _Turn(
-                role=str(role or turn.role),
-                parts=tuple(parts),
-                msg_id=mid,
-            )
-            self._render()
-            return True
-        return False
-
-    def remove_turn(self, msg_id: str) -> bool:
-        """Drop the turn with msg_id (STT cancel)."""
-        mid = str(msg_id or "").strip()
-        if not mid:
-            return False
-        for i, turn in enumerate(self._turns):
-            if turn.msg_id != mid:
-                continue
-            del self._turns[i]
-            self._render()
-            return True
-        return False
-
     def begin_part_stream(self, role: str = "assistant", msg_id: str = "") -> None:
         """Start one assistant/user turn shell for card-stable part streaming.
 
@@ -775,49 +740,23 @@ class H1TranscriptHost(QWidget):
         return view
 
     def _on_page_load_finished(self, ok: bool) -> None:
-        """First successful setHtml paint; later lands patch #transcript via JS.
-
-        Ignore failed loadFinished — iris-scroll:// clicks (and other aborted
-        navigations) must not clear _page_ready or the next land uses setHtml
-        and yanks scroll.
-        """
-        if not ok:
-            return
-        self._page_ready = True
+        """First successful setHtml paint; later lands patch #transcript via JS."""
+        self._page_ready = bool(ok)
 
     def _transcript_inner_html(self) -> str:
         self._code_seq = 0
         return "\n".join(self._turn_html(turn) for turn in self._turns)
 
     def _patch_transcript_dom(self, view) -> None:
-        """Replace #transcript only — keeps page scripts (__irisPartStream, cards).
-
-        Mute iris-scroll notify and restore body.scrollTop so a full innerHTML
-        land does not yank the viewport or look like a user scroll to hold/follow.
-        """
+        """Replace #transcript only — keeps page scripts (__irisPartStream, cards)."""
         inner = self._transcript_inner_html()
         script = (
             "(function(){"
             "var t=document.getElementById('transcript');"
             "if(!t)return false;"
-            "var b=document.body;"
-            "var y=0,max=0,follow=false;"
-            "if(b){"
-            "b.__irisScrollMute=true;"
-            "y=Math.round(b.scrollTop||0);"
-            "max=Math.max(0,(b.scrollHeight||0)-(b.clientHeight||0));"
-            "follow=y>=Math.max(0,max-2);"
-            "}"
             f"t.innerHTML={json.dumps(inner)};"
             "if(!window.__irisPartStream){"
             f"{_PART_STREAM_JS}"
-            "}"
-            "if(b){"
-            "void t.offsetHeight;"
-            "var max2=Math.max(0,(b.scrollHeight||0)-(b.clientHeight||0));"
-            "b.scrollTop=follow?max2:Math.min(y,max2);"
-            "b.classList.toggle('is-scrolled',(b.scrollTop||0)>0);"
-            "requestAnimationFrame(function(){b.__irisScrollMute=false;});"
             "}"
             "return true;"
             "})();"
@@ -883,12 +822,7 @@ class H1TranscriptHost(QWidget):
             parts_html = '<p class="part-muted"></p>'
         tts = ""
         role_key = (turn.role or "").strip().lower()
-        # notice-* are not spoken answers — never [재생] / TTS.
-        if (
-            role_key in ("assistant", "iris")
-            and turn.msg_id.strip()
-            and not turn.msg_id.startswith("notice-")
-        ):
+        if role_key in ("assistant", "iris") and turn.msg_id.strip():
             href = html.escape(f"iris-tts://{turn.msg_id}", quote=True)
             tts = (
                 f'<p class="tts-row"><a class="tts-link" href="{href}" '
