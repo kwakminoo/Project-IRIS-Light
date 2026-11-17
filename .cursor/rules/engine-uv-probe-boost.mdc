@@ -1,0 +1,48 @@
+---
+description: Iris Agent/engine 설치 후 「엔진이 아직 설치되지 않았습니다」 재발 방지 (uv sync → pip -e 금지)
+alwaysApply: true
+---
+
+# Engine 설치 = uv sync 성공 후 pip editable 금지
+
+증상: 채팅에 「엔진이 아직 설치되지 않았습니다」 / `Iris Agent Offline` / `engine python is not installed`.
+`~/.iris-light/agent/hermes-agent` 가 없거나 `venv/Scripts/python.exe` 가 없다.
+설치 로그(`agent/logs/iris-install-*.log`)에 `uv sync rc=0` 다음에 `ModuleNotFoundError: aiohttp` 와 Pillow/`browser-harness` `ResolutionImpossible` 이 같이 있다.
+
+## 원인 (2026-11-17 측정)
+
+1. pin(`vendor/iris-agent-runtime/PIN`) 의 `uv.lock` 은 Python ≥3.14 마커만 두고, Windows 기본 sync 에 `aiohttp` 가 빠질 수 있다.
+2. `_probe_venv` 가 `aiohttp` 없어 실패한다.
+3. 예전 복구가 **무조건** `pip install -e .` 를 탔다. pip 는 uv 의 Pillow==13 override 를 무시하고 `browser-harness` pillow==12.3 과 충돌한다.
+4. staging 이 discard 되고 live `hermes-agent` 가 비어 채팅이 NOT_INSTALLED 로 끝난다.
+
+## 계약 (깨면 회귀)
+
+1. `_finish_staged_install` 에서 **`uv sync` 가 성공(`installed=True`)하면** probe miss 복구는 `_boost_probe_deps` + 재probe **만** 한다.
+2. 그 경로에서 **`pip install -e .` 호출 금지** (Pillow / browser-harness ResolutionImpossible).
+3. `installed=False`(uv.lock 없거나 uv sync 실패 → pip 경로)일 때만 editable 재설치를 허용한다.
+4. `EngineHome` 기본은 `iris_agent_home()` (`~/.iris-light/agent`). `~/.iris-light/engine` 별도 트리를 전제로 두지 않는다.
+5. UI 문구만 바꾸거나 `NOT_INSTALLED` 를 삼키는 가드만 추가하지 않는다. 설치가 live venv 를 남겨야 한다.
+
+## 금지
+
+- uv sync 성공 뒤 probe 실패 → `pip install -e .` / extras editable 로 “고치기”
+- 실패 설치 후 live 를 `force_retire` 만 하고 복구 없이 끝내기
+- 「엔진 미설치」를 모델/API 키 문제로 오진
+
+## 재발 시 순서
+
+1. `Test-Path $env:USERPROFILE\.iris-light\agent\hermes-agent\venv\Scripts\python.exe`
+2. 최신 `~\.iris-light\agent\logs\iris-install-*.log` — `uv sync rc=0` / `aiohttp` / `ResolutionImpossible` / `Pillow`
+3. `python -c "from iris.engine._home import probe_engine_python; from iris.engine.types import _default_engine_home; print(probe_engine_python(_default_engine_home()))"`
+4. 계약 1–2가 코드에 있는지 확인한 뒤 설치를 다시 돌린다.
+
+## 검증
+
+```powershell
+.venv\Scripts\python.exe -m iris.system._check_uv_probe_boost_no_editable
+```
+
+라이브: 설치 성공 후 `Engine.ensure_ready()` → `EngineReady`, 채팅 한 턴이 미설치 문구 없이 끝남.
+
+PR: https://github.com/kwakminoo/Project-IRIS-Light/pull/37
