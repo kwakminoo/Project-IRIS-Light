@@ -871,17 +871,19 @@ def _finish_staged_install(
         if boost.returncode != 0:
             _discard_tree(staging)
             return fail("exit", "gateway/mcp 의존성 보강 실패", "\n".join(log))
-        emit("probe pin 후 editable 재설치…")
-        edit = _run(
-            [str(venv_py), "-m", "pip", "install", "-e", "."],
-            cwd=str(staging),
-            timeout=300.0,
-        )
-        log.append(edit.stdout or "")
-        log.append(edit.stderr or "")
-        if edit.returncode != 0:
-            _discard_tree(staging)
-            return fail("exit", "editable 재설치 실패", "\n".join(log))
+        # uv sync 성공 뒤에는 pip editable 금지 — Pillow override 를 pip 가 깨뜨림.
+        if not installed:
+            emit("probe pin 후 editable 재설치…")
+            edit = _run(
+                [str(venv_py), "-m", "pip", "install", "-e", "."],
+                cwd=str(staging),
+                timeout=300.0,
+            )
+            log.append(edit.stdout or "")
+            log.append(edit.stderr or "")
+            if edit.returncode != 0:
+                _discard_tree(staging)
+                return fail("exit", "editable 재설치 실패", "\n".join(log))
         ok, detail = _probe_venv(venv_py)
     log.append(f"probe={ok} {detail}")
     if not ok:
