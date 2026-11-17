@@ -36,7 +36,8 @@ _IMG_ALT = re.compile(r"""\balt\s*=\s*(['"])(.*?)\1""", re.IGNORECASE)
 _FILE_EXT = (
     r"(?:py|ts|tsx|js|jsx|md|json|yaml|yml|toml|css|html|htm|rs|go|java|kt|"
     r"cpp|h|c|cs|sql|sh|ps1|bat|txt|ini|cfg|xml|vue|svelte|rb|php|swift|"
-    r"gradle|kts|lock|env|ico|svg|png|jpg|jpeg|gif|webp|woff2?|ttf|spec)"
+    r"gradle|kts|lock|env|ico|svg|png|jpg|jpeg|gif|webp|woff2?|ttf|spec|"
+    r"pdf|ipynb)"
 )
 _BACKTICK_FILE_PATH = re.compile(
     rf"`((?:[\w.-]+/)+[\w.-]+\.{_FILE_EXT}(?:\:\d+(?:\:\d+)?)?)`",
@@ -481,7 +482,7 @@ _ALLOWED_URL_PREFIXES = (
     "http://", "https://",
     "iris-file://", "iris-wiki://", "iris-copy://", "iris-collapse://",
     "iris-tts://", "iris-error://", "iris-update://", "iris-hermes-update://",
-    "iris-stt://", "iris-diagram://", "iris-ollama-login://",
+    "iris-stt://", "iris-diagram://", "iris-app://", "iris-ollama-login://",
     "iris-image:",
 )
 

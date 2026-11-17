@@ -19,6 +19,8 @@ class AppHostPhase(Enum):
 class AppHostOffer:
     title: str
     html_path: str
+    offer_id: str = ""
+    offer_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,8 @@ class AppHostMessage:
 
 METHOD_PING = "iris.app/ping"
 METHOD_PONG = "iris.app/pong"
+METHOD_HOST_INFO = "iris.app/host.info"
+METHOD_UI_INITIALIZED = "iris.app/ui.initialized"
 
 
 def serialize_message(msg: AppHostMessage) -> str:
@@ -74,3 +78,16 @@ def parse_message(raw: str | bytes | dict[str, Any] | None) -> AppHostMessage | 
 
 def pong_for(ping: AppHostMessage) -> AppHostMessage:
     return AppHostMessage(method=METHOD_PONG, params=dict(ping.params or {}), id=ping.id)
+
+
+def host_info_message(
+    *, title: str = "", offer_id: str = "", offer_count: int = 0
+) -> AppHostMessage:
+    return AppHostMessage(
+        method=METHOD_HOST_INFO,
+        params={
+            "title": str(title or ""),
+            "offer_id": str(offer_id or ""),
+            "offer_count": int(offer_count or 0),
+        },
+    )

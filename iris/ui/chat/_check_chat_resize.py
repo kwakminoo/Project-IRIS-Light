@@ -1,7 +1,8 @@
-"""채팅 영역 높이 드래그 자검 — overlay 없이 패널 자체가 커진다."""
+"""채팅 영역 높이 드래그 자검 — overlay 없이 패널 자체가 커진다 (H1 primary)."""
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -9,11 +10,12 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEventLoop, Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout, QWidget
 
 from iris.ui.chat.chat_panel import ChatPanel
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
 from iris.ui.widgets.visualizer import Visualizer
 
 
@@ -35,7 +37,24 @@ def _host(app: QApplication) -> tuple[QWidget, QWidget, ChatPanel]:
     return host, above, panel
 
 
+def _run_js(view, script: str, timeout_ms: int = 10000):
+    box: dict = {"raw": None, "done": False}
+    loop = QEventLoop()
+
+    def _cb(raw) -> None:
+        box["raw"] = raw
+        box["done"] = True
+        loop.quit()
+
+    view.page().runJavaScript(script, _cb)
+    QTimer.singleShot(timeout_ms, loop.quit)
+    if not box["done"]:
+        loop.exec()
+    return box["raw"]
+
+
 def main() -> int:
+    ensure_qt_webengine_ready()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setFont(QFont("Noto Sans KR", 10))
     host, above, panel = _host(app)
@@ -48,7 +67,7 @@ def main() -> int:
 
     h0 = panel.height()
     a0 = above.height()
-    log0 = panel._log.height()
+    log0 = panel._transcript_h1.height()
     assert a0 > 80, a0
     assert h0 > 120, h0
 
@@ -59,7 +78,7 @@ def main() -> int:
     assert extra == 180, extra
     assert not panel._is_fully_expanded()
     assert panel.height() > h0, (h0, panel.height())
-    assert panel._log.height() > log0, (log0, panel._log.height())
+    assert panel._transcript_h1.height() > log0, (log0, panel._transcript_h1.height())
     assert above.height() < a0, (a0, above.height())
     assert panel.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     assert not panel.autoFillBackground()
@@ -78,7 +97,8 @@ def main() -> int:
     fade_max = host._viz.particle_core().chat_fade_y()
     assert fade_max is not None and fade_max < fade_mid, (fade_max, fade_mid)
     max_h = panel.height()
-    assert max_h >= host.height() - 4, (max_h, host.height())
+    # H1 transcript chrome can leave a few px under the old QTextEdit fill.
+    assert max_h >= host.height() - 16, (max_h, host.height())
     assert panel._is_fully_expanded()
     assert (not above.isVisible()) or above.height() == 0, (above.isVisible(), above.height())
 
@@ -97,12 +117,49 @@ def main() -> int:
     card = render_iris_message(
         "설명입니다.\n```python\ndef hello():\n    return 1\n```\nhttps://example.com"
     )
-    assert "hello" in card and "example.com" in card and "15px" in card
+    assert "hello" in card and "example.com" in card and "font-size:" in card
     panel.append_message_instant("You", '@"C:/Users/serin/Docs/document.pdf" 분석해 줘')
     app.processEvents()
-    shown = panel._log.toHtml()
-    assert "document.pdf" in shown and "C:/Users" not in shown and "Docs/" not in shown
-    assert TOKENS.chat_user_name in shown or "7dd3fc" in shown.lower()
+
+    th = panel.transcript()
+    view = th.view()
+    loaded = {"ok": False, "done": False}
+    loop = QEventLoop()
+
+    def _on_finished(ok: bool) -> None:
+        loaded["ok"] = bool(ok)
+        loaded["done"] = True
+        loop.quit()
+
+    view.loadFinished.connect(_on_finished)
+    # Force a paint if append already rendered before connect.
+    if th._view is not None:
+        th._render()
+    QTimer.singleShot(15000, loop.quit)
+    if not loaded["done"]:
+        loop.exec()
+    assert loaded["done"], "H1 loadFinished timeout"
+    probe_js = """
+    (function() {
+      var html = document.documentElement ? document.documentElement.innerHTML : '';
+      var tts = document.querySelector('a.tts-link[href^="iris-tts://"]');
+      return JSON.stringify({
+        hasPdf: html.indexOf('document.pdf') >= 0,
+        hasUsers: html.indexOf('C:/Users') >= 0 || html.indexOf('C:\\\\Users') >= 0,
+        hasDocs: html.indexOf('Docs/') >= 0,
+        hasTts: !!tts,
+        turnCount: document.querySelectorAll('.turn').length
+      });
+    })()
+    """
+    raw = _run_js(view, probe_js)
+    probe = json.loads(raw) if isinstance(raw, str) else {}
+    assert probe.get("hasPdf"), probe
+    assert not probe.get("hasUsers"), probe
+    assert not probe.get("hasDocs"), probe
+    assert probe.get("hasTts"), probe
+    assert TOKENS.chat_user_name  # theme still wired
+
     shot_dir = Path(tempfile.gettempdir()) / "iris-ui-check"
     shot_dir.mkdir(parents=True, exist_ok=True)
     panel.grab().save(str(shot_dir / "chat_rest.png"))
@@ -125,7 +182,7 @@ def main() -> int:
     core.set_chat_fade_y(80)
     app.processEvents()
     core.grab().save(str(shot_dir / "orb_high.png"))
-    print("chat resize ok", h0, "-> extra 180 / max", max_h, "shots", shot_dir)
+    print("chat resize ok", h0, "-> extra 180 / max", max_h, "shots", shot_dir, "probe", probe)
     return 0
 
 

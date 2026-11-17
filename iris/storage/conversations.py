@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Sequence
 
+from iris.core.message_parts import (
+    MessagePart,
+    TextPart,
+    parse_parts,
+    parts_display_md,
+    parts_to_jsonable,
+)
 from iris.storage.database import Database
 
 ACTIVE_CHAT_PREF_KEY = "active_chat_conversation_id"
@@ -46,6 +55,7 @@ class ChatMessage:
     content: str
     created_at: str
     model_content: str = ""
+    parts_json: str = ""
 
 
 def _now() -> str:
@@ -98,6 +108,18 @@ def _message_parts(msg: ChatMessage | dict[str, str]) -> tuple[str, str]:
     if isinstance(msg, dict):
         return str(msg.get("role") or ""), str(msg.get("content") or "")
     return msg.role, msg.content
+
+
+def message_parts(msg: ChatMessage) -> list[MessagePart]:
+    """parts_json이 있으면 파싱, 비어 있으면 legacy content → TextPart 하나."""
+    raw = (msg.parts_json or "").strip()
+    if raw:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid parts_json: {exc}") from exc
+        return parse_parts(data)
+    return [TextPart(markdown=msg.content or "")]
 
 
 # ponytail: 어휘 겹침으로 주제 전환을 본다. 오탐이 늘면 LLM 제목 생성으로 교체.
@@ -386,6 +408,10 @@ def ensure_chat_schema(db: Database) -> None:
         db._execute(
             "ALTER TABLE chat_messages ADD COLUMN model_content TEXT NOT NULL DEFAULT ''"
         )
+    if "parts_json" not in message_cols:
+        db._execute(
+            "ALTER TABLE chat_messages ADD COLUMN parts_json TEXT NOT NULL DEFAULT ''"
+        )
     db._commit()
 
 
@@ -512,28 +538,37 @@ def list_conversations(
     return out
 
 
+def _row_text(row, key: str, default: str = "") -> str:
+    try:
+        return str(row[key] or default)
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def _msg_from_row(row) -> ChatMessage:
+    return ChatMessage(
+        id=int(row["id"]),
+        conversation_id=int(row["conversation_id"]),
+        role=str(row["role"] or ""),
+        content=str(row["content"] or ""),
+        created_at=str(row["created_at"] or ""),
+        model_content=_row_text(row, "model_content"),
+        parts_json=_row_text(row, "parts_json"),
+    )
+
+
 def list_messages(db: Database, conversation_id: int) -> list[ChatMessage]:
     ensure_chat_schema(db)
     rows = db._execute(
         """
-        SELECT id, conversation_id, role, content, created_at, model_content
+        SELECT id, conversation_id, role, content, created_at, model_content, parts_json
           FROM chat_messages
          WHERE conversation_id = ?
          ORDER BY id ASC
         """,
         (int(conversation_id),),
     ).fetchall()
-    return [
-        ChatMessage(
-            id=int(row["id"]),
-            conversation_id=int(row["conversation_id"]),
-            role=str(row["role"] or ""),
-            content=str(row["content"] or ""),
-            created_at=str(row["created_at"] or ""),
-            model_content=str(row["model_content"] or ""),
-        )
-        for row in rows
-    ]
+    return [_msg_from_row(row) for row in rows]
 
 
 def history_dicts(db: Database, conversation_id: int) -> list[dict[str, str]]:
@@ -579,15 +614,38 @@ def rename_conversation(db: Database, conversation_id: int, title: str) -> str:
     return name
 
 
-def append_message(db: Database, conversation_id: int, role: str, content: str, *, model_content: str = "") -> int:
+def append_message(
+    db: Database,
+    conversation_id: int,
+    role: str,
+    content: str,
+    *,
+    model_content: str = "",
+    parts: Sequence[MessagePart] | None = None,
+) -> int:
     ensure_chat_schema(db)
     stamp = _now()
+    if parts is not None:
+        stored_content = parts_display_md(parts)
+        parts_json = json.dumps(parts_to_jsonable(parts), ensure_ascii=False)
+    else:
+        stored_content = str(content or "")
+        parts_json = ""
     cur = db._execute(
         """
-        INSERT INTO chat_messages(conversation_id, role, content, created_at, model_content)
-        VALUES(?, ?, ?, ?, ?)
+        INSERT INTO chat_messages(
+            conversation_id, role, content, created_at, model_content, parts_json
+        )
+        VALUES(?, ?, ?, ?, ?, ?)
         """,
-        (int(conversation_id), str(role or ""), str(content or ""), stamp, model_content),
+        (
+            int(conversation_id),
+            str(role or ""),
+            stored_content,
+            stamp,
+            model_content,
+            parts_json,
+        ),
     )
     db._execute(
         "UPDATE chat_conversations SET updated_at = ? WHERE id = ?",
@@ -595,6 +653,49 @@ def append_message(db: Database, conversation_id: int, role: str, content: str, 
     )
     db._commit()
     return int(cur.lastrowid or 0)
+
+
+def get_message(db: Database, message_id: int) -> ChatMessage | None:
+    ensure_chat_schema(db)
+    row = db._execute(
+        """
+        SELECT id, conversation_id, role, content, created_at, model_content, parts_json
+          FROM chat_messages
+         WHERE id = ?
+        """,
+        (int(message_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    return _msg_from_row(row)
+
+
+def update_message_parts(
+    db: Database,
+    message_id: int,
+    parts: Sequence[MessagePart],
+) -> None:
+    """Replace parts_json and refresh content via parts_display_md."""
+    ensure_chat_schema(db)
+    mid = int(message_id)
+    stored_content = parts_display_md(parts)
+    parts_json = json.dumps(parts_to_jsonable(parts), ensure_ascii=False)
+    cur = db._execute(
+        "UPDATE chat_messages SET content = ?, parts_json = ? WHERE id = ?",
+        (stored_content, parts_json, mid),
+    )
+    if int(cur.rowcount or 0) <= 0:
+        raise ValueError(f"message not found: {mid}")
+    row = db._execute(
+        "SELECT conversation_id FROM chat_messages WHERE id = ?",
+        (mid,),
+    ).fetchone()
+    if row is not None:
+        db._execute(
+            "UPDATE chat_conversations SET updated_at = ? WHERE id = ?",
+            (_now(), int(row["conversation_id"])),
+        )
+    db._commit()
 
 
 def pop_last_user_message(db: Database, conversation_id: int) -> bool:
