@@ -3223,7 +3223,8 @@ class ChatPanel(QWidget):
         self._append_typing_buffer(text)
         self.push_transcript_chunk(text)
         self._block_buffer.feed(text)
-        if not self._typing_speech_sync:
+        # PartStream already paints live — do not arm plain typing (scroll yank / sticky stop).
+        if not self._typing_speech_sync and not self._stream_active:
             self._start_plain_typing_timer()
 
     def _flush_stream_ui(self) -> None:
@@ -3255,12 +3256,12 @@ class ChatPanel(QWidget):
             self._land_turn_on_h1(who, self._typing_text, msg_id=mid)
         self._stream_active = False
         self._stream_block_start = None
-        self._ensure_buffered_typing_fallback()
+        # Plain stream: H1 already has the full body — clear leftover buffer (sticky stop / scroll yank).
+        # speech_sync keeps TTS wait / buffered typing fallback.
         if not self._typing_speech_sync:
-            if self._typing_index >= prose_char_count(self._typing_text):
-                self.finish_typing()
-            else:
-                self._start_plain_typing_timer()
+            self.finish_typing()
+        else:
+            self._ensure_buffered_typing_fallback()
 
     def append_message_typed(
         self,
