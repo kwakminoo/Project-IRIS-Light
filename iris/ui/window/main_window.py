@@ -975,6 +975,8 @@ class MainWindow(QMainWindow):
         center_on_screen(self)
 
         if not self._test_mode:
+            # Before __main__ win.show(): opacity 0 so first paint has no chrome flash.
+            self._arm_boot_intro()
             QTimer.singleShot(0, self._begin_startup_gate)
         else:
             self._chat.append_message("Iris", self._ready_status_message())
@@ -1139,6 +1141,15 @@ class MainWindow(QMainWindow):
         self._runtime_boot_started = True
         # ponytail: control/Hermes는 intro 끝난 뒤(_on_intro_finished) — MCP→/v1/state가
         # UI 스레드를 붙잡아 Windows「응답하지 않음」이 나던 경로를 피한다.
+        self._arm_boot_intro()
+        self._intro.finished.connect(self._on_intro_finished)
+        # ponytail: prepare_hidden은 _arm_boot_intro에서 즉시(첫 show 전 플래시 방지).
+        # _begin_boot_sequence가 레이아웃 후 재-arm + start — 폭 0 arm 회귀는 여기서 막음.
+        QTimer.singleShot(40, self._begin_boot_sequence)
+        QTimer.singleShot(900, self._schedule_tts_runtime_bootstrap)
+
+    def _arm_boot_intro(self) -> None:
+        """Bind intro chrome and hide opacity before first paint (anti-flash)."""
         self._intro = StartupIntroAnimator(self)
         self._intro.bind(
             left=self._left_sidebar,
@@ -1149,14 +1160,10 @@ class MainWindow(QMainWindow):
             waveform=self._chat.waveform,
             chrome=[self._drag],
         )
-        self._intro.finished.connect(self._on_intro_finished)
         self._viz.particle_core().set_boot_reveal(0.0)
         self._viz.particle_core().set_boot_glitch(1.0)
         self._chat.waveform.set_reveal_progress(0.0)
-        # ponytail: prepare_hidden은 show/layout 이후(_begin_boot_sequence) —
-        # 게이트가 빨라지면 폭 0 상태에서 arm 되어 인트로가 안 보이는 회귀가 난다.
-        QTimer.singleShot(40, self._begin_boot_sequence)
-        QTimer.singleShot(900, self._schedule_tts_runtime_bootstrap)
+        self._intro.prepare_hidden()
 
     def _schedule_core_warm(self) -> None:
         """Ollama/Iris Agent 기동은 인트로와 병렬 — 게이트에서 기다리지 않음."""
