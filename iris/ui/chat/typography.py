@@ -22,10 +22,12 @@ class Typography:
 
 
 def defaults():
+    app = QApplication.instance()
+    if app is None:
+        return Typography("Malgun Gothic", 15, "Consolas", 14)
     available = set(QFontDatabase.families())
     def choose(names, fallback):
         return next((n for n in names if n in available), fallback)
-    app = QApplication.instance()
     ui = app.font()
     screen = app.primaryScreen()
     # Qt pixels are logical pixels: never multiply by devicePixelRatio again.
@@ -103,8 +105,20 @@ def family_css(family):
     return html.escape("'" + family.replace("\\", "\\\\").replace("'", "\\'") + "'", quote=True)
 
 
+_FONT_TOKEN_KEYS = frozenset({
+    "chat_font_size",
+    "font_size_caption",
+    "font_size_micro",
+    "chat_ui_font",
+    "chat_block_mono_font",
+    "chat_block_code_weight",
+})
+
+
 class ChatTokens:
     def __getattr__(self, name):
+        if name not in _FONT_TOKEN_KEYS:
+            return getattr(THEME, name)
         p = manager.get()
         values = {"chat_font_size": f"{p.chat_font_size}px",
                   "font_size_caption": f"{p.code_font_size}px",
@@ -112,7 +126,7 @@ class ChatTokens:
                   "chat_ui_font": family_css(p.chat_font_family),
                   "chat_block_mono_font": family_css(p.code_font_family),
                   "chat_block_code_weight": 400}
-        return values[name] if name in values else getattr(THEME, name)
+        return values[name]
 
 
 TOKENS = ChatTokens()
