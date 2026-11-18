@@ -740,23 +740,49 @@ class H1TranscriptHost(QWidget):
         return view
 
     def _on_page_load_finished(self, ok: bool) -> None:
-        """First successful setHtml paint; later lands patch #transcript via JS."""
-        self._page_ready = bool(ok)
+        """First successful setHtml paint; later lands patch #transcript via JS.
+
+        Ignore failed loadFinished — iris-scroll:// clicks (and other aborted
+        navigations) must not clear _page_ready or the next land uses setHtml
+        and yanks scroll.
+        """
+        if not ok:
+            return
+        self._page_ready = True
 
     def _transcript_inner_html(self) -> str:
         self._code_seq = 0
         return "\n".join(self._turn_html(turn) for turn in self._turns)
 
     def _patch_transcript_dom(self, view) -> None:
-        """Replace #transcript only — keeps page scripts (__irisPartStream, cards)."""
+        """Replace #transcript only — keeps page scripts (__irisPartStream, cards).
+
+        Mute iris-scroll notify and restore body.scrollTop so a full innerHTML
+        land does not yank the viewport or look like a user scroll to hold/follow.
+        """
         inner = self._transcript_inner_html()
         script = (
             "(function(){"
             "var t=document.getElementById('transcript');"
             "if(!t)return false;"
+            "var b=document.body;"
+            "var y=0,max=0,follow=false;"
+            "if(b){"
+            "b.__irisScrollMute=true;"
+            "y=Math.round(b.scrollTop||0);"
+            "max=Math.max(0,(b.scrollHeight||0)-(b.clientHeight||0));"
+            "follow=y>=Math.max(0,max-2);"
+            "}"
             f"t.innerHTML={json.dumps(inner)};"
             "if(!window.__irisPartStream){"
             f"{_PART_STREAM_JS}"
+            "}"
+            "if(b){"
+            "void t.offsetHeight;"
+            "var max2=Math.max(0,(b.scrollHeight||0)-(b.clientHeight||0));"
+            "b.scrollTop=follow?max2:Math.min(y,max2);"
+            "b.classList.toggle('is-scrolled',(b.scrollTop||0)>0);"
+            "requestAnimationFrame(function(){b.__irisScrollMute=false;});"
             "}"
             "return true;"
             "})();"
