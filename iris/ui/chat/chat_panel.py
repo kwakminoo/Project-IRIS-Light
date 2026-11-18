@@ -1472,9 +1472,9 @@ class ChatPanel(QWidget):
                 min-height: 0; max-height: 16777215px;
             }
             QScrollBar::handle:vertical {
-                background: rgba(148, 163, 184, 100); min-height: 28px; border-radius: 4px;
+                background: transparent; min-height: 28px; border-radius: 4px;
             }
-            QScrollBar::handle:vertical:hover { background: rgba(148, 163, 184, 170); }
+            QScrollBar::handle:vertical:hover { background: transparent; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
         """)
