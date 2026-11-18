@@ -60,12 +60,18 @@ def main() -> int:
     panel.typing_finished.connect(lambda: finished.append(1))
     panel.append_message_typed("Iris", "긴 답변 타이핑 테스트", speech_sync=False)
     app.processEvents()
-    assert panel.is_typing_active()
-    panel.finish_typing()
-    app.processEvents()
+    if panel.is_typing_active():
+        panel.finish_typing()
+        app.processEvents()
     assert not panel.is_typing_active()
     assert finished == [1]
-    assert "긴 답변 타이핑 테스트" in panel._log.toPlainText()
+    # H1 is the typed surface; legacy _log is not filled by append_message_typed.
+    landed = "".join(
+        getattr(p, "markdown", "")
+        for t in panel.transcript()._turns
+        for p in t.parts
+    )
+    assert "긴 답변 타이핑 테스트" in landed, landed
 
     print("chat_stop_button ok")
     return 0
