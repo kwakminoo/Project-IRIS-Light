@@ -392,7 +392,9 @@ class IrisAgentChatWorker(QThread):
                         if event.text:
                             self.reasoning.emit(event.text)
                     elif isinstance(event, TurnFinished):
-                        text = "".join(content_parts) or event.text
+                        joined = "".join(content_parts)
+                        done = event.text or ""
+                        text = done if len(done) >= len(joined) else joined
                         _watch_trace(f"finished_ok text_len={len(text or '')}")
                         self.finished_ok.emit(text)
                         _watch_trace(f"finished_ok returned text_len={len(text or '')}")
