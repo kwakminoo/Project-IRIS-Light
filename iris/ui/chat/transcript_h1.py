@@ -106,12 +106,12 @@ body {{
   background: transparent;
 }}
 ::-webkit-scrollbar-thumb {{
-  background: rgba(148, 163, 184, 0.39);
+  background: transparent;
   border-radius: 4px;
   min-height: 28px;
 }}
 ::-webkit-scrollbar-thumb:hover {{
-  background: rgba(148, 163, 184, 0.67);
+  background: transparent;
 }}
 ::selection {{
   background: {t.chat_selection_bg};
