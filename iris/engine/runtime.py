@@ -45,7 +45,11 @@ from iris.engine.types import (
     TurnFinished,
     parse_engine_source,
 )
-from iris.system.iris_agent_ollama_guard import looks_like_ollama_endpoint
+from iris.system.iris_agent_ollama_guard import (
+    apply_ollama_options_guard,
+    looks_like_ollama_endpoint,
+    ollama_options_guard_present,
+)
 from iris.system.win_subprocess import no_window_kwargs
 
 _SIDECAR_MAIN = Path(__file__).resolve().parent / "_sidecar_main.py"
@@ -54,6 +58,26 @@ _HELLO_TIMEOUT_SEC = 5.0
 _TURN_IDLE_SEC = 600.0
 _CANCEL_POLL_SEC = 0.2
 _WATCH_LOG = Path.home() / ".iris-light" / "logs" / "turn_end_watch.log"
+
+
+def _agent_checkout_root(home: Path) -> Path:
+    """Prefer iris-agent when present; else hermes-agent (main repo_dir name)."""
+    base = Path(home)
+    preferred = base / "iris-agent"
+    if preferred.is_dir():
+        return preferred
+    return base / "hermes-agent"
+
+
+def _apply_ollama_options_guard_now(home: Path) -> bool:
+    """가드 부재 시 제품 checkout에 1회 적용. True면 파일이 바뀜(sidecar 재기동 신호)."""
+    try:
+        root = _agent_checkout_root(home)
+        if ollama_options_guard_present(root):
+            return False
+        return bool(apply_ollama_options_guard(root))
+    except Exception:
+        return False
 
 
 def _watch_trace(msg: str) -> None:
@@ -426,13 +450,19 @@ class Engine:
     def ensure_ready(self) -> EngineEnsureResult:
         try:
             with self._lock:
+                home = self._source.home
+                # Product chat never hits gateway ensure; soft-patch before spawn/reuse.
+                guard_changed = _apply_ollama_options_guard_now(home)
                 if self._child is not None:
                     if self._child.poll() is None:
-                        return EngineReady(self._source, "engine is ready")
-                    _close_pipes(self._child)
-                    self._child = None
-                    self._child_hello_pid = None
-                home = self._source.home
+                        if not guard_changed:
+                            return EngineReady(self._source, "engine is ready")
+                        # Patched custom provider must load in a fresh child.
+                        self._forget_child()
+                    else:
+                        _close_pipes(self._child)
+                        self._child = None
+                        self._child_hello_pid = None
                 probe = probe_engine_python(home)
                 if probe is not None and probe.code in (
                     EngineErrorCode.NOT_INSTALLED,
