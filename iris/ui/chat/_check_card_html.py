@@ -135,6 +135,23 @@ def main() -> int:
     for absent in ("Run", "Always Run", "Skip", "iris-mode://"):
         assert absent not in done_from_block, absent
 
+    running_html = shell_card_to_html(
+        to_shell_card(
+            ToolShellBlock(
+                "List files",
+                "echo hi",
+                "live line\n",
+                status="ok",
+                block_id="run1",
+                phase="running",
+            )
+        )
+    )
+    assert "실행 중" in running_html
+    assert "live line" in running_html
+    for absent in ("Run", "Always Run", "Skip", "iris-run://", "iris-skip://"):
+        assert absent not in running_html, absent
+
     print("card_html ok")
     return 0
 

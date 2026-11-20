@@ -7,9 +7,76 @@ from iris.infrastructure.speak_capability import (
     default_speak_tools,
     set_speak_surface,
 )
-from iris.system.iris_shell import parse_shell_job, run_shell_job
+from iris.system.iris_shell import ShellJob, ShellOutcome, parse_shell_job, run_shell_job
 from iris.ui.chat.run_visibility import card_from_control_result
-from iris.ui.control_actions.shell import _ide_companion_active
+from iris.ui.control_actions.shell import _ide_companion_active, run_shell_live
+
+
+def _check_live_stream_paints_running() -> None:
+    """Fake stream chunks must paint phase=running before done (one card)."""
+
+    class _Chat:
+        def __init__(self) -> None:
+            self.ops: list[tuple[str, dict]] = []
+
+        def insert_tool_block(self, **kwargs) -> str:
+            self.ops.append(("insert", dict(kwargs)))
+            return "live-1"
+
+        def replace_tool_block(self, block_id: str, **kwargs) -> bool:
+            self.ops.append(("replace", {"block_id": block_id, **kwargs}))
+            return True
+
+    chat = _Chat()
+    job = ShellJob(command="echo live", cwd=parse_shell_job({"command": "echo live"}).cwd)
+
+    def fake_stream(_job: ShellJob, on_chunk, cancel_event=None) -> ShellOutcome:
+        on_chunk("line-a\n")
+        on_chunk("line-b\n")
+        return ShellOutcome(
+            ok=True,
+            command=_job.command,
+            cwd=str(_job.cwd),
+            exit_code=0,
+            stdout="line-a\nline-b\n",
+            stderr="",
+            summary="exit 0 · ok",
+        )
+
+    outcome, bid = run_shell_live(
+        chat=chat,
+        on_ui=lambda fn: fn(),
+        job=job,
+        block_id="",
+        stream_fn=fake_stream,
+    )
+    assert outcome.ok
+    assert bid == "live-1"
+    phases = [op[1].get("phase") for op in chat.ops]
+    assert "running" in phases, phases
+    assert phases[-1] == "done", phases
+    first_running = next(i for i, p in enumerate(phases) if p == "running")
+    first_done = next(i for i, p in enumerate(phases) if p == "done")
+    assert first_running < first_done
+    # One card lifecycle: first op inserts (or replaces existing); no second insert after done.
+    inserts = [op for op in chat.ops if op[0] == "insert"]
+    assert len(inserts) == 1, inserts
+    done_ops = [op for op in chat.ops if op[1].get("phase") == "done"]
+    assert done_ops and "line-a" in (done_ops[-1][1].get("output") or "")
+
+    # Pending confirm path: reuse same block_id (replace only, no second insert).
+    pending = _Chat()
+    outcome2, bid2 = run_shell_live(
+        chat=pending,
+        on_ui=lambda fn: fn(),
+        job=job,
+        block_id="pending-9",
+        stream_fn=fake_stream,
+    )
+    assert outcome2.ok and bid2 == "pending-9"
+    assert all(op[0] == "replace" for op in pending.ops), pending.ops
+    assert pending.ops[0][1]["phase"] == "running"
+    assert pending.ops[-1][1]["phase"] == "done"
 
 
 def main() -> None:
@@ -58,6 +125,8 @@ def main() -> None:
     assert hidden.ok is False
     assert "not_allowed" in (hidden.error or ""), hidden
     set_speak_surface("home")
+
+    _check_live_stream_paints_running()
     print("iris_shell_action ok")
 
 

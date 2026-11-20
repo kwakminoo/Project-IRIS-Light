@@ -631,6 +631,55 @@ def _confirm_body(spec: Any, args: dict[str, Any]) -> str:
     return "\n".join(bits)[:800]
 
 
+# write/run: 채팅 카드 승인 가능하면 HUD 대신 (15s UI timeout·모달만 의존 금지)
+_CARD_CONFIRM_ACTIONS = frozenset(
+    {
+        "shell.run",
+        "project.run",
+        "local.write_file",
+        "project.write_file",
+    }
+)
+
+
+def human_confirm_decision(
+    spec: Any,
+    args: dict[str, Any],
+    *,
+    chat: Any | None,
+    ask_hud: Callable[[], bool],
+    on_ui: Callable[[Callable[[], Any]], Any],
+    wait: Callable[[str], str] | None = None,
+    load_approval: Callable[[], Any] | None = None,
+    on_attention: Callable[[], None] | None = None,
+) -> bool:
+    """ConfirmPath: card gate(가능 시) → 아니면 HUD."""
+    name = str(getattr(spec, "name", "") or "")
+    if name in _CARD_CONFIRM_ACTIONS:
+        from iris.ui.chat.shell_approval import load, preview_command
+        from iris.ui.chat.shell_gate import stash_shell_confirm_block, take, try_card_confirm
+
+        approval_fn = load if load_approval is None else load_approval
+        wait_fn = take if wait is None else wait
+        payload = args if isinstance(args, dict) else {}
+        command = preview_command(payload)
+        title = "Write" if "write" in name else "Shell"
+        decided = try_card_confirm(
+            chat=chat,
+            command=command,
+            title=title,
+            approval=approval_fn(),
+            wait=wait_fn,
+            on_ui=on_ui,
+            on_attention=on_attention,
+        )
+        if decided.approved is not None:
+            if name == "shell.run" and decided.approved:
+                stash_shell_confirm_block(chat, decided.block_id)
+            return bool(decided.approved)
+    return bool(ask_hud())
+
+
 def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     """기능별 등록 조립. 실행은 iris.ui.control_actions."""
     from iris.ui.control_actions.attachment import register_attachment_actions
@@ -686,7 +735,16 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 default_ok=False,
             )
 
-        return bool(_call_on_ui_unbounded(window, _ask))
+        from iris.ui.chat.shell_gate import _raise_attention
+
+        return human_confirm_decision(
+            spec,
+            args,
+            chat=getattr(window, "_chat", None),
+            ask_hud=lambda: bool(_call_on_ui_unbounded(window, _ask)),
+            on_ui=lambda fn: _call_on_ui_unbounded(window, fn),
+            on_attention=lambda: _raise_attention(window),
+        )
 
     reg.set_human_confirm(_human_confirm)
     names = [a["name"] for a in reg.catalog()]
