@@ -249,7 +249,8 @@ class LiveActivityPanel(QWidget):
             self._scroll_programmatic += 1
             try:
                 if self._scroll_user_hold and self._scroll_hold_value is not None:
-                    bar.setValue(min(self._scroll_hold_value, bar.maximum()))
+                    if bar.value() >= bar.maximum() - 2:
+                        bar.setValue(min(self._scroll_hold_value, bar.maximum()))
                 elif self._scroll_follow_tail:
                     bar.setValue(bar.maximum())
             finally:
@@ -284,7 +285,8 @@ class LiveActivityPanel(QWidget):
         self._scroll_programmatic += 1
         try:
             if self._scroll_user_hold and self._scroll_hold_value is not None:
-                bar.setValue(min(self._scroll_hold_value, maximum))
+                if bar.value() >= maximum - 2:
+                    bar.setValue(min(self._scroll_hold_value, maximum))
             elif self._scroll_follow_tail:
                 bar.setValue(maximum)
         finally:

@@ -144,6 +144,59 @@ def _scroll_hold_check(app: QApplication) -> None:
     host.close()
 
 
+def _scroll_hold_in_progress_drag_check(app: QApplication) -> None:
+    """Hold must not yank to stale Y while the user is still moving the bar."""
+    host = QWidget()
+    panel = LiveActivityPanel(host)
+    host.resize(480, 420)
+    panel.setMaximumHeight(120)
+    panel._editor.setMaximumHeight(72)
+    host.show()
+    app.processEvents()
+
+    for i in range(80):
+        panel.append_instant_line(f"fill-{i} " + ("x" * 48))
+    app.processEvents()
+
+    bar = panel._editor.verticalScrollBar()
+    assert bar.maximum() > 40
+    hold = max(0, bar.maximum() // 3)
+    bar.setValue(hold)
+    panel._note_user_log_scroll(hold)
+    app.processEvents()
+    assert panel._scroll_user_hold
+    assert panel._scroll_hold_value == hold
+
+    delta = 8
+    target = min(hold + delta, bar.maximum() - 4)
+    assert target != hold
+    bar.setValue(target)
+    user_mid = bar.value()
+    assert abs(user_mid - hold) >= 2
+
+    panel.append_instant_line("stream-a " + ("z" * 48))
+    panel.append_instant_line("stream-b " + ("z" * 48))
+    app.processEvents()
+
+    assert abs(bar.value() - user_mid) <= 2, (
+        f"viewport yanked: value={bar.value()} expected~{user_mid} hold={hold}"
+    )
+    assert bar.value() < bar.maximum() - 2
+
+    bar.setValue(bar.maximum())
+    panel._note_user_log_scroll(bar.maximum())
+    app.processEvents()
+    assert panel._scroll_follow_tail
+    assert not panel._scroll_user_hold
+
+    before_max = bar.maximum()
+    panel.append_instant_line("follow-tail " + ("w" * 48))
+    app.processEvents()
+    assert bar.maximum() >= before_max
+    assert abs(bar.value() - bar.maximum()) <= 2
+    host.close()
+
+
 class _Engine:
     def __init__(self, text: str) -> None:
         self.source = InternalSidecar(home=EngineHome(Path(".")))
@@ -183,6 +236,7 @@ def main() -> None:
     _panel_check(app)
     _begin_turn_header_check(app)
     _scroll_hold_check(app)
+    _scroll_hold_in_progress_drag_check(app)
     _worker_check()
     print("live activity reasoning ok")
 
