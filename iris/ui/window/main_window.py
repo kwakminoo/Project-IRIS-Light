@@ -3836,14 +3836,13 @@ class MainWindow(QMainWindow):
             _log("[ERROR] reason=chat panel missing or empty paths")
 
     def _begin_ide_companion_drag(self, paths: list[str]) -> None:
-        """Theia dragstart — 경로는 보관하고, OLE 드래그는 다음 틱에 넘긴다."""
+        """Theia dragstart — 경로를 pending에 두고 drag_end/release로 첨부한다."""
         clean = [str(p).strip() for p in paths if str(p).strip()]
         self._pending_ide_drag = clean
         # 탭 제스처: WebEngine 밖 pointerup이 유실되므로 앱 전역 release로 첨부.
         app = QApplication.instance()
         if app is not None and app != self:
             app.installEventFilter(self)
-        # chat.drag_start가 반환된 뒤에 DoDragDrop. 같은 스택에서 돌리면 HTTP가 막힌다.
         if app is not None:
             queued = list(clean)
             QTimer.singleShot(0, lambda p=queued: self._drag_companion_hdrop(p))
@@ -3854,25 +3853,33 @@ class MainWindow(QMainWindow):
     def _drag_companion_hdrop(self, paths: list[str]) -> None:
         if self._pending_ide_drag != paths:
             return
-        from iris.ui.window.win_ole_drop import drag_hdrop_while_button
+        # DoDragDrop on the UI thread hangs on PDF/ipynb shell preview.
+        from iris.ui.window.win_ole_drop import _log
 
-        effect = drag_hdrop_while_button(paths)
-        if effect == 0:
-            return
-        if self._pending_ide_drag != paths:
-            return
-        self._attach_os_drop_paths(paths)
-        self._pending_ide_drag = []
+        _log("skip DoDragDrop — companion pending attach only")
 
     def _expire_ide_companion_drag(self, expected: list[str]) -> None:
         if self._pending_ide_drag == expected:
             self._pending_ide_drag = []
 
-    def _finish_ide_companion_drag(self, paths: list[str] | None = None) -> list[str]:
-        """Theia dragend — 커서가 Iris 창 안이면 첨부.
+    def _cursor_over_chat_drop(self) -> bool:
+        """Companion 첨부는 ChatPanel 위에서만. note_file_drag와 같은 hit."""
+        panel = self._active_workspace_iris_panel()
+        chat = panel.chat if panel is not None else getattr(self, "_chat", None)
+        if chat is None:
+            return False
+        try:
+            from PyQt6.QtGui import QCursor
 
-        창 밖이면 pending을 유지한다. 탭 드래그는 IDE 위에서 조기 drag_end/pointerup이
-        먼저 와 pending을 지워 버리면, 이후 Iris 위 릴리즈가 무동작이 된다.
+            return bool(chat.rect().contains(chat.mapFromGlobal(QCursor.pos())))
+        except Exception:
+            return False
+
+    def _finish_ide_companion_drag(self, paths: list[str] | None = None) -> list[str]:
+        """Theia dragend — 커서가 채팅 위면 첨부.
+
+        채팅 밖이면 LMB가 아직 눌린 경우만 pending 유지(조기 drag_end).
+        버튼을 뗐으면 pending을 비운다.
         """
         if paths:
             clean = [str(p).strip() for p in paths if str(p).strip()]
@@ -3880,15 +3887,9 @@ class MainWindow(QMainWindow):
             clean = list(self._pending_ide_drag)
         if not clean:
             return []
-        try:
-            from PyQt6.QtGui import QCursor
-
-            # Companion 타일: Iris 본체 또는 채팅 영역. frameGeometry는 Qt DIP.
-            if not self.frameGeometry().contains(QCursor.pos()):
-                self._pending_ide_drag = clean
-                return []
-        except Exception:
-            self._pending_ide_drag = clean
+        if not self._cursor_over_chat_drop():
+            held = bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+            self._pending_ide_drag = clean if held else []
             return []
         self._pending_ide_drag = []
         if self._attach_os_drop_paths(clean):
@@ -3935,6 +3936,13 @@ class MainWindow(QMainWindow):
                     except RuntimeError:
                         return False
                 QTimer.singleShot(0, lambda w=child: self._arm_file_drops(w))
+        elif self._pending_ide_drag and et == QEvent.Type.MouseMove:
+            if self._cursor_over_chat_drop():
+                self._note_chat_file_drag(True)
+                if self._finish_ide_companion_drag():
+                    return False
+            else:
+                self._note_chat_file_drag(False)
         elif self._pending_ide_drag and et == QEvent.Type.MouseButtonRelease:
             # 탭→Iris: WebEngine이 포인터를 잃어도 전역 release로 첨부.
             if self._finish_ide_companion_drag():

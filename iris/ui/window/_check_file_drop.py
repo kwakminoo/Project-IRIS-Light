@@ -136,7 +136,10 @@ def main() -> None:
     check_chat_attach_action()
     check_chat_drag_actions()
     check_finish_keeps_pending_outside()
+    check_finish_misses_iris_frame_not_chat()
+    check_pending_over_chat_attaches()
     check_companion_drag_race()
+    check_companion_skips_ole_dodragdrop()
     check_pdf_skips_ole_hdrop()
     check_win_shell_drop_arm()
     check_explorer_overlay_drop()
@@ -214,69 +217,165 @@ def check_win_shell_drop_arm() -> None:
     win.close()
 
 
-def check_finish_keeps_pending_outside() -> None:
-    """탭 조기 drag_end: 커서 밖이면 pending 유지 (소실 금지)."""
-    from unittest.mock import MagicMock, patch
+def _bind_companion_drag_inst(*, over_chat: bool = False):
+    """MainWindow companion drag 메서드를 MagicMock 인스턴스에 바인딩."""
+    from unittest.mock import MagicMock
 
     from PyQt6.QtCore import QPoint, QRect
 
-    window = MagicMock()
-    # 실제 메서드 바인딩
     from iris.ui.window.main_window import MainWindow
 
     inst = MagicMock(spec=MainWindow)
     inst._pending_ide_drag = []
     inst._attach_os_drop_paths = MagicMock(return_value=True)
-    inst.frameGeometry = MagicMock(return_value=QRect(100, 100, 400, 800))
+    inst._note_chat_file_drag = MagicMock()
+    chat = MagicMock()
+    chat.rect.return_value = QRect(0, 0, 200, 400)
+    if over_chat:
+        chat.mapFromGlobal = MagicMock(return_value=QPoint(50, 50))
+    else:
+        chat.mapFromGlobal = MagicMock(return_value=QPoint(-10, -10))
+    panel = MagicMock()
+    panel.chat = chat
+    inst._active_workspace_iris_panel = MagicMock(return_value=panel)
+    inst._chat = chat
+    inst._cursor_over_chat_drop = MainWindow._cursor_over_chat_drop.__get__(inst, MainWindow)
+    inst._begin_ide_companion_drag = MainWindow._begin_ide_companion_drag.__get__(inst, MainWindow)
+    inst._finish_ide_companion_drag = MainWindow._finish_ide_companion_drag.__get__(inst, MainWindow)
+    return inst
 
-    bound_begin = MainWindow._begin_ide_companion_drag.__get__(inst, MainWindow)
-    bound_finish = MainWindow._finish_ide_companion_drag.__get__(inst, MainWindow)
+
+def check_finish_keeps_pending_outside() -> None:
+    """채팅 밖 finish: LMB 유지면 pending 유지, 떼면 pending 폐기."""
+    from unittest.mock import patch
+
+    from PyQt6.QtCore import Qt
+
+    inst = _bind_companion_drag_inst(over_chat=False)
 
     with patch("PyQt6.QtWidgets.QApplication.instance", return_value=None):
-        bound_begin([r"C:\proj\tab.py"])
+        inst._begin_ide_companion_drag([r"C:\proj\tab.py"])
     assert inst._pending_ide_drag == [r"C:\proj\tab.py"]
 
-    with patch("PyQt6.QtGui.QCursor.pos", return_value=QPoint(0, 0)):
-        assert bound_finish([r"C:\proj\tab.py"]) == []
-    assert inst._pending_ide_drag == [r"C:\proj\tab.py"], "밖이면 pending 유지해야 함"
+    # 조기 drag_end (창 밖 + LMB 유지) → pending 유지
+    with patch(
+        "iris.ui.window.main_window.QApplication.mouseButtons",
+        return_value=Qt.MouseButton.LeftButton,
+    ):
+        assert inst._finish_ide_companion_drag([r"C:\proj\tab.py"]) == []
+    assert inst._pending_ide_drag == [r"C:\proj\tab.py"], "밖+LMB면 pending 유지해야 함"
+    inst._attach_os_drop_paths.assert_not_called()
 
-    with patch("PyQt6.QtGui.QCursor.pos", return_value=QPoint(150, 200)):
-        assert bound_finish() == [r"C:\proj\tab.py"]
+    # 채팅 밖 + LMB 뗌 → pending 폐기, 첨부 없음
+    with patch(
+        "iris.ui.window.main_window.QApplication.mouseButtons",
+        return_value=Qt.MouseButton.NoButton,
+    ):
+        assert inst._finish_ide_companion_drag() == []
+    assert inst._pending_ide_drag == [], "밖+LMB 업이면 pending 폐기해야 함"
+    inst._attach_os_drop_paths.assert_not_called()
+
+
+def check_finish_misses_iris_frame_not_chat() -> None:
+    """Iris 창 안이어도 채팅이 아니면 finish로 첨부하지 않는다."""
+    from unittest.mock import patch
+
+    from PyQt6.QtCore import Qt
+
+    inst = _bind_companion_drag_inst(over_chat=False)
+    inst._pending_ide_drag = [r"C:\proj\frame.py"]
+    # Iris frame hit만으로는 첨부하지 않음. 채팅 miss면 금지.
+    with patch(
+        "iris.ui.window.main_window.QApplication.mouseButtons",
+        return_value=Qt.MouseButton.NoButton,
+    ):
+        assert inst._finish_ide_companion_drag() == []
     assert inst._pending_ide_drag == []
-    inst._attach_os_drop_paths.assert_called_with([r"C:\proj\tab.py"])
+    inst._attach_os_drop_paths.assert_not_called()
+
+    inst._pending_ide_drag = [r"C:\proj\frame.py"]
+    with patch(
+        "iris.ui.window.main_window.QApplication.mouseButtons",
+        return_value=Qt.MouseButton.LeftButton,
+    ):
+        assert inst._finish_ide_companion_drag() == []
+    assert inst._pending_ide_drag == [r"C:\proj\frame.py"], "창 안·채팅 밖·LMB면 pending 유지"
+    inst._attach_os_drop_paths.assert_not_called()
+
+
+def check_pending_over_chat_attaches() -> None:
+    """pending + 커서가 채팅 위면 finish/진입으로 첨부."""
+    from unittest.mock import MagicMock, patch
+
+    from PyQt6.QtCore import QEvent
+
+    from iris.ui.window.main_window import MainWindow
+
+    inst = _bind_companion_drag_inst(over_chat=True)
+    inst._pending_ide_drag = [r"C:\proj\chat.py"]
+    assert inst._finish_ide_companion_drag() == [r"C:\proj\chat.py"]
+    assert inst._pending_ide_drag == []
+    inst._attach_os_drop_paths.assert_called_with([r"C:\proj\chat.py"])
+
+    # MouseMove로 채팅 진입 시에도 첨부
+    inst._attach_os_drop_paths.reset_mock()
+    inst._note_chat_file_drag.reset_mock()
+    inst._pending_ide_drag = [r"C:\proj\move.py"]
+    move = MagicMock()
+    move.type.return_value = QEvent.Type.MouseMove
+    with patch("iris.ui.window.main_window.QMainWindow.eventFilter", return_value=False):
+        MainWindow.eventFilter(inst, inst, move)
+    assert inst._pending_ide_drag == []
+    inst._attach_os_drop_paths.assert_called_with([r"C:\proj\move.py"])
+    inst._note_chat_file_drag.assert_called_with(True)
 
 
 def check_companion_drag_race() -> None:
     """빠른 드롭 레이스 — pending 선도착 + 늦은 drag_end paths 둘 다 첨부."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
-    from PyQt6.QtCore import QPoint, QRect
+    inst = _bind_companion_drag_inst(over_chat=True)
 
-    from iris.ui.window.main_window import MainWindow
-
-    inst = MagicMock(spec=MainWindow)
-    inst._pending_ide_drag = []
-    inst._attach_os_drop_paths = MagicMock(return_value=True)
-    inst.frameGeometry = MagicMock(return_value=QRect(100, 100, 400, 800))
-
-    bound_begin = MainWindow._begin_ide_companion_drag.__get__(inst, MainWindow)
-    bound_finish = MainWindow._finish_ide_companion_drag.__get__(inst, MainWindow)
-
-    # 1) sync seed가 pending을 먼저 채운 뒤, Iris 위 release(경로 없이)로 첨부
+    # 1) sync seed가 pending을 먼저 채운 뒤, 채팅 위 release(경로 없이)로 첨부
     with patch("PyQt6.QtWidgets.QApplication.instance", return_value=None):
-        bound_begin([r"C:\proj\race.py"])
+        inst._begin_ide_companion_drag([r"C:\proj\race.py"])
     assert inst._pending_ide_drag == [r"C:\proj\race.py"], "pending 선도착 실패"
-    with patch("PyQt6.QtGui.QCursor.pos", return_value=QPoint(150, 200)):
-        assert bound_finish() == [r"C:\proj\race.py"]
+    assert inst._finish_ide_companion_drag() == [r"C:\proj\race.py"]
     assert inst._pending_ide_drag == []
     inst._attach_os_drop_paths.assert_called_with([r"C:\proj\race.py"])
 
     # 2) drag_start HTTP가 늦어 pending이 비어 있어도 drag_end paths로 첨부
     inst._pending_ide_drag = []
     inst._attach_os_drop_paths.reset_mock()
-    with patch("PyQt6.QtGui.QCursor.pos", return_value=QPoint(150, 200)):
-        assert bound_finish([r"C:\proj\late.py"]) == [r"C:\proj\late.py"]
+    assert inst._finish_ide_companion_drag([r"C:\proj\late.py"]) == [r"C:\proj\late.py"]
     inst._attach_os_drop_paths.assert_called_with([r"C:\proj\late.py"])
+
+
+def check_companion_skips_ole_dodragdrop() -> None:
+    """구조창 companion 첨부는 DoDragDrop 금지 — pending + drag_end/release만."""
+    from unittest.mock import MagicMock, patch
+
+    root = Path(__file__).resolve().parents[3]
+    text = (root / "iris/ui/window/main_window.py").read_text(encoding="utf-8")
+    start = text.index("def _drag_companion_hdrop")
+    end = text.index("\n    def ", start + 1)
+    body = text[start:end]
+    assert "drag_hdrop_while_button" not in body, (
+        "companion _drag_companion_hdrop must not call drag_hdrop_while_button"
+    )
+    assert "DoDragDrop(" not in body, "companion path must not invoke DoDragDrop("
+    assert "skip DoDragDrop" in body, "companion skip log missing"
+
+    from iris.ui.window.main_window import MainWindow
+
+    inst = MagicMock(spec=MainWindow)
+    inst._pending_ide_drag = [r"C:\proj\a.ipynb"]
+    bound = MainWindow._drag_companion_hdrop.__get__(inst, MainWindow)
+    with patch("iris.ui.window.win_ole_drop.drag_hdrop_while_button") as drag:
+        bound([r"C:\proj\a.ipynb"])
+    drag.assert_not_called()
+    assert inst._pending_ide_drag == [r"C:\proj\a.ipynb"], "pending must survive for drag_end/release"
+    print("companion_skips_ole_dodragdrop ok")
 
 
 def check_pdf_skips_ole_hdrop() -> None:
