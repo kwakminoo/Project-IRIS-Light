@@ -21,6 +21,10 @@ _TEXT_SUFFIXES = {".py", ".pyi", ".toml", ".md", ".txt", ".cfg", ".ini", ".json"
 _REVERSE_INIT = f'''\
 """{_REVERSE_MARKER} (F3 install overlay)."""
 from iris_agent_cli import *  # noqa: F401, F403
+import iris_agent_cli as _iris_agent_cli
+
+# Submodule imports (hermes_cli._early_recovery) resolve into iris_agent_cli.
+__path__ = list(_iris_agent_cli.__path__)
 '''
 
 _REVERSE_MAIN = '''\
