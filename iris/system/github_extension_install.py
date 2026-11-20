@@ -26,6 +26,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from iris.infrastructure.agent_runtime import iris_agent_home
+
 _URL_RE = re.compile(r"https?://[^\s<>\"')\]]+", re.IGNORECASE)
 _SAFE_PART = re.compile(r"^[A-Za-z0-9._-]+$")
 _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -103,12 +105,6 @@ class InstallResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-def hermes_home() -> Path:
-    from iris.system.hermes_iris_control_sync import hermes_home as _home
-
-    return _home()
 
 
 def parse_extension_request(text: str) -> ExtensionRequest | None:
@@ -221,7 +217,7 @@ def install_from_request(
         home.mkdir(parents=True, exist_ok=True)
         (home / "PROJECT").write_text(str(root), encoding="utf-8")
     else:
-        home = (home or hermes_home()).expanduser()
+        home = (home or iris_agent_home()).expanduser()
     secrets = _accepted_secrets(secrets or {})
     try:
         snap = (fetch or fetch_github)(req.url)
@@ -418,7 +414,7 @@ def _apply_skills(
         notes.append(
             "Skill "
             + ", ".join(f"'{n}'" for n in result.skill_names)
-            + "을 설치했습니다. Hermes skills 폴더에서 다음 요청부터 인식합니다.\n"
+            + "을 설치했습니다. Iris Agent skills 폴더에서 다음 요청부터 인식합니다.\n"
             + "\n".join(result.skill_paths)
         )
         if result.status == "refused":
@@ -534,6 +530,7 @@ def probe_mcp(
     rpc_timeout: float | None = None,
     secrets: dict[str, str] | None = None,
     tool_calls: list[dict[str, Any]] | None = None,
+    resource_uri: str = "",
 ) -> dict[str, Any]:
     """stdio initialize + tools/list + 도구 호출. 끝나면 프로세스를 죽인다.
 
@@ -555,6 +552,7 @@ def probe_mcp(
         "cwd": cwd or "",
         "stderr": "",
         "tool_results": [],
+        "resource": None,
         "pid": None,
         "returncode": None,
         "frames": [],
@@ -638,6 +636,42 @@ def probe_mcp(
             return out
         out["initialize"] = first.get("result")
         _send(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        if resource_uri:
+            _send(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "resources/read",
+                    "params": {"uri": resource_uri},
+                },
+            )
+            resource_msg, why = _wait_response(
+                proc,
+                2,
+                rpc,
+                phase="resources/read",
+                stderr_chunks=stderr_chunks,
+                frames=frames,
+            )
+            resource = (
+                resource_msg.get("result") if isinstance(resource_msg, dict) else None
+            )
+            if not isinstance(resource, dict) or not isinstance(
+                resource.get("contents"), list
+            ):
+                out["detail"] = why or _fail_detail(
+                    proc,
+                    resource_msg,
+                    stderr_chunks,
+                    secrets,
+                    phase="resources/read",
+                )
+                return out
+            out["resource"] = resource
+            out["ok"] = True
+            out["detail"] = "connected"
+            return out
         _send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         listed_at = time_monotonic()
         listed, why = _wait_response(
@@ -729,7 +763,7 @@ def probe_mcp(
             _kill_tree(proc)
         if drain is not None:
             drain.join(timeout=2)
-        out["stderr"] = "".join(stderr_chunks).strip()[:800]
+        out["stderr"] = _redact("".join(stderr_chunks).strip(), secrets)[:800]
 
 
 def _prepare_block(
@@ -1352,6 +1386,7 @@ def _send(proc: subprocess.Popen, msg: dict) -> None:
 
 _EOF = object()
 _TIMEOUT = object()
+_MAX_RPC_FRAME_BYTES = 2_000_000
 
 
 def _parse_json_line(raw: bytes) -> dict | None:
@@ -1396,6 +1431,8 @@ def _read_frame(proc: subprocess.Popen, deadline: float) -> tuple[object, str]:
                 length = int(stripped.split(b":", 1)[1].strip() or b"0")
             except ValueError:
                 continue
+            if length < 0 or length > _MAX_RPC_FRAME_BYTES:
+                return _EOF, ""
             while True:
                 header = _readline(proc.stdout, deadline)
                 if header is _TIMEOUT:
@@ -1404,7 +1441,12 @@ def _read_frame(proc: subprocess.Popen, deadline: float) -> tuple[object, str]:
                     return _EOF, ""
                 if header in (b"\r\n", b"\n", b""):
                     break
-            body = proc.stdout.read(length)
+            body = _read_exact(proc.stdout, length, deadline)
+            if body is _TIMEOUT:
+                return _TIMEOUT, ""
+            if body is _EOF or not isinstance(body, (bytes, bytearray)):
+                return _EOF, ""
+            body = bytes(body)
             shown = (stripped + b"\n" + body)[:500].decode("utf-8", errors="replace")
             try:
                 obj = json.loads(body.decode("utf-8"))
@@ -1521,6 +1563,28 @@ def _readline(stdout, deadline: float) -> object:
     if isinstance(item, Exception):
         return _EOF
     if not item:
+        return _EOF
+    return item
+
+
+def _read_exact(stdout, length: int, deadline: float) -> object:
+    box: queue.Queue = queue.Queue(1)
+
+    def _read() -> None:
+        try:
+            box.put(stdout.read(length))
+        except Exception as exc:  # noqa: BLE001
+            box.put(exc)
+
+    threading.Thread(target=_read, daemon=True).start()
+    remain = deadline - time_monotonic()
+    if remain <= 0:
+        return _TIMEOUT
+    try:
+        item = box.get(timeout=remain)
+    except queue.Empty:
+        return _TIMEOUT
+    if isinstance(item, Exception) or not item:
         return _EOF
     return item
 

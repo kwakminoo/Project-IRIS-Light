@@ -881,6 +881,16 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
 
     def project_open_similar(args: dict[str, Any]) -> dict[str, Any]:
         from iris.system.project_ops import pick_similar_project
+        from iris.ui.control_bindings import (
+            peek_bound_root,
+            refuse_agent_workspace_switch,
+        )
+
+        locked = refuse_agent_workspace_switch(
+            "project.open_similar", peek_bound_root(window)
+        )
+        if locked is not None:
+            return locked
 
         query = str(args.get("query") or args.get("name") or "").strip()
         if not query:
@@ -998,6 +1008,36 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
         _log(window, "project.list_files", True)
         return ok_result("project.list_files", listed)
 
+    def project_read_file(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.project_ops import read_project_file
+        from iris.ui.control_bindings import resolve_bound_work_root
+
+        root, root_err = resolve_bound_work_root(window, args)
+        if root_err or not root:
+            return err_result(
+                "project.read_file",
+                root_err or "project_root required (no bound IDE workspace)",
+            )
+        rel = str(args.get("rel_path") or args.get("path") or "").strip()
+        if not rel:
+            return err_result("project.read_file", "rel_path required")
+        try:
+            payload = read_project_file(
+                root,
+                rel,
+                max_bytes=int(args.get("max_bytes") or 1_048_576),
+            )
+        except (
+            FileNotFoundError,
+            IsADirectoryError,
+            NotADirectoryError,
+            OSError,
+            ValueError,
+        ) as exc:
+            return err_result("project.read_file", str(exc))
+        _log(window, "project.read_file", True)
+        return ok_result("project.read_file", payload)
+
     def diagram_render(args: dict[str, Any]) -> dict[str, Any]:
         import json
 
@@ -1025,7 +1065,10 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
                 {"diagnostics": rendered.get("diagnostics") or [], "stage": rendered.get("stage")},
             )
         rendered["opened"] = open_diagram_preview(
-            window, str(rendered["html_path"]), title=title
+            window,
+            str(rendered["html_path"]),
+            title=title,
+            kind=kind,
         )
         _log(window, "diagram.render", True)
         return ok_result("diagram.render", rendered)
@@ -1074,6 +1117,18 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
         "project.list_files",
         project_list_files,
         summary="List files in the bound IDE workspace (query = case-insensitive substring) — use this before open_file/run when the path is unknown",
+    )
+
+    reg.register(
+        "project.read_file",
+        project_read_file,
+        summary=(
+            "Read a UTF-8 file body from the bound IDE workspace disk "
+            "(rel_path or path; optional max_bytes). "
+            "Missing, escape, directory, binary/NUL, or too-large fail — never invent content. "
+            "Disk bytes only; dirty Monaco buffers need ide.save / ide.edit first."
+        ),
+        risk="low",
     )
 
     reg.register(

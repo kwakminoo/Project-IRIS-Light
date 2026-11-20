@@ -11,11 +11,11 @@ NOTE_CAP = "자동 진행 상한에 도달했습니다. 이어서 하려면 다�
 FOLLOWTHROUGH_UTTERANCE = (
     "이미 요청된 작업을 멈추지 마라. 완료라고 말하지 말고 이번 턴에 도구를 호출하라. "
     "사이트 전체 저장이면 wiki.import_pages 한 번이면 된다. "
-    "파일·스크립트 생성이면 mcp__iris_control__iris_invoke action=project.write_file 을 호출하라."
+    "파일·스크립트 생성이면 SpeakTools project.write_file 을 호출하라."
 )
 FILE_FOLLOWTHROUGH_UTTERANCE = (
-    "완료라고 말하지 말고 이번 턴에 mcp__iris_control__iris_invoke "
-    "action=project.write_file 을 호출하라. ok 와 디스크 path 없이 생성·작성했다고 말하지 마라."
+    "완료라고 말하지 말고 이번 턴에 SpeakTools project.write_file 을 호출하라. "
+    "ok 와 디스크 path 없이 생성·작성했다고 말하지 마라."
 )
 
 _GOAL_BULK = ("저장", "수집", "전부", "모든", "하나하나", "순차", "페이지")

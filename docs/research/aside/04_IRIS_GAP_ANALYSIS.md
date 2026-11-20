@@ -8,7 +8,7 @@ Aside public facts come from `docs/research/aside/01_ASIDE_FEATURES.md` through 
 
 ## Structure
 
-IRIS does not ship a Chromium-fork daily browser. It embeds one process-wide session that drives one `QWebEngineView`. Hermes never talks to Chromium or CDP. It calls three MCP names (`iris_get_state`, `iris_get_catalog`, `iris_invoke`). Page driving is the Control Surface action string inside `iris_invoke`, such as `browser.click`.
+IRIS does not ship a Chromium-fork daily browser. It embeds one process-wide session that drives one `QWebEngineView`. Hermes never talks to Chromium or CDP. Product chat uses SpeakTools (`PHASE4_ALLOWLIST`): `get_state`, `get_catalog`, `control.invoke`, …. Page driving is SpeakTools/`control.invoke` with `action=browser.*` (not MCP tool names). The older iris-control MCP triple was removed.
 
 ```text
 ChatPanel send
@@ -16,13 +16,12 @@ ChatPanel send
       → Hermes POST
           teaching: iris/browser/observation.py::browser_teaching_block
           state:    pack_browser_observation(get_browser_session())
-      → Hermes MCP tools (only three names)
-          iris_get_state | iris_get_catalog | iris_invoke
-      → iris_invoke {action: browser.*}   # Control Surface name, not an MCP tool
-          → iris/mcp/iris_control_stdio.py   # execution errors keep isError=false
-          → POST /v1/invoke                  # urlopen timeout 120s
+      → SpeakTools (PHASE4_ALLOWLIST)
+          get_state | get_catalog | control.invoke | …
+      → control.invoke {action: browser.*}   # ActionRegistry name, not an MCP tool
           → ActionRegistry.invoke
               browser.* skips the 15s HTTP UI marshal (`runs_off_ui_thread`)
+          → (compat) Control Surface HTTP :8765 /v1/invoke may still exist for non-seed
           → iris/ui/control_actions/browser.py::_handle
               parse_command (iris/browser/registry.py)
               looks_sensitive_browser_act  (optional HUD ask_human)
@@ -42,9 +41,9 @@ Where this investigation splits:
 - Left branch is IRIS source, verified.
 - Right branch is Aside public docs plus REA capture of aside.com. No Aside.exe.
 
-Hermes built-in `browser` and `terminal` toolsets are disabled so the model cannot drive a second Chromium. `iris/system/hermes_iris_control_sync.py` `_IRIS_DISABLED_TOOLSETS = ("terminal", "browser")`. The skill `integrations/hermes-skills/iris-control/iris-browser/SKILL.md` forbids a sibling Playwright MCP for the same clicks.
+Hermes built-in `browser` and `terminal` toolsets are disabled so the model cannot drive a second Chromium. `iris/system/iris_agent_control_sync.py` (legacy filename note: was `hermes_iris_control_sync.py`) `_IRIS_DISABLED_TOOLSETS = ("terminal", "browser")`. The skill `integrations/iris-skills/iris-control/iris-browser/SKILL.md` forbids a sibling Playwright MCP for the same clicks.
 
-`iris/browser/intent.py` is gone. `_check_intent.py` asserts `match_browser_intent` and `_try_local_browser_control` stay absent. A 2026-10-22 note in `docs/code-review/completed/브라우저-명령-미실행-원인과-개선.md` still describes that router. Treat that file as historical. Current contract is teaching plus `iris_invoke` only.
+`iris/browser/intent.py` is gone. `_check_intent.py` asserts `match_browser_intent` and `_try_local_browser_control` stay absent. A 2026-10-22 note in `docs/code-review/completed/브라우저-명령-미실행-원인과-개선.md` still describes that router. Treat that file as historical. Current contract is teaching plus SpeakTools `control.invoke` only.
 
 Key types:
 
@@ -66,7 +65,7 @@ Key types:
 | `pack_browser_observation` | Trusted Iris-owned block plus untrusted `BEGIN PAGE TEXT`. | No episodic browser memory. |
 | `shared_browser_profile` in `iris/ui/browser/webengine_setup.py` | Named Qt profile under `~/.iris-light/browser-profile`. Chrome-like UA (QtWebEngine token stripped). Cookies persist. | Not the system Chrome profile. A site that "won't stay logged in" is a different cookie jar, not a dead engine. |
 | `register_browser_actions` | Wires session to MainWindow. | Must stay. |
-| MCP in `iris/mcp/iris_control_stdio.py` | Three tools. `browser.*` is the `action` string. Execution failures keep `isError` false. `urlopen` timeout 120s. | Navigate 45s fits inside 120s. A 45s timeout still returns as a tool result, not a transport error. |
+| MCP tombstone `iris/mcp/iris_control_stdio.py` | `TOOLS=[]`. Must not run as an MCP server. Product path is SpeakTools, not this module. | Older MCP triple removed. Compat Control Surface HTTP `:8765` may still serve non-seed invoke. |
 | `_call_on_ui_unbounded` in `iris/ui/control_bindings.py` | Browser Qt hops wait until the UI thread returns. | `_call_on_ui` (3s, swallows to `None`) is HUD only. Mixing them up would make clicks vanish. |
 | `BrowserPanel` tabs | Human chrome only. No `browser.tab_*`. Last tab close navigates home. | Aside Agent Tabs are agent-owned. |
 | `BrowserSession.snapshot()` | Live URL/title overlay. Keeps previous `gen` and `nodes`. `_on_tab_changed` calls this. | Click after a human tab switch can hit `stale_ref` or the old `lastEls`. |
@@ -95,7 +94,7 @@ Status is measured from source. `partial` means a path exists but a documented h
 | Media play/pause/resume | partial | `Media`, `__irisBrowser.tryPlay`, `QTest.mouseClick` fallback | Consent/signin/age/captcha returned as `detail`, not bypassed. Speaker output unconfirmed. |
 | Mini player | partial | `MiniPlayer` → `MainWindow.apply_browser_view_host` → `BrowserMiniPlayer` | Command restore in non-companion can leave the view in the Tool window (`.tmp/browser-unify-how/EXPLANATION.md`; verify before treating as current). Explicit mini works. |
 | Cookies / session persist | done | `shared_browser_profile`, `AllowPersistentCookies` | Isolated from system Chrome. No incognito session flag. |
-| Human tabs | partial | `BrowserPanel` `_on_tab_changed`, `_adopt_popup` | Create/switch/close are human. Agent sees `browser_tab_index` in `iris_get_state` but cannot switch. |
+| Human tabs | partial | `BrowserPanel` `_on_tab_changed`, `_adopt_popup` | Create/switch/close are human. Agent sees `browser_tab_index` in SpeakTools `get_state` but cannot switch. |
 | Agent tab control | missing | no `browser.tab_*` | Aside Agent Tabs are out of scope without a Chromium fork. |
 | Popups | partial | `IrisWebEnginePage.createWindow` → `_adopt_popup` | New page is appended. Agent `target_id` after popup unconfirmed. |
 | Downloads / file picker | missing | no `downloadRequested` / file dialog handler under `iris/ui/browser` | unconfirmed Qt default. |
@@ -104,14 +103,14 @@ Status is measured from source. `partial` means a path exists but a documented h
 | Password vault | missing | no vault on `BrowserSession` | |
 | Browser episodic memory | missing | chat/wiki memory is a different subsystem | |
 | Render-process recovery | missing | `_on_crash` logs only | |
-| Local phrase router | removed | `_check_intent.py` forbids `intent.py` | Small models that do not `iris_invoke` still look "disconnected". Historical cause in the 2026-10-22 review. |
+| Local phrase router | removed | `_check_intent.py` forbids `intent.py` | Small models that do not `control.invoke` still look "disconnected". Historical cause in the 2026-10-22 review. |
 
 Hermes link, measured:
 
-1. `sync_iris_control()` writes MCP `iris-control`, copies `iris-browser` skill, disables Hermes `browser` toolset.
+1. `iris.system.iris_agent_control_sync` `sync_iris_control()` scrubs `mcp_servers.iris-control`, copies `iris-browser` skill, disables Hermes `terminal`+`browser` toolsets.
 2. Every chat POST includes `browser_teaching_block()` and `pack_browser_observation()`.
-3. Tool loop runs inside the Hermes gateway, not in Iris (`HermesChatWorker._run_external`).
-4. Success depends on the model emitting `iris_invoke`. Iris does not fall back to a local browser phrase path.
+3. Tool loop runs inside the Hermes gateway, not in Iris (`HermesChatWorker._run_external`); page drive is SpeakTools → `control.invoke` → ActionRegistry → `browser.*`.
+4. Success depends on the model emitting SpeakTools `control.invoke`. Iris does not fall back to a local browser phrase path.
 
 ## Feature gap
 
@@ -119,7 +118,7 @@ Hermes link, measured:
 | --- | --- | --- | --- |
 | Daily Chromium browser with logged-in sites | Whole-app Chromium fork | Qt WebEngine panel in the Iris window | different product shape, keep |
 | Agent lives in the same visible page the person watches | Official | Skill: "the user watches the same page" | already aligned |
-| Control language | Playwright-shaped REPL + bash | Named `browser.*` via `iris_invoke` | keep IRIS |
+| Control language | Playwright-shaped REPL + bash | Named `browser.*` via SpeakTools `control.invoke` | keep IRIS |
 | Snapshot | Trimmed a11y + CUA fallback | 40 named DOM nodes from injected JS | IRIS weaker |
 | Background agent tabs that do not steal focus | Blink patch | Extra pages, human tab bar, `FocusOnNavigationEnabled=True` | IRIS weaker, Blink out of scope |
 | Locked agent viewport 1440×900 | Blink patch | View follows the Qt widget | out of scope unless faked in the widget |
@@ -129,7 +128,7 @@ Hermes link, measured:
 | Side panel from current page | Help center | Chat already beside the page in companion 80:20 and dedicated 820:420 | IRIS has side chat. No page-attachment chip |
 | Split tabs | Help center | Layout shells, not two web pages | IRIS missing |
 | Incognito agent task | Help center | One persistent profile | IRIS missing |
-| MCP/CLI into the same browser | `aside mcp` | `iris_invoke` | different names, same idea |
+| MCP/CLI into the same browser | `aside mcp` | SpeakTools `control.invoke` | different names, same idea |
 | Desktop Computer Use | Changelog, Max plan | Separate ShowUI path | do not merge |
 | Bot-detection Chromium patches | Official blog | UA token strip only | IRIS weaker, fork out of scope |
 | Hosted-model privacy | Policy: providers get prompts and selected snapshots | PAGE TEXT is already sent to Hermes/the model | similar trust boundary, different product copy |
@@ -148,12 +147,12 @@ Aside's blog argues that dedicated `browser.*` tools fight the model's training 
 
 | Symptom | First wrong place | Evidence | Kind |
 | --- | --- | --- | --- |
-| Agent says it cannot browse while the panel is open | Model never emits `iris_invoke`. Local phrase router was removed on purpose. | `_check_intent.py` forbids `intent.py`. 2026-10-22 review: gemma4 answered in text only. | measured contract, runtime depends on the model |
+| Agent says it cannot browse while the panel is open | Model never emits SpeakTools `control.invoke`. Local phrase router was removed on purpose. | `_check_intent.py` forbids `intent.py`. 2026-10-22 review: gemma4 answered in text only. | measured contract, runtime depends on the model |
 | Navigate hangs then dies | `WebEnginePageDriver.navigate` 45s `loadFinished` wait | `_driver.py` raises `TimeoutError("navigate timeout")`, session sets FAULTED | measured |
 | Click continues on a page that is still navigating | `settle_after_act` waits 45s and does not raise | `_driver.py` | measured. Snapshot after the wait can still be the old document. |
 | Page looks dead after a Chromium crash | `renderProcessTerminated` only logs. Does not set FAULTED. | `webengine_setup.py` `_on_crash` | measured, no restore. Chip can stay READY. |
 | Reload looks done while blank | `reload` 30s wait then `_phase = READY` | `_driver.py` `reload` | measured |
-| YouTube play hangs then MCP drops | Stacked waits: navigate 45s + click loop 15s + watch 12s + tryPlay 16s, plus a second navigate | `_play_first_result`, `try_play`, MCP `urlopen` 120s | measured in source. Live 120s race unconfirmed. Worker is not cancelled when the MCP client leaves. |
+| YouTube play hangs then invoke client drops | Stacked waits: navigate 45s + click loop 15s + watch 12s + tryPlay 16s, plus a second navigate | `_play_first_result`, `try_play`, Control Surface/compat `urlopen` 120s | measured in source. Live 120s race unconfirmed. Worker is not cancelled when the invoke client leaves. |
 | Human `javascript:` URL does nothing | `_on_url_submitted` `except ValueError: return` | `panel.py` | measured. Agent path returns `disallowed url scheme`. |
 | Black or frozen first paint | WebEngine imported after `QApplication`, or GPU flags | `ensure_qt_webengine_ready`, 총괄표 item 19 | measured bootstrap, black screen recurrence unconfirmed |
 | Site blocks the embed | Residual Qt/WebEngine fingerprint after UA strip | `chrome_like_user_agent` | remaining blocks unconfirmed |
@@ -170,7 +169,7 @@ There is no automatic reconnect after FAULTED. The completed review already reco
 
 Keep, improve in place:
 
-- `BrowserSession` + `command_specs` + `iris_invoke`
+- `BrowserSession` + `command_specs` + SpeakTools `control.invoke`
 - Qt WebEngine + `shared_browser_profile` + `_bridge.js`
 - `ViewHost` reparent and `BrowserMiniPlayer` as `Qt.Tool`
 - Hermes `browser` toolset stays disabled
@@ -195,7 +194,7 @@ Ranked for the person using Iris chat plus the in-window page. Each item stays o
 4. Screenshot fallback when `nodes` is empty or `stale_ref` hits a canvas. Do not add a second click API until this miss is real on YouTube/canvas. Files: `WebEnginePageDriver`, observation packer.
 5. Secret fill that never copies the password into PAGE TEXT, plus a wider `looks_sensitive_browser_act`. Files: `observation.py`, type path in `session.py`.
 
-Later, still in place: Qt download signal, incognito `QWebEngineProfile` flag, origin markdown notes, popup `target_id` after `_adopt_popup`, `setRunsOnSubFrames` if iframe snapshot is in scope, cap YouTube play so stacked waits stay under the 120s MCP client.
+Later, still in place: Qt download signal, incognito `QWebEngineProfile` flag, origin markdown notes, popup `target_id` after `_adopt_popup`, `setRunsOnSubFrames` if iframe snapshot is in scope, cap YouTube play so stacked waits stay under the 120s invoke/client timeout.
 
 Do not: fork Chromium, add Asidewright, add `aside repl`, enable Hermes built-in `browser_*`, drive Theia with `BrowserSession`, parent the view into `ChatPanel`.
 
@@ -218,14 +217,14 @@ Do not: fork Chromium, add Asidewright, add `aside repl`, enable Hermes built-in
 | `iris/ui/qt_bootstrap.py` | `ensure_qt_webengine_ready`, `_apply_chromium_flags` | Process-wide Chromium flags |
 | `iris/ui/window/main_window.py` | `show_browser_workspace`, `apply_browser_view_host`, `_chat_messages_with_project_context` | Shell + packing |
 | `iris/ui/workspaces/iris_ide_window.py` | `apply_browser_view_host` | `ide_internal` / mini only |
-| `iris/mcp/iris_control_stdio.py` | `_handle_tool`, `TOOLS` | Three MCP names |
-| `iris/system/control_surface.py` | `ActionRegistry.invoke`, `runs_off_ui_thread` | HTTP control plane |
-| `iris/system/hermes_iris_control_sync.py` | `_merge_disabled_toolsets`, `sync_iris_control` | Disable Hermes browser toolset |
+| `iris/mcp/iris_control_stdio.py` | `TOOLS=[]` | Tombstone; must not run as MCP server |
+| `iris/system/control_surface.py` | `ActionRegistry.invoke`, `runs_off_ui_thread` | Control plane (SpeakTools + optional HTTP `:8765`) |
+| `iris/system/iris_agent_control_sync.py` | `_merge_disabled_toolsets`, `sync_iris_control` | Scrub iris-control MCP; disable Hermes browser+terminal; copy skills |
 | `iris/runtime/agent_local_gate.py` | `hermes_owns_local_intents` | Skip new local intercepts when Hermes is on |
-| `integrations/hermes-skills/iris-control/iris-browser/SKILL.md` | n/a | Agent instructions |
+| `integrations/iris-skills/iris-control/iris-browser/SKILL.md` | n/a | Agent instructions |
 | `iris/browser/_check_intent.py` | `main` | Intercept-gone + packer |
 
-Modules that import `iris.browser` or `iris.ui.browser` (product, not tests): `iris/ui/window/main_window.py`, `iris/ui/workspaces/iris_ide_window.py`, `iris/ui/control_actions/browser.py`, `iris/ui/control_bindings.py`, `iris/mcp/iris_control_stdio.py` (teaching block only), `iris/system/hermes_memory_nudge.py`, plus the browser packages themselves. `iris/ui/qt_bootstrap.py` does not import `iris.browser`. It sets Chromium flags before `QApplication`.
+Modules that import `iris.browser` or `iris.ui.browser` (product, not tests): `iris/ui/window/main_window.py`, `iris/ui/workspaces/iris_ide_window.py`, `iris/ui/control_actions/browser.py`, `iris/ui/control_bindings.py`, `iris/mcp/iris_control_stdio.py` (tombstone; teaching helpers only if referenced), `iris/system/hermes_memory_nudge.py`, plus the browser packages themselves. `iris/ui/qt_bootstrap.py` does not import `iris.browser`. It sets Chromium flags before `QApplication`.
 
 ## Borrowing
 
@@ -237,18 +236,18 @@ Modules that import `iris.browser` or `iris.ui.browser` (product, not tests): `i
 | [pi-mono/core](https://github.com/badlogic/pi-mono) | Runtime Aside names in public docs | IRIS already runs Hermes |
 | Moss local embeddings | Retrieval idea only | Markdown grep first |
 | Chromium fork / Blink patches | Focus and stealth | Out of scope for Qt WebEngine |
-| `aside mcp` | One MCP into the live user browser | IRIS already has `iris_invoke` |
+| `aside mcp` | One MCP into the live user browser | IRIS already has SpeakTools `control.invoke` |
 
 ## Tradeoffs if IRIS copied Aside's control language
 
 | Choice | For the person using Iris | For the next engineer | Verdict |
 | --- | --- | --- | --- |
 | Keep `browser.*` | Same skill, same HUD, same refs | One bus, tests already exist | Keep |
-| Restore a local phrase router | Small models browse without `iris_invoke` | Conflicts with `_check_intent.py` and Hermes-owns-intents | Do not restore unless the product asks |
+| Restore a local phrase router | Small models browse without `control.invoke` | Conflicts with `_check_intent.py` and Hermes-owns-intents | Do not restore unless the product asks |
 | Add a JS REPL beside `browser.*` | Longer automations | Two ways to click | Do not add |
 | Switch engine to a Chromium fork | Closer to Aside stealth and Agent Tabs | Breaks Qt panel and 80:20 | Do not |
 | Packed a11y + crash restore + tab gen on Qt | Fewer missed clicks, fewer dead panels | Localized to session, bridge, webengine_setup | Do |
 
 `.tmp/browser-unify-how/EXPLANATION.md` still describes `ViewHost` as `Literal["panel", "mini"]`. Source is `PanelHost` / `MiniHost`. Treat that note as stale.
 
-Earlier explorers: [IRIS browser stack](ac4a82f3-993a-4d6b-9acb-1eaddac5bdf0), [IRIS Hermes browser](414be7e4-7cbc-4c99-939c-acc34156d197). This rewrite folded [IRIS browser instability](bc02a582-59d5-47b4-8832-eae86527973c) and [IRIS browser feature status](0232bdad-1f4b-49fc-91e1-951778aca95f) after they finished: dual bridge inject, `setRunsOnSubFrames(False)`, reload-forces-READY, renderer death leaving READY, YouTube wait stack vs 120s MCP, human URL-bar swallow, type as value events not keydown. Source re-checked those paths.
+Earlier explorers: [IRIS browser stack](ac4a82f3-993a-4d6b-9acb-1eaddac5bdf0), [IRIS Hermes browser](414be7e4-7cbc-4c99-939c-acc34156d197). This rewrite folded [IRIS browser instability](bc02a582-59d5-47b4-8832-eae86527973c) and [IRIS browser feature status](0232bdad-1f4b-49fc-91e1-951778aca95f) after they finished: dual bridge inject, `setRunsOnSubFrames(False)`, reload-forces-READY, renderer death leaving READY, YouTube wait stack vs 120s invoke timeout, human URL-bar swallow, type as value events not keydown. Source re-checked those paths.

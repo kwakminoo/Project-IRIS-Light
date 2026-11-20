@@ -1,4 +1,4 @@
-"""Hermes가 직접 부르는 PDF·GitHub 확장·사진 코드 액션."""
+"""Iris Agent가 직접 부르는 PDF·GitHub 확장·사진 코드 액션."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def register_agent_turn_actions(window: Any, reg: ActionRegistry) -> None:
     )
 
     def note_export_pdf(args: dict[str, Any]) -> dict[str, Any]:
-        from iris.knowledge.pdf_export import save_pdf
+        from iris.knowledge.pdf_export import save_pdf, verify_pdf_file
         from iris.knowledge.pdf_job import compose_pdf_text, resolve_pdf_dest, source_list
 
         snap = _call_on_ui(window, lambda: _pdf_root(window))
@@ -33,14 +33,24 @@ def register_agent_turn_actions(window: Any, reg: ActionRegistry) -> None:
             return err_result("note.export_pdf", "content or sources required")
         dest = resolve_pdf_dest(str(args.get("path") or ""), root)
         saved = save_pdf(content, dest)
-        if not saved.get("ok") or not dest.is_file():
+        verified = verify_pdf_file(Path(str(saved.get("path") or dest)))
+        if not saved.get("ok") or not verified.get("ok"):
             return err_result("note.export_pdf", str(saved.get("error") or "PDF 저장에 실패했습니다."))
 
+        actual_path = str(verified["path"])
+
         def _arm() -> None:
-            window._turn_pdf_path = str(dest.resolve())
+            window._turn_pdf_path = actual_path
+            window._turn_write_path = actual_path
+            note_write = getattr(window, "_note_tool_file_write", None)
+            if callable(note_write):
+                note_write()
 
         _call_on_ui(window, _arm)
-        return ok_result("note.export_pdf", {"path": str(dest.resolve())})
+        return ok_result(
+            "note.export_pdf",
+            {"path": actual_path, "verified": True, "size": int(verified["size"])},
+        )
 
     def extension_install_github(args: dict[str, Any]) -> dict[str, Any]:
         from iris.system.github_extension_install import ExtensionRequest, install_from_request
@@ -96,7 +106,7 @@ def register_agent_turn_actions(window: Any, reg: ActionRegistry) -> None:
             )
         data["scope"] = scope
         if result.mcp_added and scope == "iris":
-            data["runtime"] = _restart_gateway(window)
+            data["runtime"] = _sidecar_runtime_notice()
         if result.status in ("installed", "already") and scope == "iris":
             def _sync() -> None:
                 try:
@@ -161,7 +171,7 @@ def register_agent_turn_actions(window: Any, reg: ActionRegistry) -> None:
     reg.register(
         "extension.install_github",
         extension_install_github,
-        summary="Install a GitHub repo as MCP and/or skill. Required: url. kind=auto|mcp|skill. scope=project only in IRIS IDE (writes the open project). scope=iris only on the main Iris screen (Hermes). needs_input: ask and do not invent secrets. Do not claim installed without ok. Do not treat an IDE extension and a Hermes MCP as one install.",
+        summary="Install a GitHub repo as MCP and/or skill. Required: url. kind=auto|mcp|skill. scope=project only in IRIS IDE (writes the open project). scope=iris only on the main Iris screen (Iris Agent). needs_input: ask and do not invent secrets. Do not claim installed without ok. Do not treat an IDE extension and an Iris Agent MCP as one install.",
         risk="medium",
     )
     reg.register(
@@ -248,19 +258,8 @@ def _write_on_ui(window: Any, payload: dict[str, Any]) -> dict[str, Any] | None:
     return out if isinstance(out, dict) else None
 
 
-def _restart_gateway(window: Any) -> str:
-    settings = window._settings
-    try:
-        from iris.system.hermes_gateway import restart_hermes_gateway
-
-        ok = restart_hermes_gateway(
-            str(getattr(settings, "hermes_base_url", "") or ""),
-            api_key=str(getattr(settings, "hermes_api_key", "") or ""),
-            command=str(getattr(settings, "hermes_command", "") or "hermes"),
-            wait_sec=60.0,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return f"설정은 저장됐지만 gateway 재시작에 실패했습니다: {exc}"[:300]
-    if ok:
-        return "Iris Agent gateway를 재시작했습니다. 이제 이 MCP 도구를 사용할 수 있습니다."
-    return "설정은 저장됐지만 gateway 재시작에 실패했습니다. Hermes를 다시 켜면 적용됩니다."
+def _sidecar_runtime_notice() -> str:
+    """Product path: no :8642 restart. Sidecar reads home on the next turn."""
+    return (
+        "설정은 저장됐습니다. Iris Agent(sidecar) 다음 턴부터 home 설정을 읽습니다."
+    )

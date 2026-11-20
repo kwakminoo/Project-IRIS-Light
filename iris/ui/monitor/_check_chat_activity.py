@@ -45,6 +45,12 @@ def _check_map() -> None:
     m.mark_finished(99, viewing=False)
     assert m.get(99) is ChatActivity.IDLE
 
+    m.mark_working(4)
+    m.mark_failed(4, viewing=False)
+    assert m.get(4) is ChatActivity.FAILED
+    m.clear_done(4)
+    assert m.get(4) is ChatActivity.IDLE
+
 
 def _check_row_timer(app: QApplication) -> None:
     panel = ChatHistoryPanel()
@@ -57,25 +63,30 @@ def _check_row_timer(app: QApplication) -> None:
         f for f in panel._inner.findChildren(QFrame) if f.objectName() == "HudChatRow"
     )
     assert row._activity is ChatActivity.IDLE
-    assert not row._anim_timer.isActive()
+    assert row._badge is not None and not row._badge._anim_timer.isActive()
 
     panel.set_activity({7: ChatActivity.WORKING})
     app.processEvents()
     assert row._activity is ChatActivity.WORKING
-    assert row._anim_timer.isActive()
-    assert row._badge is not None and not row._badge.isHidden()
+    assert row._badge._anim_timer.isActive()
+    assert not row._badge.isHidden()
 
     panel.set_activity({7: ChatActivity.DONE})
     app.processEvents()
     assert row._activity is ChatActivity.DONE
-    assert not row._anim_timer.isActive()
-    assert row._badge is not None and not row._badge.isHidden()
+    assert not row._badge._anim_timer.isActive()
+    assert not row._badge.isHidden()
+
+    panel.set_activity({7: ChatActivity.FAILED})
+    app.processEvents()
+    assert row._activity is ChatActivity.FAILED
+    assert not row._badge._anim_timer.isActive()
 
     panel.set_activity({})
     app.processEvents()
     assert row._activity is ChatActivity.IDLE
-    assert not row._anim_timer.isActive()
-    assert row._badge is not None and row._badge.isHidden()
+    assert not row._badge._anim_timer.isActive()
+    assert row._badge.isHidden()
 
 
 def main() -> int:

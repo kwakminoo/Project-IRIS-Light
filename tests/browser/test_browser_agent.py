@@ -72,7 +72,7 @@ class PackHermesResultTests(unittest.TestCase):
             read_text="Article body that Hermes may cite.",
         )
 
-    def test_packer_is_the_only_hermes_read(self) -> None:
+    def test_packer_is_the_only_agent_read(self) -> None:
         result = self._article_result()
         blob = pack_hermes_result(result)
         self.assertTrue(blob["ok"])

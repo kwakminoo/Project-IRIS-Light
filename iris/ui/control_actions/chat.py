@@ -260,6 +260,92 @@ def register_chat_actions(window: ChatHost, reg: ActionRegistry) -> None:
             },
         )
 
+    def chat_search_past(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.runtime.past_chats import (
+            MAX_PAST_HITS,
+            SEMANTIC_UNAVAILABLE_MSG,
+            format_past_chats_for_prompt,
+            past_chat_limit,
+            sources_note,
+        )
+        from iris.ui.workers.past_chats_worker import run_semantic_past_search_off_ui
+
+        query = str(args.get("query") or args.get("q") or "").strip()
+        if not query:
+            return err_result("chat.search_past", "query required")
+        try:
+            raw_limit = int(args.get("limit") or MAX_PAST_HITS)
+        except (TypeError, ValueError):
+            raw_limit = MAX_PAST_HITS
+        limit = past_chat_limit(raw_limit)
+        settings = window._model_switch.history_settings
+        if not settings.enabled or not settings.reference_past_chats:
+            return ok_result(
+                "chat.search_past",
+                {
+                    "hits": [],
+                    "prompt_block": "",
+                    "sources_note": "",
+                    "count": 0,
+                    "message": "past chat reference is disabled in settings",
+                },
+            )
+        if not settings.embed_enabled:
+            return ok_result(
+                "chat.search_past",
+                {
+                    "hits": [],
+                    "prompt_block": "",
+                    "sources_note": "",
+                    "count": 0,
+                    "message": SEMANTIC_UNAVAILABLE_MSG,
+                },
+            )
+        cid = int(getattr(window, "_conversation_id", 0) or 0)
+        settings_obj = getattr(window, "_settings", None)
+        base_url = str(getattr(settings_obj, "ollama_base_url", "") or "").strip()
+        if not base_url:
+            base_url = "http://127.0.0.1:11434"
+        # Embed path only — off UI thread so 1–9s embed does not freeze Qt.
+        chats, message = run_semantic_past_search_off_ui(
+            window._model_switch,
+            base_url,
+            query,
+            cid,
+            limit=limit,
+        )
+        hits = []
+        for chat in chats:
+            entry = chat.entry
+            body = (entry.body or "").strip()
+            excerpt = body if len(body) <= 240 else body[:240] + "…"
+            day = ""
+            if entry.created_at:
+                day = entry.created_at[:10]
+            hits.append(
+                {
+                    "id": int(entry.id),
+                    "day": day,
+                    "role": entry.role,
+                    "title": entry.title or "",
+                    "body": excerpt,
+                    "excerpt": excerpt,
+                    "similarity": chat.similarity,
+                }
+            )
+        prompt_block = format_past_chats_for_prompt(chats)
+        note = sources_note(chats)
+        _log(window, "chat.search_past", True)
+        payload: dict[str, Any] = {
+            "hits": hits,
+            "prompt_block": prompt_block,
+            "sources_note": note,
+            "count": len(hits),
+        }
+        if message:
+            payload["message"] = message
+        return ok_result("chat.search_past", payload)
+
     reg.register("activity.log", activity_log, summary="Append Live Activity line")
 
     reg.register("notify.add_alert", notify_add, summary="Add notification alert row")
@@ -269,4 +355,11 @@ def register_chat_actions(window: ChatHost, reg: ActionRegistry) -> None:
         chat_exec_python,
         summary="Run whitelisted Python (numpy/matplotlib) and return plot PNGs for chat",
         risk="medium",
+    )
+
+    reg.register(
+        "chat.search_past",
+        chat_search_past,
+        summary="Search prior chat conversations (not wiki notes) by query",
+        risk="low",
     )

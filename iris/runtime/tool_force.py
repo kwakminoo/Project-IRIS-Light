@@ -29,6 +29,33 @@ class RespondUnwrap:
     was_respond: bool
 
 
+@dataclass(frozen=True)
+class ToolActivity:
+    name: str
+    record: str
+    exit_tool: bool
+    count_ok: bool
+
+
+def tool_activity(message: str) -> ToolActivity | None:
+    """Normalize a sidecar tool label without treating tool use as success."""
+    text = (message or "").strip()
+    if not text:
+        return None
+    prefix = "[IRIS tool use:"
+    if text.startswith(prefix) and text.endswith("]"):
+        name = text[len(prefix) : -1].strip().lower()
+    else:
+        name = text.split(maxsplit=1)[0].strip().lower()
+    if not name:
+        return None
+    exit_tool = is_exit_tool_name(name)
+    record = RESPOND_OK_ACTIVITY if exit_tool else text
+    from iris.runtime.turn_followthrough import counts_as_tool_ok
+
+    return ToolActivity(name, record, exit_tool, counts_as_tool_ok(record))
+
+
 def is_exit_tool_name(name: str) -> bool:
     return str(name or "").strip().lower() in EXIT_TOOL_NAMES
 

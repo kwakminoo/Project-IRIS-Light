@@ -112,8 +112,8 @@ def _check_window(app: QApplication) -> None:
     win._turn_gate.arm()
     win._on_chat_failed_for_turn("연결 거절", "turn-3")
     app.processEvents()
-    assert _texts(win._history)[-1] == "둘째 답"
-    assert not any(item["content"] == "실패할 질문" for item in win._history)
+    # 실패해도 user 유지 — 스트림 5xx→복구 레이스에서 pop이 성공 착지를 지운다.
+    assert _texts(win._history)[-1] == "실패할 질문"
     assert not win._busy
     win._record_history("user", "오류 다음")
     win._turn_gate.begin("turn-4")

@@ -1,0 +1,14 @@
+﻿ts	phase	decision	why	evidence	result
+2026-11-12T03:39:55Z	start	figure-it-out Hermes-free branding run	run owns leftover rename to Iris with TDD waves	parent chat	open
+2026-11-12T03:39:55Z	frame	done = user-visible Hermes gone except NOTICE/LICENSE; checks green; vendor hermes_cli kept	173 py files mention hermes; blast radius high so wave by surface	iris rg count	scope locked
+2026-11-12T03:41:57Z	wave-a	user-string branding green	replaced Hermes user strings in listed ui modules	_check_iris_branding_user_strings exit 0; phase3 exit 0	ok
+2026-11-12T03:43:31Z	wave-a	Wave A verified by parent	branding_user_strings + phase3 exit 0	parent re-run	VERIFIED
+2026-11-12T03:46:20Z	wave-b	invert IrisAgent* workers + migrate ui/engine checks + expand forbidden strings	definition IrisAgent*; Hermes* compat aliases; product/_check call sites IrisAgent*	user_strings+worker_aliases+chat_landing+phase3 exit 0	ok
+2026-11-12T03:47:09Z	wave-b	Wave B verified by parent	user_strings+worker_aliases+IrisAgentChatWorker.__name__	parent re-run	VERIFIED
+2026-11-12T03:50:35Z	wave-c	Settings agent_* fields + hermes_* property aliases; ui/control migrated	canonical dataclass agent_command/base_url/api_key; dual-key control JSON kept	policy+phase3+user_strings+worker_aliases+chat_landing exit 0	ok
+2026-11-12T03:51:27Z	wave-c	Wave C verified by parent	agent_* dataclass fields + hermes_* properties	parent re-run policy_settings	VERIFIED
+2026-11-12T03:56:28Z	wave-d	invert IrisAgentClient/InferenceTarget + AGENT_BACKEND=agent; LightSettingsSelection agent_*; hermes_* aliases	helpers normalize/resolve_hermes_* and SetupProtocol hermes_* kwargs deferred (blast/landing)	client+backend_route+backend_call+policy+branding+landing+sidecar exit 0	ok
+2026-11-12T03:57:58Z	wave-d	Wave D verified by parent	landing+sidecar+IrisAgentClient alias	parent re-run	VERIFIED
+2026-11-12T04:05:00Z	wave-e	IrisAgent* leftovers + product copy + normalize/resolve + agent kwargs/notify	HermesLoginWarm*/Update* inverted with aliases; user copy Iris Agent; normalize_iris_agent_openai_base_url/resolve_iris_agent_inference; SetupProtocol/startup_health accept agent_*; update_notify JSON agent with hermes read-compat	user_strings+product_copy+worker_aliases+policy+landing+sidecar+startup+client+notify+route+health exit 0	ok
+2026-11-12T04:05:28Z	wave-e	Wave E verified by parent	branding+product_copy+startup+aliases	parent re-run	VERIFIED
+2026-11-12T04:05:28Z	handback	branding waves A-E closed	user-visible Iris; vendor/LICENSE hermes kept	.audit/hermes-branding-iris.tsv	DONE

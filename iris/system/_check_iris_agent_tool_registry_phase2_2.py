@@ -15,7 +15,7 @@ from iris.infrastructure.agent_tool_registry import (
     default_registry,
     invoke_agent_tool,
 )
-from iris.system.hermes_iris_control_sync import project_root
+from iris.system.iris_agent_control_sync import project_root
 
 
 def _block_network(*_a: object, **_k: object) -> None:
@@ -71,7 +71,7 @@ def _main() -> None:
     skill = (
         root
         / "integrations"
-        / "hermes-skills"
+        / "iris-skills"
         / "iris-control"
         / "iris-wiki"
         / "SKILL.md"

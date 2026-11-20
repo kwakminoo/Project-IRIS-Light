@@ -6,7 +6,7 @@ Run: .venv\\Scripts\\python.exe -m iris.infrastructure._check_tool_json_as_conte
 
 from __future__ import annotations
 
-from iris.infrastructure.hermes_client import (
+from iris.infrastructure.iris_agent_client import (
     _looks_like_tool_args_json,
     _should_emit_assistant_content,
 )

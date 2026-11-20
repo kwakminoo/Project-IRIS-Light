@@ -45,7 +45,7 @@ class PerRoutineModelTests(TestCase):
         self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.db = Database(Path(self._tmp.name) / "r.db")
         self.settings = SimpleNamespace(
-            hermes_enabled=False, ollama_base_url="http://127.0.0.1:11434/v1"
+            agent_enabled=False, ollama_base_url="http://127.0.0.1:11434/v1"
         )
 
     def tearDown(self) -> None:
@@ -84,16 +84,16 @@ class PerRoutineModelTests(TestCase):
         cleared = update_routine(self.db, r.id, model="")
         self.assertEqual(cleared.model, "")
 
-    def test_hermes_routes_everything_through_the_gateway(self) -> None:
+    def test_agent_routes_everything_through_the_gateway(self) -> None:
         hermes = SimpleNamespace(
-            hermes_enabled=True,
-            hermes_base_url="http://127.0.0.1:8642/v1",
-            hermes_api_key="k",
-            hermes_command="hermes",
+            agent_enabled=True,
+            agent_base_url="http://127.0.0.1:8642/v1",
+            agent_api_key="k",
+            agent_command="hermes",
             ollama_base_url="http://127.0.0.1:11434/v1",
         )
         with patch(
-            "iris.infrastructure.hermes_client.resolve_hermes_inference",
+            "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             side_effect=lambda m, **kw: SimpleNamespace(model=f"up/{m}", label=m),
         ):
             route = resolve_backend_route(hermes, self.db, "api:ab:remote")

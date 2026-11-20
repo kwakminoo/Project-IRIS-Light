@@ -9,10 +9,10 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from iris.infrastructure.hermes_client import HermesClient
-from iris.infrastructure.hermes_credentials import (
-    is_weak_hermes_api_key,
-    resolve_hermes_api_key,
+from iris.infrastructure.iris_agent_client import HermesClient
+from iris.infrastructure.iris_agent_credentials import (
+    is_weak_agent_api_key,
+    resolve_agent_api_key,
 )
 from iris.system.setup_protocol import (
     HERMES_MIN_OLLAMA_NUM_CTX,
@@ -24,25 +24,25 @@ from iris.system.setup_protocol import (
 
 class WeakHermesApiKeyTests(TestCase):
     def test_empty_and_short_are_weak(self) -> None:
-        self.assertTrue(is_weak_hermes_api_key(""))
-        self.assertTrue(is_weak_hermes_api_key("   "))
-        self.assertTrue(is_weak_hermes_api_key("short-key-only"))
-        self.assertTrue(is_weak_hermes_api_key("x" * 23))
+        self.assertTrue(is_weak_agent_api_key(""))
+        self.assertTrue(is_weak_agent_api_key("   "))
+        self.assertTrue(is_weak_agent_api_key("short-key-only"))
+        self.assertTrue(is_weak_agent_api_key("x" * 23))
 
     def test_placeholder_markers_are_weak(self) -> None:
-        self.assertTrue(is_weak_hermes_api_key("change-me-please-long-enough"))
-        self.assertTrue(is_weak_hermes_api_key("please-replace-me-xxxxxxxxxx"))
-        self.assertTrue(is_weak_hermes_api_key("your-api-key-goes-here-now"))
-        self.assertTrue(is_weak_hermes_api_key("todo-fill-this-in-xxxxxxxxxxx"))
-        self.assertTrue(is_weak_hermes_api_key("this-is-a-placeholder-value"))
+        self.assertTrue(is_weak_agent_api_key("change-me-please-long-enough"))
+        self.assertTrue(is_weak_agent_api_key("please-replace-me-xxxxxxxxxx"))
+        self.assertTrue(is_weak_agent_api_key("your-api-key-goes-here-now"))
+        self.assertTrue(is_weak_agent_api_key("todo-fill-this-in-xxxxxxxxxxx"))
+        self.assertTrue(is_weak_agent_api_key("this-is-a-placeholder-value"))
 
     def test_strong_token_is_kept(self) -> None:
         strong = secrets.token_urlsafe(32)
         # 드물게 marker 부분문자열이 들어가면 재발급 대상 — 그때는 다시 뽑는다
-        if is_weak_hermes_api_key(strong):
+        if is_weak_agent_api_key(strong):
             strong = "A" * 32
-        self.assertFalse(is_weak_hermes_api_key(strong))
-        self.assertFalse(is_weak_hermes_api_key("x" * 32))
+        self.assertFalse(is_weak_agent_api_key(strong))
+        self.assertFalse(is_weak_agent_api_key("x" * 32))
 
 
 class OllamaProviderModelCtxTests(TestCase):
@@ -62,7 +62,7 @@ class OllamaProviderModelCtxTests(TestCase):
 
 
 class CtxBelowMinDetailTests(TestCase):
-    def test_detects_hermes_ctx_message(self) -> None:
+    def test_detects_agent_ctx_message(self) -> None:
         msg = (
             "Model exaone3.5:2.4b has a context window of 32,768 tokens, "
             "which is below the minimum of 64,000"
@@ -81,7 +81,7 @@ class HermesEnvRotateTests(TestCase):
         self._patches = [
             patch("iris.system.setup_protocol.hermes_home", lambda: self.home),
             patch(
-                "iris.infrastructure.hermes_credentials.hermes_home",
+                "iris.infrastructure.iris_agent_credentials.hermes_home",
                 lambda: self.home,
             ),
             patch(
@@ -102,13 +102,13 @@ class HermesEnvRotateTests(TestCase):
             "API_SERVER_KEY=change-me-please\n", encoding="utf-8"
         )
         proto = SetupProtocol(dry_run=False, simulate=False)
-        result = proto._step_hermes_env()
+        result = proto._step_agent_env()
         self.assertEqual(result.status, "done", result)
-        self.assertTrue(proto._hermes_key_rotated)
+        self.assertTrue(proto._agent_key_rotated)
         self.assertIn("재발급", result.message)
         new_key = (self.home / ".env").read_text(encoding="utf-8")
         self.assertNotIn("change-me-please", new_key)
-        self.assertFalse(is_weak_hermes_api_key(resolve_hermes_api_key()))
+        self.assertFalse(is_weak_agent_api_key(resolve_agent_api_key()))
 
     def test_strong_key_preserved(self) -> None:
         strong = "A" * 32
@@ -116,9 +116,9 @@ class HermesEnvRotateTests(TestCase):
             f"API_SERVER_KEY={strong}\n", encoding="utf-8"
         )
         proto = SetupProtocol(dry_run=False, simulate=False)
-        result = proto._step_hermes_env()
+        result = proto._step_agent_env()
         self.assertEqual(result.status, "done", result)
-        self.assertFalse(proto._hermes_key_rotated)
+        self.assertFalse(proto._agent_key_rotated)
         self.assertNotIn("재발급", result.message)
         self.assertIn(strong, (self.home / ".env").read_text(encoding="utf-8"))
 
@@ -128,77 +128,76 @@ class HermesEnvRotateTests(TestCase):
             f"API_SERVER_KEY={strong}\n", encoding="utf-8"
         )
         proto = SetupProtocol(dry_run=False, simulate=False)
-        result = proto._step_hermes_env(force_rotate=True)
+        result = proto._step_agent_env(force_rotate=True)
         self.assertEqual(result.status, "done", result)
-        self.assertTrue(proto._hermes_key_rotated)
+        self.assertTrue(proto._agent_key_rotated)
         body = (self.home / ".env").read_text(encoding="utf-8")
         self.assertNotIn(strong, body)
 
 
 class HermesGatewayForceRestartTests(TestCase):
-    def test_already_running_restarts_when_key_rotated(self) -> None:
+    def test_agent_runtime_skips_http_restart_when_key_rotated(self) -> None:
+        """Product agent_runtime is sidecar/home only — no :8642 restart."""
         proto = SetupProtocol(dry_run=False, simulate=False)
-        proto._hermes_key_rotated = True
-        restart_calls: list[bool] = []
-
-        def _restart(*_a, **_k):
-            restart_calls.append(True)
-            return True
-
-        with (
-            patch(
-                "iris.system.hermes_gateway.is_hermes_gateway_running",
-                return_value=True,
-            ),
-            patch(
-                "iris.system.hermes_gateway.restart_hermes_gateway",
-                side_effect=_restart,
-            ),
-            patch(
-                "iris.system.hermes_gateway.ensure_hermes_gateway_running",
-                return_value=True,
-            ),
-            patch(
-                "iris.system.setup_protocol.verify_iris_mcp_tools",
-                return_value=(True, "mcp ok"),
-            ),
-            patch(
-                "iris.system.setup_protocol.resolve_hermes_api_key",
-                return_value="test-key-xxxxxxxxxxxxxxxx",
-            ),
-        ):
-            result = proto._step_hermes_gateway()
-        self.assertEqual(result.status, "done", result)
-        self.assertEqual(len(restart_calls), 1)
-        self.assertFalse(proto._hermes_key_rotated)
-
-    def test_already_running_kept_without_rotate(self) -> None:
-        proto = SetupProtocol(dry_run=False, simulate=False)
-        proto._hermes_key_rotated = False
+        proto._agent_key_rotated = True
         restart_calls: list[bool] = []
 
         with (
             patch(
-                "iris.system.hermes_gateway.is_hermes_gateway_running",
-                return_value=True,
-            ),
-            patch(
-                "iris.system.hermes_gateway.restart_hermes_gateway",
+                "iris.system.iris_agent_gateway.restart_agent_gateway",
                 side_effect=lambda *_a, **_k: restart_calls.append(True) or True,
             ),
             patch(
-                "iris.system.hermes_gateway.mark_gateway_already_running",
+                "iris.system.setup_protocol.probe_agent_runtime",
+                return_value=(True, "ok"),
+            ),
+            patch(
+                "iris.system.setup_protocol.ensure_iris_agent_runtime",
+                return_value=type(
+                    "R", (), {"ok": True, "messages": ["sidecar ready"]}
+                )(),
             ),
             patch(
                 "iris.system.setup_protocol.verify_iris_mcp_tools",
                 return_value=(True, "mcp ok"),
             ),
             patch(
-                "iris.system.setup_protocol.resolve_hermes_api_key",
+                "iris.system.setup_protocol.resolve_agent_api_key",
                 return_value="test-key-xxxxxxxxxxxxxxxx",
             ),
         ):
-            result = proto._step_hermes_gateway()
+            result = proto._step_agent_runtime()
+        self.assertEqual(result.status, "done", result)
+        self.assertEqual(len(restart_calls), 0)
+        self.assertFalse(proto._agent_key_rotated)
+
+    def test_already_running_kept_without_rotate(self) -> None:
+        proto = SetupProtocol(dry_run=False, simulate=False)
+        proto._agent_key_rotated = False
+        restart_calls: list[bool] = []
+
+        with (
+            patch(
+                "iris.system.iris_agent_gateway.is_agent_gateway_running",
+                return_value=True,
+            ),
+            patch(
+                "iris.system.iris_agent_gateway.restart_agent_gateway",
+                side_effect=lambda *_a, **_k: restart_calls.append(True) or True,
+            ),
+            patch(
+                "iris.system.iris_agent_gateway.mark_gateway_already_running",
+            ),
+            patch(
+                "iris.system.setup_protocol.verify_iris_mcp_tools",
+                return_value=(True, "mcp ok"),
+            ),
+            patch(
+                "iris.system.setup_protocol.resolve_agent_api_key",
+                return_value="test-key-xxxxxxxxxxxxxxxx",
+            ),
+        ):
+            result = proto._step_agent_runtime()
         self.assertEqual(result.status, "done", result)
         self.assertEqual(len(restart_calls), 0)
 
@@ -216,12 +215,12 @@ class HermesGatewayForceRestartTests(TestCase):
 
         def _gw(*, force_restart: bool = False):
             calls["gw"].append(force_restart)
-            return proto._record_step("hermes_gateway", "done", "restarted")
+            return proto._record_step("agent_runtime", "done", "restarted")
 
         with (
             patch.object(proto, "verify_core", side_effect=verifies),
-            patch.object(proto, "_step_hermes_env", side_effect=_env),
-            patch.object(proto, "_step_hermes_gateway", side_effect=_gw),
+            patch.object(proto, "_step_agent_env", side_effect=_env),
+            patch.object(proto, "_step_agent_runtime", side_effect=_gw),
         ):
             result = proto._step_core_smoke()
         self.assertEqual(result.status, "done", result)
@@ -232,33 +231,33 @@ class HermesGatewayForceRestartTests(TestCase):
 class HermesApiKeyResolveTests(TestCase):
     def test_empty_iris_key_uses_gateway_env(self) -> None:
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_agent_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
-            self.assertEqual(resolve_hermes_api_key(""), "gateway-secret")
-            self.assertEqual(resolve_hermes_api_key("   "), "gateway-secret")
+            self.assertEqual(resolve_agent_api_key(""), "gateway-secret")
+            self.assertEqual(resolve_agent_api_key("   "), "gateway-secret")
 
     def test_stale_iris_key_does_not_override_gateway_env(self) -> None:
         """설정창에 남은 잘못된 키로 401이 나던 경로."""
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_agent_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
-            self.assertEqual(resolve_hermes_api_key("wrong-from-settings"), "gateway-secret")
+            self.assertEqual(resolve_agent_api_key("wrong-from-settings"), "gateway-secret")
 
     def test_iris_key_used_when_gateway_env_missing(self) -> None:
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_agent_dotenv",
             return_value={},
         ):
-            self.assertEqual(resolve_hermes_api_key("iris-only"), "iris-only")
-            self.assertEqual(resolve_hermes_api_key(""), "")
+            self.assertEqual(resolve_agent_api_key("iris-only"), "iris-only")
+            self.assertEqual(resolve_agent_api_key(""), "")
 
 
 class HermesClientAuthTests(TestCase):
     def test_chat_client_sends_bearer_even_if_caller_passes_empty_key(self) -> None:
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_agent_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
             client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
@@ -268,7 +267,7 @@ class HermesClientAuthTests(TestCase):
 
     def test_gateway_ready_false_without_key(self) -> None:
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_agent_dotenv",
             return_value={},
         ):
             client = HermesClient("http://127.0.0.1:1/v1", api_key="")
@@ -281,10 +280,10 @@ class HermesClientAuthTests(TestCase):
         from io import BytesIO
         from urllib.error import HTTPError
 
-        from iris.infrastructure.hermes_client import HealthProbeResult
+        from iris.infrastructure.iris_agent_client import HealthProbeResult
 
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_agent_dotenv",
             return_value={"API_SERVER_KEY": "x" * 40},
         ):
             client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
@@ -301,7 +300,7 @@ class HermesClientAuthTests(TestCase):
             with (
                 patch.object(client, "probe_health", return_value=healthy),
                 patch(
-                    "iris.infrastructure.hermes_client.urlopen", side_effect=err
+                    "iris.infrastructure.iris_agent_client.urlopen", side_effect=err
                 ),
             ):
                 ready = client.probe_gateway_ready()
@@ -311,19 +310,19 @@ class HermesClientAuthTests(TestCase):
             self.assertEqual(ready.http_status, 401)
             self.assertIn("401", ready.detail)
 
-    def test_normalize_hermes_openai_base_url(self) -> None:
-        from iris.infrastructure.hermes_client import normalize_hermes_openai_base_url
+    def test_normalize_iris_agent_openai_base_url(self) -> None:
+        from iris.infrastructure.iris_agent_client import normalize_iris_agent_openai_base_url
 
         self.assertEqual(
-            normalize_hermes_openai_base_url("http://127.0.0.1:8642"),
+            normalize_iris_agent_openai_base_url("http://127.0.0.1:8642"),
             "http://127.0.0.1:8642/v1",
         )
         self.assertEqual(
-            normalize_hermes_openai_base_url("http://127.0.0.1:8642/v1/"),
+            normalize_iris_agent_openai_base_url("http://127.0.0.1:8642/v1/"),
             "http://127.0.0.1:8642/v1",
         )
         self.assertEqual(
-            normalize_hermes_openai_base_url("http://127.0.0.1:8642/v1/v1"),
+            normalize_iris_agent_openai_base_url("http://127.0.0.1:8642/v1/v1"),
             "http://127.0.0.1:8642/v1",
         )
         client = HermesClient("http://127.0.0.1:8642", api_key="x" * 40)
@@ -333,10 +332,10 @@ class HermesClientAuthTests(TestCase):
         from io import BytesIO
         from urllib.error import HTTPError
 
-        from iris.infrastructure.hermes_client import HealthProbeResult
+        from iris.infrastructure.iris_agent_client import HealthProbeResult
 
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_agent_dotenv",
             return_value={"API_SERVER_KEY": "x" * 40},
         ):
             client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
@@ -353,7 +352,7 @@ class HermesClientAuthTests(TestCase):
             with (
                 patch.object(client, "probe_health", return_value=healthy),
                 patch(
-                    "iris.infrastructure.hermes_client.urlopen", side_effect=err
+                    "iris.infrastructure.iris_agent_client.urlopen", side_effect=err
                 ),
             ):
                 ready = client.probe_gateway_ready()
@@ -365,58 +364,40 @@ class HermesClientAuthTests(TestCase):
 
 
 class HermesGatewayStepReadyTests(TestCase):
-    def test_health_ok_models_fail_triggers_restart(self) -> None:
+    def test_agent_runtime_does_not_http_restart_on_models_fail(self) -> None:
+        """agent_runtime step no longer probes/restarts :8642; core_smoke owns recovery."""
         from iris.system.setup_protocol import SetupProtocol
 
         proto = SetupProtocol(dry_run=False, simulate=False)
         restart_calls: list[bool] = []
 
-        def _restart(*_a, **_k):
-            restart_calls.append(True)
-            return True
-
         with (
             patch(
-                "iris.system.hermes_gateway.is_hermes_gateway_running",
-                side_effect=[True, False],  # health_up, ready_up
+                "iris.system.iris_agent_gateway.restart_agent_gateway",
+                side_effect=lambda *_a, **_k: restart_calls.append(True) or True,
             ),
             patch(
-                "iris.system.hermes_gateway.probe_gateway_ready",
+                "iris.system.setup_protocol.probe_agent_runtime",
+                return_value=(True, "ok"),
+            ),
+            patch(
+                "iris.system.setup_protocol.ensure_iris_agent_runtime",
                 return_value=type(
-                    "R",
-                    (),
-                    {
-                        "ok": False,
-                        "code": "models_http",
-                        "detail": "/v1/models HTTP 401",
-                        "key_weak": False,
-                        "key_len": 40,
-                        "models_ok": False,
-                        "http_status": 401,
-                    },
+                    "R", (), {"ok": True, "messages": ["sidecar ready"]}
                 )(),
-            ),
-            patch(
-                "iris.system.hermes_gateway.restart_hermes_gateway",
-                side_effect=_restart,
-            ),
-            patch(
-                "iris.system.hermes_gateway.ensure_hermes_gateway_running",
-                return_value=True,
             ),
             patch(
                 "iris.system.setup_protocol.verify_iris_mcp_tools",
                 return_value=(True, "mcp ok"),
             ),
             patch(
-                "iris.system.setup_protocol.resolve_hermes_api_key",
+                "iris.system.setup_protocol.resolve_agent_api_key",
                 return_value="x" * 40,
             ),
-            patch.object(proto, "_step_hermes_env"),
         ):
-            result = proto._step_hermes_gateway()
+            result = proto._step_agent_runtime()
         self.assertEqual(result.status, "done", result.message)
-        self.assertTrue(restart_calls)
+        self.assertEqual(len(restart_calls), 0)
 
     def test_core_smoke_ready_fail_restarts(self) -> None:
         from iris.system.setup_protocol import SetupProtocol
@@ -439,14 +420,14 @@ class HermesGatewayStepReadyTests(TestCase):
 
         def _gw(*, force_restart: bool = False):
             calls["gw"].append(force_restart)
-            return proto._record_step("hermes_gateway", "done", "restarted")
+            return proto._record_step("agent_runtime", "done", "restarted")
 
         with (
             patch.object(proto, "verify_core", side_effect=verifies),
-            patch.object(proto, "_step_hermes_env", side_effect=_env),
-            patch.object(proto, "_step_hermes_gateway", side_effect=_gw),
+            patch.object(proto, "_step_agent_env", side_effect=_env),
+            patch.object(proto, "_step_agent_runtime", side_effect=_gw),
             patch(
-                "iris.system.hermes_gateway.probe_gateway_ready",
+                "iris.system.iris_agent_gateway.probe_gateway_ready",
                 return_value=type(
                     "R",
                     (),
@@ -486,14 +467,14 @@ class HermesGatewayStepReadyTests(TestCase):
 
         def _gw(*, force_restart: bool = False):
             calls["gw"].append(force_restart)
-            return proto._record_step("hermes_gateway", "done", "restarted")
+            return proto._record_step("agent_runtime", "done", "restarted")
 
         with (
             patch.object(proto, "verify_core", side_effect=verifies),
-            patch.object(proto, "_step_hermes_env", side_effect=_env),
-            patch.object(proto, "_step_hermes_gateway", side_effect=_gw),
+            patch.object(proto, "_step_agent_env", side_effect=_env),
+            patch.object(proto, "_step_agent_runtime", side_effect=_gw),
             patch(
-                "iris.system.hermes_gateway.probe_gateway_ready",
+                "iris.system.iris_agent_gateway.probe_gateway_ready",
                 return_value=type(
                     "R",
                     (),
@@ -523,7 +504,7 @@ class HermesGatewayStepReadyTests(TestCase):
         self.assertFalse(any(calls["env"]))
     def test_probe_unauthorized_without_key(self) -> None:
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_agent_dotenv",
             return_value={},
         ):
             client = HermesClient("http://127.0.0.1:1/v1", api_key="")
@@ -534,7 +515,7 @@ class HermesGatewayStepReadyTests(TestCase):
         from urllib.error import HTTPError
 
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_agent_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
             client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
@@ -545,7 +526,7 @@ class HermesGatewayStepReadyTests(TestCase):
                 None,
                 BytesIO(b"Unauthorized"),
             )
-            with patch("iris.infrastructure.hermes_client.urlopen", side_effect=err):
+            with patch("iris.infrastructure.iris_agent_client.urlopen", side_effect=err):
                 self.assertEqual(client.probe_chat_auth(), "unauthorized")
 
     def test_probe_http_400_means_bearer_accepted(self) -> None:
@@ -553,7 +534,7 @@ class HermesGatewayStepReadyTests(TestCase):
         from urllib.error import HTTPError
 
         with patch(
-            "iris.infrastructure.hermes_credentials.load_hermes_dotenv",
+            "iris.infrastructure.iris_agent_credentials.load_agent_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
             client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
@@ -564,32 +545,32 @@ class HermesGatewayStepReadyTests(TestCase):
                 None,
                 BytesIO(b"messages required"),
             )
-            with patch("iris.infrastructure.hermes_client.urlopen", side_effect=err):
+            with patch("iris.infrastructure.iris_agent_client.urlopen", side_effect=err):
                 self.assertEqual(client.probe_chat_auth(), "ok")
 
 
 class HermesCloudAuthErrorTests(TestCase):
     def test_sse_cloud_401_message(self) -> None:
-        from iris.infrastructure.hermes_errors import (
+        from iris.infrastructure.iris_agent_errors import (
             CLOUD_AUTH_ERROR_PREFIX,
             GATEWAY_AUTH_ERROR_PREFIX,
-            format_hermes_http_401,
-            format_hermes_sse_error,
+            format_agent_http_401,
+            format_agent_sse_error,
             looks_like_upstream_unauthorized,
         )
 
         self.assertTrue(looks_like_upstream_unauthorized("HTTP 401: Unauthorized"))
-        msg = format_hermes_sse_error("HTTP 401: Unauthorized", model="gemma4:31b-cloud")
+        msg = format_agent_sse_error("HTTP 401: Unauthorized", model="gemma4:31b-cloud")
         self.assertIn(CLOUD_AUTH_ERROR_PREFIX, msg)
         self.assertNotIn(GATEWAY_AUTH_ERROR_PREFIX, msg)
-        gw = format_hermes_http_401()
+        gw = format_agent_http_401()
         self.assertIn(GATEWAY_AUTH_ERROR_PREFIX, gw)
         self.assertNotIn(CLOUD_AUTH_ERROR_PREFIX, gw)
 
     def test_tools_error_soft_message(self) -> None:
-        from iris.infrastructure.hermes_errors import format_hermes_sse_error
+        from iris.infrastructure.iris_agent_errors import format_agent_sse_error
 
-        msg = format_hermes_sse_error(
+        msg = format_agent_sse_error(
             "registry.ollama.ai/library/exaone3.5:2.4b does not support tools"
         )
         self.assertIn("도구", msg)

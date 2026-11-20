@@ -31,13 +31,13 @@ class SettingsDialogPerfTests(TestCase):
                 side_effect=AssertionError("network"),
             ),
             patch(
-                "iris.system.setup_protocol.is_hermes_gateway_running",
+                "iris.system.setup_protocol.is_agent_gateway_running",
                 side_effect=AssertionError("network"),
             ),
         ):
             snap = proto.detect_local()
         self.assertIsNone(snap.get("ollama_running"))
-        self.assertIsNone(snap.get("hermes_running"))
+        self.assertIsNone(snap.get("agent_running"))
 
     def test_enrich_detect_network_calls_health_only_timeout(self) -> None:
         proto = SetupProtocol()
@@ -48,7 +48,7 @@ class SettingsDialogPerfTests(TestCase):
                 return_value=True,
             ) as ollama,
             patch(
-                "iris.system.setup_protocol.is_hermes_gateway_running",
+                "iris.system.setup_protocol.is_agent_gateway_running",
                 return_value=False,
             ) as hermes,
         ):
@@ -58,4 +58,4 @@ class SettingsDialogPerfTests(TestCase):
         hermes.assert_called_once()
         self.assertEqual(hermes.call_args.kwargs.get("timeout_sec"), 0.5)
         self.assertTrue(out["ollama_running"])
-        self.assertFalse(out["hermes_running"])
+        self.assertFalse(out["agent_running"])

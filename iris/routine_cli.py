@@ -72,7 +72,7 @@ def run_tick(*, force: bool = False) -> int:
     from iris.infrastructure.ollama_client import OllamaClient
     from iris.knowledge.iris_state import sync_routine_note
     from iris.knowledge.iris_wiki import IrisWiki
-    from iris.runtime.backend_route import route_for_routine
+    from iris.runtime.backend_route import is_agent_backend, route_for_routine
     from iris.runtime.model_switch import ModelSwitchService
     from iris.runtime.routine_search import format_evidence, run_search
     from iris.runtime.routine_runner import (
@@ -138,7 +138,7 @@ def run_tick(*, force: bool = False) -> int:
                     build_run_messages(
                         routine,
                         evidence=evidence,
-                        tools_available=(route.backend == "hermes"),
+                        tools_available=is_agent_backend(route.backend),
                     ),
                     timeout_sec=180.0,
                     think=False,
@@ -239,18 +239,27 @@ def _launch_iris() -> bool:
     """아이리스를 새로 띄운다."""
     import subprocess
 
-    runner = Path(sys.executable)
-    pythonw = runner.with_name("pythonw.exe")
-    if pythonw.is_file():
-        runner = pythonw
     try:
-        subprocess.Popen(
-            [str(runner), "-m", "iris"],
-            cwd=str(_ROOT),
-            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+        from iris.system.gui_python import gui_launch_env, resolve_gui_pythonw
+
+        runner = resolve_gui_pythonw(_ROOT)
+        env = gui_launch_env(_ROOT)
+    except Exception:
+        runner = Path(sys.executable)
+        pythonw = runner.with_name("pythonw.exe")
+        if pythonw.is_file():
+            runner = pythonw
+        env = None
+    try:
+        kwargs: dict = {
+            "cwd": str(_ROOT),
+            "creationflags": getattr(subprocess, "DETACHED_PROCESS", 0)
             | getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            close_fds=True,
-        )
+            "close_fds": True,
+        }
+        if env is not None:
+            kwargs["env"] = env
+        subprocess.Popen([str(runner), "-m", "iris"], **kwargs)
     except (OSError, ValueError) as exc:
         _log(f"launch failed: {exc}")
         return False

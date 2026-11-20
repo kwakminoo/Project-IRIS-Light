@@ -15,8 +15,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 BACKEND_OLLAMA = "ollama"
-BACKEND_HERMES = "hermes"
+BACKEND_AGENT = "agent"
+BACKEND_HERMES = BACKEND_AGENT  # compat alias — writers emit "agent"
 BACKEND_API = "api"
+# Readers also accept legacy "hermes" (see iris.runtime.backend_route.is_agent_backend).
+_AGENT_BACKENDS = frozenset({BACKEND_AGENT, "hermes"})
 
 DEFAULT_TIMEOUT_SEC = 90.0
 
@@ -30,8 +33,8 @@ class BackendRoute:
     base_url: str = ""
     api_key: str = ""
     auth_style: str = "bearer"
-    command: str = "hermes"
-    # Hermes 전용 — resolve_hermes_inference() 결과
+    command: str = "iris-agent"
+    # Hermes 전용 — resolve_iris_agent_inference() 결과
     target: Any = None
     extra: dict[str, str] = field(default_factory=dict)
 
@@ -47,8 +50,8 @@ def collect_reply(
     """스트림을 끝까지 받아 본문만 이어 붙인다."""
     stop = cancelled or (lambda: False)
     backend = (route.backend or "").strip().lower()
-    if backend == BACKEND_HERMES:
-        return _hermes(route, messages, stop)
+    if backend in _AGENT_BACKENDS:
+        return _agent(route, messages, stop)
     if backend == BACKEND_API:
         return _api(route, messages, timeout_sec, stop)
     return _ollama(route, messages, timeout_sec, stop, think)
@@ -72,11 +75,11 @@ def _ollama(route, messages, timeout_sec, stop, think) -> str:
     return "".join(parts)
 
 
-def _hermes(route, messages, stop) -> str:
-    from iris.infrastructure.hermes_client import HermesClient
+def _agent(route, messages, stop) -> str:
+    from iris.infrastructure.iris_agent_client import IrisAgentClient
 
-    client = HermesClient(
-        route.base_url or "http://127.0.0.1:8642/v1",
+    client = IrisAgentClient(
+        (route.base_url or "").strip(),
         api_key=route.api_key,
         command=route.command,
     )
@@ -175,26 +178,32 @@ if __name__ == "__main__":
         def stream_chat(self, model, messages, **k):
             raise AssertionError("hermes stream must not run after sync fail + base_url")
 
-    import iris.infrastructure.hermes_client as _hc
+    import iris.infrastructure.iris_agent_client as _hc
     import iris.infrastructure.openai_compat_client as _oc
 
     fake = _FakeHermes()
-    _orig = _hc.HermesClient
-    _hc.HermesClient = lambda *a, **k: fake  # type: ignore[misc, assignment]
+    _orig = _hc.IrisAgentClient
+    _hc.IrisAgentClient = lambda *a, **k: fake  # type: ignore[misc, assignment]
     try:
         out = collect_reply(
-            BackendRoute(backend=BACKEND_HERMES, model="ignored", target=_FakeTarget()),
+            BackendRoute(backend=BACKEND_AGENT, model="ignored", target=_FakeTarget()),
+            [{"role": "user", "content": "hi"}],
+        )
+        # Legacy route id still lands on the agent path.
+        out_legacy = collect_reply(
+            BackendRoute(backend="hermes", model="ignored", target=_FakeTarget()),
             [{"role": "user", "content": "hi"}],
         )
     finally:
-        _hc.HermesClient = _orig
+        _hc.IrisAgentClient = _orig
     assert out == "ok"
+    assert out_legacy == "ok"
     assert fake.synced is not None
     assert fake.synced[0] == "nvidia/test-model"
     assert fake.synced[1] is not None
     assert fake.synced[1].model == "nvidia/test-model"
 
-    _hc.HermesClient = lambda *a, **k: _FailSyncHermes()  # type: ignore[misc, assignment]
+    _hc.IrisAgentClient = lambda *a, **k: _FailSyncHermes()  # type: ignore[misc, assignment]
     _orig_stream = _oc.stream_chat
 
     def _fake_api_stream(*a, **k):
@@ -203,11 +212,11 @@ if __name__ == "__main__":
     _oc.stream_chat = _fake_api_stream  # type: ignore[assignment]
     try:
         out2 = collect_reply(
-            BackendRoute(backend=BACKEND_HERMES, model="ignored", target=_FakeTarget()),
+            BackendRoute(backend=BACKEND_AGENT, model="ignored", target=_FakeTarget()),
             [{"role": "user", "content": "hi"}],
         )
     finally:
-        _hc.HermesClient = _orig
+        _hc.IrisAgentClient = _orig
         _oc.stream_chat = _orig_stream
     assert out2 == "via-api"
     print("backend_call self-check ok")

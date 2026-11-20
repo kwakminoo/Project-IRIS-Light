@@ -6,12 +6,13 @@ import json
 import os
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 os.environ["IRIS_CONTROL_TOKEN"] = "contract-check-token"
 os.environ.pop("IRIS_CONTROL_URL", None)
 
 import iris.system.control_surface as cs
-from iris.mcp.iris_control_stdio import _http, _tool_result
+from iris.system.control_http_client import _http, _tool_result
 
 cs.write_control_endpoint = lambda **_k: None  # type: ignore[assignment]
 cs.clear_control_endpoint = lambda: None  # type: ignore[assignment]
@@ -149,6 +150,13 @@ def main() -> None:
         assert down["isError"] is True
     finally:
         surface.stop()
+
+    src = Path(cs.__file__).read_text(encoding="utf-8")
+    assert "def invoke_http_timeout(" in src
+    assert 'if name in ("ide.pick_open_file", "ide.pick_open_folder")' in src
+    assert "confirm_required and not runs_off_ui_thread" in src
+    assert cs.invoke_http_timeout("ide.pick_open_folder") is None
+    assert cs.invoke_http_timeout("email.send", confirm_required=True) is None
     print("control http contract ok")
 
 

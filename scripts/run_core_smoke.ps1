@@ -1,4 +1,4 @@
-# Core smoke — startup, gateway, Hermes, control, IDE tile
+# Core smoke — startup, agent_runtime sidecar step, Hermes required, control, IDE tile
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\run_core_smoke.ps1
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $PSScriptRoot

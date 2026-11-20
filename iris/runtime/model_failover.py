@@ -21,6 +21,7 @@ claude-code-router(MIT)의 세 파일을 옮긴 것이다.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -176,7 +177,7 @@ class RouteTarget:
     """전환 후보 하나. 모델만이 아니라 어느 백엔드로 갈지까지 들고 있다."""
 
     model: str
-    backend: str = ""  # ollama | hermes | api | ''(현재 것 유지)
+    backend: str = ""  # ollama | agent | api | ''(현재 것 유지); legacy hermes ok
     label: str = ""
     free: bool = False
 
@@ -187,6 +188,32 @@ class RouteTarget:
     @property
     def key(self) -> str:
         return f"{self.backend}|{self.model}"
+
+
+class RouteCooldownBook:
+    """Rate-limit 뒤 해당 RouteTarget 을 until_monotonic 까지 체인에서 건너뛴다."""
+
+    def __init__(self) -> None:
+        self._until: dict[str, float] = {}
+
+    def mark_cool(self, target: RouteTarget, until_monotonic: float) -> None:
+        self._until[target.key] = max(
+            self._until.get(target.key, 0.0), float(until_monotonic)
+        )
+
+    def is_cool(
+        self, target: RouteTarget, now_monotonic: float | None = None
+    ) -> bool:
+        now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        until = self._until.get(target.key)
+        return until is not None and now < until
+
+    def filter_ready(
+        self,
+        targets: list[RouteTarget],
+        now_monotonic: float | None = None,
+    ) -> list[RouteTarget]:
+        return [t for t in targets if not self.is_cool(t, now_monotonic)]
 
 
 @dataclass(frozen=True)
@@ -332,7 +359,7 @@ if __name__ == "__main__":
     assert plan.next_after(2) is None
 
     # 같은 모델이라도 백엔드가 다르면 별개 후보다 (#1804 회피)
-    dup = build_execution_plan(primary, [RouteTarget(model="qwen3:8b", backend="hermes"), free1])
+    dup = build_execution_plan(primary, [RouteTarget(model="qwen3:8b", backend="agent"), free1])
     assert len(dup.attempts) == 3
     same = build_execution_plan(primary, [RouteTarget(model="qwen3:8b", backend="ollama")])
     assert len(same.attempts) == 1
@@ -372,4 +399,15 @@ if __name__ == "__main__":
 
     assert "무료" in describe_switch(primary, free1, "할당량 소진")
     assert describe_switch(None, free1, "").endswith("전환했습니다.")
+
+    book = RouteCooldownBook()
+    cool_t = RouteTarget(model="cool", backend="api")
+    hot_t = RouteTarget(model="hot", backend="api")
+    assert book.is_cool(cool_t) is False
+    book.mark_cool(cool_t, until_monotonic=1.0)
+    assert book.is_cool(cool_t, now_monotonic=0.5) is True
+    assert book.is_cool(cool_t, now_monotonic=1.5) is False
+    assert [t.model for t in book.filter_ready([cool_t, hot_t], now_monotonic=0.5)] == [
+        "hot"
+    ]
     print("model_failover self-check ok")

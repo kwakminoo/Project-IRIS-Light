@@ -191,10 +191,10 @@ class TopStatusHeader:
         self,
         settings: Settings | None,
         *,
-        hermes_online: bool = False,
+        agent_online: bool = False,
     ) -> None:
         """Iris Agent 가용성 갱신."""
-        line = external_backend_status_line(settings, hermes_online=hermes_online)
+        line = external_backend_status_line(settings, agent_online=agent_online)
         hm = "UNAVAILABLE"
         if "Iris Agent (Connected)" in line:
             hm = "CONNECTED"
@@ -227,5 +227,5 @@ class TopStatusHeader:
             else:
                 self.set_browser_status("CLOSED", dot_kind="unavailable")
             self._browser_chip.setToolTip(
-                "Iris 내장 브라우저 제어 상태 (Hermes AGENT와 별개)"
+                "Iris 내장 브라우저 제어 상태 (Iris Agent와 별개)"
             )

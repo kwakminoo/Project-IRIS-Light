@@ -11,13 +11,14 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from iris.system.hermes_iris_control_sync import iris_state_dir, project_root
+from iris.system.iris_agent_control_sync import iris_state_dir, project_root
 from iris.system.node_runtime import (
     NODE_DOWNLOAD_URL,
     install_node_winget,
@@ -27,6 +28,79 @@ from iris.system.node_runtime import (
 
 THEIA_VERSION = "1.74.0"
 RUNTIME_NAME = "iris-ide"
+
+# Iris app .venv 오염 — IDE 통합 터미널 python 이 headless OpenCV 로 잡히지 않게
+_IDE_POLLUTION_ENV_KEYS = (
+    "VIRTUAL_ENV",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONEXECUTABLE",
+    "PYTHONUSERBASE",
+    "UV_PROJECT",
+    "UV_PROJECT_ENVIRONMENT",
+    "UV_PYTHON",
+    "UV_PYTHON_PREFERENCE",
+    "CONDA_PREFIX",
+    "CONDA_DEFAULT_ENV",
+    "CONDA_PYTHON_EXE",
+    "PIP_PYTHON",
+)
+
+
+def resolve_iris_venv_for_ide() -> Path | None:
+    """Prefer VIRTUAL_ENV if it is a dir; else project_root()/.venv; else None."""
+    raw = (os.environ.get("VIRTUAL_ENV") or "").strip()
+    if raw:
+        p = Path(raw).expanduser()
+        if p.is_dir():
+            return p
+    fallback = project_root() / ".venv"
+    if fallback.is_dir():
+        return fallback
+    return None
+
+
+def _path_entry_under_venv(entry: str, venv_root: Path) -> bool:
+    if not entry or not entry.strip():
+        return False
+    try:
+        root = venv_root.resolve()
+    except OSError:
+        root = Path(os.path.normpath(str(venv_root)))
+    try:
+        child = Path(entry).resolve()
+    except OSError:
+        child = Path(os.path.normpath(entry))
+    if sys.platform == "win32":
+        r, c = str(root).casefold(), str(child).casefold()
+        sep = "\\"
+    else:
+        r, c = str(root), str(child)
+        sep = "/"
+    return c == r or c.startswith(r.rstrip("/\\") + sep)
+
+
+def sanitize_ide_child_env(
+    env: Mapping[str, str],
+    *,
+    iris_venv: Path | None,
+) -> dict[str, str]:
+    """Copy env, drop Iris venv pollution, strip PATH entries under iris_venv.
+
+    Does not set a new VIRTUAL_ENV for IDE. Idempotent.
+    """
+    out = dict(env)
+    for key in _IDE_POLLUTION_ENV_KEYS:
+        out.pop(key, None)
+    if iris_venv is not None and iris_venv.is_dir():
+        path = out.get("PATH", "")
+        kept = [
+            part
+            for part in path.split(os.pathsep)
+            if part and not _path_entry_under_venv(part, iris_venv)
+        ]
+        out["PATH"] = os.pathsep.join(kept)
+    return out
 
 
 def is_iris_ide_demo() -> bool:
@@ -485,6 +559,7 @@ class IrisIdeRuntimeManager:
             self._bridge_port = _free_port()
         self._token = secrets.token_urlsafe(24)
         env = os.environ.copy()
+        env = sanitize_ide_child_env(env, iris_venv=resolve_iris_venv_for_ide())
         # 경로 점검용 변수가 부모에 남아 있으면 브리지가 listen 전에 종료한다.
         env.pop("IRIS_BRIDGE_RESOLVE_CHECK", None)
         env["PORT"] = str(self._theia_port)

@@ -152,7 +152,7 @@ class SidecarAgentLoopTests(TestCase):
                 [{"role": "system", "content": "IRIS control"}],
             )
 
-    def test_fake_ctor_disables_hermes_persist(self) -> None:
+    def test_fake_ctor_disables_agent_persist(self) -> None:
         with TemporaryDirectory() as tmp:
             record = Path(tmp) / "agent.json"
             proc = self._start_fake(record)

@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from iris.infrastructure.agent_tool_registry import default_registry
-from iris.system.hermes_iris_control_sync import project_root
+from iris.system.iris_agent_control_sync import project_root
 
 
 def _block_network(*_a: object, **_k: object) -> None:
@@ -71,8 +71,8 @@ def _main() -> None:
     assert "Hermes Agent가 아니다" not in soul
 
     skill_dirs = [
-        root / "integrations" / "hermes-skills" / "iris-control" / "iris-session-status",
-        root / "integrations" / "hermes-skills" / "iris-control" / "iris-work-start",
+        root / "integrations" / "iris-skills" / "iris-control" / "iris-session-status",
+        root / "integrations" / "iris-skills" / "iris-control" / "iris-work-start",
     ]
     for skill_dir in skill_dirs:
         text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")

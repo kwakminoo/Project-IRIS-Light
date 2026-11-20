@@ -53,14 +53,18 @@ def register_settings_actions(window: SettingsHost, reg: ActionRegistry) -> None
                 "ollama_model": s.ollama_model,
                 "agent_required": True,
                 "agent_version": load_pinned_sha(),
-                "hermes_enabled": s.hermes_enabled,
+                "agent_enabled": s.agent_enabled,
             },
         )
 
     def settings_set(args: dict[str, Any]) -> dict[str, Any]:
         s = window._settings
         # 에이전트 URL·키·명령은 런타임 홈 .env / supervisor 소유. 설정 액션으로 받지 않음.
-        blocked = ("hermes_api_key", "hermes_command", "hermes_base_url")
+        blocked = (
+            "agent_api_key",
+            "agent_command",
+            "agent_base_url",
+        )
         for key in blocked:
             if key in args:
                 return err_result(
@@ -75,13 +79,15 @@ def register_settings_actions(window: SettingsHost, reg: ActionRegistry) -> None
             changed.append("ollama_base_url")
         # 에이전트는 도구 호출의 유일한 경로이므로 끌 수 없음. 조용히 무시하면
         # 모델이 자기 도구를 잃은 채 성공했다고 답하게 됨.
-        if "hermes_enabled" in args and not bool(args["hermes_enabled"]):
+        # 제품 게이트는 agent_enabled만. 알 수 없는 키(옛 hermes_* 포함)는 no-op.
+        disable_requested = "agent_enabled" in args and not bool(args["agent_enabled"])
+        if disable_requested:
             return err_result(
                 "settings.set",
                 "agent cannot be disabled — Iris Agent is required for tool calls",
             )
         window._status_header.set_model_name(s.model_name or s.ollama_model or "(unset)")
-        window._refresh_hermes_health()
+        window._refresh_agent_health()
         _log(window, "settings.set", True)
         return ok_result("settings.set", {"changed": changed})
 

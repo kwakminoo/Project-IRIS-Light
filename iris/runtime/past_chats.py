@@ -1,6 +1,6 @@
-"""이전 대화 참고 — 평소 채팅에서 다른 대화의 기록을 찾아 붙인다.
+"""이전 대화 참고 — SpeakTool `chat.search_past` 가 다른 대화 기록을 찾는다.
 
-ChatGPT의 "이전 대화 참조"와 같은 기능이다. 두 가지를 지킨다.
+두 가지를 지킨다.
 
 - **지금 대화는 빼고 찾는다.** 이미 모델 컨텍스트에 있고, 안 빼면 방금 보낸
   질문이 자기 자신을 1위로 찾아온다.
@@ -13,6 +13,9 @@ ChatGPT의 "이전 대화 참조"와 같은 기능이다. 두 가지를 지킨�
 게 없고, 답만 걸리면 무엇에 대한 답인지 모른다. 실제 앱에서 "저번에 설치 오류
 어떻게 고쳤지?"가 다른 테스트 채팅의 **같은 질문**(답 없음)을 찾아왔다 — 그런
 기록은 버린다.
+
+의도 판별(저번/이전 대화 regex)은 없다. 모델이 `chat.search_past` 를 고를 때만
+검색한다.
 """
 
 from __future__ import annotations
@@ -27,8 +30,12 @@ from iris.storage.conversations import INTERRUPTED_NOTE
 
 # 이보다 짧은 말("응", "고마워")로는 찾지 않는다 — 키워드 검색이 잡음만 올린다.
 MIN_QUERY_CHARS = 4
-# 평소 채팅엔 인수인계보다 적게 붙인다. 매 턴 들어가므로 토큰과 잡음이 쌓인다.
+# SpeakTool 한 호출에 붙일 상한. 토큰·잡음을 막는다.
 MAX_PAST_HITS = 3
+# SpeakTool 경로: 임베더 없거나 embed off 일 때 (키워드-only 금지).
+SEMANTIC_UNAVAILABLE_MSG = (
+    "semantic search unavailable; enable embed in settings or install an embedding model"
+)
 
 # 인수인계·루틴은 "관련 기록이 있다"는 전제에서 순위만 매기면 되지만, 평소
 # 채팅은 "관련 기록이 있기나 한가"를 판정해야 한다. 그래서 더 엄격하게 거른다.
@@ -97,6 +104,7 @@ def past_chat_limit(retrieval_limit: int) -> int:
 
 
 def should_search(text: str) -> bool:
+    """도구 내부 길이 게이트. 의도 regex 없음 — 호출자가 검색 여부를 고른다."""
     return len((text or "").strip()) >= MIN_QUERY_CHARS
 
 
@@ -105,6 +113,8 @@ def find_past_chats(
     query: str,
     current_conversation_id: int,
     ollama_client: object | None = None,
+    *,
+    limit: int | None = None,
 ) -> list[SearchHit]:
     """다른 대화의 기록을 찾는다. `ollama_client` 가 있으면 의미검색까지 한다.
 
@@ -116,8 +126,10 @@ def find_past_chats(
         return []
     if not should_search(query):
         return []
-    limit = past_chat_limit(settings.retrieval_limit)
-    if limit <= 0:
+    capped = past_chat_limit(
+        settings.retrieval_limit if limit is None else limit
+    )
+    if capped <= 0:
         return []
     embedder = None
     if ollama_client is not None:
@@ -126,7 +138,7 @@ def find_past_chats(
         embedder = resolve_embedder(settings, ollama_client)
     hits = service.retrieve(  # type: ignore[attr-defined]
         query,
-        limit=limit * 3,  # 거르고 나서 limit 만큼 남도록 넉넉히
+        limit=capped * 3,  # 거르고 나서 capped 만큼 남도록 넉넉히
         embedder=embedder,
         exclude_conversation_id=int(current_conversation_id or 0) or None,
         # 1위 대비 컷을 끈다 — 똑같은 옛 질문이 유사도 1.0으로 1위면 쓸모 있는
@@ -146,9 +158,41 @@ def find_past_chats(
         chat = PastChat(chat.hit, turns=tuple(t for t in chat.turns if t.id not in covered))
         covered.update(t.id for t in chat.turns)
         out.append(chat)
-        if len(out) >= limit:
+        if len(out) >= capped:
             break
     return out
+
+
+def semantic_past_chats(
+    service: object,
+    query: str,
+    current_conversation_id: int,
+    ollama_client: object,
+    *,
+    limit: int | None = None,
+) -> tuple[list, str | None]:
+    """Embed-backed past search for SpeakTool. Never keyword-only.
+
+    Returns (chats, message). message is set when search cannot run; chats empty.
+    Caller must supply a real Ollama client and run this off the UI thread.
+    """
+    settings = service.history_settings  # type: ignore[attr-defined]
+    if not settings.enabled or not settings.reference_past_chats:
+        return [], "past chat reference is disabled in settings"
+    if not settings.embed_enabled:
+        return [], SEMANTIC_UNAVAILABLE_MSG
+    from iris.runtime.model_switch import resolve_embedder
+
+    if resolve_embedder(settings, ollama_client) is None:
+        return [], SEMANTIC_UNAVAILABLE_MSG
+    chats = find_past_chats(
+        service,
+        query,
+        current_conversation_id,
+        ollama_client,
+        limit=limit,
+    )
+    return chats, None
 
 
 def _clean_answer(text: str) -> str:

@@ -6,6 +6,54 @@
     "confirm_required": false
   },
   {
+    "name": "app.demo_ping",
+    "summary": "Open the App Host demo (app_host_ping.html)",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "app.directory_list",
+    "summary": "List or search App Host directory apps",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "app.list_presented",
+    "summary": "List ChatAppOffers currently registered in the chat App Host stack",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "app.open",
+    "summary": "Open an installed or builtin App Directory app by app_id (e.g. demo-ping). Prefer @app / directory for known apps; use app.present_html for invented UI.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "app.present_html",
+    "summary": "Present model-authored HTML as an interactive app inline in the chat transcript. Use for calculators, quizzes, forms, tools the user can operate. Pass a complete HTML document in html. Do not write Desktop .html files for this.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "attachment.copy_to",
+    "summary": "Copy an attached original by attachment_id to an absolute destination. The source host path is never exposed; external writes require human confirmation. overwrite defaults to false.",
+    "risk": "medium",
+    "confirm_required": true
+  },
+  {
+    "name": "attachment.list",
+    "summary": "List current chat attachments as {id, filename, size, mime}. Use id with attachment.copy_to / move_to / project.import_attachment; host paths are never returned.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "attachment.move_to",
+    "summary": "Move an attached original by attachment_id to an absolute destination. Call only when the user explicitly asked to move it; source deletion requires human confirmation.",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
     "name": "browser.back",
     "summary": "Browser history back",
     "risk": "low",
@@ -180,6 +228,12 @@
     "confirm_required": false
   },
   {
+    "name": "chat.search_past",
+    "summary": "Search prior chat conversations (not wiki notes) by query",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
     "name": "chat.send",
     "summary": "Submit composer text as a user turn (same as Send)",
     "risk": "medium",
@@ -198,15 +252,15 @@
     "confirm_required": false
   },
   {
-    "name": "content.extract",
-    "summary": "Extract text from PDF (scanned image pages included), Office, text, image, or http(s) URL. Chat already attaches [자료 본문] before the answer.",
-    "risk": "low",
+    "name": "content.dump_lab_scripts",
+    "summary": "From a lecture PDF, parse lab blocks (프로그램 N-M labels, then (실습) titles) and write source files under the project (default labs/). Prefer attachment_id (uuid or unique filename from attachment.list / get_state); legacy absolute PDF path still allowed. Returns written paths and labels only — not PDF text. Prefer this over content.extract + project.write_file when the user wants all labs as files.",
+    "risk": "medium",
     "confirm_required": false
   },
   {
-    "name": "content.dump_lab_scripts",
-    "summary": "From a lecture PDF path, parse every practice/lab program label and write source files under the project (default labs/). Returns written paths and labels only — not PDF text. Prefer this over content.extract + project.write_file when the user wants all labs as files. Pass Attachment absolute path.",
-    "risk": "medium",
+    "name": "content.extract",
+    "summary": "Extract text from PDF (scanned image pages included), Office, text, image, or http(s) URL. Prefer attachment_id (uuid or unique filename from attachment.list / get_state); legacy source/path/url may be http(s) or an absolute file. Host paths are never listed in get_state.",
+    "risk": "low",
     "confirm_required": false
   },
   {
@@ -379,7 +433,7 @@
   },
   {
     "name": "extension.install_github",
-    "summary": "Install a GitHub repo as MCP and/or skill. Required: url. kind=auto|mcp|skill. scope=project only in IRIS IDE (writes the open project). scope=iris only on the main Iris screen (Hermes). needs_input: ask and do not invent secrets. Do not claim installed without ok. Do not treat an IDE extension and a Hermes MCP as one install.",
+    "summary": "Install a GitHub repo as MCP and/or skill. Required: url. kind=auto|mcp|skill. scope=project only in IRIS IDE (writes the open project). scope=iris only on the main Iris screen (Iris Agent). needs_input: ask and do not invent secrets. Do not claim installed without ok. Do not treat an IDE extension and an Iris Agent MCP as one install.",
     "risk": "medium",
     "confirm_required": false
   },
@@ -451,7 +505,7 @@
   },
   {
     "name": "ide.open_file",
-    "summary": "Open an existing file in the bound IDE workspace. Required: path, or project_root+rel_path. Relative paths are under the bound workspace from iris_get_state, not the shell cwd. Missing files are an error; do not create a substitute.",
+    "summary": "Open an existing file in the bound IDE workspace. Required: path, or project_root+rel_path. Relative paths are under the bound workspace from get_state, not the shell cwd. Missing files are an error; do not create a substitute.",
     "risk": "medium",
     "confirm_required": false
   },
@@ -576,6 +630,24 @@
     "confirm_required": false
   },
   {
+    "name": "local.read_file",
+    "summary": "Read one absolute local text path within the configured System or Workspace + Attachments scope.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "local.search_files",
+    "summary": "Search filenames under one explicit absolute root within the configured local read scope.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "local.write_file",
+    "summary": "Write one absolute local text path within the configured System or Workspace + Attachments scope. Required: path, content.",
+    "risk": "medium",
+    "confirm_required": true
+  },
+  {
     "name": "note.export_pdf",
     "summary": "Make a PDF from content and/or source files. Required: content or sources. Optional path (open project, else Documents/IRIS/iris-note.pdf). Do not run PyMuPDF, reportlab, or pdf_create.py. Do not claim saved without ok and a real file.",
     "risk": "medium",
@@ -624,6 +696,12 @@
     "confirm_required": false
   },
   {
+    "name": "project.import_attachment",
+    "summary": "Copy an attached original into the bound IDE workspace. Required: attachment_id and workspace-relative rel_path; existing files are refused.",
+    "risk": "medium",
+    "confirm_required": false
+  },
+  {
     "name": "project.list_files",
     "summary": "List files in the bound IDE workspace (query = case-insensitive substring) — use this before open_file/run when the path is unknown",
     "risk": "low",
@@ -639,6 +717,12 @@
     "name": "project.open_similar",
     "summary": "Fuzzy-find best matching project and open in Companion; on ambiguous/low_score returns matches (use force=true to override)",
     "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "project.read_file",
+    "summary": "Read a UTF-8 file body from the bound IDE workspace disk (rel_path or path; optional max_bytes). Missing, escape, directory, binary/NUL, or too-large fail — never invent content. Disk bytes only; dirty Monaco buffers need ide.save / ide.edit first.",
+    "risk": "low",
     "confirm_required": false
   },
   {
@@ -720,6 +804,12 @@
     "confirm_required": false
   },
   {
+    "name": "shell.run",
+    "summary": "Run a shell command on the Iris home surface (no console window; output appears as an Iris Shell chat card). cwd must be under the user home. When IDE Companion is active, use familiar terminal (Iris tools terminal) instead.",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
     "name": "ui.open_mcp",
     "summary": "Open Iris Agent MCP manager dialog",
     "risk": "low",
@@ -768,6 +858,18 @@
     "confirm_required": false
   },
   {
+    "name": "web.run_extract",
+    "summary": "Extract readable text from public http(s) URLs (Iris urllib lane). Required: urls (list, max 5). Optional: char_limit.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "web.run_search",
+    "summary": "Search the web via Iris (Brave/Tavily/Exa/SerpAPI keys from settings). Required: query. Optional: limit (1..100).",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
     "name": "wiki.delete_note",
     "summary": "Delete one user Iris Wiki note by rel_path",
     "risk": "medium",
@@ -775,7 +877,7 @@
   },
   {
     "name": "wiki.import_content",
-    "summary": "Save PDF/URL/file into Iris Wiki with a full summary and key concepts on top, and the original below. PDF is copied; web is one HTML file. No text cap. Image pages are read one by one.",
+    "summary": "Save PDF/URL/file into Iris Wiki with a full summary and key concepts on top, and the original below. Prefer attachment_id from attachment.list / get_state; legacy source/path/url may be http(s) or an absolute file. PDF is copied; web is one HTML file. No text cap. Image pages are read one by one.",
     "risk": "medium",
     "confirm_required": false
   },

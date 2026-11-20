@@ -59,6 +59,9 @@ def start_ollama_server() -> bool:
         popen_kwargs["startupinfo"] = startupinfo
     else:
         popen_kwargs["start_new_session"] = True
+    env = os.environ.copy()
+    env.setdefault("OLLAMA_NUM_PARALLEL", "5")
+    popen_kwargs["env"] = env
     try:
         subprocess.Popen([exe, "serve"], **popen_kwargs)
         return True
@@ -183,6 +186,37 @@ def _self_check_open_ollama_app() -> None:
         shutil.rmtree(exe.parent, ignore_errors=True)
 
 
+def _self_check_start_ollama_server_env() -> None:
+    pops: list[dict] = []
+    saved_popen = subprocess.Popen
+    old_parallel = os.environ.pop("OLLAMA_NUM_PARALLEL", None)
+
+    def _popen(cmd: list[str], **kw: object) -> object:
+        pops.append(dict(kw))
+
+        class _Proc:
+            pid = 1
+
+        return _Proc()
+
+    try:
+        globals()["ollama_executable"] = lambda: "ollama"  # type: ignore[assignment]
+        subprocess.Popen = _popen  # type: ignore[method-assign]
+        assert start_ollama_server() is True
+        assert len(pops) == 1
+        env = pops[0].get("env") or {}
+        assert env.get("OLLAMA_NUM_PARALLEL") == "5"
+        if sys.platform == "win32":
+            flags = int(pops[0].get("creationflags", 0))
+            no_window = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            assert flags & no_window
+    finally:
+        globals()["ollama_executable"] = ollama_executable
+        subprocess.Popen = saved_popen  # type: ignore[method-assign]
+        if old_parallel is not None:
+            os.environ["OLLAMA_NUM_PARALLEL"] = old_parallel
+
+
 if __name__ == "__main__":
     base = "http://127.0.0.1:11434/v1"
     assert is_ollama_running(base) in (True, False)
@@ -190,4 +224,5 @@ if __name__ == "__main__":
     assert is_ollama_running("http://127.0.0.1:1/v1", timeout_sec=1.0) is False
     assert isinstance(ollama_app_candidates(), list)
     _self_check_open_ollama_app()
+    _self_check_start_ollama_server_env()
     print("ollama_server ok - running:", is_ollama_running(base))

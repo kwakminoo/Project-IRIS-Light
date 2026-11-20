@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest import TestCase, mock
 
 from iris.system import android_emulator as ae
-from iris.system.hermes_iris_control_sync import _python_cmd, project_root
+from iris.system.iris_agent_control_sync import _python_cmd, project_root
 from iris.system.phone_control import read_call_state
 from iris.system.win_subprocess import (
     harden_subprocess_kwargs,

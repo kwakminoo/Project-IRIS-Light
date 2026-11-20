@@ -109,7 +109,7 @@ class SttUxTests(TestCase):
         self.assertNotIn("OPENCLAW", prefixes)
         self.assertNotIn("HERMES", prefixes)
         header.set_stt_status("off")
-        header.refresh_backend_status(Settings(), hermes_online=True)
+        header.refresh_backend_status(Settings(), agent_online=True)
         values = [
             lab.text()
             for lab in header.status_widget().findChildren(QLabel)

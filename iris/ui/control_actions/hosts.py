@@ -1,9 +1,9 @@
 """액션 모듈이 요구하는 호스트 속성.
 
 MainWindow가 이 프로토콜을 만족하지만, 액션 모듈은 MainWindow를 import하지 않는다.
-실행 스레드: HTTP 워커가 registry.invoke를 부른다. project.run·project.write_file·project.delete·chat.exec_python·email.list_messages·email.read_message·emulator.*·browser.*·note.export_pdf·extension.install_github·project.write_image_code·wiki.reprocess_note 만 UI 스레드 밖이다 (iris.system.control_surface.runs_off_ui_thread). 나머지는 Qt 메인 스레드.
+실행 스레드: HTTP 워커가 registry.invoke를 부른다. project.run·shell.run·project.write_file·project.delete·chat.exec_python·email.list_messages·email.read_message·emulator.*·browser.*·web.run_search·web.run_extract·note.export_pdf·extension.install_github·project.write_image_code·wiki.reprocess_note 만 UI 스레드 밖이다 (iris.system.control_surface.runs_off_ui_thread). 나머지는 Qt 메인 스레드.
 반환: ok_result / err_result. 예외는 ActionRegistry.invoke가 err_result로 감싼다.
-confirm_required 액션은 HUD가 아니면 거절된다. args.confirm 은 무시된다.
+confirm_required 액션은 human_confirm(카드 또는 HUD) 없으면 거절된다. args.confirm 은 무시된다.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ class SessionHost(Protocol):
     _calendar_page: Any
     _db: Any
     _get_bound_ide_session: Any
-    _hermes_online: Any
+    _agent_online: Any
     _selected_email_account_id: Any
     _settings: Any
     _ui_mode: Any
@@ -101,7 +101,7 @@ class SettingsHost(Protocol):
     _chat: Any
     _open_settings_dialog: Any
     _open_user_profile_dialog: Any
-    _refresh_hermes_health: Any
+    _refresh_agent_health: Any
     _settings: Any
     _status_header: Any
 

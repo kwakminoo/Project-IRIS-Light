@@ -49,12 +49,12 @@ def ensure_voice_hash_for_test(base_url: str, prefs: VoicePreferences) -> str:
     )
 
 
-def load_hermes_sync_status_text() -> str:
-    """마지막 Iris↔Hermes Control 동기화 상태 문구를 읽는다."""
+def load_iris_agent_sync_status_text() -> str:
+    """마지막 Iris↔Agent Control 동기화 상태 문구를 읽는다."""
     try:
         import json
 
-        from iris.system.hermes_iris_control_sync import sync_state_path
+        from iris.system.iris_agent_control_sync import sync_state_path
 
         path = sync_state_path()
         if not path.is_file():

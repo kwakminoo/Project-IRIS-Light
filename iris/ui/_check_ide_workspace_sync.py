@@ -108,7 +108,10 @@ def check_mismatch_open_fail() -> None:
         assert data.get("project_root") == want_s
         assert data.get("bound_workspace_root") == bound_s
         assert data.get("open_folder_path") == want_s
+        assert data.get("code") == "align_failed", data
+        assert data.get("hint") == "ide.open_folder", data
         assert "companion not entered" in str(data.get("error") or err.get("error") or "")
+        assert "ide.open_folder" in str(err.get("error") or "")
         assert opened == [want_s]
         assert "call ide.open_folder first" not in str(err.get("error") or "")
 

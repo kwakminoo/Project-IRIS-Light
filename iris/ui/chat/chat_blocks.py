@@ -7,10 +7,18 @@ import html
 import re
 from dataclasses import dataclass, replace
 from enum import Enum
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
+from PyQt6.QtGui import QCursor
+from PyQt6.QtWidgets import QMenu, QWidget
+
+from iris.core.message_parts import ToolPart
+from iris.ui.chat.card_models import RUN_MODES
 from iris.ui.chat.chat_syntax import highlight_code
+from iris.ui.chat.shell_approval import choose, load, save
+from iris.ui.chat.shell_gate import decide
 from iris.ui.chat.typography import TOKENS
 
 if TYPE_CHECKING:
@@ -65,6 +73,36 @@ class ToolShellBlock:
     status: str = "ok"
     block_id: str = ""
     collapsed: bool = False
+    phase: str = "done"
+
+
+def tool_part_to_shell_block(part: ToolPart) -> ToolShellBlock:
+    """ToolPart → Cursor shell card. Legacy name/detail-only becomes degraded card."""
+    output = part.output or ""
+    if not output and not (part.command or "").strip() and (part.detail or "").strip():
+        output = part.detail
+    return ToolShellBlock(
+        title=part.name or "Shell",
+        command=part.command or "",
+        output=output,
+        status=(part.status or "ok").strip() or "ok",
+        block_id=(part.block_id or "").strip(),
+        collapsed=bool(part.collapsed),
+        phase="done",
+    )
+
+
+def shell_block_to_tool_part(block: ToolShellBlock) -> ToolPart:
+    """ToolShellBlock → expanded ToolPart (persist / history source of truth)."""
+    return ToolPart(
+        name=block.title or "Shell",
+        detail="",
+        command=block.command or "",
+        output=block.output or "",
+        status=(block.status or "ok").strip() or "ok",
+        block_id=(block.block_id or "").strip(),
+        collapsed=bool(block.collapsed),
+    )
 
 
 def tool_block_markers(block_id: str) -> tuple[str, str]:
@@ -76,19 +114,28 @@ def collapse_anchor_for(block_id: str) -> str:
     return f"iris-collapse://{(block_id or 'tool').strip() or 'tool'}"
 
 
+# QUrl lowercases / empties opaque hosts; keep payload in a path segment.
+_COPY_SCHEME = "iris-copy://"
+_COPY_PATH_MARK = "_/"
+
+
 def copy_anchor_for(code: str) -> str:
     payload = base64.urlsafe_b64encode((code or "").encode("utf-8")).decode("ascii")
-    return f"iris-copy://{payload}"
+    return f"{_COPY_SCHEME}{_COPY_PATH_MARK}{payload}"
 
 
 def parse_copy_anchor(anchor: str) -> str | None:
     raw = (anchor or "").strip()
-    if not raw.startswith("iris-copy://"):
+    if not raw.startswith(_COPY_SCHEME):
         return None
+    body = raw[len(_COPY_SCHEME) :]
+    if body.startswith(_COPY_PATH_MARK):
+        body = body[len(_COPY_PATH_MARK) :]
+    elif body.startswith("/"):
+        body = body[1:]
+    # else: legacy iris-copy://{payload} (ChatLog / old HTML)
     try:
-        return base64.urlsafe_b64decode(raw.removeprefix("iris-copy://").encode("ascii")).decode(
-            "utf-8"
-        )
+        return base64.urlsafe_b64decode(body.encode("ascii")).decode("utf-8")
     except Exception:
         return None
 
@@ -99,6 +146,113 @@ def parse_collapse_block_id(anchor: str) -> str | None:
         return None
     bid = raw.removeprefix("iris-collapse://").strip()
     return bid or None
+
+
+_SHELL_APPROVAL_SCHEMES = (
+    ("iris-run://", "run"),
+    ("iris-always://", "always"),
+    ("iris-skip://", "skip"),
+    ("iris-mode://", "mode"),
+)
+
+
+def parse_shell_approval_anchor(anchor: str) -> tuple[str, str] | None:
+    raw = (anchor or "").strip()
+    for scheme, action in _SHELL_APPROVAL_SCHEMES:
+        if raw.startswith(scheme):
+            bid = raw.removeprefix(scheme).strip()
+            return (action, bid) if bid else None
+    return None
+
+
+def _decode_apply_body(query: str) -> str:
+    if not query:
+        return ""
+    try:
+        padded = query + "=" * (-len(query) % 4)
+        return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def parse_apply_target(anchor: str) -> tuple[str, str] | None:
+    raw = (anchor or "").strip()
+    if not raw.startswith("iris-apply://"):
+        return None
+    path_part, sep, query = raw.removeprefix("iris-apply://").partition("?")
+    path = unquote(path_part).strip()
+    if not path:
+        return None
+    if not sep:
+        return path, ""
+    return path, _decode_apply_body(query)
+
+
+def parse_apply_anchor(anchor: str) -> str | None:
+    parsed = parse_apply_target(anchor)
+    if parsed is None:
+        return None
+    path, _body = parsed
+    return path or None
+
+
+def apply_code_to_root(root: Path, rel: str, body: str) -> Path | None:
+    if not isinstance(body, str) or body == "" or not isinstance(rel, str):
+        return None
+    raw = rel.strip()
+    if not raw:
+        return None
+    windows = PureWindowsPath(raw)
+    posix = PurePosixPath(raw.replace("\\", "/"))
+    if windows.is_absolute() or bool(windows.drive) or posix.is_absolute():
+        return None
+    if any(part == ".." for part in windows.parts) or any(part == ".." for part in posix.parts):
+        return None
+    parts = [part for part in posix.parts if part not in ("", ".")]
+    if not parts:
+        return None
+    try:
+        base = Path(root).resolve()
+    except OSError:
+        return None
+    current = base
+    for part in parts:
+        nxt = current / part
+        try:
+            if nxt.is_symlink():
+                landed = nxt.resolve()
+                if not landed.is_relative_to(base):
+                    return None
+                current = landed
+                continue
+        except OSError:
+            return None
+        current = nxt
+    try:
+        destination = current.resolve()
+        if not destination.is_relative_to(base):
+            return None
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(body, encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    return destination
+
+
+def handle_apply_click(widget: QWidget, anchor: str) -> None:
+    try:
+        parsed = parse_apply_target(anchor)
+        if parsed is None:
+            return
+        rel, body = parsed
+        from iris.ui.control_bindings import resolve_bound_work_root
+
+        root, err = resolve_bound_work_root(widget.window())
+        if err or not root:
+            return
+        apply_code_to_root(Path(root), rel, body)
+    except Exception:
+        return
 
 
 IRIS_FILE_SCHEME = "iris-file://"
@@ -483,68 +637,10 @@ def fenced_code_to_html(block: FencedCodeBlock) -> str:
 
 
 def tool_shell_to_html(block: ToolShellBlock) -> str:
-    t = TOKENS
-    status = (block.status or "ok").strip().lower()
-    is_ok = status in ("ok", "success", "done")
-    border_color = t.chat_block_border if is_ok else t.error
-    status_label = "성공" if is_ok else "실패"
-    status_color = t.success if is_ok else t.error
-    title = html.escape(block.title or "Shell")
-    command = html.escape(block.command or "")
-    output = html.escape(block.output or "")
-    block_id = html.escape((block.block_id or "tool").strip() or "tool", quote=True)
-    collapse_href = html.escape(collapse_anchor_for(block.block_id or "tool"), quote=True)
-    chevron = "▶" if block.collapsed else "▼"
-    body_display = "none" if block.collapsed else "block"
-    status_span = (
-        f'<span style="color:{status_color};font-size:{t.font_size_micro};'
-        f'font-weight:600;margin-right:8px;">{status_label}</span>'
-    )
-    copy_cmd = ""
-    if block.command:
-        copy_href = html.escape(copy_anchor_for(block.command), quote=True)
-        copy_cmd = (
-            f'<a href="{copy_href}" style="color:{t.text_muted};text-decoration:none;'
-            f'font-size:{t.font_size_micro};font-weight:600;margin-right:8px;">명령 복사</a>'
-        )
-    # Keep outer <pre> for collapse markers; split header links so copy is not nested.
-    header = (
-        f'<span style="display:block;padding:6px 10px;font-weight:600;'
-        f'border-bottom:1px solid {t.chat_block_border};">'
-        f'<a href="{collapse_href}" style="text-decoration:none;color:{t.text_primary};">'
-        f'<span style="color:{t.text_accent};font-family:{t.chat_block_mono_font};'
-        f'font-weight:700;">&gt;_</span> {title}</a>'
-        f'<span style="float:right;">'
-        f"{status_span}{copy_cmd}"
-        f'<a href="{collapse_href}" style="color:{t.text_muted};text-decoration:none;'
-        f'font-size:{t.font_size_micro};font-weight:600;">{chevron}</a>'
-        f"</span></span>"
-    )
-    command_block = (
-        f'<code style="display:block;padding:6px 10px 4px 10px;font-family:{t.chat_block_mono_font};'
-        f'font-size:{t.font_size_caption};color:{t.text_accent};">{command}</code>'
-        if command
-        else ""
-    )
-    output_block = (
-        f'<code style="display:block;padding:0 10px 8px 10px;font-family:{t.chat_block_mono_font};'
-        f'font-size:{t.font_size_caption};color:{t.text_secondary};white-space:pre-wrap;">'
-        f"{output}</code>"
-        if output
-        else ""
-    )
-    body = (
-        f'<span style="display:{body_display};" data-iris-tool-body="{block_id}">'
-        f"{command_block}{output_block}</span>"
-    )
-    return (
-        f'<pre style="display:block;margin:6px 0;padding:0;white-space:pre-wrap;'
-        f"background-color:{t.chat_block_bg};"
-        f"border:1px solid {border_color};"
-        f"border-radius:{t.chat_block_radius}px;"
-        f'color:{t.text_primary};">'
-        f"{header}{body}</pre>"
-    )
+    from iris.ui.chat.card_html import shell_card_to_html
+    from iris.ui.chat.card_models import to_shell_card
+
+    return shell_card_to_html(to_shell_card(block))
 
 
 def marked_tool_shell_to_html(block: ToolShellBlock) -> str:
@@ -565,6 +661,18 @@ def replace_marked_tool_block(html_doc: str, block_id: str, block: ToolShellBloc
     return re.sub(pattern, replacement, html_doc, count=1)
 
 
+def _rerender_tool_block(text_edit: "QTextEdit", block_id: str, block: ToolShellBlock) -> bool:
+    html_doc = text_edit.toHtml()
+    updated = replace_marked_tool_block(html_doc, block_id, block)
+    if updated == html_doc:
+        return False
+    bar = text_edit.verticalScrollBar()
+    pos = bar.value()
+    text_edit.setHtml(updated)
+    bar.setValue(pos)
+    return True
+
+
 def handle_tool_collapse_click(
     text_edit: "QTextEdit",
     blocks: dict[str, ToolShellBlock],
@@ -578,14 +686,70 @@ def handle_tool_collapse_click(
         return False
     toggled = replace(block, collapsed=not block.collapsed)
     blocks[block_id] = toggled
-    html_doc = text_edit.toHtml()
-    updated = replace_marked_tool_block(html_doc, block_id, toggled)
-    if updated == html_doc:
+    return _rerender_tool_block(text_edit, block_id, toggled)
+
+
+def build_run_mode_menu(parent: QWidget) -> QMenu:
+    # Parent is the text edit. A menu owned by the frameless main window crashes on show.
+    menu = QMenu(parent)
+    for mode_id, label, description in RUN_MODES:
+        action = menu.addAction(label)
+        action.setToolTip(description)
+        action.setData(mode_id)
+    return menu
+
+
+def _save_chosen_mode(mode_id: str, approval_path: Path | None) -> None:
+    try:
+        save(choose(load(approval_path), mode_id, ""), approval_path)
+    except OSError:
+        return
+
+
+def wire_run_mode_menu(menu: QMenu, approval_path: Path | None) -> None:
+    for item in menu.actions():
+        mode_id = item.data()
+        if not isinstance(mode_id, str):
+            continue
+        item.triggered.connect(
+            lambda _checked=False, mid=mode_id, dest=approval_path: _save_chosen_mode(mid, dest)
+        )
+
+
+def handle_shell_approval_click(
+    text_edit: "QTextEdit",
+    blocks: dict[str, ToolShellBlock],
+    anchor: str,
+    *,
+    approval_path: Path | None = None,
+) -> bool:
+    parsed = parse_shell_approval_anchor(anchor)
+    if parsed is None:
         return False
-    bar = text_edit.verticalScrollBar()
-    pos = bar.value()
-    text_edit.setHtml(updated)
-    bar.setValue(pos)
+    action, block_id = parsed
+    block = blocks.get(block_id)
+    if block is None:
+        return False
+    if action == "run":
+        decide(block_id, "run")
+        return True
+    if action == "always":
+        try:
+            save(choose(load(approval_path), "always", block.command or ""), approval_path)
+        except OSError:
+            pass
+        decide(block_id, "always")
+        return True
+    if action == "skip":
+        skipped = replace(block, phase="done", status="skipped")
+        blocks[block_id] = skipped
+        decide(block_id, "skip")
+        return _rerender_tool_block(text_edit, block_id, skipped)
+    if action != "mode":
+        return False
+    menu = build_run_mode_menu(text_edit)
+    wire_run_mode_menu(menu, approval_path)
+    menu.exec(QCursor.pos())
     return True
 
 

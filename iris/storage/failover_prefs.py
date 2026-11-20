@@ -16,7 +16,7 @@ from iris.storage.database import Database
 FAILOVER_KEY = "model_failover_v1"
 HISTORY_KEY = "wiki_history_v1"
 
-BACKENDS: tuple[str, ...] = ("ollama", "hermes", "api")
+BACKENDS: tuple[str, ...] = ("ollama", "agent", "api")
 
 
 @dataclass
@@ -29,6 +29,8 @@ class FallbackEntry:
     def __post_init__(self) -> None:
         self.model = str(self.model or "").strip()
         self.backend = str(self.backend or "ollama").strip().lower()
+        if self.backend == "hermes":
+            self.backend = "agent"
         if self.backend not in BACKENDS:
             self.backend = "ollama"
         self.label = str(self.label or "").strip() or self.model

@@ -5,7 +5,7 @@
 계약만 제품이 소유한다. 설치는 업스트림을 pin 에만 checkout 한 뒤 overlay 를
 한 번 적용한다. gateway 기동 경로에서는 소스 문자열 치환을 하지 않는다.
 
-Phase 4: 활성 홈은 제품 경로만. 레거시 ``%LOCALAPPDATA%\\hermes`` 는
+Phase 4: 활성 홈은 제품 경로만. 레거시 홈(legacy_agent_home)은
 마이그레이션 원본이며 더 이상 쓰이지 않는다.
 """
 
@@ -30,9 +30,18 @@ IRIS_AGENT_PIN_SHA = "a382af23f4c067d23463b5781958684c2cda82bc"
 IRIS_AGENT_UPSTREAM_URL = "https://github.com/NousResearch/hermes-agent.git"
 
 _MIGRATE_STAMP = ".iris-agent-migrated-from"
-# config / .env / memories only — hermes-agent checkout 은 pin 재설치.
-_MIGRATE_FILES = (".env", "config.yaml", "MEMORY.md", "USER.md")
+# config / .env / memories only — checkout tree is pin-reinstalled when needed.
+# MEMORY.md / USER.md live under memories/; do not dual-copy root stubs.
+_MIGRATE_FILES = (".env", "config.yaml")
 _MIGRATE_DIRS = ("memories", "skills")
+
+# Product checkout dirname. New installs write here; resolver may still read legacy.
+IRIS_AGENT_CHECKOUT_NAME = "iris-agent"
+LEGACY_AGENT_CHECKOUT_NAME = "hermes-agent"
+
+# Product probe: Iris CLI only. F3 materializes iris_agent_cli; F2 forward shim
+# covers soft-fail when rename cannot replace hermes_cli.
+AGENT_CLI_PROBE_NAMES = ("iris_agent_cli", "iris_cli")
 
 
 def vendor_runtime_root() -> Path:
@@ -59,6 +68,44 @@ def load_upstream_url() -> str:
     return IRIS_AGENT_UPSTREAM_URL
 
 
+def agent_cli_probe_code(*extra_imports: str) -> str:
+    """``-c`` snippet: iris_agent_cli or iris_cli, then extras.
+
+    F3 overlay materializes ``iris_agent_cli``; F2 forward shim is the
+    soft-fail path when Windows locks block the rename.
+    """
+    names = ", ".join(repr(n) for n in AGENT_CLI_PROBE_NAMES)
+    extras = ", ".join(extra_imports)
+    body = (
+        "import importlib\n"
+        f"_names = ({names})\n"
+        "_cli = None\n"
+        "for _n in _names:\n"
+        "    try:\n"
+        "        _cli = importlib.import_module(_n)\n"
+        "        break\n"
+        "    except ImportError:\n"
+        "        pass\n"
+        "assert _cli is not None, 'no agent cli package'\n"
+    )
+    if extras:
+        body += f"import {extras}\n"
+    body += "print('ok')\n"
+    return body
+
+
+def upstream_url_matches_vendor() -> bool:
+    """True when ``load_upstream_url()`` equals vendor ``UPSTREAM`` first line."""
+    url_file = vendor_runtime_root() / "UPSTREAM"
+    loaded = load_upstream_url()
+    if not url_file.is_file():
+        return loaded == IRIS_AGENT_UPSTREAM_URL and loaded.startswith("http")
+    raw = url_file.read_text(encoding="utf-8").strip().splitlines()
+    if not raw:
+        return False
+    return loaded == raw[0].strip() and loaded.startswith("http")
+
+
 def product_agent_home() -> Path:
     """제품 홈 목표 경로. ``IRIS_AGENT_HOME`` 또는 ``~/.iris-light/agent``."""
     override = (os.environ.get("IRIS_AGENT_HOME") or "").strip()
@@ -78,14 +125,66 @@ def legacy_agent_home() -> Path:
 def iris_agent_home() -> Path:
     """활성 런타임 홈 하나. gateway·sync·install·warm 이 이 경로만 쓴다.
 
-    Phase 4: 레거시 ``%LOCALAPPDATA%/hermes`` 로 폴백하지 않는다.
+    Phase 4: legacy_agent_home 으로 폴백하지 않는다.
     이전 데이터는 ``migrate_legacy_agent_home`` / ``ensure_iris_agent_home`` 으로 복사한다.
     """
     return product_agent_home()
 
 
+def iris_agent_checkout_write_dir(home: Path | None = None) -> Path:
+    """Canonical write dest for installs / staging swap.
+
+    New homes (neither checkout present) and ``iris-agent`` trees write to
+    ``iris-agent``. If only a locked ``hermes-agent`` remains after soft-fail
+    migrate, keep writing there so we do not dual-tree the home.
+    """
+    base = home or iris_agent_home()
+    preferred = base / IRIS_AGENT_CHECKOUT_NAME
+    if preferred.is_dir():
+        return preferred
+    legacy = base / LEGACY_AGENT_CHECKOUT_NAME
+    if legacy.is_dir():
+        return legacy
+    return preferred
+
+
+def iris_agent_checkout_dir(home: Path | None = None) -> Path:
+    """Product checkout under agent home.
+
+    Prefer ``iris-agent`` when present; fall back to ``hermes-agent`` for
+    half-migrated homes (locked rename soft-fail).
+    """
+    base = home or iris_agent_home()
+    preferred = base / IRIS_AGENT_CHECKOUT_NAME
+    if preferred.is_dir():
+        return preferred
+    return base / LEGACY_AGENT_CHECKOUT_NAME
+
+
+def migrate_legacy_checkout_dirname(home: Path | None = None) -> tuple[str, str]:
+    """Rename ``hermes-agent`` → ``iris-agent`` when unlocked.
+
+    Soft-fail on Windows locks: keep reading via :func:`iris_agent_checkout_dir`
+    fallback. Returns ``(status, detail)`` with status in
+    ``ok`` / ``skipped`` / ``failed_soft``.
+    """
+    base = home or iris_agent_home()
+    preferred = base / IRIS_AGENT_CHECKOUT_NAME
+    legacy = base / LEGACY_AGENT_CHECKOUT_NAME
+    if preferred.is_dir():
+        return "skipped", "iris-agent already present"
+    if not legacy.is_dir():
+        return "skipped", "no hermes-agent"
+    try:
+        legacy.rename(preferred)
+    except OSError as exc:
+        return "failed_soft", f"rename locked, keep hermes-agent: {exc}"
+    return "ok", "renamed hermes-agent → iris-agent"
+
+
 def iris_agent_repo_dir(home: Path | None = None) -> Path:
-    return (home or iris_agent_home()) / "hermes-agent"
+    """Alias for :func:`iris_agent_checkout_dir` (read path; write uses write_dir)."""
+    return iris_agent_checkout_dir(home)
 
 
 @dataclass
@@ -244,6 +343,7 @@ def ensure_iris_agent_home(*, dry_run: bool = False) -> Path:
             home.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             log.warning("iris agent home mkdir: %s", exc)
+        # Checkout rename stays on install paths with explicit home=.
     return home
 
 
@@ -507,56 +607,43 @@ def replace_agent_loop_worker(
 
 
 def ensure_iris_agent_runtime(
-    base_url: str = "http://127.0.0.1:8642/v1",
+    base_url: str = "",
     *,
     api_key: str = "",
-    command: str = "hermes",
+    command: str = "iris-agent",
     wait_sec: float = 45.0,
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[str], None] | None = None,
     provider: bool = True,
-    start_gateway: bool = True,
+    start_gateway: bool = False,
 ) -> IrisAgentRuntimeEnsureResult:
-    """Iris Agent 수명 supervisor — home → provider → gateway (멱등).
+    """Iris Agent 수명 supervisor — home → provider (멱등).
 
-    setup / HermesHealthWorker / login warm 이 이 심볼만 통해 ensure 한다.
-    Lifetime: keep-background (Iris 종료 후에도 gateway 유지 가능).
+    Product chat is InternalSidecar; HTTP gateway is not started here.
+    ``start_gateway`` / ``base_url`` / ``api_key`` / ``command`` / ``wait_sec``
+    remain for call-site compat and are ignored for gateway lifecycle.
+    Lifetime note: keep-background applied only to legacy gateway module tests.
     """
+    _ = (base_url, api_key, command, wait_sec, should_abort, on_progress, start_gateway)
     home = ensure_iris_agent_home()
     messages: list[str] = [f"home={home}"]
     # circular: hermes_gateway imports ensure_iris_agent_home from this module.
-    from iris.system.hermes_gateway import (
-        ensure_hermes_gateway_running,
-        ensure_hermes_provider_config,
-    )
+    from iris.system.iris_agent_gateway import ensure_agent_provider_config
 
     if provider:
         try:
-            ensure_hermes_provider_config()
+            ensure_agent_provider_config()
             messages.append("provider ok")
         except Exception as exc:  # noqa: BLE001
             messages.append(f"provider skip: {exc}")
             log.warning("iris agent runtime provider: %s", exc)
 
-    if not start_gateway:
-        gateway_ok = False
-        messages.append("gateway skipped")
-    else:
-        gateway_ok = bool(
-            ensure_hermes_gateway_running(
-                base_url,
-                api_key=api_key,
-                command=command,
-                wait_sec=wait_sec,
-                should_abort=should_abort,
-                on_progress=on_progress,
-            )
-        )
-        messages.append("gateway ok" if gateway_ok else "gateway fail")
+    gateway_ok = False
+    messages.append("gateway skipped (Iris Agent sidecar)")
 
     # Hermes install/gateway가 업스트림 SOUL.md를 심은 뒤 Iris 페르소나로 되돌린다.
     try:
-        from iris.system.hermes_soul_sync import ensure_soul
+        from iris.system.iris_agent_soul_sync import ensure_soul
 
         messages.append(ensure_soul())
     except Exception as exc:  # noqa: BLE001
@@ -564,7 +651,7 @@ def ensure_iris_agent_runtime(
         log.warning("iris agent runtime soul: %s", exc)
 
     return IrisAgentRuntimeEnsureResult(
-        ok=gateway_ok if start_gateway else True,
+        ok=True,
         home=home,
         gateway_ok=gateway_ok,
         messages=messages,
@@ -579,7 +666,7 @@ def apply_iris_agent_baseline_overlays(agent_root: Path) -> list[str]:
     """
     root = Path(agent_root)
     messages: list[str] = []
-    from iris.system.hermes_ollama_guard import (
+    from iris.system.iris_agent_ollama_guard import (
         apply_ollama_options_guard,
         ollama_options_guard_present,
     )
@@ -593,14 +680,30 @@ def apply_iris_agent_baseline_overlays(agent_root: Path) -> list[str]:
         log.warning("iris agent baseline: ollama options guard not applied at %s", root)
 
     # circular: sync imports credentials → agent_runtime; mutate only at install.
-    from iris.system.hermes_iris_control_sync import ensure_hermes_stdio_dead_check_patch
+    from iris.system.iris_agent_control_sync import ensure_iris_agent_stdio_dead_check_patch
 
     messages.append(
-        ensure_hermes_stdio_dead_check_patch(agent_root=root, mutate=True)
+        ensure_iris_agent_stdio_dead_check_patch(agent_root=root, mutate=True)
     )
-    from iris.system.hermes_tool_choice import apply_hermes_tool_choice_overlay
+    from iris.system.iris_agent_tool_choice import apply_iris_agent_tool_choice_overlay
 
-    messages.extend(apply_hermes_tool_choice_overlay(root))
+    messages.extend(apply_iris_agent_tool_choice_overlay(root))
+    from iris.system.iris_agent_package_identity import (
+        apply_iris_agent_package_identity_overlay,
+    )
+
+    messages.extend(apply_iris_agent_package_identity_overlay(root))
+    from iris.system.iris_agent_cli_rename_overlay import (
+        apply_iris_agent_cli_rename_overlay,
+    )
+
+    messages.extend(apply_iris_agent_cli_rename_overlay(root))
+    from iris.system.iris_agent_cli_shim_overlay import (
+        apply_iris_agent_cli_shim_overlay,
+    )
+
+    # F2 no-op when F3 already materialized a real iris_agent_cli.
+    messages.extend(apply_iris_agent_cli_shim_overlay(root))
     stamp = root / ".iris-agent-baseline"
     try:
         stamp.write_text(f"{load_pinned_sha()}\n", encoding="utf-8")
@@ -614,6 +717,18 @@ if __name__ == "__main__":
     assert load_upstream_url().startswith("https://")
     home = iris_agent_home()
     assert isinstance(home, Path)
-    assert iris_agent_repo_dir(home) == home / "hermes-agent"
+    write = iris_agent_checkout_write_dir(home)
+    if (home / IRIS_AGENT_CHECKOUT_NAME).is_dir():
+        assert write == home / IRIS_AGENT_CHECKOUT_NAME
+    elif (home / LEGACY_AGENT_CHECKOUT_NAME).is_dir():
+        # Soft-fail / half-migrated: keep writing the live legacy tree.
+        assert write == home / LEGACY_AGENT_CHECKOUT_NAME
+    else:
+        assert write == home / IRIS_AGENT_CHECKOUT_NAME
+    # Neither name present → fall back to hermes-agent (half-migrated read).
+    assert iris_agent_checkout_dir(home) == home / LEGACY_AGENT_CHECKOUT_NAME or (
+        home / IRIS_AGENT_CHECKOUT_NAME
+    ).is_dir()
+    assert iris_agent_repo_dir(home) == iris_agent_checkout_dir(home)
     assert iris_agent_home() == product_agent_home()
     print("agent_runtime self-check ok", load_pinned_sha()[:7], home)

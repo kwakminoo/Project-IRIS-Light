@@ -1,0 +1,39 @@
+---
+description: Hermes ON 채팅 완료→DB/UI 착지 계약 (2026-11 재발 방지)
+alwaysApply: true
+---
+
+# Hermes 채팅 착지 계약 (재발 금지)
+
+증상: Hermes `agent.log`에 `Turn ended`가 있는데 Iris DB/UI에 assistant가 없고, user가 사라지거나 스피너만 돈다. 이중 GUI·이중 sidecar가 자주 같이 보인다.
+
+상세: `docs/code-review/completed/헤르메스-채팅착지-일체화-2026-11-10.md`  
+증명: `.iris_light_test_tmp/verify-iris/live-model-measure/nvidia_land_ok.json` (`iris_native`)
+
+## 계약 (깨면 회귀)
+
+1. **단일 실 GUI** — Windows는 `Global\` named mutex (`gui_singleton`). venv `Scripts\pythonw.exe` 스텁이 자식을 남기므로 기동은 base `pythonw` + `__PYVENV_LAUNCHER__` (`gui_python`). 스텁+실GUI를 “두 인스턴스”로 세지 말고, 실GUI(락 PID / 다중 스레드)만 센다.
+2. **채팅 핫패스에 동기 native 프로브 금지** — `HermesChatWorker._wire_native_speak_tools`는 기본 OFF (`IRIS_WIRE_NATIVE_SPEAK_TOOLS`). wiki/mail/calendar invoke로 턴 시작을 막지 않는다.
+3. **완료 신호는 return 전에도** — sidecar는 Hermes `Turn ended` 시점(로그 핸들러 또는 agent.log 폴링)에 단말 `done`/`fail`을 낸다. `run_conversation` return만 기다리지 않는다 (Hermes #131740 wedge).
+4. **done/fail 전송** — Windows에서 단말 이벤트는 **UDP** (`IRIS_TERMINAL_UDP_PORT`) 우선. stdout만으로 done을 보내지 않는다 (EINVAL/파이프 쐐기). delta/think는 stdout 유지 가능.
+5. **fail이 user를 지우지 않음** — `_on_chat_failed` / `_fail_slot_away`는 user 행 pop 금지. orphan/`(빈 응답)` finish는 active cid에 남긴다.
+6. **착지 증명** — measure 스크립트가 DB에 assistant를 INSERT한 것은 Iris-native 착지가 아니다. 같은 `conversation_id` + `finished_ok`/`land_db_ok`/`recv udp` 증거를 본다.
+7. **슬롯 예외** — Live Activity reasoning 경로에 `append_reasoning` 등 슬롯이 읽는 속·메서드가 없으면 0xC0000409. `qt-slot-abort` 규칙과 함께 지킨다.
+
+## 재발 시 순서
+
+1. GUI·sidecar·gateway 개수 확인 (실GUI 1 + 그 자식 sidecar 1).
+2. `~/.iris-light/agent/logs/agent.log`에 이번 턴 `Turn ended` 여부.
+3. `~/.iris-light/logs/turn_end_watch.log`에 `emit done` / `recv udp` / `finished_ok` / `land_db_ok`.
+4. user만 있고 assistant 없으면 위 계약 중 어느 단이 빠졌는지 고친다. “프로세스를 하나로 합치기”로 우회하지 않는다.
+
+## 검증
+
+```powershell
+.venv\Scripts\python.exe -m iris.ui._check_chat_landing_contract
+.venv\Scripts\python.exe -m iris.engine._check_post_turn_end_stall
+.venv\Scripts\python.exe -m iris.ui._check_sidecar_done_landing
+.venv\Scripts\python.exe -m iris.system._check_gui_singleton
+```
+
+라이브: Iris 1개 + Hermes ON + 한 턴 전송 → 같은 conversation에 assistant 행.

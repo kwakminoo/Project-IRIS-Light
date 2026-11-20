@@ -98,10 +98,10 @@ class ContextHandoffWiringTests(TestCase):
             _settings=SimpleNamespace(
                 ollama_model="paid:big",
                 ollama_base_url="http://127.0.0.1:11434",
-                hermes_enabled=False,
+                agent_enabled=False,
             ),
             _history_embed_worker=None,
-            _use_hermes_backend=lambda: False,
+            _use_agent_backend=lambda: False,
         )
         # 창을 띄우지 않으므로 서로 부르는 메서드는 스텁에 직접 매어 준다.
         for name in (
@@ -264,28 +264,28 @@ class ContextHandoffWiringTests(TestCase):
     def test_summary_route_picks_the_backend_in_use(self) -> None:
         from types import SimpleNamespace as NS
 
-        self.win._use_hermes_backend = lambda: False
+        self.win._use_agent_backend = lambda: False
         route = MainWindow._summary_route_for(self.win, "qwen3:8b")
         self.assertEqual(route.backend, "ollama")
         self.assertEqual(route.model, "qwen3:8b")
 
-        self.win._use_hermes_backend = lambda: True
-        self.win._settings.hermes_base_url = "http://127.0.0.1:8642/v1"
-        self.win._settings.hermes_api_key = "k"
-        self.win._settings.hermes_command = "hermes"
+        self.win._use_agent_backend = lambda: True
+        self.win._settings.agent_base_url = "http://127.0.0.1:8642/v1"
+        self.win._settings.agent_api_key = "k"
+        self.win._settings.agent_command = "hermes"
         with patch(
-            "iris.infrastructure.hermes_client.resolve_hermes_inference",
+            "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             return_value=NS(model="upstream", label="up"),
         ):
             route = MainWindow._summary_route_for(self.win, "qwen3:8b")
         self.assertEqual(route.backend, "hermes")
         self.assertEqual(route.target.model, "upstream")
 
-    def test_summary_route_api_model_skips_hermes(self) -> None:
+    def test_summary_route_api_model_skips_agent(self) -> None:
         """Hermes 켜져 있어도 Iris API runtime 제목/요약은 제공자 직행."""
         from iris.storage.api_providers import ApiProvider
 
-        self.win._use_hermes_backend = lambda: True
+        self.win._use_agent_backend = lambda: True
         provider = ApiProvider(
             id="nv1",
             name="NVIDIA",
@@ -304,7 +304,7 @@ class ContextHandoffWiringTests(TestCase):
         self.assertEqual(route.model, "nvidia/nemotron-mini")
 
     def test_summary_route_is_none_when_it_cannot_resolve(self) -> None:
-        self.win._use_hermes_backend = lambda: True
+        self.win._use_agent_backend = lambda: True
         with patch(
             "iris.ui.window.main_window.get_api_provider",
             return_value=None,
@@ -316,7 +316,7 @@ class ContextHandoffWiringTests(TestCase):
         settings = self.win._model_switch.failover_settings
         settings.ask_old_model_summary = False
         save_failover_settings(self.db, settings)
-        self.win._use_hermes_backend = lambda: False
+        self.win._use_agent_backend = lambda: False
 
         started = []
         self.win._summary_route_for = lambda *a: started.append(1)
@@ -432,7 +432,7 @@ class ContextHandoffWiringTests(TestCase):
 
     # --- Hermes 경로 체인 --------------------------------------------
 
-    def test_hermes_chain_resolves_targets_on_the_ui_thread(self) -> None:
+    def test_agent_chain_resolves_targets_on_the_ui_thread(self) -> None:
         """워커는 DB를 못 만진다 — 후보 타깃을 여기서 미리 풀어 넘겨야 한다."""
         from types import SimpleNamespace as NS
 
@@ -442,8 +442,8 @@ class ContextHandoffWiringTests(TestCase):
             FallbackEntry(model="api:zz:remote", backend="api"),
         ]
         save_failover_settings(self.db, settings)
-        self.win._settings.hermes_enabled = True
-        self.win._use_hermes_backend = lambda: True
+        self.win._settings.agent_enabled = True
+        self.win._use_agent_backend = lambda: True
         self.win._context_limit_cache.update(
             {"paid:big": 128_000, "free:a": 128_000, "api:zz:remote": 128_000}
         )
@@ -456,10 +456,10 @@ class ContextHandoffWiringTests(TestCase):
         primary = NS(model="big-upstream", label="big")
 
         with patch(
-            "iris.infrastructure.hermes_client.resolve_hermes_inference",
+            "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             side_effect=lambda m, **kw: resolved[m],
         ):
-            attempts = MainWindow._hermes_fallback_attempts(
+            attempts = MainWindow._agent_fallback_attempts(
                 self.win, "paid:big", msgs, primary
             )
 
@@ -471,7 +471,7 @@ class ContextHandoffWiringTests(TestCase):
         self.assertEqual(attempts[1].target.model, "free-upstream")
         self.assertEqual(attempts[2].target.model, "vendor/remote-v2")
 
-    def test_hermes_chain_drops_candidates_it_cannot_resolve(self) -> None:
+    def test_agent_chain_drops_candidates_it_cannot_resolve(self) -> None:
         """설정에서 지워진 API 같은 후보는 조용히 뺀다."""
         from types import SimpleNamespace as NS
 
@@ -481,7 +481,7 @@ class ContextHandoffWiringTests(TestCase):
             FallbackEntry(model="free:a", backend="ollama"),
         ]
         save_failover_settings(self.db, settings)
-        self.win._use_hermes_backend = lambda: True
+        self.win._use_agent_backend = lambda: True
         self.win._context_limit_cache.update({"paid:big": 128_000, "free:a": 128_000})
 
         def _resolve(model, **kwargs):
@@ -490,31 +490,31 @@ class ContextHandoffWiringTests(TestCase):
             return NS(model="free-upstream", label="free A")
 
         with patch(
-            "iris.infrastructure.hermes_client.resolve_hermes_inference",
+            "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             side_effect=_resolve,
         ):
-            attempts = MainWindow._hermes_fallback_attempts(
+            attempts = MainWindow._agent_fallback_attempts(
                 self.win, "paid:big", [{"role": "user", "content": "q"}], NS(label="big")
             )
 
         self.assertEqual([a.model for a in attempts], ["paid:big", "free:a"])
 
-    def test_hermes_chain_compresses_for_small_candidates(self) -> None:
+    def test_agent_chain_compresses_for_small_candidates(self) -> None:
         from types import SimpleNamespace as NS
 
         settings = self.win._model_switch.failover_settings
         settings.chain = [FallbackEntry(model="tiny:free", backend="ollama")]
         save_failover_settings(self.db, settings)
-        self.win._use_hermes_backend = lambda: True
+        self.win._use_agent_backend = lambda: True
         self.win._history = [{"role": "user", "content": "원래 요구사항이다"}]
         self.win._context_limit_cache.update({"paid:big": 128_000, "tiny:free": 1024})
 
         big = [{"role": "user", "content": "나" * 20000}]
         with patch(
-            "iris.infrastructure.hermes_client.resolve_hermes_inference",
+            "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             side_effect=lambda m, **kw: NS(model="tiny-upstream", label="tiny"),
         ):
-            attempts = MainWindow._hermes_fallback_attempts(
+            attempts = MainWindow._agent_fallback_attempts(
                 self.win, "paid:big", big, NS(label="big")
             )
 

@@ -299,17 +299,17 @@ class IrisWiki:
         self,
         skills: list[tuple[str, str]],
         *,
-        hermes_root: str = "",
+        iris_agent_root: str = "",
     ) -> None:
-        """등록·사용 중인 Hermes 스킬 목록 → user/integrations/skills.md."""
+        """등록·사용 중인 Iris Agent 스킬 목록 → user/integrations/skills.md."""
         lines = [
             "# Iris Skills",
             "",
-            "> Hermes `skills/` 폴더에 있는 SKILL.md 기준. Iris Composer + 메뉴와 동기화됩니다.",
+            "> Iris Agent `skills/` 폴더에 있는 SKILL.md 기준. Iris Composer + 메뉴와 동기화됩니다.",
             "",
         ]
-        if hermes_root:
-            lines.append(f"- 경로: `{hermes_root}`")
+        if iris_agent_root:
+            lines.append(f"- 경로: `{iris_agent_root}`")
             lines.append("")
         if not skills:
             lines.append("_등록된 스킬 없음_")
@@ -326,17 +326,17 @@ class IrisWiki:
         self,
         mcps: list[tuple[str, str]],
         *,
-        hermes_root: str = "",
+        iris_agent_root: str = "",
     ) -> None:
-        """Hermes config.yaml mcp_servers → user/integrations/mcp.md."""
+        """Iris Agent config.yaml mcp_servers → user/integrations/mcp.md."""
         lines = [
             "# Iris MCP Servers",
             "",
-            "> Hermes `config.yaml`의 `mcp_servers` 등록분. Iris Composer + 메뉴와 동기화됩니다.",
+            "> Iris Agent `config.yaml`의 `mcp_servers` 등록분. Iris Composer + 메뉴와 동기화됩니다.",
             "",
         ]
-        if hermes_root:
-            lines.append(f"- 경로: `{hermes_root}`")
+        if iris_agent_root:
+            lines.append(f"- 경로: `{iris_agent_root}`")
             lines.append("")
         if not mcps:
             lines.append("_등록된 MCP 없음_")

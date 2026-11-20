@@ -17,7 +17,15 @@
 - Soft-patches (ollama options guard; dead-check verify) land at install/update via `apply_iris_agent_baseline_overlays`. Gateway start does not string-replace agent sources.
 - Runtime home is `iris_agent_home()` → `IRIS_AGENT_HOME` or `~/.iris-light/agent` only.
   Legacy `%LOCALAPPDATA%\hermes` is migrate-from (copy, never delete); active writers use product home.
-  Install/update checkout the pin in `PIN` via `load_pinned_sha()` (see `hermes_install` / `hermes_update`).
+  Install/update checkout the pin in `PIN` via `load_pinned_sha()` (see `install_iris_agent_*` / `iris_agent_update`).
+- New installs write `iris-agent`. Readers prefer `iris-agent` then fall back to
+  `hermes-agent`. Soft-fail rename when Windows locks the live tree; do not force-rename.
+
+## Phase F next (package ownership)
+
+**Current = pin + F1 name overlay + F2 CLI shim + F3 overlay rename.** UPSTREAM stays Nous (`https://github.com/NousResearch/hermes-agent.git`). Product owns `PIN`/`UPSTREAM`, checkout write name `iris-agent`. Probe accepts `iris_agent_cli` / `iris_cli` only (dual-accept of `hermes_cli` off when F3 applied). F1 soft-patches `pyproject.toml` name/scripts (`iris-agent` / `iris` → `iris_agent_cli.main`). F3 (`apply_iris_agent_cli_rename_overlay`) copies `hermes_cli` → real `iris_agent_cli` with text rewrite, then replaces physical `hermes_cli` with a reverse shim; `iris_cli` re-exports `iris_agent_cli`. Soft-fail on Windows locks: leave upstream `hermes_cli`, keep real `iris_agent_cli` if copy succeeded; F2 forward shim runs only when F3 did not materialize a real package.
+
+**Next (optional) = Iris-owned remote.** Publish an Iris fork (or absorb a trimmed tree) and point `UPSTREAM` at it. Do not force-rename a live locked Windows tree as a destructive test; overlays remain the install path.
 
 ## CVE / rebase procedure
 

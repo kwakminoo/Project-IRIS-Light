@@ -44,9 +44,8 @@
 ┌───────────┐ ┌────────────────────────────┐
 │  Model    │ │  Iris Agent Runtime        │
 │  Ollama   │ │  홈 ~/.iris-light/agent    │
-│ :11434    │ │  기본 InternalSidecar      │
-└───────────┘ │  (옵션 ExternalGateway)    │
-              └────────────────────────────┘
+│ :11434    │ │  InternalSidecar only      │
+└───────────┘ └────────────────────────────┘
 ```
 
 ### 2.1 Presentation
@@ -64,8 +63,7 @@
 | 포트/컴포넌트 | 역할 | 기본 |
 |---------------|------|------|
 | Ollama 클라이언트 | 모델 목록·단순 채팅·헬스 | `:11434` |
-| Iris Agent 엔진 | 말 턴·도구 스트림 (`iris/engine`, 워커) | InternalSidecar |
-| ExternalGateway (옵션) | 레거시 HTTP 게이트웨이 | `:8642/v1` |
+| Iris Agent 엔진 | 말 턴·도구 스트림 (`iris/engine`, 워커) | InternalSidecar only |
 | Control Surface | 에이전트→Iris UI 역제어 HTTP | `:8765` (비시드 compat) |
 | Setup / supervisor | 첫 실행·핀·에이전트 수명 | `ensure_iris_agent_runtime` |
 | Voice Runtime | STT/TTS (별도 `.venv-voice`) | `:18765` |
@@ -74,7 +72,7 @@
 - 홈: `IRIS_AGENT_HOME` 또는 `~/.iris-light/agent` (Windows는 `%USERPROFILE%\.iris-light\agent`)
 - 기본 말 턴: **InternalSidecar** (`shared_engine`)
 - 도구: 제품 경로 seed는 native `IrisAgentToolRegistry`. 비시드 Control 액션은 `:8765` MCP compat
-- 저장소 동봉 스킬: `integrations/hermes-skills/iris-control/*` (동기화 대상은 제품 에이전트 홈)
+- 저장소 동봉 스킬: `integrations/iris-skills/iris-agent/*` (홈 설치: `skills/iris-agent/`; 한 릴리스 `skills/iris-control/` 마이그레이션)
 - 업스트림 크레딧: NOTICE의 Nous Hermes Agent (MIT)
 
 ### 2.5 Workspace Awareness
@@ -124,16 +122,14 @@ Alert { category, title, message, target_id, policy_decision }
    [IRIS Chat UI]
        │
        ▼
-   [Iris Agent — InternalSidecar 기본]
+   [Iris Agent — InternalSidecar]
        │
        ├─ LLM ─────────▶ [Ollama :11434]
        ├─ native tools ▶ IrisAgentToolRegistry (seed)
-       └─ (옵션) ExternalGateway :8642
-                      │
-         (비시드 compat) Control :8765 / MCP
+       └─ (비시드 compat) Control :8765 / MCP
 ```
 
-- **기본**: Iris Agent InternalSidecar가 Ollama를 provider로 사용
+- **제품**: Iris Agent InternalSidecar만. `:8642` ExternalGateway는 제품 경로 아님
 - **단순 채팅/모델 목록**: Iris → Ollama 직행 가능
 - **역제어**: 비시드 액션만 Control Surface `:8765` / MCP stdio (compat)
 
@@ -151,7 +147,7 @@ Alert { category, title, message, target_id, policy_decision }
 ```
 iris/
   ui/                 # Presentation · workspaces · workers · control_bindings
-  engine/             # Iris Agent InternalSidecar / ExternalGateway
+  engine/             # Iris Agent InternalSidecar only
   system/             # setup_protocol, agent gateway, control_surface, emulator
   infrastructure/     # ollama_client, hermes_client(어댑터명), agent_tool_registry
   runtime/            # UserTurnDispatcher, voice intents
@@ -165,7 +161,7 @@ iris/
 services/
   voice_runtime/      # FastAPI STT/TTS (:18765)
 integrations/
-  hermes-skills/iris-control/   # 스킬 소스 (제품명 Iris Agent)
+  iris-skills/iris-agent/     # 스킬 소스 → 홈 skills/iris-agent (legacy skills/iris-control 마이그레이션)
   hermes-plugins/ · hermes-mcp/ · showui-aloha/
 vendor/
   iris-agent-runtime/ # pin SHA

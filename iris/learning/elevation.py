@@ -77,14 +77,20 @@ def iris_launch_command() -> tuple[str, str]:
     """(executable, parameters) for ShellExecute runas.
 
     UAC·작업표시줄 아이콘은 대상 exe에서 온다. dist\\IRIS.exe(thin launcher)가
-    있으면 그걸 쓴다 — 클릭 시 다시 .venv pythonw -m iris 로 최신 소스를 띄운다.
-    exe가 없을 때만 pythonw 폴백.
+    있으면 그걸 쓴다 — 클릭 시 다시 base pythonw -m iris 로 최신 소스를 띄운다.
+    exe가 없을 때만 pythonw 폴백 (venv Scripts 스텁이 아니라 base).
     """
     iris_exe = _find_iris_exe()
     if iris_exe is not None:
         return str(iris_exe), ""
 
     root = _project_root()
+    try:
+        from iris.system.gui_python import resolve_gui_pythonw
+
+        return str(resolve_gui_pythonw(root)), "-m iris"
+    except Exception:
+        pass
     for name in ("pythonw.exe", "python.exe"):
         py = root / ".venv" / "Scripts" / name
         if py.is_file():
@@ -99,25 +105,58 @@ def iris_launch_command() -> tuple[str, str]:
 
 
 def relaunch_as_admin(*, working_directory: str | None = None) -> bool:
-    """UAC 프롬프트 후 관리자 권한으로 새 프로세스 기동. 성공 시 True."""
+    """UAC 프롬프트 후 관리자 권한으로 새 프로세스 기동. 성공 시 True.
+
+    성공하면 호출측은 즉시 sys.exit(0) 해야 한다. 부모가 GUI/mutex 를 유지하면
+    자식과 이중 UI 가 된다 (Local\\ mutex 는 integrity 가 다르면 공유되지 않음).
+    """
     if sys.platform != "win32":
         return False
     if is_elevated():
         return False
     import ctypes
+    import os
+    from pathlib import Path
 
+    root = _project_root()
+    try:
+        from iris.system.gui_python import gui_launch_env
+
+        os.environ.update(gui_launch_env(root))
+    except Exception:
+        pass
     exe, params = iris_launch_command()
-    cwd = working_directory or str(_project_root())
-    # SEE_MASK — return value > 32 means success
-    rc = ctypes.windll.shell32.ShellExecuteW(
-        None,
-        "runas",
-        exe,
-        params or None,
-        cwd,
-        _SW_SHOWNORMAL,
-    )
-    return int(rc) > 32
+    cwd = working_directory or str(root)
+    # Child inherits this; parent must exit after successful ShellExecute.
+    os.environ["IRIS_ELEVATED_CHILD"] = "1"
+    try:
+        # SEE_MASK — return value > 32 means success
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "runas",
+            exe,
+            params or None,
+            cwd,
+            _SW_SHOWNORMAL,
+        )
+        ok = int(rc) > 32
+    except Exception:
+        os.environ.pop("IRIS_ELEVATED_CHILD", None)
+        raise
+    try:
+        path = Path.home() / ".iris-light" / "logs" / "boot_trace.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"pid={os.getpid()} ppid={os.getppid()} "
+                f"relaunch_as_admin ShellExecuteW exe={exe!r} params={params!r} "
+                f"rc={int(rc)} ok={ok}\n"
+            )
+    except Exception:
+        pass
+    if not ok:
+        os.environ.pop("IRIS_ELEVATED_CHILD", None)
+    return ok
 
 
 def needs_admin_for_setup() -> bool:
@@ -137,7 +176,7 @@ def needs_admin_for_setup() -> bool:
 
 
 def _pending_setup_wizard_path() -> Path:
-    from iris.system.hermes_iris_control_sync import iris_state_dir
+    from iris.system.iris_agent_control_sync import iris_state_dir
 
     return iris_state_dir() / "pending_setup_wizard"
 

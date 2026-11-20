@@ -82,7 +82,7 @@ class HandoffSummaryWorker(QThread):
 if __name__ == "__main__":
     route = SummaryRoute(backend="ollama", model="m")
     assert route.base_url == "" and route.target is None and route.extra == {}
-    assert SummaryRoute(backend="HERMES", model="m").backend == "HERMES"
+    assert SummaryRoute(backend="agent", model="m").backend == "agent"
     w = HandoffSummaryWorker(route, [{"role": "user", "content": "x"}], archive_id="a1")
     assert w._archive_id == "a1" and w._timeout_sec == DEFAULT_TIMEOUT_SEC
     w.request_cancel()

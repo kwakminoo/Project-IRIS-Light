@@ -26,10 +26,13 @@ class AIAgent:
         self.kwargs = kwargs
         self.stream_delta_callback = kwargs.get("stream_delta_callback")
         self._persist_disabled = False
+        skip = {
+            "stream_delta_callback",
+            "tool_progress_callback",
+            "reasoning_callback",
+        }
         recorded = {
-            key: value
-            for key, value in kwargs.items()
-            if key not in {"stream_delta_callback", "tool_progress_callback"}
+            key: value for key, value in kwargs.items() if key not in skip
         }
         _CTORS.append(recorded)
         _flush()

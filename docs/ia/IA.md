@@ -111,7 +111,7 @@ flowchart TB
 | `~/.iris-light/agent/.env` | 도구·프로바이더 API 키 (Exa, Firecrawl, Naver, API_SERVER_KEY …) |
 | `~/.iris-light/agent/config.yaml` | model provider, `web.search_backend` 등 |
 | `vendor/iris-agent-runtime/PIN` | 런타임 pin SHA |
-| `integrations/hermes-skills/iris-control/` | Iris 역제어 스킬(재배포용) |
+| `integrations/iris-skills/iris-agent/` | Iris 역제어 스킬(재배포용) |
 | `integrations/hermes-plugins/web/serpapi/` | SerpApi 플러그인 소스 |
 
 구 `%LOCALAPPDATA%\hermes`는 활성 홈이 아니다. 마이그레이션 잔여만 있을 수 있다.

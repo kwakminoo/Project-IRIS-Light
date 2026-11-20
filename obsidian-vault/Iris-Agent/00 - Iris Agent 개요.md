@@ -42,9 +42,8 @@ Iris 기동·Setup Protocol이 핀된 런타임을 제품 홈에 맞춘다.
 | 영역 | 내용 |
 |------|------|
 | **홈** | `IRIS_AGENT_HOME` 또는 `~/.iris-light/agent` |
-| **기본 실행** | InternalSidecar (`shared_engine`) |
-| **옵션** | ExternalGateway `:8642` |
-| **스킬** | `integrations/hermes-skills/iris-control/*` → 제품 홈 sync |
+| **실행** | InternalSidecar only (`shared_engine`) |
+| **스킬** | `integrations/iris-skills/iris-agent/*` → 홈 `skills/iris-agent/` |
 | **정본 대화** | Iris SQLite (`~/.iris-light/iris_light.db`) |
 
 ## 관련 노트

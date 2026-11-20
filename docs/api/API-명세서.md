@@ -104,7 +104,7 @@
 | **Base URL (옵션)** | `http://127.0.0.1:8642` (Iris는 `/v1` suffix 사용) |
 | **인증 (옵션 HTTP)** | `Authorization: Bearer <API_SERVER_KEY>` |
 | **스타트포인트** | 사용자 메시지 전송, 모델 동기화, health 체크 |
-| **스킬** | 제품 홈 skills / 저장소 `integrations/hermes-skills` |
+| **스킬** | 제품 홈 skills / 저장소 `integrations/iris-skills` |
 
 #### 엔드포인트
 
@@ -362,12 +362,19 @@ Exa·Firecrawl은 **빌트인 `web_search`가 1차**, 스킬은 백엔드 고정
 
 ## 6b. Iris Control Surface (Hermes → Iris 역제어)
 
-Hermes가 Iris UI를 조작하는 **로컬 제어면**. 키워드 라우터 없음 — Hermes tool-calling만.
+Hermes가 Iris UI를 조작하는 **로컬 제어면**. 키워드 라우터 없음 — Hermes tool-calling만.  
+제품 채팅 경로: **SpeakTools** (`PHASE4_ALLOWLIST`) — `get_state`, `get_catalog`, `control.invoke`, … (프로바이더가 밑줄 표기를 쓸 수 있음).  
+구 iris-control MCP 트리플은 제거·스크럽됨. `iris/mcp/iris_control_stdio.py`는 tombstone(`TOOLS=[]`)이며 MCP 서버로 돌리지 않음.
 
 ```
-Hermes MCP iris-control (stdio)
-  → HTTP 127.0.0.1:8765
-    → MainWindow 핸들러 (IDE Companion, workspace, settings, …)
+Hermes SpeakTools (PHASE4_ALLOWLIST)
+  → get_state | get_catalog | control.invoke | …
+  → control.invoke {action: browser.* | ide.* | …}
+      → ActionRegistry.invoke
+      → MainWindow 핸들러 (IDE Companion, workspace, settings, browser, …)
+
+(호환) Control Surface HTTP 127.0.0.1:8765 — non-seed/compat invoke용으로 남을 수 있음.
+  Hermes가 세 MCP 도구로 말한다고 쓰지 말 것.
 ```
 
 | Method | Path | 설명 |
@@ -379,11 +386,11 @@ Hermes MCP iris-control (stdio)
 
 인증: `Authorization: Bearer <IRIS_CONTROL_TOKEN>` (또는 `~/.iris-light/control_token`)
 
-MCP 도구: `iris_get_state`, `iris_get_catalog`, `iris_invoke`  
-설치·스킬: `integrations/hermes-skills/README.md`  
-**자동 동기화:** Iris 기동 시 `hermes_iris_control_sync`가 Hermes `config.yaml`·skills·MEMORY에 기록(재시작 유지). 변경 시 gateway `--replace`.
+제품 SpeakTools: `get_state`, `get_catalog`, `control.invoke` (및 allowlist 나머지). 브라우저 페이지 조작은 `control.invoke` + `action=browser.*`.  
+설치·스킬: `integrations/iris-skills/README.md` (`iris-browser` + teaching/observation pack 유지)  
+**자동 동기화:** Iris 기동 시 `iris_agent_control_sync`(구 `hermes_iris_control_sync` 파일명 가능)가 `mcp_servers.iris-control`을 스크럽하고 skills를 복사하며 Hermes `terminal`+`browser` toolset을 끔. 변경 시 gateway `--replace`.
 
-대표 액션: `ide.enter_companion`, `ide.exit_companion`, `ide.open_folder`, `ide.open_file`, `project.write_file` (`open`/`stream`), `project.run`, `workspace.open_*`, `profile.set`, `email.*`, `wiki.*`, `settings.*`  
+대표 액션: `ide.enter_companion`, `ide.exit_companion`, `ide.open_folder`, `ide.open_file`, `project.write_file` (`open`/`stream`), `project.run`, `workspace.open_*`, `profile.set`, `email.*`, `wiki.*`, `settings.*`, `browser.*`  
 고위험(`email.send` 등)은 `args.confirm=true` 필수.
 
 바이브코딩: `project.write_file`(기본 open+live stream)로 IDE 탭을 열고 파일 내용을 청크로 늘리며, 실행은 `project.run`이 **IDE 통합 터미널**에 출력(로그 파일 탭 아님). 채팅은 `summary`만.
@@ -428,4 +435,5 @@ MCP 도구: `iris_get_state`, `iris_get_catalog`, `iris_invoke`
 | 2026-08-25 | 현황 동기화: env 표 확장, Control/Voice 포트, 워커 경로, 모델 예시 비움 |
 | 2026-07-22 | 초판. Hermes/Ollama/Exa/Firecrawl/Google/Naver + iris-apis 스킬 매핑 |
 | 2026-07-22 | SerpApi 플러그인·engine 카탈로그·IA 문서 추가 |
-| 2026-07-24 | Iris Control Surface + Hermes MCP iris-control + work-start 스킬 |
+| 2026-07-24 | Iris Control Surface + work-start 스킬 (당시 iris-control MCP; 이후 SpeakTools로 교체·스크럽) |
+| 2026-11-17 | 6b: 제품 경로 SpeakTools (`get_state`/`get_catalog`/`control.invoke`); iris-control MCP tombstone |

@@ -101,5 +101,5 @@ class VoiceReferenceValidationTests(TestCase):
 
 class HermesSyncStatusTests(TestCase):
     def test_returns_status_text_without_raising(self) -> None:
-        text = settings_service.load_hermes_sync_status_text()
+        text = settings_service.load_agent_sync_status_text()
         self.assertTrue(text.startswith("상태:"))

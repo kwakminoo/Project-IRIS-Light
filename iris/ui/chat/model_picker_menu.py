@@ -13,12 +13,15 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from iris.infrastructure.api_model_meta import tool_support_label
+from iris.infrastructure.model_blurb_ko import display_api_description
 from iris.infrastructure.model_descriptions import describe_model
+from iris.infrastructure.ollama_client import display_name_from_runtime
 from iris.storage.api_providers import is_api_runtime_model, parse_runtime_model_id
 from iris.ui.chat.composer_plus_menu import _MenuRow
 from iris.ui.chat.skill_mcp_dialogs import _ItemCard, _card_qss
@@ -29,11 +32,11 @@ from iris.ui.shared.theme_tokens import TOKENS
 _COLOR_MODEL_DEFAULT = "#38bdf8"
 _COLOR_MODEL_NO_TOOLS = "#9ca3af"
 _COLOR_MODEL_PRO = "#fca5a5"
-_COLOR_MODEL_UNKNOWN = "#fbbf24"  # 도구지원 미확인 — 선택 시 1회 프로브함
+_COLOR_MODEL_UNKNOWN = "#fbbf24"  # roster off_domain, or Ollama tool-unknown
 
 # 이 수 이상 모델을 가진 원격 제공자는 하위 목록 창으로 묶음 (제공자 이름과 무관).
-# 로컬은 개수와 상관없이 LOCAL MODEL 한 항목으로만 연다.
-BRAND_MIN_MODELS = 6
+# 1이면 모델이 하나여도 브랜드 폴더. 로컬은 개수와 상관없이 LOCAL MODEL 한 항목.
+BRAND_MIN_MODELS = 1
 LOCAL_MODEL_MENU_LABEL = "LOCAL MODEL"
 
 
@@ -48,10 +51,99 @@ class PickerModel:
     is_api: bool = False
     tool_support: str = ""  # 커스텀 API 전용 — yes | no | unknown
     availability: str = ""  # ok | unverified | unavailable | ""
+    listing_description: str = ""
+    price_class: str = "unknown"  # free|paid|unknown
+    modality: str = "unknown"
+    retired: bool = False
+
+
+def _roster_aware(m: PickerModel) -> bool:
+    if m.is_api:
+        return True
+    pc = (m.price_class or "").strip()
+    mod = (m.modality or "").strip()
+    return (
+        (pc not in ("", "unknown"))
+        or (mod not in ("", "unknown"))
+        or bool((m.listing_description or "").strip())
+        or m.retired
+    )
+
+
+def picker_sort_key(
+    m: PickerModel,
+    *,
+    favorites: frozenset[str] | set[str] | None = None,
+) -> tuple:
+    """Homogeneous picker order key: (retired, unavailable, tier|rank, id).
+
+    When ``favorites`` is set, prefix ``0`` (favorite) / ``1`` (other) so
+    favorites float to the top without changing relative order within each group.
+    """
+    from iris.infrastructure.model_roster import sort_key as roster_sort_key
+    from iris.infrastructure.ollama_client import model_list_tier
+
+    if _roster_aware(m):
+        base = roster_sort_key(picker_entry_from_model(m))
+    else:
+        tool = m.tool_support or ("no" if not m.supports_tools else "")
+        rank, _ = model_list_tier(m.runtime, state=m.availability, tool=tool)
+        retired = 0
+        unavailable = 0
+        base = (retired, unavailable, rank, m.label.lower())
+    if favorites is None:
+        return base
+    return (0 if m.runtime in favorites else 1, *base)
+
+
+def sorted_picker_models(
+    models: list[PickerModel],
+    *,
+    favorites: frozenset[str] | set[str] | None = None,
+) -> list[PickerModel]:
+    if favorites is None:
+        return sorted(models, key=picker_sort_key)
+    return sorted(models, key=lambda m: picker_sort_key(m, favorites=favorites))
+
+
+def picker_entry_from_model(m: PickerModel):
+    """Build RosterEntry for color/sort. Rules stay in model_roster."""
+    from iris.infrastructure.model_roster import RosterEntry
+
+    price = m.price_class if m.price_class in ("free", "paid", "unknown") else "unknown"
+    modality = (
+        m.modality
+        if m.modality
+        in ("chat", "image", "audio", "video", "embedding", "other", "unknown")
+        else "unknown"
+    )
+    avail = m.availability if m.availability in ("ok", "unverified", "unavailable", "") else ""
+    tools = m.tool_support if m.tool_support in ("yes", "no", "unknown", "") else "unknown"
+    return RosterEntry(
+        model_id=m.runtime,
+        description=m.listing_description or "",
+        price_class=price,  # type: ignore[arg-type]
+        modality=modality,  # type: ignore[arg-type]
+        availability=avail,  # type: ignore[arg-type]
+        tool_support=tools,  # type: ignore[arg-type]
+        retired=bool(m.retired),
+    )
 
 
 def picker_tier_color(m: PickerModel) -> str:
-    """유료=빨강, 도구 미지원=회색, 도구 미확인=주황, 그 외=시안."""
+    """Roster path: free=cyan, off_domain=orange, paid=red, unknown=gray.
+    Ollama legacy: subscription=red, no-tools=gray, tool-unknown=orange.
+    """
+    if _roster_aware(m):
+        from iris.infrastructure.model_roster import DisplayTier, display_tier
+
+        tier = display_tier(picker_entry_from_model(m))
+        return {
+            DisplayTier.FREE: _COLOR_MODEL_DEFAULT,
+            DisplayTier.OFF_DOMAIN: _COLOR_MODEL_UNKNOWN,
+            DisplayTier.PAID: _COLOR_MODEL_PRO,
+            DisplayTier.UNKNOWN: _COLOR_MODEL_NO_TOOLS,
+        }[tier]
     if m.requires_subscription:
         return _COLOR_MODEL_PRO
     if not m.supports_tools:
@@ -74,8 +166,9 @@ def _ollama_blurb(m: PickerModel) -> str:
 
 
 def _api_blurb(m: PickerModel) -> str:
-    from iris.infrastructure.ollama_client import display_name_from_runtime
-
+    ko = display_api_description(m.runtime, m.listing_description or "")
+    if ko:
+        return ko
     bits = [m.label or display_name_from_runtime(m.runtime), tool_support_label(m.tool_support)]
     if m.tool_support == "unknown":
         bits.append("선택하면 1회 확인함")
@@ -118,10 +211,32 @@ def is_local_picker_model(m: PickerModel) -> bool:
     return True
 
 
+def _paint_favorite_star(btn: QToolButton, favorited: bool) -> None:
+    btn.setText("★" if favorited else "☆")
+    color = "#fbbf24" if favorited else "#64748b"
+    btn.setStyleSheet(
+        f"QToolButton#ModelFavoriteStar {{"
+        f" color: {color}; border: none; background: transparent;"
+        f" font-size: 14px; padding: 0;"
+        f" }}"
+    )
+
+
+def _make_favorite_star(favorited: bool, parent: QWidget | None = None) -> QToolButton:
+    btn = QToolButton(parent)
+    btn.setObjectName("ModelFavoriteStar")
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setAutoRaise(True)
+    btn.setFixedSize(22, 22)
+    _paint_favorite_star(btn, favorited)
+    return btn
+
+
 class ModelBrandDialog(QDialog):
     """Ollama / NVIDIA 등 브랜드 하위 모델 카드 목록."""
 
     model_chosen = pyqtSignal(str)  # runtime
+    favorite_toggled = pyqtSignal(str)  # runtime — parent persists later
 
     def __init__(
         self,
@@ -130,8 +245,10 @@ class ModelBrandDialog(QDialog):
         parent: QWidget | None = None,
         *,
         hint: str = "",
+        favorites: frozenset[str] | set[str] | None = None,
     ) -> None:
         super().__init__(parent)
+        self._favorites: set[str] = set(favorites or ())
         configure_hud_dialog(
             self,
             title=title,
@@ -155,20 +272,7 @@ class ModelBrandDialog(QDialog):
             empty.setObjectName("HudDialogHint")
             self._list_lay.addWidget(empty)
         else:
-            from iris.infrastructure.ollama_client import model_list_tier
-
-            ordered = sorted(
-                models,
-                key=lambda m: (
-                    model_list_tier(
-                        m.runtime,
-                        state=m.availability,
-                        tool=m.tool_support or ("no" if not m.supports_tools else ""),
-                    )[0],
-                    m.label.lower(),
-                ),
-            )
-            for m in ordered:
+            for m in sorted_picker_models(models, favorites=self._favorites):
                 self._add_card(m)
         self._list_lay.addStretch(1)
 
@@ -179,9 +283,26 @@ class ModelBrandDialog(QDialog):
             blurb = _api_blurb(m)
         else:
             blurb = _ollama_blurb(m)
-        card = _ItemCard(m.label, blurb, title_color=picker_tier_color(m))
+        card = _ItemCard(
+            m.label,
+            blurb,
+            title_color=picker_tier_color(m),
+            show_favorite=True,
+            favorited=m.runtime in self._favorites,
+        )
         card.use_clicked.connect(lambda _n, rt=m.runtime: self._pick(rt))
+        card.favorite_clicked.connect(
+            lambda rt=m.runtime, c=card: self._on_favorite(rt, c)
+        )
         self._list_lay.addWidget(card)
+
+    def _on_favorite(self, runtime: str, card: _ItemCard) -> None:
+        if runtime in self._favorites:
+            self._favorites.discard(runtime)
+        else:
+            self._favorites.add(runtime)
+        card.set_favorited(runtime in self._favorites)
+        self.favorite_toggled.emit(runtime)
 
     def _pick(self, runtime: str) -> None:
         self.model_chosen.emit(runtime)
@@ -209,6 +330,7 @@ class ModelPickerMenu(QFrame):
     open_ollama = pyqtSignal()
     open_brand = pyqtSignal(str)  # provider id
     model_chosen = pyqtSignal(str)
+    favorite_toggled = pyqtSignal(str)  # runtime — parent persists later
 
     def __init__(
         self,
@@ -217,12 +339,14 @@ class ModelPickerMenu(QFrame):
         has_ollama: bool,
         brands: list[tuple[str, str, int]] | None = None,  # (provider_id, 표시명, 모델수)
         singles: list[PickerModel] | None = None,
+        favorites: frozenset[str] | set[str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(
             parent,
             Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint,
         )
+        self._favorites: set[str] = set(favorites or ())
         self.setObjectName("ComposerPlusMenu")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setStyleSheet(
@@ -283,7 +407,7 @@ class ModelPickerMenu(QFrame):
             row.clicked.connect(lambda _=False, bid=brand_id: self._on_brand(bid))
             root.addWidget(row)
 
-        singles = list(singles or [])
+        singles = sorted_picker_models(list(singles or []), favorites=self._favorites)
         if singles:
             sep = QFrame()
             sep.setObjectName("ComposerPlusSep")
@@ -296,6 +420,15 @@ class ModelPickerMenu(QFrame):
                 sub = "도구 가능" if m.supports_tools else "도구 미지원"
                 if m.requires_subscription:
                     sub = "Pro · " + sub
+                wrap = QWidget()
+                wrap.setObjectName("ModelPickerSingleRow")
+                hl = QHBoxLayout(wrap)
+                hl.setContentsMargins(2, 0, 0, 0)
+                hl.setSpacing(0)
+                star = _make_favorite_star(m.runtime in self._favorites)
+                star.clicked.connect(
+                    lambda _=False, rt=m.runtime, b=star: self._on_favorite(rt, b)
+                )
                 row = _MenuRow(
                     "M",
                     m.label,
@@ -304,7 +437,9 @@ class ModelPickerMenu(QFrame):
                     title_color=picker_tier_color(m),
                 )
                 row.clicked.connect(lambda _=False, rt=m.runtime: self._pick(rt))
-                root.addWidget(row)
+                hl.addWidget(star, 0)
+                hl.addWidget(row, 1)
+                root.addWidget(wrap)
 
         if not local and not has_ollama and not (brands or []) and not singles:
             empty = _MenuRow("—", "모델 없음", "설정에서 API/Ollama 확인")
@@ -312,6 +447,14 @@ class ModelPickerMenu(QFrame):
             root.addWidget(empty)
 
         outer.addWidget(main)
+
+    def _on_favorite(self, runtime: str, star: QToolButton) -> None:
+        if runtime in self._favorites:
+            self._favorites.discard(runtime)
+        else:
+            self._favorites.add(runtime)
+        _paint_favorite_star(star, runtime in self._favorites)
+        self.favorite_toggled.emit(runtime)
 
     def _on_local(self) -> None:
         self.hide()
@@ -346,11 +489,14 @@ def brand_label(items: list[PickerModel], fallback: str = "API") -> str:
 
 def split_picker_groups(
     models: list[PickerModel],
+    *,
+    favorites: frozenset[str] | set[str] | None = None,
 ) -> tuple[list[PickerModel], list[PickerModel], dict[str, list[PickerModel]], list[PickerModel]]:
     """(local, ollama, api_brands_by_provider_id, singles).
 
     로컬 Ollama(비클라우드) + 로컬 Base URL 커스텀 API는 `local`.
-    Ollama 클라우드 런타임만 `ollama`. 원격 API는 **모델 수**로만 분기.
+    Ollama 클라우드 런타임만 `ollama`. 원격 API는 제공자당
+    ``BRAND_MIN_MODELS``개 이상이면 브랜드 폴더(기본 1 → 모델 1개도 폴더).
     """
     local: list[PickerModel] = []
     ollama: list[PickerModel] = []
@@ -370,13 +516,13 @@ def split_picker_groups(
     singles: list[PickerModel] = []
     for pid, items in by_pid.items():
         if len(items) >= BRAND_MIN_MODELS:
-            brands[pid] = sorted(items, key=lambda x: x.label.lower())
+            brands[pid] = sorted_picker_models(items, favorites=favorites)
         else:
             singles.extend(items)
 
-    local.sort(key=lambda x: x.label.lower())
-    ollama.sort(key=lambda x: x.label.lower())
-    singles.sort(key=lambda x: x.label.lower())
+    local = sorted_picker_models(local, favorites=favorites)
+    ollama = sorted_picker_models(ollama, favorites=favorites)
+    singles = sorted_picker_models(singles, favorites=favorites)
     return local, ollama, brands, singles
 
 
@@ -421,11 +567,12 @@ if __name__ == "__main__":
     assert LOCAL_MODEL_MENU_LABEL == "LOCAL MODEL"
     one_local, one_ol, _br, _si = split_picker_groups([o])
     assert len(one_local) == 1 and one_ol == []
-    # 모델 2개인 제공자는 그대로 노출, BRAND_MIN_MODELS 이상이면 브랜드로 묶음
+    # 원격 API는 모델 1개여도 브랜드 폴더로 묶음
     local, ol, brands, si = split_picker_groups([o, cloud, local_api, n, g])
     assert {m.runtime for m in local} == {"api:lm:llama", "gemma4:latest"}
     assert [m.runtime for m in ol] == ["gemma4:31b-cloud"]
-    assert brands == {} and len(si) == 2
+    assert set(brands) == {"nv", "oa"} and si == []
+    assert len(brands["nv"]) == 1 and len(brands["oa"]) == 1
     many = [
         PickerModel(
             f"api:gm:models/gemini-{i}",
@@ -434,16 +581,95 @@ if __name__ == "__main__":
             provider_base="https://generativelanguage.googleapis.com/v1beta",
             is_api=True,
         )
-        for i in range(BRAND_MIN_MODELS)
+        for i in range(3)
     ]
     local, ol, brands, si = split_picker_groups([o, *many])
     assert len(local) == 1 and local[0].runtime == "gemma4:latest"
     assert ol == []
-    assert list(brands) == ["gm"] and len(brands["gm"]) == BRAND_MIN_MODELS
+    assert list(brands) == ["gm"] and len(brands["gm"]) == 3
     assert si == []
     assert brand_label(brands["gm"]) == "Gemini"
     assert is_api_runtime_model(n.runtime)
-    assert picker_tier_color(n) == _COLOR_MODEL_DEFAULT
+    # API without roster price → unknown gray (tools no longer paint primary)
+    assert picker_tier_color(n) == _COLOR_MODEL_NO_TOOLS
     assert picker_tier_color(no_tools) == _COLOR_MODEL_NO_TOOLS
+    free_api = PickerModel(
+        "api:nv:free",
+        "free",
+        supports_tools=False,
+        tool_support="no",
+        provider_name="NVIDIA",
+        is_api=True,
+        price_class="free",
+        modality="chat",
+    )
+    assert picker_tier_color(free_api) == _COLOR_MODEL_DEFAULT
     assert picker_tier_color(pro) == _COLOR_MODEL_PRO
+
+    import sys
+
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    fav_rt = "api:nv:fav-model"
+    other_rt = "api:nv:other-model"
+    brand_models = [
+        PickerModel(
+            other_rt,
+            "other",
+            is_api=True,
+            provider_name="NVIDIA",
+            price_class="free",
+            modality="chat",
+        ),
+        PickerModel(
+            fav_rt,
+            "fav",
+            is_api=True,
+            provider_name="NVIDIA",
+            price_class="free",
+            modality="chat",
+        ),
+    ]
+    dlg = ModelBrandDialog("NVIDIA", brand_models, favorites={fav_rt})
+    stars: list[QToolButton] = []
+    for i in range(dlg._list_lay.count()):
+        item = dlg._list_lay.itemAt(i)
+        w = item.widget() if item is not None else None
+        if w is None:
+            continue
+        star = w.findChild(QToolButton, "ModelFavoriteStar")
+        if star is not None:
+            stars.append(star)
+    assert len(stars) == 2
+    assert stars[0].text() == "★" and stars[1].text() == "☆"
+    toggled: list[str] = []
+    chosen: list[str] = []
+    dlg.favorite_toggled.connect(toggled.append)
+    dlg.model_chosen.connect(chosen.append)
+    stars[1].click()
+    assert toggled == [other_rt]
+    assert stars[1].text() == "★"
+    assert chosen == []
+
+    single = PickerModel(
+        "api:oa:solo",
+        "solo",
+        is_api=True,
+        provider_name="OpenAI",
+        price_class="free",
+        modality="chat",
+    )
+    menu = ModelPickerMenu(
+        has_ollama=False,
+        singles=[single],
+        favorites={single.runtime},
+    )
+    menu_stars = menu.findChildren(QToolButton, "ModelFavoriteStar")
+    assert len(menu_stars) == 1
+    assert menu_stars[0].text() == "★"
+    # Provider-only path must not grow stars
+    providers_only = ModelPickerMenu(has_ollama=True, local=[o])
+    assert providers_only.findChildren(QToolButton, "ModelFavoriteStar") == []
+
     print("model_picker_menu self-check ok")

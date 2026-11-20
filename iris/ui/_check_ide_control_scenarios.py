@@ -1,6 +1,6 @@
 """IDE / project 시나리오 10개 — 기대 vs 실제 리포트.
 
-제어면 HTTP + Hermes MCP/스킬 배선 검증.
+제어면 HTTP + Iris Agent MCP/스킬 배선 검증.
 NL→Hermes LLM 경로는 인프라가 준비됐는지까지 확인 (실제 LLM 응답은 수동).
 """
 
@@ -127,7 +127,7 @@ def mcp_call_state() -> dict:
 
 def main() -> int:
     sys.path.insert(0, str(ROOT))
-    from iris.system.hermes_iris_control_sync import sync_iris_control, verify_install
+    from iris.system.iris_agent_control_sync import sync_iris_control, verify_install
 
     sync = sync_iris_control()
     verified = verify_install()
@@ -163,14 +163,14 @@ def main() -> int:
         "mcp_servers.iris-control 존재·일치",
         f"mcp_installed={verified.mcp_installed} changed={sync.mcp_changed}",
         verified.mcp_installed,
-        fix="iris/system/hermes_iris_control_sync.py ensure_mcp_in_config / Hermes config 쓰기 권한",
+        fix="iris/system/iris_agent_control_sync.py ensure_mcp_in_config / Hermes config 쓰기 권한",
         detail={"sync": sync.messages, "errors": sync.errors},
     )
 
     # 2 skills
     add(
         2,
-        "iris-work-* 스킬 3개 Hermes skills에 설치",
+        "iris-work-* 스킬 3개 Iris Agent skills에 설치",
         "iris-work-start/end/session-status SKILL.md 존재",
         f"ok={verified.skills_ok} missing={verified.skills_missing}",
         len(verified.skills_ok) == 3 and not verified.skills_missing,

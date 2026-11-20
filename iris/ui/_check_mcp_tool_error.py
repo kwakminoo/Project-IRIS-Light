@@ -11,14 +11,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from iris.mcp.iris_control_stdio import _tool_result
+from iris.system.control_http_client import _tool_result
 from iris.system.control_surface import ActionRegistry
 from iris.ui.control_bindings import _register_actions
 
 _THRESHOLD = 3
 
 
-def _hermes_count(previous: int, mcp_result: dict) -> int:
+def _agent_count(previous: int, mcp_result: dict) -> int:
     """isError면 연결 실패로 센다. 아니면 전송은 된 것이므로 0으로 되돌린다."""
     if mcp_result["isError"]:
         return previous + 1
@@ -41,11 +41,11 @@ def check_business_errors_do_not_lock() -> None:
         result = _tool_result(payload)
         assert result["isError"] is False, payload
         assert '"ok": false' in result["content"][0]["text"]
-        count = _hermes_count(count, result)
+        count = _agent_count(count, result)
         assert not _locked(count), payload
     ok = _tool_result({"ok": True, "action": "ping", "error": None})
     assert ok["isError"] is False
-    count = _hermes_count(count, ok)
+    count = _agent_count(count, ok)
     assert count == 0
 
 
@@ -59,7 +59,7 @@ def check_transport_still_locks() -> None:
     for _ in range(_THRESHOLD):
         result = _tool_result(down)
         assert result["isError"] is True
-        count = _hermes_count(count, result)
+        count = _agent_count(count, result)
     assert _locked(count)
 
 

@@ -15,7 +15,7 @@ from iris.runtime.tool_force import (
 )
 from iris.runtime.turn_followthrough import counts_as_tool_ok
 from iris.runtime.turn_verify import SIDE_EFFECT_EXPLICIT_FAIL, TurnEvidence, verify_file_create_turn
-from iris.system.hermes_tool_choice import iris_tool_force_policy
+from iris.system.iris_agent_tool_choice import iris_tool_force_policy
 from iris.ui.chat.file_write_claim import CHAT_ONLY
 
 

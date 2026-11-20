@@ -1,6 +1,6 @@
 """Phase 2.3 Iris Agent speak-path tool wire 자검.
 
-- HermesChatWorker 가 speak_invoke_agent_tool / invoke_native_tool 로
+- IrisAgentChatWorker 가 speak_invoke_agent_tool / invoke_native_tool 로
   iris.wiki.list_notes 를 호출한다.
 - 그 경로는 MCP stdio·Control HTTP 가 필요하면 실패한다.
 - run() 이 _wire_native_speak_tools 를 호출한다 (죽은 메서드만 두지 않음).
@@ -17,8 +17,8 @@ from iris.infrastructure.agent_tool_registry import (
     resolve_speak_tool_name,
     speak_invoke_agent_tool,
 )
-from iris.system.hermes_iris_control_sync import project_root
-from iris.ui.workers.hermes_workers import HermesChatWorker
+from iris.system.iris_agent_control_sync import project_root
+from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker
 
 
 def _block_network(*_a: object, **_k: object) -> None:
@@ -32,7 +32,7 @@ def _main() -> None:
     assert resolve_speak_tool_name("wiki.list_notes") == "iris.wiki.list_notes"
 
     workers_src = (
-        root / "iris" / "ui" / "workers" / "hermes_workers.py"
+        root / "iris" / "ui" / "workers" / "iris_agent_workers.py"
     ).read_text(encoding="utf-8")
     assert "speak_invoke_agent_tool" in workers_src
     assert "def invoke_native_tool" in workers_src
@@ -63,7 +63,7 @@ def _main() -> None:
     reg = default_registry()
     with mock.patch("socket.socket", side_effect=_block_network):
         with mock.patch("socket.create_connection", side_effect=_block_network):
-            via_worker = HermesChatWorker.invoke_native_tool(
+            via_worker = IrisAgentChatWorker.invoke_native_tool(
                 "iris.wiki.list_notes",
                 {"limit": 3},
             )
@@ -80,7 +80,7 @@ def _main() -> None:
     assert via_alias.get("call_path") == "native"
 
     # Phase 2.5+: seed mail is native (gate 1). Non-seed still may HTTP compat.
-    mail = HermesChatWorker.invoke_native_tool("iris.mail.list_accounts", {})
+    mail = IrisAgentChatWorker.invoke_native_tool("iris.mail.list_accounts", {})
     assert mail.get("ok") is True, mail
     assert mail.get("call_path") == "native"
     assert (mail.get("data") or {}).get("bridge") == "none"
@@ -88,7 +88,7 @@ def _main() -> None:
     skill = (
         root
         / "integrations"
-        / "hermes-skills"
+        / "iris-skills"
         / "iris-control"
         / "iris-wiki"
         / "SKILL.md"

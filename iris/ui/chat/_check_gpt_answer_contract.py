@@ -109,7 +109,7 @@ def _assert_extract_confidence() -> None:
 
 
 def _assert_nudge_v24_examples() -> None:
-    from iris.system import hermes_memory_nudge as nudge
+    from iris.system import iris_agent_memory_nudge as nudge
 
     assert "iris-control-nudge-v" in nudge._MARKER
     assert "project.create_scaffold" in nudge._BLOCK

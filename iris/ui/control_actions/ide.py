@@ -190,6 +190,17 @@ def register_ide_actions(window: IdeHost, reg: ActionRegistry) -> None:
         return ok_result("ide.pick_open_file", body)
 
     def ide_open_folder(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.ui.control_bindings import (
+            peek_bound_root,
+            refuse_agent_workspace_switch,
+        )
+
+        locked = refuse_agent_workspace_switch(
+            "ide.open_folder", peek_bound_root(window)
+        )
+        if locked is not None:
+            return locked
+
         path = str(args.get("path") or args.get("folder") or args.get("project_root") or "").strip()
         if not path:
             return err_result("ide.open_folder", "path required")
@@ -305,7 +316,7 @@ def register_ide_actions(window: IdeHost, reg: ActionRegistry) -> None:
     reg.register(
         "ide.open_file",
         ide_open_file,
-        summary="Open an existing file in the bound IDE workspace. Required: path, or project_root+rel_path. Relative paths are under the bound workspace from iris_get_state, not the shell cwd. Missing files are an error; do not create a substitute.",
+        summary="Open an existing file in the bound IDE workspace. Required: path, or project_root+rel_path. Relative paths are under the bound workspace from get_state, not the shell cwd. Missing files are an error; do not create a substitute.",
         risk="medium",
     )
 

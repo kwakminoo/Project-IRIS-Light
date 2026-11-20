@@ -11,14 +11,14 @@ if TYPE_CHECKING:
 def external_backend_status_line(
     settings: "Settings | None",
     *,
-    hermes_online: bool = False,
+    agent_online: bool = False,
 ) -> str:
     """상태 칩용 한 줄 요약."""
     if settings is None:
         return "Iris Agent (Unavailable)"
-    if not settings.hermes_enabled:
+    if not settings.agent_enabled:
         status = "Unavailable"
-    elif hermes_online:
+    elif agent_online:
         status = "Connected"
     else:
         status = "Offline"

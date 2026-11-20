@@ -23,7 +23,8 @@ from iris.ui.settings.settings_dialog import LightSettingsSelection, SettingsDia
 
 
 def check_default_is_on() -> None:
-    assert Settings().hermes_enabled is True, "에이전트 기본값이 꺼져 있음"
+    s = Settings()
+    assert s.agent_enabled is True, "에이전트 기본값이 꺼져 있음"
 
 
 def check_settings_dialog_has_no_switch(app: QApplication) -> None:
@@ -32,25 +33,36 @@ def check_settings_dialog_has_no_switch(app: QApplication) -> None:
 
     dlg = SettingsDialog(Settings(), None)
     try:
-        assert not hasattr(dlg, "_hermes_on"), "설정 화면에 에이전트 끄기 체크박스가 남아 있음"
+        assert not hasattr(dlg, "_agent_on"), "설정 화면에 에이전트 끄기 체크박스가 남아 있음"
         assert dlg.selection() is None
     finally:
         dlg.deleteLater()
 
 
 def check_control_action_rejects_disable() -> None:
+    """Disable gate is agent_enabled only; leftover hermes_enabled in set args is ignored no-op (ok=True)."""
     surface = MagicMock()
     surface.registry = reg = ActionRegistry()
     _register_actions(MagicMock(), surface)
 
-    off = reg.invoke("settings.set", {"hermes_enabled": False})
-    assert off["ok"] is False, "settings.set이 에이전트 끄기를 수용함"
-    err = (off["error"] or "").lower()
-    assert "agent" in err or "hermes" in err, off["error"]
+    got = reg.invoke("settings.get", {})
+    assert got["ok"] is True, got.get("error")
+    payload = got.get("result") or {}
+    assert "agent_enabled" in payload
+    assert "hermes_enabled" not in payload, "settings.get must not emit hermes_enabled"
 
-    # 켜는 요청은 무해한 no-op이어야 함 (기존 클라이언트 호환)
-    on = reg.invoke("settings.set", {"hermes_enabled": True})
-    assert on["ok"] is True, on.get("error")
+    off_agent = reg.invoke("settings.set", {"agent_enabled": False})
+    assert off_agent["ok"] is False, "settings.set이 agent_enabled 끄기를 수용함"
+    err = (off_agent["error"] or "").lower()
+    assert "agent" in err, off_agent["error"]
+
+    # Old clients may still send hermes_enabled; ignore as unknown (no disable gate).
+    off_legacy = reg.invoke("settings.set", {"hermes_enabled": False})
+    assert off_legacy["ok"] is True, off_legacy.get("error")
+    on_legacy = reg.invoke("settings.set", {"hermes_enabled": True})
+    assert on_legacy["ok"] is True, on_legacy.get("error")
+    on_agent = reg.invoke("settings.set", {"agent_enabled": True})
+    assert on_agent["ok"] is True, on_agent.get("error")
 
 
 def check_control_action_rejects_agent_shell_fields() -> None:
@@ -58,15 +70,23 @@ def check_control_action_rejects_agent_shell_fields() -> None:
     surface.registry = reg = ActionRegistry()
     _register_actions(MagicMock(), surface)
     for key, value in (
-        ("hermes_base_url", "http://evil.example/v1"),
-        ("hermes_api_key", "sk-leak"),
-        ("hermes_command", "evil-hermes"),
+        ("agent_base_url", "http://evil.example/v1"),
+        ("agent_api_key", "sk-leak"),
+        ("agent_command", "evil-agent"),
     ):
         result = reg.invoke("settings.set", {key: value, "confirm": True})
         assert result["ok"] is False, f"settings.set이 {key} 편집을 수용함"
         assert "runtime" in (result["error"] or "").lower() or "not editable" in (
             result["error"] or ""
         ).lower(), result["error"]
+    # Legacy hermes_* keys are unknown args (no Settings field) — no-op, not blocked.
+    for key, value in (
+        ("hermes_base_url", "http://evil.example/v1"),
+        ("hermes_api_key", "sk-leak"),
+        ("hermes_command", "evil-hermes"),
+    ):
+        result = reg.invoke("settings.set", {key: value, "confirm": True})
+        assert result["ok"] is True, result.get("error")
 
 
 if __name__ == "__main__":

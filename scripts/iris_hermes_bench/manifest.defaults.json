@@ -1,0 +1,12 @@
+{
+  "model": "gpt-oss:120b-cloud",
+  "base_url": "http://127.0.0.1:11434/v1",
+  "api_key": "ollama",
+  "provider": "custom",
+  "hermes_bin": "%LOCALAPPDATA%\\hermes\\bin\\hermes.exe",
+  "max_turns": 12,
+  "iris_turn_timeout_s": 300,
+  "phases": [1, 2, 3, 4],
+  "sequential": true,
+  "notes": "Both arms must use the same model+base_url. Hermes arm uses isolated HERMES_HOME without iris-control MCP."
+}

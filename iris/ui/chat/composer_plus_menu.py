@@ -17,15 +17,15 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from iris.infrastructure.hermes_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import iris_agent_home
 
 
-def _hermes_root() -> Path:
-    return hermes_home()
+def _agent_root() -> Path:
+    return iris_agent_home()
 
 
-def list_hermes_skill_names(*, limit: int = 80) -> list[str]:
-    root = _hermes_root() / "skills"
+def list_agent_skill_names(*, limit: int = 80) -> list[str]:
+    root = _agent_root() / "skills"
     try:
         if not root.is_dir():
             return []
@@ -44,7 +44,7 @@ def list_hermes_skill_names(*, limit: int = 80) -> list[str]:
 
 def list_custom_skill_names(*, limit: int = 40) -> list[str]:
     """하위 호환 — custom 폴더만."""
-    root = _hermes_root() / "skills" / "custom"
+    root = _agent_root() / "skills" / "custom"
     try:
         if not root.is_dir():
             return []
@@ -61,9 +61,9 @@ def list_custom_skill_names(*, limit: int = 40) -> list[str]:
     return names
 
 
-def list_hermes_mcp_names(*, limit: int = 24) -> list[str]:
+def list_agent_mcp_names(*, limit: int = 24) -> list[str]:
     """config.yaml 의 mcp_servers 최상위 키만 (args/env 중첩 키 제외)."""
-    cfg = _hermes_root() / "config.yaml"
+    cfg = _agent_root() / "config.yaml"
     try:
         if not cfg.is_file():
             return []
@@ -194,6 +194,7 @@ class ComposerPlusMenu(QFrame):
     add_folder = pyqtSignal()
     skill_chosen = pyqtSignal(str)
     mcp_chosen = pyqtSignal(str)
+    open_apps_panel = pyqtSignal()
     open_skills_panel = pyqtSignal()
     open_mcp_panel = pyqtSignal()
 
@@ -250,12 +251,16 @@ class ComposerPlusMenu(QFrame):
         folder.clicked.connect(self._on_folder)
         root.addWidget(folder)
 
+        apps = _MenuRow("APP", "Apps", "browse directory", show_arrow=True)
+        apps.clicked.connect(self._on_open_apps)
+        root.addWidget(apps)
+
         sep1 = QFrame()
         sep1.setObjectName("ComposerPlusSep")
         sep1.setFixedHeight(1)
         root.addWidget(sep1)
 
-        n_skills = len(list_hermes_skill_names())
+        n_skills = len(list_agent_skill_names())
         skills_row = _MenuRow(
             "SK",
             "Skills",
@@ -270,7 +275,7 @@ class ComposerPlusMenu(QFrame):
         sep2.setFixedHeight(1)
         root.addWidget(sep2)
 
-        n_mcp = len(list_hermes_mcp_names())
+        n_mcp = len(list_agent_mcp_names())
         mcp_row = _MenuRow(
             "MCP",
             "MCP",
@@ -297,6 +302,10 @@ class ComposerPlusMenu(QFrame):
     def _on_open_skills(self) -> None:
         self.hide()
         self.open_skills_panel.emit()
+
+    def _on_open_apps(self) -> None:
+        self.hide()
+        self.open_apps_panel.emit()
 
     def _on_open_mcp(self) -> None:
         self.hide()
@@ -475,8 +484,8 @@ if __name__ == "__main__":
 
     from PyQt6.QtWidgets import QApplication
 
-    assert isinstance(list_hermes_skill_names(), list)
-    assert isinstance(list_hermes_mcp_names(), list)
+    assert isinstance(list_agent_skill_names(), list)
+    assert isinstance(list_agent_mcp_names(), list)
     assert ComposerSendButton._BTN == ComposerPlusButton._BTN
     assert ComposerSendButton._ARM == ComposerPlusButton._ARM
     assert ComposerSendButton._ARROW_RGB == ComposerPlusButton._PLUS_RGB
@@ -490,8 +499,8 @@ if __name__ == "__main__":
     print(
         "composer_plus_menu ok",
         "skills",
-        len(list_hermes_skill_names()),
+        len(list_agent_skill_names()),
         "mcp",
-        len(list_hermes_mcp_names()),
+        len(list_agent_mcp_names()),
     )
     _ = app

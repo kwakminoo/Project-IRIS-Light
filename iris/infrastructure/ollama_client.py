@@ -13,8 +13,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from iris.runtime.stream_usage import parse_stream_usage
+
 OLLAMA_CLOUD_CATALOG_URL = "https://ollama.com/api/tags"
 OLLAMA_HTTP_USER_AGENT = "Iris-Light/1.0"
+OLLAMA_CHAT_CONTEXT_CAP = 64_000
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,11 @@ class OllamaModelInfo:
     availability: str = ""
     # 커스텀 API Base URL. 로컬 피커 분류용. Ollama 모델은 비움.
     endpoint: str = ""
+    # roster / listing meta (API). empty → picker falls back to legacy flags
+    listing_description: str = ""
+    price_class: str = "unknown"  # free|paid|unknown
+    modality: str = "unknown"
+    retired: bool = False
 
     def __post_init__(self) -> None:
         if not self.catalog_name:
@@ -96,6 +104,10 @@ def apply_ollama_cleanup(
         tool_support=tool,
         availability=state,
         endpoint=model.endpoint,
+        listing_description=model.listing_description,
+        price_class=model.price_class,
+        modality=model.modality,
+        retired=model.retired,
     )
 
 
@@ -506,13 +518,20 @@ class OllamaClient:
     ) -> Iterator[dict[str, Any]]:
         """
         /api/chat NDJSON 스트림.
-        yield: {"thinking": str|None, "content": str|None, "done": bool, "raw": dict}
+        yield: thinking/content, normalized usage, terminal state, and raw provider data.
         """
+        # ponytail: 64K caps memory use; raise only when Iris gains a user-tunable context budget.
+        # Ollama otherwise uses the runtime default context (commonly 2K).
+        num_ctx = min(
+            self.model_context_length(model, default=OLLAMA_CHAT_CONTEXT_CAP),
+            OLLAMA_CHAT_CONTEXT_CAP,
+        )
         payload = {
             "model": model,
             "messages": messages,
             "stream": True,
             "think": think,
+            "options": {"num_ctx": num_ctx, "num_predict": -1},
         }
         from iris.runtime.attachment_context import trace_payload
         trace_payload("ollama", payload)
@@ -536,7 +555,9 @@ class OllamaClient:
                     yield {
                         "thinking": msg.get("thinking") if isinstance(msg, dict) else None,
                         "content": msg.get("content") if isinstance(msg, dict) else None,
+                        "usage": parse_stream_usage(obj),
                         "done": bool(obj.get("done")),
+                        "done_reason": str(obj.get("done_reason") or ""),
                         "raw": obj,
                     }
         except HTTPError as e:

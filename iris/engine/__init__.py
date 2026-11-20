@@ -9,6 +9,7 @@ Agent-readable:
 
 from iris.engine.runtime import Engine, shared_engine
 from iris.engine.types import (
+    AppUiOfferEvent,
     CancelToken,
     ChatMessage,
     ChatTranscript,
@@ -21,7 +22,6 @@ from iris.engine.types import (
     EnginePython,
     EngineReady,
     EngineSource,
-    ExternalGateway,
     GuiPython,
     HermesHome,
     InternalSidecar,
@@ -38,6 +38,7 @@ from iris.engine.types import (
 )
 
 __all__ = [
+    "AppUiOfferEvent",
     "CancelToken",
     "ChatMessage",
     "ChatTranscript",
@@ -51,7 +52,6 @@ __all__ = [
     "EnginePython",
     "EngineReady",
     "EngineSource",
-    "ExternalGateway",
     "GuiPython",
     "HermesHome",
     "InternalSidecar",

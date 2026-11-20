@@ -36,7 +36,8 @@ _IMG_ALT = re.compile(r"""\balt\s*=\s*(['"])(.*?)\1""", re.IGNORECASE)
 _FILE_EXT = (
     r"(?:py|ts|tsx|js|jsx|md|json|yaml|yml|toml|css|html|htm|rs|go|java|kt|"
     r"cpp|h|c|cs|sql|sh|ps1|bat|txt|ini|cfg|xml|vue|svelte|rb|php|swift|"
-    r"gradle|kts|lock|env|ico|svg|png|jpg|jpeg|gif|webp|woff2?|ttf|spec)"
+    r"gradle|kts|lock|env|ico|svg|png|jpg|jpeg|gif|webp|woff2?|ttf|spec|"
+    r"pdf|ipynb)"
 )
 _BACKTICK_FILE_PATH = re.compile(
     rf"`((?:[\w.-]+/)+[\w.-]+\.{_FILE_EXT}(?:\:\d+(?:\:\d+)?)?)`",
@@ -145,10 +146,10 @@ def render_user_message(text: str) -> str:
     rendered = render_markdown_document(source, citations=False)
     for index, chip in enumerate(chips):
         rendered = rendered.replace(_ATTACH_TOKEN.format(index), chip)
-    # QTextDocument does not support rounded CSS bubbles. A quiet inset card
-    # uses native paragraph margins instead of a dark, rectangular table.
+    # QTextDocument does not support rounded CSS bubbles. Flush left like
+    # assistant turns (no horizontal inset).
     return (
-        '<div style="margin-left:24px;margin-right:12px;">'
+        '<div style="margin-left:0;margin-right:0;">'
         f"{rendered}</div>"
     )
 
@@ -170,6 +171,7 @@ def render_tool_shell(
     block_id: str = "",
     *,
     collapsed: bool = False,
+    phase: str | None = None,
 ) -> str:
     block = ToolShellBlock(
         title=title or "Shell",
@@ -178,6 +180,7 @@ def render_tool_shell(
         status=status or "ok",
         block_id=block_id or "tool",
         collapsed=collapsed,
+        phase=(phase or "done").strip() or "done",
     )
     return wrap_document_html(marked_tool_shell_to_html(block))
 
@@ -480,8 +483,9 @@ _CHAT_TAG = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>", re.DOTALL)
 _ALLOWED_URL_PREFIXES = (
     "http://", "https://",
     "iris-file://", "iris-wiki://", "iris-copy://", "iris-collapse://",
-    "iris-tts://", "iris-error://", "iris-update://", "iris-hermes-update://",
-    "iris-stt://", "iris-diagram://", "iris-ollama-login://",
+    "iris-tts://", "iris-error://", "iris-update://", "iris-agent-update://",
+    "iris-stt://", "iris-diagram://", "iris-app://", "iris-ollama-login://",
+    "iris-run://", "iris-always://", "iris-skip://", "iris-mode://", "iris-apply://",
     "iris-image:",
 )
 

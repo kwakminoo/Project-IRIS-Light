@@ -97,10 +97,10 @@ class VerifyCoreChatReadyTests(TestCase):
 
     @patch("iris.system.setup_protocol.verify_iris_mcp_tools", return_value=(True, "ok"))
     @patch(
-        "iris.infrastructure.hermes_client.HermesClient.probe_chat_auth",
+        "iris.infrastructure.iris_agent_client.HermesClient.probe_chat_auth",
         return_value="ok",
     )
-    @patch("iris.system.setup_protocol.is_hermes_gateway_running", return_value=True)
+    @patch("iris.system.setup_protocol.is_agent_gateway_running", return_value=True)
     @patch("iris.system.setup_protocol.ollama_cloud_signed_in", return_value=True)
     @patch(
         "iris.system.setup_protocol._list_ollama_model_names",
@@ -115,10 +115,10 @@ class VerifyCoreChatReadyTests(TestCase):
 
     @patch("iris.system.setup_protocol.verify_iris_mcp_tools", return_value=(True, "ok"))
     @patch(
-        "iris.infrastructure.hermes_client.HermesClient.probe_chat_auth",
+        "iris.infrastructure.iris_agent_client.HermesClient.probe_chat_auth",
         return_value="unauthorized",
     )
-    @patch("iris.system.setup_protocol.is_hermes_gateway_running", return_value=True)
+    @patch("iris.system.setup_protocol.is_agent_gateway_running", return_value=True)
     @patch("iris.system.setup_protocol.ollama_cloud_signed_in", return_value=False)
     @patch(
         "iris.system.setup_protocol._list_ollama_model_names",

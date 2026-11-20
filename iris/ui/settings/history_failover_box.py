@@ -1,36 +1,26 @@
-"""설정 — 위키 History 기록·검색, 모델 자동 전환 체인.
+"""설정 — 위키 History 기록·검색.
 
 `build_history_failover_box(db)` 가 QGroupBox 를 돌려주고, 위젯을 박스 속성으로
-달아 둔다(이 저장소의 `build_chat_title_box` 방식). 저장은 `save_history_failover`
-가 맡는다 — 다이얼로그가 Save 를 누를 때 부른다.
+달아 둔다. 저장은 `save_history_failover` 가 맡는다 — HistorySettings 만 저장한다.
+모델 자동 전환 UI는 AI Hub `AiRoutingPanel` 로 옮겼다.
 """
 
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QPushButton,
     QSpinBox,
     QVBoxLayout,
 )
 
-from iris.runtime.model_failover import MODE_MODEL_CHAIN, MODE_OFF, MODE_RETRY
 from iris.storage.database import Database
 from iris.storage.failover_prefs import (
-    BACKENDS,
-    FailoverSettings,
-    FallbackEntry,
     HistorySettings,
-    load_failover_settings,
     load_history_settings,
-    save_failover_settings,
     save_history_settings,
 )
 from iris.ui.settings.hud_dialog import (
@@ -41,17 +31,11 @@ from iris.ui.settings.hud_dialog import (
 )
 
 
-def _entry_label(entry: FallbackEntry) -> str:
-    tail = " · 무료" if entry.free else ""
-    return f"{entry.model}  [{entry.backend}]{tail}"
-
-
 def build_history_failover_box(db: Database) -> QGroupBox:
-    """History 기록·검색 + 모델 자동 전환 설정."""
+    """History 기록·검색 설정."""
     history = load_history_settings(db)
-    failover = load_failover_settings(db)
 
-    box = QGroupBox("대화 기록 (History) · 모델 자동 전환")
+    box = QGroupBox("대화 기록 (History)")
     lay = QVBoxLayout(box)
     lay.setSpacing(TOKENS.spacing_sm)
     lay.addWidget(
@@ -110,136 +94,23 @@ def build_history_failover_box(db: Database) -> QGroupBox:
         )
     )
 
-    # --- 자동 전환 --------------------------------------------------
-
-    lay.addWidget(
-        make_hint(
-            "쓰던 모델이 할당량 소진(429)이나 서버 오류로 막히면 아래 순서대로 "
-            "다음 모델에 다시 요청합니다. 대화 맥락은 같이 넘어갑니다."
-        )
-    )
-    failover_enabled = QCheckBox("모델 자동 전환 사용")
-    failover_enabled.setChecked(failover.enabled)
-    lay.addWidget(failover_enabled)
-
-    f_form = QFormLayout()
-    configure_form(f_form)
-
-    mode = QComboBox()
-    mode.addItem("다른 모델로 전환", MODE_MODEL_CHAIN)
-    mode.addItem("같은 모델로 재시도", MODE_RETRY)
-    mode.addItem("전환 안 함", MODE_OFF)
-    idx = mode.findData(failover.mode)
-    mode.setCurrentIndex(idx if idx >= 0 else 0)
-    mode.setMinimumHeight(32)
-    f_form.addRow(make_form_label("실패했을 때"), mode)
-
-    retry_count = QSpinBox()
-    retry_count.setRange(0, 10)
-    retry_count.setValue(failover.retry_count)
-    retry_count.setMinimumHeight(32)
-    f_form.addRow(make_form_label("재시도 횟수"), retry_count)
-
-    preempt_enabled = QCheckBox("한도에 가까워지면 미리 전환")
-    preempt_enabled.setChecked(failover.preempt_enabled)
-    f_form.addRow(make_form_label("선제 전환"), preempt_enabled)
-
-    preempt_percent = QSpinBox()
-    preempt_percent.setRange(50, 100)
-    preempt_percent.setSuffix(" %")
-    preempt_percent.setValue(int(failover.preempt_percent))
-    preempt_percent.setMinimumHeight(32)
-    f_form.addRow(make_form_label("선제 전환 기준"), preempt_percent)
-
-    ask_summary = QCheckBox("전환 전에 쓰던 모델이 인수인계문을 쓰게 함")
-    ask_summary.setChecked(failover.ask_old_model_summary)
-    f_form.addRow(make_form_label("인수인계"), ask_summary)
-    lay.addLayout(f_form)
-
-    chain_list = QListWidget()
-    chain_list.setMinimumHeight(96)
-    for entry in failover.chain:
-        item = QListWidgetItem(_entry_label(entry))
-        item.setData(256, entry)
-        chain_list.addItem(item)
-    lay.addWidget(chain_list)
-
-    add_row = QHBoxLayout()
-    new_model = QLineEdit()
-    new_model.setPlaceholderText("전환할 모델 이름 (예: gemma4:free)")
-    new_model.setMinimumHeight(32)
-    new_backend = QComboBox()
-    for backend in BACKENDS:
-        new_backend.addItem(backend, backend)
-    new_backend.setMinimumHeight(32)
-    add_btn = QPushButton("추가")
-    up_btn = QPushButton("↑")
-    down_btn = QPushButton("↓")
-    del_btn = QPushButton("삭제")
-    for widget in (new_model, new_backend, add_btn, up_btn, down_btn, del_btn):
-        add_row.addWidget(widget)
-    lay.addLayout(add_row)
-    lay.addWidget(
-        make_hint(
-            "Hermes 가 켜져 있으면(기본값) 모든 후보를 Hermes 게이트웨이로 시도합니다. "
-            "Hermes 를 끄면 지금 쓰는 모델과 같은 종류의 후보만 쓸 수 있습니다 — "
-            "Ollama 모델이면 Ollama 후보만, 커스텀 API 모델이면 API 후보만 시도합니다."
-        )
-    )
-
-    def _add() -> None:
-        name = new_model.text().strip()
-        if not name:
-            return
-        entry = FallbackEntry(model=name, backend=new_backend.currentData(), free=True)
-        item = QListWidgetItem(_entry_label(entry))
-        item.setData(256, entry)
-        chain_list.addItem(item)
-        new_model.clear()
-
-    def _move(delta: int) -> None:
-        row = chain_list.currentRow()
-        target = row + delta
-        if row < 0 or not (0 <= target < chain_list.count()):
-            return
-        item = chain_list.takeItem(row)
-        chain_list.insertItem(target, item)
-        chain_list.setCurrentRow(target)
-
-    def _delete() -> None:
-        row = chain_list.currentRow()
-        if row >= 0:
-            chain_list.takeItem(row)
-
-    add_btn.clicked.connect(_add)
-    new_model.returnPressed.connect(_add)
-    up_btn.clicked.connect(lambda: _move(-1))
-    down_btn.clicked.connect(lambda: _move(1))
-    del_btn.clicked.connect(_delete)
-
     def _sync_enabled() -> None:
         on = enabled.isChecked()
         for widget in (
-            rec_chat, rec_actions, rec_artifacts, rec_inputs,
-            past_chats, retrieval, embed_enabled, embed_model,
+            rec_chat,
+            rec_actions,
+            rec_artifacts,
+            rec_inputs,
+            past_chats,
+            retrieval,
+            embed_enabled,
+            embed_model,
         ):
             widget.setEnabled(on)
         embed_model.setEnabled(on and embed_enabled.isChecked())
 
-        f_on = failover_enabled.isChecked()
-        for widget in (
-            mode, retry_count, preempt_enabled, ask_summary,
-            chain_list, new_model, new_backend, add_btn, up_btn, down_btn, del_btn,
-        ):
-            widget.setEnabled(f_on)
-        retry_count.setEnabled(f_on and mode.currentData() == MODE_RETRY)
-        preempt_percent.setEnabled(f_on and preempt_enabled.isChecked())
-
     enabled.toggled.connect(_sync_enabled)
     embed_enabled.toggled.connect(_sync_enabled)
-    failover_enabled.toggled.connect(_sync_enabled)
-    preempt_enabled.toggled.connect(_sync_enabled)
-    mode.currentIndexChanged.connect(_sync_enabled)
     _sync_enabled()
 
     box.history_enabled = enabled  # type: ignore[attr-defined]
@@ -251,28 +122,11 @@ def build_history_failover_box(db: Database) -> QGroupBox:
     box.reference_past_chats = past_chats  # type: ignore[attr-defined]
     box.embed_enabled = embed_enabled  # type: ignore[attr-defined]
     box.embed_model = embed_model  # type: ignore[attr-defined]
-    box.failover_enabled = failover_enabled  # type: ignore[attr-defined]
-    box.failover_mode = mode  # type: ignore[attr-defined]
-    box.retry_count = retry_count  # type: ignore[attr-defined]
-    box.preempt_enabled = preempt_enabled  # type: ignore[attr-defined]
-    box.preempt_percent = preempt_percent  # type: ignore[attr-defined]
-    box.ask_old_model_summary = ask_summary  # type: ignore[attr-defined]
-    box.chain_list = chain_list  # type: ignore[attr-defined]
     return box
 
 
-def chain_from_box(box: QGroupBox) -> list[FallbackEntry]:
-    widget = box.chain_list  # type: ignore[attr-defined]
-    out: list[FallbackEntry] = []
-    for row in range(widget.count()):
-        entry = widget.item(row).data(256)
-        if isinstance(entry, FallbackEntry):
-            out.append(entry)
-    return out
-
-
 def save_history_failover(db: Database, box: QGroupBox) -> None:
-    """박스의 현재 값을 저장한다. 다이얼로그 Save 에서 부른다."""
+    """박스의 History 값만 저장한다. 다이얼로그 Save 에서 부른다."""
     save_history_settings(
         db,
         HistorySettings(
@@ -285,17 +139,5 @@ def save_history_failover(db: Database, box: QGroupBox) -> None:
             embed_model=box.embed_model.text(),  # type: ignore[attr-defined]
             embed_enabled=box.embed_enabled.isChecked(),  # type: ignore[attr-defined]
             reference_past_chats=box.reference_past_chats.isChecked(),  # type: ignore[attr-defined]
-        ),
-    )
-    save_failover_settings(
-        db,
-        FailoverSettings(
-            enabled=box.failover_enabled.isChecked(),  # type: ignore[attr-defined]
-            mode=box.failover_mode.currentData(),  # type: ignore[attr-defined]
-            retry_count=box.retry_count.value(),  # type: ignore[attr-defined]
-            preempt_percent=float(box.preempt_percent.value()),  # type: ignore[attr-defined]
-            preempt_enabled=box.preempt_enabled.isChecked(),  # type: ignore[attr-defined]
-            ask_old_model_summary=box.ask_old_model_summary.isChecked(),  # type: ignore[attr-defined]
-            chain=chain_from_box(box),
         ),
     )

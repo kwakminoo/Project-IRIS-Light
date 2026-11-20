@@ -3,9 +3,9 @@
 Product owns the seed catalog. Every seed tool is ``native`` and runs
 in-process (no MCP stdio, no Control HTTP on the product speak path).
 
-Speak/chat path: :func:`speak_invoke_agent_tool` (HermesChatWorker).
-MCP ``iris_invoke`` for covered seed ``control_action`` values is redirected
-via :func:`try_native_control_invoke` (product-path shrink; not plan B rename).
+Speak/chat path: :func:`speak_invoke_agent_tool` (IrisAgentChatWorker / SpeakTools).
+Legacy MCP triple names are not product tools; covered seed ``control_action``
+values resolve via :func:`try_native_control_invoke` on the SpeakTools path.
 Non-catalog Control actions may still use Control HTTP as **compat only**.
 """
 
@@ -99,6 +99,27 @@ def _invoke_live_control(action: str, args: dict[str, Any]) -> dict[str, Any] | 
     from iris.system.control_surface import call_registered
 
     return call_registered(surface, action, dict(args or {}), timeout=30.0)
+
+
+def _live_bound_root() -> str | None:
+    """Companion-mounted workspace from live get_state, or None if unbound/unavailable."""
+    out = _invoke_live_control("get_state", {})
+    if not out or not out.get("ok"):
+        return None
+    result = out.get("result") if isinstance(out.get("result"), dict) else {}
+    sess = result.get("ide_session") if isinstance(result.get("ide_session"), dict) else {}
+    root = str(sess.get("workspace_root") or "").strip()
+    return root or None
+
+
+def _refuse_agent_workspace_locked(tool: str, bound_root: str) -> dict[str, Any]:
+    return _err(
+        tool,
+        "IDE Companion workspace is locked; write under bound_root "
+        "(use content.dump_lab_scripts / content.extract for PDFs)",
+        data={"bound_root": bound_root, "reason": "agent_workspace_locked"},
+        bridge="none",
+    )
 
 
 def _shape_control(tool: str, control_out: dict[str, Any]) -> dict[str, Any]:
@@ -340,6 +361,9 @@ class IrisAgentToolRegistry:
         return _shape_control("iris.session.get_state", control_out)
 
     def _handle_ide_open_folder(self, args: dict[str, Any]) -> dict[str, Any]:
+        bound = _live_bound_root()
+        if bound:
+            return _refuse_agent_workspace_locked("iris.ide.open_folder", bound)
         path = str(args.get("path") or "").strip()
         if not path:
             return _err("iris.ide.open_folder", "path required", bridge="none")
@@ -349,6 +373,9 @@ class IrisAgentToolRegistry:
         return _shape_control("iris.ide.open_folder", control_out)
 
     def _handle_project_open_similar(self, args: dict[str, Any]) -> dict[str, Any]:
+        bound = _live_bound_root()
+        if bound:
+            return _refuse_agent_workspace_locked("iris.project.open_similar", bound)
         query = str(args.get("query") or args.get("name") or "").strip()
         if not query:
             return _err(
@@ -473,17 +500,38 @@ def try_native_control_invoke(
 ) -> dict[str, Any] | None:
     """If ``action`` is already native, invoke in-process and shape Control result.
 
-    Used by MCP ``iris_invoke`` to shrink the Control HTTP product path for
-    seed tools. Returns ``None`` when the action is not a native seed mapping
+    Product path (registry is None): SpeakTools PHASE4 allowlist first.
+    Explicit registry: seed catalog only (tests / MCP shrink helpers).
+    Returns ``None`` when the action is not a native mapping
     (compat HTTP may still apply for non-seed Control actions).
     """
+    key = (action or "").strip()
+    if registry is None:
+        from iris.infrastructure.tool_capability import (
+            PHASE4_ALLOWLIST,
+            default_agent_tools,
+            resolve_legacy_name,
+        )
+
+        resolved = resolve_legacy_name(key)
+        if PHASE4_ALLOWLIST.grant(resolved) is not None:
+            out = default_agent_tools().invoke(resolved, args or {}).as_dict()
+            return {
+                "ok": bool(out.get("ok")),
+                "action": resolved or key,
+                "result": out.get("data") if isinstance(out.get("data"), dict) else {},
+                "error": "" if out.get("ok") else str(out.get("error") or "native invoke failed"),
+                "call_path": "native",
+                "tool": resolved or key,
+                "bridge": str(out.get("bridge") or "none"),
+            }
     native = native_tool_for_control_action(action, registry=registry)
     if native is None:
         return None
     out = invoke_agent_tool(native, args, registry=registry)
     return {
         "ok": bool(out.get("ok")),
-        "action": (action or "").strip() or native,
+        "action": key or native,
         "result": out.get("data") if isinstance(out.get("data"), dict) else {},
         "error": "" if out.get("ok") else str(out.get("error") or "native invoke failed"),
         "call_path": "native",
@@ -498,11 +546,20 @@ def speak_invoke_agent_tool(
     *,
     registry: IrisAgentToolRegistry | None = None,
 ) -> dict[str, Any]:
-    """Speak/chat worker entry for native seed tools (Phase 2.5).
+    """Speak/chat worker entry via SpeakTools (PHASE4), else seed registry.
 
-    HermesChatWorker calls this instead of MCP stdio → Control HTTP for
-    product-owned seed tools.
+    IrisAgentChatWorker calls this instead of MCP stdio → Control HTTP for
+    product-owned tools.
     """
+    from iris.infrastructure.tool_capability import (
+        PHASE4_ALLOWLIST,
+        default_agent_tools,
+        resolve_legacy_name,
+    )
+
+    resolved = resolve_legacy_name((name or "").strip())
+    if registry is None and PHASE4_ALLOWLIST.grant(resolved) is not None:
+        return default_agent_tools().invoke(resolved, args or {}).as_dict()
     return invoke_agent_tool(
         resolve_speak_tool_name(name),
         args,

@@ -27,8 +27,8 @@ ROUTINE_DIR = f"{IRIS_DIR}/routines"
 STATE_ORDER: tuple[str, ...] = (
     "대화 모델",
     "백엔드",
-    "Hermes 게이트웨이",
-    "Hermes API 키",
+    "Iris Agent 엔드포인트",
+    "Iris Agent API 키",
     "등록된 API",
     "History 기록",
     "History 검색",
@@ -54,9 +54,9 @@ def mask(value: Any) -> str:
 def build_state(
     *,
     ollama_model: str = "",
-    hermes_enabled: bool = False,
-    hermes_base_url: str = "",
-    hermes_api_key: str = "",
+    agent_enabled: bool = False,
+    agent_base_url: str = "",
+    agent_api_key: str = "",
     api_providers: list[Any] | None = None,
     history: Any = None,
     failover: Any = None,
@@ -65,10 +65,13 @@ def build_state(
     """지금 상태를 라벨→문구로. 비밀값은 여기서 이미 가려진다."""
     state: dict[str, str] = {}
     state["대화 모델"] = str(ollama_model or "").strip() or "(선택 안 됨)"
-    state["백엔드"] = "Hermes 에이전트" if hermes_enabled else "Ollama 직행"
-    if hermes_enabled:
-        state["Hermes 게이트웨이"] = str(hermes_base_url or "").strip()
-        state["Hermes API 키"] = mask(hermes_api_key)
+    state["백엔드"] = "Iris Agent" if agent_enabled else "Ollama 직행"
+    if agent_enabled:
+        endpoint = str(agent_base_url or "").strip()
+        # Empty = product sidecar (no HTTP gateway). Only surface an opt-in URL.
+        if endpoint:
+            state["Iris Agent 엔드포인트"] = endpoint
+        state["Iris Agent API 키"] = mask(agent_api_key)
 
     providers = list(api_providers or [])
     if providers:
@@ -305,7 +308,7 @@ if __name__ == "__main__":
     from iris.storage.database import Database
     from iris.storage.routines import create_routine, mark_ran
 
-    assert is_secret_label("Hermes API 키") is True
+    assert is_secret_label("Iris Agent API 키") is True
     assert is_secret_label("access token") is True
     assert is_secret_label("대화 모델") is False
     assert mask("sk-real-secret") == "설정됨" and mask("") == "없음"
@@ -329,11 +332,12 @@ if __name__ == "__main__":
         api_key = "sk-super-secret-value"
         enabled = True
 
+    # Fixture: opt-in HTTP endpoint label (not product default).
     state = build_state(
         ollama_model="qwen3:8b",
-        hermes_enabled=True,
-        hermes_base_url="http://127.0.0.1:8642/v1",
-        hermes_api_key="sk-hermes-secret",
+        agent_enabled=True,
+        agent_base_url="http://127.0.0.1:8642/v1",  # test fixture URL
+        agent_api_key="sk-hermes-secret",
         api_providers=[_P()],
         history=_H(),
         failover=_F(),
@@ -343,10 +347,10 @@ if __name__ == "__main__":
     # 비밀값이 어떤 형태로도 새면 안 된다
     assert "sk-hermes-secret" not in blob
     assert "sk-super-secret-value" not in blob
-    assert state["Hermes API 키"] == "설정됨"
+    assert state["Iris Agent API 키"] == "설정됨"
     assert "키 설정됨" in state["등록된 API"]
     assert state["대화 모델"] == "qwen3:8b"
-    assert state["백엔드"] == "Hermes 에이전트"
+    assert state["백엔드"] == "Iris Agent"
     assert "대화, 수행, 입력" == state["History 기록"]
     assert "bge-m3" in state["History 검색"]
     assert "free:a[ollama]" in state["전환 후보"]

@@ -20,9 +20,9 @@ from iris.browser.types import (
     MediaState,
     empty_snapshot,
 )
-from iris.runtime.agent_local_gate import hermes_owns_local_intents
+from iris.runtime.agent_local_gate import agent_owns_local_intents
 from iris.system.control_surface import ActionRegistry
-from iris.system.hermes_iris_control_sync import _merge_disabled_toolsets
+from iris.system.iris_agent_control_sync import _merge_disabled_toolsets
 from iris.ui.window.main_window import MainWindow
 
 
@@ -40,7 +40,7 @@ def _home_payload() -> str:
         _db=None,
         _pending_handoff="",
         _pending_past_chats="",
-        _use_hermes_backend=lambda: True,
+        _use_agent_backend=lambda: True,
         _workspace_mode="assistant",
         _workspace_screen_context=lambda: "",
     )
@@ -74,7 +74,7 @@ def _veto_chats_reach_launch() -> None:
                 if name.startswith("_try_"):
                     return lambda *_a, **_k: False
                 raise AttributeError(name)
-            _hermes_online = True
+            _agent_online = True
             _saved_model = "gemma4:e2b"
             _settings = SimpleNamespace(ollama_model="gemma4:e2b")
             _control_surface = SimpleNamespace(registry=_Reg())
@@ -93,7 +93,7 @@ def _veto_chats_reach_launch() -> None:
             def _try_local_pinned_status(self, turn):
                 return False
 
-            def _use_hermes_backend(self):
+            def _use_agent_backend(self):
                 return True
 
             def _try_local_extension_install(self, turn, allow_new=False):
@@ -130,8 +130,8 @@ def main() -> int:
 
     gate = (root / "runtime" / "agent_local_gate.py").read_text(encoding="utf-8")
     assert "브라우저 play/pause/search는 예외" not in gate
-    assert hermes_owns_local_intents(True) is True
-    assert hermes_owns_local_intents(False) is False
+    assert agent_owns_local_intents(True) is True
+    assert agent_owns_local_intents(False) is False
 
     teach = browser_teaching_block()
     for spec in command_specs():
@@ -210,15 +210,13 @@ def main() -> int:
     kept_web = _merge_disabled_toolsets(["web"])
     assert "web" in kept_web and "browser" in kept_web and "terminal" in kept_web
 
-    from iris.mcp.iris_control_stdio import TOOLS
-
-    invoke = next(item for item in TOOLS if item["name"] == "iris_invoke")
-    assert "browser.search" in invoke["description"]
+    # iris-control MCP TOOLS are gone; browser teaching lives in SpeakTools/skills.
+    assert "browser.search" in browser_teaching_block()
 
     skill = (
         Path(__file__).resolve().parents[2]
         / "integrations"
-        / "hermes-skills"
+        / "iris-skills"
         / "iris-control"
         / "iris-browser"
         / "SKILL.md"

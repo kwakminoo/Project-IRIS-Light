@@ -42,7 +42,7 @@ def _tiny_pdf(path: Path) -> None:
 
 
 class WikiOriginalForcedTests(unittest.TestCase):
-    def test_document_saves_bypass_hermes(self):
+    def test_document_saves_bypass_agent(self):
         self.assertTrue(local_document_wiki_save_enabled())
         main = Path(__file__).resolve().parents[1] / "iris" / "ui" / "window" / "main_window.py"
         src = main.read_text(encoding="utf-8")

@@ -27,16 +27,18 @@ class UpdateNotifyBox(QGroupBox):
             )
         )
         self.iris_notify = QCheckBox("아이리스 업데이트 알림 허용")
-        self.hermes_notify = QCheckBox("아이리스 에이전트 업데이트 알림 허용")
+        self.agent_notify = QCheckBox("아이리스 에이전트 업데이트 알림 허용")
         self.iris_notify.setChecked(prefs.iris)
-        self.hermes_notify.setChecked(prefs.hermes)
+        self.agent_notify.setChecked(prefs.agent)
         lay.addWidget(self.iris_notify)
-        lay.addWidget(self.hermes_notify)
+        lay.addWidget(self.agent_notify)
+        # Compat for callers that still poke hermes_notify.
+        self.hermes_notify = self.agent_notify
 
     def prefs(self) -> UpdateNotifyPrefs:
         return UpdateNotifyPrefs(
             iris=self.iris_notify.isChecked(),
-            hermes=self.hermes_notify.isChecked(),
+            agent=self.agent_notify.isChecked(),
         )
 
 

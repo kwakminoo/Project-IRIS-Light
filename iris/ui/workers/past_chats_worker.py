@@ -1,16 +1,82 @@
-"""이전 대화 참고 워커 — 질의 임베딩을 UI 스레드 밖에서 한다.
+"""턴 전 컨텍스트 워커 + SpeakTool 의미검색 헬퍼.
 
-채팅 한 턴을 보내기 직전에 돈다. 창은 멈추지 않지만 답변 시작은 이 결과를
-기다린다. 그래서 MainWindow 가 제한 시간(기본 3초)을 두고, 넘기면 키워드
-결과로 먼저 보낸다. 늦게 온 이 결과는 버린다.
+MainWindow 의 PastChatsWorker 는 위키·오늘웹·코드 노트를 UI 밖에서 모은다.
+이전 대화 자동 주입은 끈다 (`search_past=False`).
+
+SpeakTool `chat.search_past` 는 `run_semantic_past_search_off_ui` 로
+`semantic_past_chats` 만 돌린다. 키워드-only 폴백 없음.
 """
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from concurrent.futures import ThreadPoolExecutor
+
+from PyQt6.QtCore import QEventLoop, QThread, QTimer, pyqtSignal
 
 from iris.infrastructure.ollama_client import OllamaClient
-from iris.runtime.past_chats import find_past_chats, warm_embedder
+from iris.runtime.past_chats import find_past_chats, semantic_past_chats, warm_embedder
+
+# SpeakTool sync wait — embed cold start can be ~9s; keep UI event loop pumping.
+SEARCH_PAST_TIMEOUT_S = 12.0
+
+
+def run_semantic_past_search_off_ui(
+    service: object,
+    base_url: str,
+    query: str,
+    conversation_id: int,
+    *,
+    limit: int | None = None,
+    timeout_s: float = SEARCH_PAST_TIMEOUT_S,
+) -> tuple[list, str | None]:
+    """Run `semantic_past_chats` off the caller thread; wait via QEventLoop.
+
+    Returns (chats, message). On timeout/failure: empty chats + message.
+    Never falls back to keyword-only.
+    """
+    box: dict[str, object] = {"chats": [], "message": None}
+
+    def work() -> None:
+        try:
+            chats, msg = semantic_past_chats(
+                service,
+                query,
+                conversation_id,
+                OllamaClient(base_url),
+                limit=limit,
+            )
+            box["chats"] = chats
+            box["message"] = msg
+        except Exception as exc:  # noqa: BLE001
+            box["chats"] = []
+            box["message"] = f"semantic search failed: {exc}"
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    fut = pool.submit(work)
+    loop = QEventLoop()
+    timed_out = {"v": False}
+
+    def poll() -> None:
+        if fut.done():
+            loop.quit()
+        else:
+            QTimer.singleShot(50, poll)
+
+    def on_timeout() -> None:
+        timed_out["v"] = True
+        loop.quit()
+
+    wait_ms = max(1, int(float(timeout_s) * 1000))
+    QTimer.singleShot(wait_ms, on_timeout)
+    QTimer.singleShot(0, poll)
+    loop.exec()
+    if timed_out["v"] and not fut.done():
+        pool.shutdown(wait=False, cancel_futures=True)
+        return [], "semantic search timed out"
+    pool.shutdown(wait=True)
+    chats = box["chats"]
+    msg = box["message"]
+    return list(chats or []), (str(msg) if msg else None)
 
 
 class PastChatsWorker(QThread):
@@ -26,6 +92,7 @@ class PastChatsWorker(QThread):
         current_conversation_id: int,
         *,
         search_today: bool = False,
+        search_past: bool = False,
         wiki_on_empty: bool = False,
         code_on_empty: bool = False,
         parent=None,
@@ -36,6 +103,7 @@ class PastChatsWorker(QThread):
         self._query = query
         self._conversation_id = int(current_conversation_id or 0)
         self._search_today = bool(search_today)
+        self._search_past = bool(search_past)
         self._wiki_on_empty = bool(wiki_on_empty)
         self._code_on_empty = bool(code_on_empty)
 
@@ -77,12 +145,14 @@ class PastChatsWorker(QThread):
             web_urls = list(found.urls)
         try:
             client = OllamaClient(self._base_url)
-            hits = find_past_chats(
-                self._service,
-                self._query,
-                self._conversation_id,
-                client,
-            )
+            hits: list = []
+            if self._search_past:
+                hits = find_past_chats(
+                    self._service,
+                    self._query,
+                    self._conversation_id,
+                    client,
+                )
             wiki_block = ""
             code_block = ""
             wiki = getattr(self._service, "wiki", None)

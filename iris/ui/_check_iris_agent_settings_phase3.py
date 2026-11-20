@@ -48,7 +48,7 @@ def check_settings_source_has_no_shell_labels() -> None:
 def check_settings_dialog_has_no_shell_widgets(app: QApplication) -> None:
     dlg = SettingsDialog(Settings(), None)
     try:
-        for attr in ("_hermes_url", "_hermes_key", "_hermes_cmd"):
+        for attr in ("_agent_url", "_agent_key", "_agent_cmd"):
             assert not hasattr(dlg, attr), f"settings dialog still has widget {attr}"
         # 섹션이 늦게 붙으므로 연결 섹션까지 펌프
         for _ in range(40):

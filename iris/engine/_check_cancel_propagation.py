@@ -26,7 +26,7 @@ from iris.engine import (
     TurnCancelled,
 )
 from iris.engine.types import EngineHome
-from iris.infrastructure.hermes_client import HermesClient, HermesInferenceTarget
+from iris.infrastructure.iris_agent_client import IrisAgentClient, IrisAgentInferenceTarget
 
 
 def _check_engine_stop_before_forget() -> None:
@@ -39,7 +39,7 @@ def _check_engine_stop_before_forget() -> None:
         token = CancelToken()
         turn = StatelessTurn(
             transcript=ChatTranscript.parse([{"role": "user", "content": "hi"}]),
-            model=HermesInferenceTarget(model="llama3.2", provider="custom"),
+            model=IrisAgentInferenceTarget(model="llama3.2", provider="custom"),
             cancel=token,
         )
 
@@ -100,7 +100,7 @@ def _check_stream_cancel_beats_idle_timeout() -> None:
     port = server.server_address[1]
     Thread(target=server.serve_forever, daemon=True).start()
     token = CancelToken()
-    client = HermesClient(
+    client = IrisAgentClient(
         f"http://127.0.0.1:{port}/v1",
         api_key="not-a-real-key",
         timeout_sec=300.0,
@@ -144,7 +144,7 @@ def _check_shutdown_not_blocked_by_turn_lock() -> None:
         token = CancelToken()
         turn = StatelessTurn(
             transcript=ChatTranscript.parse([{"role": "user", "content": "hi"}]),
-            model=HermesInferenceTarget(model="llama3.2", provider="custom"),
+            model=IrisAgentInferenceTarget(model="llama3.2", provider="custom"),
             cancel=token,
         )
         in_read = Event()

@@ -23,7 +23,7 @@ def build_calendar_agent_context(
 ) -> str:
     lines = [
         "당신은 Iris Light 캘린더 도우미입니다. 기본 페르소나(SOUL)의 말투·판단 원칙을 따릅니다.",
-        "일정 추가·조회·삭제는 가능하면 Iris Control MCP(`iris_invoke`)를 사용하세요:",
+        "일정 추가·조회·삭제는 SpeakTools control.invoke(또는 allowlist 직접 도구)를 사용하세요:",
         "- workspace.open_calendar",
         "- calendar.add_event {title, start_at, note?, place?}",
         "- calendar.list_events / calendar.status",
@@ -33,7 +33,7 @@ def build_calendar_agent_context(
         "- calendar.refresh_holidays",
         "- 기본 화면/홈: workspace.open_assistant",
         "- 마이크: voice.mic_off / voice.mic_on",
-        "MCP를 쓸 수 없을 때만 아래 블록을 응답 끝에 포함하세요.",
+        "도구를 쓸 수 없을 때만 아래 블록을 응답 끝에 포함하세요.",
         "일반 설명은 한국어로 짧게, 마크다운 가능.",
         "",
         "형식:",

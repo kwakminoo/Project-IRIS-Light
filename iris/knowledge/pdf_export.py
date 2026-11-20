@@ -122,6 +122,24 @@ def write_pdf_file(text: str, dest: Path) -> None:
         raise OSError("PDF 파일이 생성되지 않았습니다.")
 
 
+def verify_pdf_file(path: Path) -> dict[str, str | bool | int]:
+    """V step: verify the resolved file produced by the real PDF path."""
+    target = Path(path).expanduser().resolve()
+    try:
+        size = target.stat().st_size
+        if size < 64:
+            raise ValueError("PDF is too small")
+        with target.open("rb") as handle:
+            head = handle.read(5)
+            handle.seek(max(0, size - 1024))
+            tail = handle.read()
+        if head != b"%PDF-" or b"%%EOF" not in tail:
+            raise ValueError("invalid PDF signature")
+        return {"ok": True, "path": str(target), "size": size, "error": ""}
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "path": str(target), "size": 0, "error": str(exc)}
+
+
 def _failure(detail: str) -> dict[str, str | bool]:
     text = (detail or "알 수 없는 오류").strip()
     if "접근" in text or "Permission" in text or "WinError 5" in text:
@@ -206,8 +224,19 @@ def save_pdf(text: str, dest: Path, *, timeout_sec: float = 60.0) -> dict[str, s
         fail = _failure(detail.splitlines()[-1][:300] if detail else "PDF 생성에 실패했습니다.")
         trace(f"[PDF] generation failed: {fail['error']}")
         return fail
+    verified = verify_pdf_file(dest)
+    if not verified["ok"]:
+        fail = _failure(str(verified["error"]))
+        trace(f"[PDF] generation failed: {fail['error']}")
+        return fail
     trace("[PDF] generation completed")
-    return {"ok": True, "path": str(dest.resolve()), "error": ""}
+    return {
+        "ok": True,
+        "path": str(verified["path"]),
+        "size": int(verified["size"]),
+        "verified": True,
+        "error": "",
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
