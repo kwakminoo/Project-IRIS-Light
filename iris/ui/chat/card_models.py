@@ -230,7 +230,10 @@ def _block_phase(block: _ShellBlock) -> str:
 def to_shell_card(block: _ShellBlock) -> ShellCardModel:
     status = (block.status or "ok").strip().lower()
     kind = "ok" if status in _OK_STATUS else "error"
-    if status == "skipped":
+    phase = _block_phase(block)
+    if phase == "running":
+        label = "실행 중"
+    elif status == "skipped":
         label = "Skipped"
     elif kind == "ok":
         label = "성공"
@@ -247,5 +250,5 @@ def to_shell_card(block: _ShellBlock) -> ShellCardModel:
         collapsed=bool(block.collapsed),
         show_command_copy=bool(command),
         copy_payload=command,
-        phase=_block_phase(block),
+        phase=phase,
     )

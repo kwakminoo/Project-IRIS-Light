@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from iris.system.control_surface import invoke_http_timeout, runs_off_ui_thread
 from iris.ui.chat.shell_approval import ApprovalState
+from iris.ui import control_bindings
 from iris.ui.control_bindings import _CARD_CONFIRM_ACTIONS, human_confirm_decision
 
 
@@ -41,6 +43,7 @@ def main() -> int:
 
     chat = _FakeChat()
     run_spec = SimpleNamespace(name="project.run", summary="run")
+    attention: list[str] = []
     approved = human_confirm_decision(
         run_spec,
         {"command": "git status"},
@@ -49,12 +52,14 @@ def main() -> int:
         on_ui=lambda fn: fn(),
         wait=lambda _bid: "run",
         load_approval=lambda: ApprovalState(),
+        on_attention=lambda: attention.append("attn"),
     )
     assert approved is True
     assert hud_calls == []
     assert len(chat.inserts) == 1
     assert chat.inserts[0]["phase"] == "pending"
     assert chat.inserts[0]["command"] == "git status"
+    assert attention == ["attn"]
 
     skipped_chat = _FakeChat()
     denied = human_confirm_decision(
@@ -65,11 +70,14 @@ def main() -> int:
         on_ui=lambda fn: fn(),
         wait=lambda _bid: "skip",
         load_approval=lambda: ApprovalState(),
+        on_attention=lambda: attention.append("attn"),
     )
     assert denied is False
     assert hud_calls == []
+    assert attention == ["attn", "attn"]
 
     auto_chat = _FakeChat()
+    attention.clear()
     auto = human_confirm_decision(
         run_spec,
         {"command": "git status"},
@@ -78,10 +86,12 @@ def main() -> int:
         on_ui=lambda fn: fn(),
         wait=lambda _bid: (_ for _ in ()).throw(AssertionError("waited")),
         load_approval=lambda: ApprovalState(mode_id="run_everything"),
+        on_attention=lambda: attention.append("attn"),
     )
     assert auto is True
     assert hud_calls == []
     assert auto_chat.inserts == []
+    assert attention == []
 
     email_spec = SimpleNamespace(name="email.send", summary="send")
     mail = human_confirm_decision(
@@ -111,6 +121,10 @@ def main() -> int:
     assert "shell.run" in _CARD_CONFIRM_ACTIONS
     assert "project.write_file" in _CARD_CONFIRM_ACTIONS
     assert "email.send" not in _CARD_CONFIRM_ACTIONS
+
+    bindings_src = Path(control_bindings.__file__).read_text(encoding="utf-8")
+    assert "on_attention=" in bindings_src
+    assert "_raise_attention(window)" in bindings_src
 
     print("agent confirm path ok")
     return 0
