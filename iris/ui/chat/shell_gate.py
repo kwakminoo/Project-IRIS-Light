@@ -9,6 +9,17 @@ from typing import Any, Callable
 from iris.ui.chat.run_visibility import card_from_control_result, insert_visibility_card
 from iris.ui.chat.shell_approval import ApprovalState, preview_command, should_auto_run
 
+# Chat attr: confirm→action handoff for shell.run live paint (one card lifecycle).
+SHELL_CONFIRM_BLOCK_ATTR = "_shell_confirm_block_id"
+
+
+@dataclass(frozen=True)
+class CardConfirmResult:
+    """Card gate outcome. approved=None means caller should fall back (HUD)."""
+
+    approved: bool | None
+    block_id: str = ""
+
 
 @dataclass
 class _Wait:
@@ -47,6 +58,35 @@ def take(block_id: str) -> str:
     return slot.decision
 
 
+def stash_shell_confirm_block(chat: Any | None, block_id: str) -> None:
+    if chat is None:
+        return
+    setattr(chat, SHELL_CONFIRM_BLOCK_ATTR, (block_id or "").strip())
+
+
+def take_shell_confirm_block(chat: Any | None) -> str:
+    if chat is None:
+        return ""
+    bid = str(getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, "") or "").strip()
+    setattr(chat, SHELL_CONFIRM_BLOCK_ATTR, "")
+    return bid
+
+
+def _raise_attention(window: Any) -> None:
+    """Bring a Qt window forward so pending Run/Skip is visible."""
+    if window is None:
+        return
+    show_normal = getattr(window, "showNormal", None)
+    if callable(show_normal):
+        show_normal()
+    raise_ = getattr(window, "raise_", None)
+    if callable(raise_):
+        raise_()
+    activate = getattr(window, "activateWindow", None)
+    if callable(activate):
+        activate()
+
+
 def try_card_confirm(
     *,
     chat: Any | None,
@@ -55,16 +95,18 @@ def try_card_confirm(
     approval: ApprovalState,
     wait: Callable[[str], str],
     on_ui: Callable[[Callable[[], Any]], Any] | None = None,
-) -> bool | None:
-    """채팅 pending 카드로 승인. None이면 호출자가 HUD 등으로 폴백.
+    on_attention: Callable[[], None] | None = None,
+) -> CardConfirmResult:
+    """채팅 pending 카드로 승인. approved=None이면 호출자가 HUD 등으로 폴백.
 
-    True/False는 승인·거절. insert 불가·실패만 None.
+    True/False는 승인·거절. insert 불가·실패만 approved=None.
+    block_id is set when a pending card was inserted (empty on auto_run).
     """
     can_insert = chat is not None and callable(getattr(chat, "insert_tool_block", None))
     if not can_insert:
-        return None
+        return CardConfirmResult(None)
     if should_auto_run(approval, command):
-        return True
+        return CardConfirmResult(True)
 
     def _ui(fn: Callable[[], Any]) -> Any:
         if on_ui is None:
@@ -91,8 +133,14 @@ def try_card_confirm(
     except Exception:
         block_id = ""
     if not block_id:
-        return None
-    return wait(block_id) in ("run", "always")
+        return CardConfirmResult(None)
+    if on_attention is not None:
+        try:
+            _ui(on_attention)
+        except Exception:
+            pass
+    approved = wait(block_id) in ("run", "always")
+    return CardConfirmResult(approved, block_id)
 
 
 def _skipped() -> dict[str, Any]:
@@ -132,6 +180,7 @@ def gate_project_run(
     approval: ApprovalState,
     wait: Callable[[str], str],
     on_ui: Callable[[Callable[[], Any]], Any] | None = None,
+    on_attention: Callable[[], None] | None = None,
 ) -> dict:
     payload = args if isinstance(args, dict) else {}
     command = preview_command(payload)
@@ -182,6 +231,11 @@ def gate_project_run(
         block_id = ""
     if not block_id:
         return _run()
+    if on_attention is not None:
+        try:
+            _ui(on_attention)
+        except Exception:
+            pass
     if wait(block_id) not in ("run", "always"):
         return _skipped()
     return _run(block_id)

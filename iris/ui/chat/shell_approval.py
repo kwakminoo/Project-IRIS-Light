@@ -58,9 +58,11 @@ def choose(state: ApprovalState, action: str, command: str) -> ApprovalState:
         return ApprovalState(mode_id=act, allowlist=state.allowlist)
     if act == "always":
         prefix = command_prefix(command)
-        if not prefix or prefix in state.allowlist:
+        if not prefix:
             return state
-        return ApprovalState(mode_id=state.mode_id, allowlist=(*state.allowlist, prefix))
+        allowlist = state.allowlist if prefix in state.allowlist else (*state.allowlist, prefix)
+        next_state = ApprovalState(mode_id="use_allowlist", allowlist=allowlist)
+        return state if next_state == state else next_state
     return state
 
 

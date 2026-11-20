@@ -706,12 +706,13 @@ def human_confirm_decision(
     on_ui: Callable[[Callable[[], Any]], Any],
     wait: Callable[[str], str] | None = None,
     load_approval: Callable[[], Any] | None = None,
+    on_attention: Callable[[], None] | None = None,
 ) -> bool:
     """ConfirmPath: card gate(가능 시) → 아니면 HUD."""
     name = str(getattr(spec, "name", "") or "")
     if name in _CARD_CONFIRM_ACTIONS:
         from iris.ui.chat.shell_approval import load, preview_command
-        from iris.ui.chat.shell_gate import take, try_card_confirm
+        from iris.ui.chat.shell_gate import stash_shell_confirm_block, take, try_card_confirm
 
         approval_fn = load if load_approval is None else load_approval
         wait_fn = take if wait is None else wait
@@ -725,9 +726,12 @@ def human_confirm_decision(
             approval=approval_fn(),
             wait=wait_fn,
             on_ui=on_ui,
+            on_attention=on_attention,
         )
-        if decided is not None:
-            return decided
+        if decided.approved is not None:
+            if name == "shell.run" and decided.approved:
+                stash_shell_confirm_block(chat, decided.block_id)
+            return bool(decided.approved)
     return bool(ask_hud())
 
 
@@ -788,12 +792,15 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 default_ok=False,
             )
 
+        from iris.ui.chat.shell_gate import _raise_attention
+
         return human_confirm_decision(
             spec,
             args,
             chat=getattr(window, "_chat", None),
             ask_hud=lambda: bool(_call_on_ui_unbounded(window, _ask)),
             on_ui=lambda fn: _call_on_ui_unbounded(window, fn),
+            on_attention=lambda: _raise_attention(window),
         )
 
     reg.set_human_confirm(_human_confirm)

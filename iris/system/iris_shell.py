@@ -9,6 +9,9 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -82,12 +85,33 @@ def _clip(text: str, limit: int = _MAX_CAPTURE) -> tuple[str, bool]:
     return raw[:limit] + "…", True
 
 
+def _shell_argv(command: str) -> list[str]:
+    if os.name == "nt":
+        return ["cmd", "/c", command]
+    return ["sh", "-c", command]
+
+
+def _terminate_proc(proc: subprocess.Popen[str]) -> None:
+    try:
+        proc.terminate()
+    except OSError:
+        return
+    try:
+        proc.wait(timeout=1.5)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=1.5)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+
 def run_shell_job(job: ShellJob) -> ShellOutcome:
     """Run one command with CREATE_NO_WINDOW. Never opens a console window."""
-    if os.name == "nt":
-        argv = ["cmd", "/c", job.command]
-    else:
-        argv = ["sh", "-c", job.command]
+    argv = _shell_argv(job.command)
     try:
         completed = subprocess.run(
             argv,
@@ -135,6 +159,133 @@ def run_shell_job(job: ShellJob) -> ShellOutcome:
         stderr=stderr,
         summary=f"exit {code} · {'ok' if ok else 'fail'}",
         truncated=t_out or t_err,
+    )
+
+
+def stream_shell_job(
+    job: ShellJob,
+    on_chunk: Callable[[str], None],
+    *,
+    cancel_event: threading.Event | None = None,
+) -> ShellOutcome:
+    """Stream one command; paint live output via on_chunk.
+
+    Chunks are merged plain text (stderr redirected to stdout) for chat.
+    ``on_chunk`` may be called from a reader thread — keep it thread-safe
+    and non-blocking. Windows uses CREATE_NO_WINDOW / no_window_kwargs.
+    """
+    argv = _shell_argv(job.command)
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=str(job.cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            **no_window_kwargs(),
+        )
+    except OSError as exc:
+        return ShellOutcome(
+            ok=False,
+            command=job.command,
+            cwd=str(job.cwd),
+            exit_code=-1,
+            stdout="",
+            stderr=str(exc),
+            summary="spawn failed",
+        )
+
+    parts: list[str] = []
+    parts_len = 0
+    hit_limit = False
+    lock = threading.Lock()
+
+    def reader() -> None:
+        nonlocal parts_len, hit_limit
+        stream = proc.stdout
+        if stream is None:
+            return
+        while True:
+            chunk = stream.readline()
+            if chunk == "":
+                break
+            emit = chunk
+            with lock:
+                if parts_len >= _MAX_CAPTURE:
+                    hit_limit = True
+                    continue
+                room = _MAX_CAPTURE - parts_len
+                if len(chunk) > room:
+                    emit = chunk[:room]
+                    hit_limit = True
+                parts.append(emit)
+                parts_len += len(emit)
+            on_chunk(emit)
+
+    thread = threading.Thread(target=reader, name="iris-shell-stream", daemon=True)
+    thread.start()
+
+    deadline = time.monotonic() + float(job.timeout_s)
+    timed_out = False
+    cancelled = False
+    while proc.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            _terminate_proc(proc)
+            break
+        if time.monotonic() >= deadline:
+            timed_out = True
+            _terminate_proc(proc)
+            break
+        time.sleep(0.05)
+
+    try:
+        proc.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        _terminate_proc(proc)
+    thread.join(timeout=5.0)
+
+    with lock:
+        raw = "".join(parts)
+    stdout, clipped = _clip(raw)
+    truncated = hit_limit or clipped
+    code = int(proc.returncode if proc.returncode is not None else -1)
+
+    if cancelled:
+        return ShellOutcome(
+            ok=False,
+            command=job.command,
+            cwd=str(job.cwd),
+            exit_code=-1,
+            stdout=stdout,
+            stderr="",
+            summary="cancelled",
+            truncated=truncated,
+        )
+    if timed_out:
+        return ShellOutcome(
+            ok=False,
+            command=job.command,
+            cwd=str(job.cwd),
+            exit_code=-1,
+            stdout=stdout,
+            stderr=f"timeout after {job.timeout_s}s",
+            summary=f"timeout · {job.timeout_s}s",
+            truncated=truncated,
+        )
+    ok = code == 0
+    return ShellOutcome(
+        ok=ok,
+        command=job.command,
+        cwd=str(job.cwd),
+        exit_code=code,
+        stdout=stdout,
+        stderr="",
+        summary=f"exit {code} · {'ok' if ok else 'fail'}",
+        truncated=truncated,
     )
 
 
