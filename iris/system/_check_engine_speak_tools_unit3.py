@@ -11,13 +11,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from iris.engine.types import IRIS_ENGINE_TOOLS, assert_iris_engine_tools_catalog
-from iris.infrastructure.speak_capability import (
+from iris.infrastructure.tool_capability import (
     PHASE4_ALLOWLIST,
     assert_engine_tools_match_allowlist,
-    default_speak_tools,
+    default_agent_tools,
 )
 from iris.mcp.iris_control_stdio import TOOLS
-from iris.ui.workers.iris_agent_workers import HermesChatWorker
+from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker
 
 
 _MCP_TRIPLE = ("iris_get_state", "iris_get_catalog", "iris_invoke")
@@ -29,7 +29,7 @@ def _main() -> None:
         "IRIS_ENGINE_TOOLS must not remain the MCP iris-control triple"
     )
     assert IRIS_ENGINE_TOOLS == PHASE4_ALLOWLIST.names()
-    assert IRIS_ENGINE_TOOLS == default_speak_tools().engine_names()
+    assert IRIS_ENGINE_TOOLS == default_agent_tools().engine_names()
     assert "chat.set_title" in IRIS_ENGINE_TOOLS
     assert "project.run" in IRIS_ENGINE_TOOLS
     assert "iris_invoke" not in IRIS_ENGINE_TOOLS
@@ -50,11 +50,11 @@ def _main() -> None:
     except AssertionError as exc:
         assert "MCP triple" in str(exc) or "iris_get_state" in str(exc)
 
-    assert HermesChatWorker.engine_tool_names() == IRIS_ENGINE_TOOLS
-    listed = HermesChatWorker.invoke_native_tool("wiki.list_notes", {"limit": 1})
+    assert IrisAgentChatWorker.engine_tool_names() == IRIS_ENGINE_TOOLS
+    listed = IrisAgentChatWorker.invoke_native_tool("wiki.list_notes", {"limit": 1})
     assert listed.get("call_path") == "native", listed
     assert listed.get("ok") is True, listed
-    titled = HermesChatWorker.invoke_native_tool("chat.set_title", {"title": "u3"})
+    titled = IrisAgentChatWorker.invoke_native_tool("chat.set_title", {"title": "u3"})
     assert titled.get("call_path") == "native", titled
 
     workers_text = (
@@ -77,15 +77,20 @@ def _main() -> None:
         "chat.set_title",
         "settings.get",
         "wiki.write_user_note",
-        "project.run",
         "get_state",
         "get_catalog",
         "chat.new_session",
+        "write_file",
+        "terminal",
     ):
         assert bare in nudge, bare
+    assert "control.invoke" in PHASE4_ALLOWLIST.names()
+    assert "control.invoke" in IRIS_ENGINE_TOOLS
     item5 = nudge.split("\n5.", 1)[-1].split("\n6.", 1)[0]
     assert "mcp__iris_control__iris_invoke" not in item5, item5
-    assert "project.run" in item5
+    assert "write_file" in item5 and "terminal" in item5, item5
+    assert "Do NOT use Iris Agent built-in" not in item5, item5
+    assert "shell.run" not in item5, item5
 
     stdio_names = tuple(tool["name"] for tool in TOOLS)
     assert stdio_names == ()

@@ -29,7 +29,7 @@
 | UI | PyQt6 |
 | 언어 | Python 3 |
 | 로컬 모델 | Ollama `:11434` |
-| Agent | Iris Agent (기본 InternalSidecar, 옵션 ExternalGateway `:8642`) |
+| Agent | Iris Agent (InternalSidecar only) |
 | 역제어 | Control Surface `:8765` + MCP `iris_control` (비시드 compat) |
 | 음성(옵션) | Voice Runtime `:18765` (`.venv-voice`) |
 | 저장 | SQLite (`~/.iris-light`) — 채팅 정본 |
@@ -42,7 +42,7 @@
 | 경로 | 역할 |
 |------|------|
 | `iris/ui/` | Frontend · MainWindow · Chat · Workspace |
-| `iris/engine/` | Iris Agent InternalSidecar / ExternalGateway |
+| `iris/engine/` | Iris Agent InternalSidecar only |
 | `iris/runtime/` | UserTurn · 음성 규칙 인텐트 |
 | `iris/infrastructure/` | Ollama · hermes_client(어댑터) · agent_tool_registry |
 | `iris/system/` | Setup · IDE · 에이전트/Ollama 기동 · Control |
@@ -65,7 +65,6 @@
 | 구성요소 | 포트/경로 | 비고 |
 |----------|-----------|------|
 | Ollama | `11434` | `/api/chat` · 로컬/클라우드 |
-| Iris Agent (옵션 HTTP) | `8642/v1` | ExternalGateway일 때만 |
 | Control Surface | `8765` | 에이전트 → Iris UI 역제어 (compat) |
 | Voice Runtime | `18765` | faster-whisper · Qwen3-TTS |
 | 기본 모델(설치) | `gemma4:e2b` | Setup 기본값 |

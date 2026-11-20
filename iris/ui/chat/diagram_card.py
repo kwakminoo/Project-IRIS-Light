@@ -26,6 +26,8 @@ _CARD_MIN = 180
 _CARD_MAX = 420
 _CARD_DEFAULT = 280
 _SCHEME = "iris-diagram://"
+# QUrl empties opaque hosts that contain %2F; keep path after a fixed authority mark.
+_PATH_MARK = "_/"
 
 # present 모드 헤더의 23rem 오른쪽 패딩만 좁은 칸에서 없앤다. archify 소스는 그대로 둔다.
 _FIT_JS = """
@@ -58,14 +60,20 @@ def present_file_url(path: Path | str) -> QUrl:
 
 
 def diagram_href(path: str) -> str:
-    return _SCHEME + quote(str(path or ""), safe="")
+    return _SCHEME + _PATH_MARK + quote(str(path or ""), safe="")
 
 
 def parse_diagram_href(anchor: str) -> str | None:
     raw = anchor or ""
     if not raw.startswith(_SCHEME):
         return None
-    text = unquote(raw[len(_SCHEME) :]).strip()
+    body = raw[len(_SCHEME) :]
+    if body.startswith(_PATH_MARK):
+        body = body[len(_PATH_MARK) :]
+    elif body.startswith("/"):
+        body = body[1:]
+    # else: legacy iris-diagram://{quoted} (ChatLog / old HTML)
+    text = unquote(body).strip()
     return text or None
 
 

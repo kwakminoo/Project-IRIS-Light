@@ -71,7 +71,7 @@ def _main() -> None:
     skill = (
         root
         / "integrations"
-        / "hermes-skills"
+        / "iris-skills"
         / "iris-control"
         / "iris-wiki"
         / "SKILL.md"

@@ -5,13 +5,16 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from iris.infrastructure.model_roster import (
+    ListingModel,
     RosterEntry,
     SyncResult,
+    is_chat_picker_model,
     mark_price_refetch_done,
     needs_price_refetch,
     parse_listing,
@@ -370,6 +373,22 @@ def apply_roster_to_provider(
     provider.model_meta = sanitize_model_meta(provider.model_meta)
 
 
+def is_nvidia_integrate_base(url: str) -> bool:
+    host = (urlparse((url or "").strip()).hostname or "").lower()
+    return host == "integrate.api.nvidia.com"
+
+
+def _nvidia_integrate_free_hint(listings: Sequence[ListingModel]) -> list[ListingModel]:
+    """Integrate listing presence means Free Available for this account → paint free."""
+    out: list[ListingModel] = []
+    for m in listings:
+        if m.price_class == "unknown":
+            out.append(replace(m, price_class="free"))
+        else:
+            out.append(m)
+    return out
+
+
 def sync_provider_listing(
     provider: ApiProvider,
     raw_entries: Sequence[Mapping[str, Any] | object],
@@ -390,6 +409,8 @@ def sync_provider_listing(
     """
     listings = [parse_listing(e) for e in raw_entries]
     listings = [m for m in listings if m.id]
+    if is_nvidia_integrate_base(provider.base_url):
+        listings = _nvidia_integrate_free_hint(listings)
     current = roster_from_provider(provider)
     result = sync_from_listing(
         current,
@@ -404,6 +425,8 @@ def sync_provider_listing(
         except Exception:
             second_raw = []
         second = [m for m in (parse_listing(e) for e in second_raw) if m.id]
+        if is_nvidia_integrate_base(provider.base_url):
+            second = _nvidia_integrate_free_hint(second)
         # Empty second listing must not confirm_missing-retire the whole brand.
         if second:
             result = sync_from_listing(
@@ -618,8 +641,19 @@ def record_model_probe(
 
 
 def usable_models(provider: ApiProvider) -> list[str]:
-    """피커에 보여줄 모델. 정리에서 거절해도 이름 목록에서 빼지 않는다."""
-    return list(provider.models)
+    """피커에 보여줄 채팅 모델.
+
+    unavailable 채팅 이름은 유지한다. embed / content-safety / 이미지·오디오·비디오
+    등 비채팅 모달리티는 제외한다.
+    """
+    by_id = {e.model_id: e for e in roster_from_provider(provider)}
+    out: list[str] = []
+    for mid in provider.models:
+        entry = by_id.get(mid)
+        modality = entry.modality if entry is not None else "unknown"
+        if is_chat_picker_model(mid, modality):
+            out.append(mid)
+    return out
 
 
 def ok_providers_for_picker(db: Database | None) -> list[ApiProvider]:
@@ -657,7 +691,27 @@ if __name__ == "__main__":
         models=["good", "dead"],
         model_states={"dead": "unavailable"},
     )
+    # unavailable chat names stay; only non-chat leave the picker list
     assert usable_models(marked) == ["good", "dead"]
+    mixed = ApiProvider(
+        name="Mix",
+        base_url="https://x/v1",
+        models=[
+            "openai/gpt-4o",
+            "nvidia/nemotron-3.5-embed-1b",
+            "nvidia/nemotron-3.5-content-safety",
+            "dead-chat",
+        ],
+        model_states={"dead-chat": "unavailable"},
+        model_meta={
+            "openai/gpt-4o": {**empty_model_meta_row(), "modality": "chat"},
+            "nvidia/nemotron-3.5-embed-1b": {
+                **empty_model_meta_row(),
+                "modality": "embedding",
+            },
+        },
+    )
+    assert usable_models(mixed) == ["openai/gpt-4o", "dead-chat"]
     loaded_meta = _from_dict(
         {
             "id": "m1",
@@ -702,4 +756,6 @@ if __name__ == "__main__":
     assert loaded_meta.models == ["keep-me", "alive"]
     assert loaded_meta.model_meta["keep-me"]["retired"] is True
     assert loaded_meta.model_meta["alive"]["price_class"] == "paid"
+    assert is_nvidia_integrate_base("https://integrate.api.nvidia.com/v1")
+    assert not is_nvidia_integrate_base("https://api.openai.com/v1")
     print("api_providers self-check ok")

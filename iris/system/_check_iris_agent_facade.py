@@ -1,8 +1,8 @@
 """Unit 5/6/7 — public ``iris.agent`` façade (≤10 exports) + primary call-site names.
 
-Logic lives in ``iris_agent_*``; ``hermes_*`` files are thin re-export shims.
+Logic lives in ``iris_agent_*`` (thin ``hermes_*`` re-export shims deleted).
 Product hot paths must use Iris Agent names and must not import
-``hermes_workers`` / HermesChatWorker.
+deleted ``hermes_workers`` paths / HermesChatWorker.
 
 Run:
   .venv\\Scripts\\python.exe -m iris.system._check_iris_agent_facade
@@ -79,7 +79,7 @@ def _check_export_surface() -> None:
         assert hasattr(agent, name), name
 
 
-def _check_aliases_are_thin() -> None:
+def _check_facade_wires_canonical_workers() -> None:
     import iris.agent as agent
     from iris.infrastructure import agent_runtime as ar
     from iris.infrastructure.agent_tool_registry import speak_invoke_agent_tool
@@ -91,14 +91,18 @@ def _check_aliases_are_thin() -> None:
     assert agent.ensure_runtime is ar.ensure_iris_agent_runtime
     assert agent.pin_sha is ar.load_pinned_sha
     assert agent.speak_invoke is speak_invoke_agent_tool
-    assert agent.IrisAgentHealthWorker is hw.HermesHealthWorker
-    assert agent.IrisAgentChatWorker is hw.HermesChatWorker
-    assert agent.IrisAgentControlSyncWorker is hw.HermesControlSyncWorker
-    assert agent.IrisAgentModelSyncWorker is hw.HermesModelSyncWorker
-    assert hw.IrisAgentChatWorker is hw.HermesChatWorker
-    assert hw.IrisAgentHealthWorker is hw.HermesHealthWorker
-    assert hw.IrisAgentControlSyncWorker is hw.HermesControlSyncWorker
-    assert hw.IrisAgentModelSyncWorker is hw.HermesModelSyncWorker
+    assert agent.IrisAgentHealthWorker is hw.IrisAgentHealthWorker
+    assert agent.IrisAgentChatWorker is hw.IrisAgentChatWorker
+    assert agent.IrisAgentControlSyncWorker is hw.IrisAgentControlSyncWorker
+    assert agent.IrisAgentModelSyncWorker is hw.IrisAgentModelSyncWorker
+    for banned in (
+        "HermesChatWorker",
+        "HermesHealthWorker",
+        "HermesControlSyncWorker",
+        "HermesModelSyncWorker",
+    ):
+        assert not hasattr(hw, banned), banned
+        assert banned not in getattr(hw, "__all__", ())
 
 
 def _check_main_window_uses_facade_names() -> None:
@@ -123,7 +127,7 @@ def _check_settings_uses_facade_control_sync() -> None:
     assert "HermesControlSyncWorker" not in src
 
 
-def _check_hot_paths_no_hermes_workers() -> None:
+def _check_hot_paths_no_agent_workers() -> None:
     for path in _iter_hot_path_py():
         src = path.read_text(encoding="utf-8")
         rel = path.relative_to(ROOT).as_posix()
@@ -133,10 +137,10 @@ def _check_hot_paths_no_hermes_workers() -> None:
 
 def main() -> None:
     _check_export_surface()
-    _check_aliases_are_thin()
+    _check_facade_wires_canonical_workers()
     _check_main_window_uses_facade_names()
     _check_settings_uses_facade_control_sync()
-    _check_hot_paths_no_hermes_workers()
+    _check_hot_paths_no_agent_workers()
     print("iris_agent_facade: ok")
 
 

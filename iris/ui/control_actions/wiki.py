@@ -334,12 +334,15 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             UnsupportedAttachmentTypeError,
             extract_from_source,
         )
+        from iris.ui.control_actions.attachment_resolve import resolve_content_source
 
-        source = str(args.get("source") or args.get("path") or args.get("url") or "").strip()
-        if not source:
-            return err_result("content.extract", "source required (file path or http(s) URL)")
+        source, src_err = resolve_content_source(
+            window, args, "content.extract", allow_url=True, allow_absolute=True
+        )
+        if src_err is not None:
+            return src_err
         try:
-            data = extract_from_source(source)
+            data = extract_from_source(str(source))
         except UnsupportedAttachmentTypeError as exc:
             return err_result(
                 "content.extract",
@@ -366,27 +369,38 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         )
 
     def content_dump_lab_scripts(args: dict[str, Any]) -> dict[str, Any]:
-        from iris.knowledge.lab_script_dump import dump_lab_scripts, to_hermes_summary
+        from iris.knowledge.lab_script_dump import dump_lab_scripts, to_agent_summary
+        from iris.ui.control_actions.attachment_resolve import resolve_content_source
+        from iris.ui.control_bindings import peek_bound_root, resolve_bound_work_root
 
-        source = str(args.get("source") or args.get("path") or "").strip()
-        if not source:
-            return err_result(
-                "content.dump_lab_scripts",
-                "source required (Attachment absolute PDF path)",
-            )
-        root = str(args.get("project_root") or args.get("root") or "").strip()
-        if not root:
-            getter = getattr(window, "_current_project_root", None)
-            if callable(getter):
-                try:
-                    root = str(getter() or "")
-                except Exception:
-                    root = ""
-        if not root:
-            return err_result(
-                "content.dump_lab_scripts",
-                "project_root required (or open a project in Iris)",
-            )
+        source, src_err = resolve_content_source(
+            window,
+            args,
+            "content.dump_lab_scripts",
+            allow_url=False,
+            allow_absolute=True,
+        )
+        if src_err is not None:
+            return src_err
+        # Companion open → always write under bound root; ignore mismatched project_root.
+        if peek_bound_root(window) is not None:
+            root, root_err = resolve_bound_work_root(window, {})
+            if root_err:
+                return err_result("content.dump_lab_scripts", root_err)
+        else:
+            root = str(args.get("project_root") or args.get("root") or "").strip()
+            if not root:
+                getter = getattr(window, "_current_project_root", None)
+                if callable(getter):
+                    try:
+                        root = str(getter() or "")
+                    except Exception:
+                        root = ""
+            if not root:
+                return err_result(
+                    "content.dump_lab_scripts",
+                    "project_root required (or open a project in Iris)",
+                )
         out_dir = str(args.get("out_dir") or args.get("out_subdir") or "labs").strip() or "labs"
         _sum, vision = _summary_and_vision(args)
         _ = _sum
@@ -399,7 +413,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             vision_bytes = _bytes_reader
         try:
             result = dump_lab_scripts(
-                source,
+                str(source),
                 root,
                 out_subdir=out_dir,
                 vision_reader=vision_bytes,
@@ -407,26 +421,29 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         except (ValueError, OSError, RuntimeError) as exc:
             return err_result("content.dump_lab_scripts", str(exc))
         _log(window, "content.dump_lab_scripts", True)
-        return ok_result("content.dump_lab_scripts", to_hermes_summary(result).to_dict())
+        return ok_result("content.dump_lab_scripts", to_agent_summary(result).to_dict())
 
     def wiki_import_content(args: dict[str, Any]) -> dict[str, Any]:
         from iris.knowledge.content_extract import UnsupportedAttachmentTypeError
         from iris.knowledge.wiki_import_ops import import_to_wiki
+        from iris.ui.control_actions.attachment_resolve import resolve_content_source
 
-        source = str(args.get("source") or args.get("path") or args.get("url") or "").strip()
+        source, src_err = resolve_content_source(
+            window, args, "wiki.import_content", allow_url=True, allow_absolute=True
+        )
+        if src_err is not None:
+            return src_err
         title_in = str(args.get("title") or "").strip() or None
         rel_in = str(args.get("rel_path") or "").strip() or None
         open_note = bool(args.get("open", True))
         mode = str(args.get("mode") or "raw").strip().lower()
         if mode not in ("raw", "summarize"):
             mode = "raw"
-        if not source:
-            return err_result("wiki.import_content", "source required (file path or http(s) URL)")
         summarize_fn, vision = _summary_and_vision(args)
         try:
             result = import_to_wiki(
                 window._iris_wiki,
-                source=source,
+                source=str(source),
                 title=title_in,
                 mode=mode,
                 rel_path=rel_in,
@@ -741,21 +758,38 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
     reg.register(
         "content.extract",
         content_extract,
-        summary="Extract text from PDF (scanned image pages included), Office, text, image, or http(s) URL. Chat already attaches [자료 본문] before the answer.",
+        summary=(
+            "Extract text from PDF (scanned image pages included), Office, text, image, "
+            "or http(s) URL. Prefer attachment_id (uuid or unique filename from "
+            "attachment.list / get_state); legacy source/path/url may be http(s) or an "
+            "absolute file. Host paths are never listed in get_state."
+        ),
         risk="low",
     )
 
     reg.register(
         "content.dump_lab_scripts",
         content_dump_lab_scripts,
-        summary="From a lecture PDF path, parse every practice/lab program label and write source files under the project (default labs/). Returns written paths and labels only — not PDF text. Prefer this over content.extract + project.write_file when the user wants all labs as files. Pass Attachment absolute path.",
+        summary=(
+            "From a lecture PDF, parse lab blocks (프로그램 N-M labels, then (실습) titles) "
+            "and write source files under the project (default labs/). Prefer attachment_id "
+            "(uuid or unique filename from attachment.list / get_state); legacy absolute "
+            "PDF path still allowed. Returns written paths and labels only — not PDF text. "
+            "Prefer this over content.extract + project.write_file when the user wants all "
+            "labs as files."
+        ),
         risk="medium",
     )
 
     reg.register(
         "wiki.import_content",
         wiki_import_content,
-        summary="Save PDF/URL/file into Iris Wiki with a full summary and key concepts on top, and the original below. PDF is copied; web is one HTML file. No text cap. Image pages are read one by one.",
+        summary=(
+            "Save PDF/URL/file into Iris Wiki with a full summary and key concepts on top, "
+            "and the original below. Prefer attachment_id from attachment.list / get_state; "
+            "legacy source/path/url may be http(s) or an absolute file. PDF is copied; web "
+            "is one HTML file. No text cap. Image pages are read one by one."
+        ),
         risk="medium",
     )
 

@@ -33,7 +33,7 @@ class BackendRoute:
     base_url: str = ""
     api_key: str = ""
     auth_style: str = "bearer"
-    command: str = "hermes"
+    command: str = "iris-agent"
     # Hermes 전용 — resolve_iris_agent_inference() 결과
     target: Any = None
     extra: dict[str, str] = field(default_factory=dict)
@@ -51,7 +51,7 @@ def collect_reply(
     stop = cancelled or (lambda: False)
     backend = (route.backend or "").strip().lower()
     if backend in _AGENT_BACKENDS:
-        return _hermes(route, messages, stop)
+        return _agent(route, messages, stop)
     if backend == BACKEND_API:
         return _api(route, messages, timeout_sec, stop)
     return _ollama(route, messages, timeout_sec, stop, think)
@@ -75,11 +75,11 @@ def _ollama(route, messages, timeout_sec, stop, think) -> str:
     return "".join(parts)
 
 
-def _hermes(route, messages, stop) -> str:
+def _agent(route, messages, stop) -> str:
     from iris.infrastructure.iris_agent_client import IrisAgentClient
 
     client = IrisAgentClient(
-        route.base_url or "http://127.0.0.1:8642/v1",
+        (route.base_url or "").strip(),
         api_key=route.api_key,
         command=route.command,
     )
@@ -184,7 +184,6 @@ if __name__ == "__main__":
     fake = _FakeHermes()
     _orig = _hc.IrisAgentClient
     _hc.IrisAgentClient = lambda *a, **k: fake  # type: ignore[misc, assignment]
-    _hc.HermesClient = _hc.IrisAgentClient
     try:
         out = collect_reply(
             BackendRoute(backend=BACKEND_AGENT, model="ignored", target=_FakeTarget()),
@@ -197,7 +196,6 @@ if __name__ == "__main__":
         )
     finally:
         _hc.IrisAgentClient = _orig
-        _hc.HermesClient = _orig
     assert out == "ok"
     assert out_legacy == "ok"
     assert fake.synced is not None
@@ -206,7 +204,6 @@ if __name__ == "__main__":
     assert fake.synced[1].model == "nvidia/test-model"
 
     _hc.IrisAgentClient = lambda *a, **k: _FailSyncHermes()  # type: ignore[misc, assignment]
-    _hc.HermesClient = _hc.IrisAgentClient
     _orig_stream = _oc.stream_chat
 
     def _fake_api_stream(*a, **k):
@@ -220,7 +217,6 @@ if __name__ == "__main__":
         )
     finally:
         _hc.IrisAgentClient = _orig
-        _hc.HermesClient = _orig
         _oc.stream_chat = _orig_stream
     assert out2 == "via-api"
     print("backend_call self-check ok")

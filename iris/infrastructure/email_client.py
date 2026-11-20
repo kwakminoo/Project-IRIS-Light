@@ -636,7 +636,7 @@ def build_agent_context(
     *,
     inbox: "list[MailSummary] | None" = None,
 ) -> str:
-    """이메일 챗 → Hermes 에이전트에 주입할 시스템 컨텍스트.
+    """이메일 챗 → Iris Agent에 주입할 시스템 컨텍스트.
 
     현재 계정·받은편지 요약·(열람 중이면) 메일 본문을 넣어
     '오늘 온 메일' / '이 메일 답장 초안'이 도구 없이도 바로 동작하게 한다.
@@ -644,7 +644,7 @@ def build_agent_context(
     """
     lines = [
         "너는 이메일 업무를 돕는 아이리스야. 기본 페르소나(SOUL)의 말투·판단 원칙을 따른다.",
-        "메일 화면 조작·목록 조회는 Iris Control MCP(iris_invoke)를 쓴다: "
+        "메일 화면 조작·목록 조회는 SpeakTools control.invoke(또는 allowlist 직접 도구)를 쓴다: "
         "workspace.open_email, email.list_messages, email.read_message, "
         "email.refresh_inbox, email.open_message, email.open_compose, email.send. "
         "기본 화면/홈으로: workspace.open_assistant. "

@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from iris.infrastructure.iris_agent_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import iris_agent_home
 
 _SERPAPI_ACCOUNT = "https://serpapi.com/account.json"
 _FIRECRAWL_USAGE_URLS = (
@@ -40,8 +40,8 @@ class ApiQuota:
         return max(0.0, min(100.0, 100.0 * float(self.used) / float(self.total)))
 
 
-def _hermes_env_path() -> Path:
-    return hermes_home() / ".env"
+def _agent_env_path() -> Path:
+    return iris_agent_home() / ".env"
 
 
 def _parse_dotenv(path: Path) -> dict[str, str]:
@@ -65,14 +65,14 @@ def _parse_dotenv(path: Path) -> dict[str, str]:
 
 
 def _env_get(*names: str) -> str:
-    """프로세스 env → Hermes .env 순으로 키 조회."""
+    """프로세스 env → Iris Agent .env 순으로 키 조회."""
     for name in names:
         v = (os.environ.get(name) or "").strip()
         if v:
             return v
-    hermes = _parse_dotenv(_hermes_env_path())
+    agent_env = _parse_dotenv(_agent_env_path())
     for name in names:
-        v = (hermes.get(name) or "").strip()
+        v = (agent_env.get(name) or "").strip()
         if v:
             return v
     return ""

@@ -77,7 +77,7 @@ class UserTurnDispatcherTests(TestCase):
         self.assertEqual(self.dropped[0][0].text, "B")
         self.assertEqual(self.dropped[0][1], "queue_overflow")
 
-    def test_default_ten_sessions_run_and_eleventh_waits(self) -> None:
+    def test_default_five_sessions_run_and_sixth_waits(self) -> None:
         dispatcher = UserTurnDispatcher()
         ready: list[object] = []
         queued: list[tuple[object, str]] = []
@@ -85,14 +85,14 @@ class UserTurnDispatcherTests(TestCase):
         dispatcher.turn_queued.connect(lambda turn, reason: queued.append((turn, reason)))
         turns = [
             dispatcher.submit(text=str(i), source=UserTurnSource.KEYBOARD, session_id=i)
-            for i in range(1, 12)
+            for i in range(1, 7)
         ]
-        self.assertEqual([turn.text for turn in ready], [str(i) for i in range(1, 11)])
+        self.assertEqual([turn.text for turn in ready], [str(i) for i in range(1, 6)])
         self.assertEqual(queued[-1][1], "concurrent_cap")
-        self.assertEqual(turns[10].text, "11")
+        self.assertEqual(turns[5].text, "6")
         dispatcher.finish_active_turn(turns[0].id)
-        self.assertEqual(ready[-1].text, "11")
-        self.assertEqual(len(ready), 11)
+        self.assertEqual(ready[-1].text, "6")
+        self.assertEqual(len(ready), 6)
 
     def test_clear_pending_for_leaves_other_sessions(self) -> None:
         dispatcher = UserTurnDispatcher(max_pending=3, max_concurrent=1)

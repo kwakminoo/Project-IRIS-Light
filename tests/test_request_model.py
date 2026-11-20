@@ -21,7 +21,7 @@ from iris.engine import (  # noqa: E402
 )
 from iris.infrastructure.iris_agent_client import HermesClient, HermesInferenceTarget  # noqa: E402
 from iris.runtime.chat_run_slot import ChatRunSlot, choose_turn_model  # noqa: E402
-from iris.ui.workers.iris_agent_workers import HermesChatWorker  # noqa: E402
+from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker  # noqa: E402
 
 
 def _slot() -> ChatRunSlot:
@@ -149,7 +149,7 @@ class ChatWorkerModelTests(TestCase):
         )
         with patch("iris.ui.workers.iris_agent_workers.shared_engine", return_value=engine):
             for target in targets:
-                worker = HermesChatWorker(
+                worker = IrisAgentChatWorker(
                     target.label,
                     [{"role": "user", "content": "hi"}],
                     target=target,
@@ -160,7 +160,7 @@ class ChatWorkerModelTests(TestCase):
 
 class SideCallHermesTests(TestCase):
     def test_title_path_does_not_write_gateway_config(self) -> None:
-        from iris.ui.workers.backend_call import BackendRoute, _hermes
+        from iris.ui.workers.backend_call import BackendRoute, _agent
 
         client = _FakeClient()
         target = HermesInferenceTarget(
@@ -173,7 +173,7 @@ class SideCallHermesTests(TestCase):
             target=target,
         )
         with patch("iris.infrastructure.iris_agent_client.HermesClient", return_value=client):
-            text = _hermes(route, [{"role": "user", "content": "제목"}], lambda: False)
+            text = _agent(route, [{"role": "user", "content": "제목"}], lambda: False)
         self.assertEqual(text, "ok")
         self.assertEqual(client.set_calls, 0)
         self.assertEqual(client.seen, [("vendor/internal-v3", "custom")])

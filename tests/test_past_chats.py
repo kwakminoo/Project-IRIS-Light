@@ -464,7 +464,7 @@ class MainWindowPastChatsTests(_Base):
             _db=self.db,
             _pending_handoff="",
             _pending_past_chats="# 이전 대화에서 찾은 기록",
-            _use_hermes_backend=lambda: True,
+            _use_agent_backend=lambda: True,
         )
         payload = MainWindow._chat_messages_with_project_context(win)
         self.assertEqual(payload[-1]["content"], "지금 질문")

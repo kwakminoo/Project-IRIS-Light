@@ -57,7 +57,7 @@ def main() -> None:
 
     hermes_bodies: list[dict] = []
 
-    def fake_hermes_open(req, timeout=0):
+    def fake_agent_open(req, timeout=0):
         body = json.loads(req.data.decode())
         hermes_bodies.append(body)
         if "stream_options" in body:
@@ -71,7 +71,7 @@ def main() -> None:
         return BytesIO(b"data: [DONE]\n\n")
 
     client = hermes.IrisAgentClient("http://127.0.0.1:9/v1", api_key="k")
-    with patch.object(hermes, "urlopen", fake_hermes_open):
+    with patch.object(hermes, "urlopen", fake_agent_open):
         list(client.stream_chat("m", [], provider="custom"))
     assert "stream_options" in hermes_bodies[0]
     assert "stream_options" not in hermes_bodies[1]

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from iris.config.settings import default_env_path
-from iris.infrastructure.iris_agent_credentials import hermes_home, load_hermes_dotenv
+from iris.infrastructure.iris_agent_credentials import iris_agent_home, load_iris_agent_dotenv
 
 SEARCH_PRESET_ENV = "IRIS_SEARCH_PRESET"
 SEARCH_ENTRIES_ENV = "IRIS_SEARCH_ENTRIES"
@@ -270,7 +270,7 @@ def upsert_dotenv(path: Path, updates: dict[str, str]) -> None:
 
 def load_search_api_keys() -> dict[str, str]:
     """Iris Agent .env → 검색 관련 키만."""
-    env = load_hermes_dotenv()
+    env = load_iris_agent_dotenv()
     out: dict[str, str] = {}
     for key in search_env_keys():
         out[key] = (env.get(key) or os.environ.get(key) or "").strip()
@@ -278,7 +278,7 @@ def load_search_api_keys() -> dict[str, str]:
 
 
 def load_search_preset_id() -> str:
-    env = load_hermes_dotenv()
+    env = load_iris_agent_dotenv()
     stored = (env.get(SEARCH_PRESET_ENV) or os.environ.get(SEARCH_PRESET_ENV) or "").strip()
     if stored in _PRESET_BY_ID:
         return stored
@@ -291,7 +291,7 @@ def load_search_preset_id() -> str:
 
 def load_search_entries() -> list[str]:
     """등록된 검색 프리셋 id. 목록 키가 없으면 기존 단일 프리셋·저장된 키로 옮긴다."""
-    env = load_hermes_dotenv()
+    env = load_iris_agent_dotenv()
     if SEARCH_ENTRIES_ENV in env or SEARCH_ENTRIES_ENV in os.environ:
         raw = (env.get(SEARCH_ENTRIES_ENV) or os.environ.get(SEARCH_ENTRIES_ENV) or "")
         return parse_search_entry_ids(raw)
@@ -316,7 +316,7 @@ def save_search_api_keys(
     entry_ids: list[str] | None = None,
 ) -> Path:
     """검색 키와 선택 프리셋을 Iris Agent .env에 저장하고 프로세스 환경에도 반영."""
-    existing = load_hermes_dotenv()
+    existing = load_iris_agent_dotenv()
     updates: dict[str, str] = {}
     for key in search_env_keys():
         if key not in values:
@@ -330,7 +330,7 @@ def save_search_api_keys(
     if entry_ids is not None:
         ids = parse_search_entry_ids(",".join(entry_ids))
         updates[SEARCH_ENTRIES_ENV] = ",".join(ids)
-    path = hermes_home() / ".env"
+    path = iris_agent_home() / ".env"
     if updates:
         upsert_dotenv(path, updates)
         for key, val in updates.items():
@@ -341,7 +341,7 @@ def save_search_api_keys(
     return path
 
 
-def apply_hermes_search_backend(backend: str, *, config_path: Path | None = None) -> None:
+def apply_iris_agent_search_backend(backend: str, *, config_path: Path | None = None) -> None:
     """config.yaml 최상위 web.search_backend / web.backend 만 바꾼다.
 
     파일 전체를 dump하면 PATH 같은 기존 값이 깨지므로 해당 줄만 고친다.
@@ -349,7 +349,7 @@ def apply_hermes_search_backend(backend: str, *, config_path: Path | None = None
     backend = (backend or "").strip()
     if not backend or any(c.isspace() for c in backend):
         return
-    path = config_path or (hermes_home() / "config.yaml")
+    path = config_path or (iris_agent_home() / "config.yaml")
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
     lines = text.splitlines()
@@ -422,9 +422,9 @@ def _check_backend_splice() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Path(tmp) / "config.yaml"
         cfg.write_text("model:\n  provider: ollama\n", encoding="utf-8")
-        apply_hermes_search_backend("tavily", config_path=cfg)
-        apply_hermes_search_backend("exa", config_path=cfg)
-        apply_hermes_search_backend("", config_path=cfg)
+        apply_iris_agent_search_backend("tavily", config_path=cfg)
+        apply_iris_agent_search_backend("exa", config_path=cfg)
+        apply_iris_agent_search_backend("", config_path=cfg)
         text = cfg.read_text(encoding="utf-8")
     assert "provider: ollama" in text
     assert text.count("search_backend:") == 1

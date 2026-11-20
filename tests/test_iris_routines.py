@@ -76,9 +76,9 @@ class IrisStateSecretTests(TestCase):
     def setUp(self) -> None:
         self.state = build_state(
             ollama_model="qwen3:8b",
-            hermes_enabled=True,
-            hermes_base_url="http://127.0.0.1:8642/v1",
-            hermes_api_key="sk-hermes-must-never-appear",
+            agent_enabled=True,
+            agent_base_url="http://127.0.0.1:8642/v1",
+            agent_api_key="sk-hermes-must-never-appear",
             api_providers=[_Provider()],
             history=_History(),
             failover=_Failover(),
@@ -92,17 +92,17 @@ class IrisStateSecretTests(TestCase):
         self.assertIn("설정됨", blob)
 
     def test_absent_key_says_so_plainly(self) -> None:
-        state = build_state(hermes_enabled=True, hermes_api_key="")
-        self.assertEqual(state["Hermes API 키"], "없음")
+        state = build_state(agent_enabled=True, agent_api_key="")
+        self.assertEqual(state["Iris Agent API 키"], "없음")
 
     def test_secret_label_detection(self) -> None:
-        self.assertTrue(is_secret_label("Hermes API 키"))
+        self.assertTrue(is_secret_label("Iris Agent API 키"))
         self.assertTrue(is_secret_label("access token"))
         self.assertFalse(is_secret_label("대화 모델"))
 
     def test_state_covers_what_the_user_configured(self) -> None:
         self.assertEqual(self.state["대화 모델"], "qwen3:8b")
-        self.assertEqual(self.state["백엔드"], "Hermes 에이전트")
+        self.assertEqual(self.state["백엔드"], "Iris Agent")
         self.assertIn("대화", self.state["History 기록"])
         self.assertIn("bge-m3", self.state["History 검색"])
         self.assertIn("free:a", self.state["전환 후보"])

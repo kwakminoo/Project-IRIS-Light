@@ -8,19 +8,19 @@ from iris.infrastructure.email_client import (
     filter_summaries_since,
 )
 from iris.infrastructure.iris_agent_client import (
-    infer_hermes_provider,
-    is_hermes_syncable_model,
+    infer_agent_provider,
+    is_iris_agent_syncable_model,
     is_iris_api_runtime_model,
 )
 from iris.system.control_surface import runs_off_ui_thread
 
 
-def test_iris_api_model_not_synced_to_hermes() -> None:
+def test_iris_api_model_not_synced_to_agent() -> None:
     mid = "api:41025a6367b9:nvidia/nemotron-3-ultra-550b-a55b"
     assert is_iris_api_runtime_model(mid)
-    assert not is_hermes_syncable_model(mid)
-    assert infer_hermes_provider(mid) == "auto"
-    assert infer_hermes_provider("gemma4:26b") == "ollama"
+    assert not is_iris_agent_syncable_model(mid)
+    assert infer_agent_provider(mid) == "auto"
+    assert infer_agent_provider("gemma4:26b") == "ollama"
 
 
 def test_agent_context_includes_inbox() -> None:
@@ -55,8 +55,8 @@ def test_email_imap_actions_run_off_ui() -> None:
 
 
 if __name__ == "__main__":
-    test_iris_api_model_not_synced_to_hermes()
+    test_iris_api_model_not_synced_to_agent()
     test_agent_context_includes_inbox()
     test_iris_email_skill_exists()
     test_email_imap_actions_run_off_ui()
-    print("test_email_hermes_provider_fix ok")
+    print("test_email_agent_provider_fix ok")

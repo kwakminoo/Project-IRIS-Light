@@ -18,15 +18,30 @@ def _main() -> None:
     app = QApplication([])
     panel = ChatPanel()
     panel.append_update_prompt(detail="abc1234 → def5678")
-    html = panel._log.toHtml()
-    assert "iris-update://apply" in html
-    assert "iris-update://later" in html
-    assert "[Update]" in html and "[Late]" in html
-    assert "업데이트가 가능합니다" in html
+    blob = "\n".join(
+        p.markdown
+        for t in panel.transcript()._turns
+        for p in t.parts
+        if hasattr(p, "markdown")
+    )
+    assert "iris-update://apply" in blob
+    assert "iris-update://later" in blob
+    assert "[Update]" in blob and "[Late]" in blob
+    assert "업데이트가 가능합니다" in blob
+    assert panel._log.toPlainText().strip() == ""
     panel.dismiss_update_prompt("미룸")
-    html2 = panel._log.toHtml()
-    assert "iris-update://apply" not in html2
-    assert "미룸" in panel._log.toPlainText()
+    blob2 = "\n".join(
+        p.markdown
+        for t in panel.transcript()._turns
+        for p in t.parts
+        if hasattr(p, "markdown")
+    )
+    assert "iris-update://apply" not in blob2
+    assert "미룸" in blob2 or any(
+        "미룸" in getattr(p, "markdown", "")
+        for t in panel.transcript()._turns
+        for p in t.parts
+    )
 
     st = UpdateStatus(available=True, local_sha="a" * 40, remote_sha="b" * 40, detail="x")
     assert st.available

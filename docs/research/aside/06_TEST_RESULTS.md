@@ -75,7 +75,7 @@ Parent-walk contract. `setRunsOnSubFrames` stays False. Same-origin iframe nodes
 | `iris/browser/_driver.py` | Snapshot frames, `scroll_by(ref=)`, Fake `mark_disconnected`, no FAULT on ref miss |
 | `iris/browser/observation.py` | Node line extras. Trusted `frames=` line |
 | `iris/browser/_check_bridge_frames.py` | Local HTML WebEngine check |
-| `integrations/hermes-skills/iris-control/iris-browser/SKILL.md` | scroll `{ref}`, frames, disconnected `stale_ref` |
+| `integrations/iris-skills/iris-control/iris-browser/SKILL.md` | scroll `{ref}`, frames, disconnected `stale_ref` |
 | `tests/browser/test_browser_session_unit.py` | Parse, scroll-to-ref, gen stale, disconnected hook |
 | `tests/browser/test_browser_intent.py` | PAGE TEXT frame and `in_view=false` lines |
 
@@ -128,7 +128,7 @@ Base is candidate-1 compact `PageNode` flags. The packer grafts C2 excerpt elast
 | `iris/browser/session.py` | `_stamp` is the only ref writer and clips `name` / `context` |
 | `iris/browser/observation.py` | True-only suffixes, `ctx=` on `(role, name)` collision, `PAGE_TEXT_BUDGET` |
 | `iris/browser/_check_bridge_snapshot.py` | Local HTML WebEngine check |
-| `integrations/hermes-skills/iris-control/iris-browser/SKILL.md` | `ctx=` and true-only flags |
+| `integrations/iris-skills/iris-control/iris-browser/SKILL.md` | `ctx=` and true-only flags |
 | `tests/browser/test_browser_intent.py` | Packer lines, password, dense excerpt, context out of HUD |
 | `tests/browser/test_browser_session_unit.py` | Idle snapshot does not restamp. Stamp copies flags |
 | `tests/browser/test_browser_agent.py` | Packer key set locked |

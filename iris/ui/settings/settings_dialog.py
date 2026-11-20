@@ -47,7 +47,7 @@ from iris.infrastructure.external_api_keys import (
     SEARCH_PRESETS,
     SearchPreset,
     active_search_preset_id,
-    apply_hermes_search_backend,
+    apply_iris_agent_search_backend,
     load_calendar_api_key,
     load_search_api_keys,
     load_search_entries,
@@ -95,10 +95,10 @@ from iris.ui.settings.history_failover_box import (
     save_history_failover,
 )
 from iris.ui.settings.routines_box import build_routines_box
-from iris.system.iris_agent_login_warm import sync as sync_hermes_login_warm
+from iris.system.iris_agent_login_warm import sync as sync_agent_login_warm
 from iris.ui.settings.iris_agent_login_warm_box import (
     IrisAgentLoginWarmBox,
-    save_hermes_login_warm_box,
+    save_iris_agent_login_warm_box,
 )
 from iris.ui.settings.update_notify_box import UpdateNotifyBox, save_update_notify_box
 from iris.ui.settings.voice_runtime_status import VoiceRuntimeStatusWidget
@@ -186,18 +186,6 @@ class LightSettingsSelection:
     agent_api_key: str
     voice_prefs: VoicePreferences
     learning_prefs: LearningPreferences
-
-    @property
-    def hermes_command(self) -> str:
-        return self.agent_command
-
-    @property
-    def hermes_base_url(self) -> str:
-        return self.agent_base_url
-
-    @property
-    def hermes_api_key(self) -> str:
-        return self.agent_api_key
 
 
 def _nearest_index(combo, value: float) -> int:
@@ -320,7 +308,7 @@ class SettingsDialog(QDialog):
         q.append(self._section_typography)
         q.append(self._section_connection)
         q.append(self._section_update_notify)
-        q.append(self._section_hermes_login_warm)
+        q.append(self._section_agent_login_warm)
         q.append(self._section_api)
         if self._db is None:
             return
@@ -334,7 +322,7 @@ class SettingsDialog(QDialog):
         q.append(self._section_email)
         q.append(self._section_ide)
         q.append(self._section_project_parents)
-        q.append(self._section_hermes_control)
+        q.append(self._section_agent_control)
         q.append(self._section_setup_protocol)
 
     def _section_typography(self) -> None:
@@ -378,9 +366,9 @@ class SettingsDialog(QDialog):
         self._update_notify_box = UpdateNotifyBox(self._db)
         self._content_lay.addWidget(make_collapsible(self._update_notify_box))
 
-    def _section_hermes_login_warm(self) -> None:
-        self._hermes_login_warm_box = IrisAgentLoginWarmBox(self._db)
-        self._content_lay.addWidget(make_collapsible(self._hermes_login_warm_box))
+    def _section_agent_login_warm(self) -> None:
+        self._agent_login_warm_box = IrisAgentLoginWarmBox(self._db)
+        self._content_lay.addWidget(make_collapsible(self._agent_login_warm_box))
 
     def _section_api(self) -> None:
         self._content_lay.addWidget(make_collapsible(self._build_api_box()))
@@ -444,8 +432,8 @@ class SettingsDialog(QDialog):
     def _section_project_parents(self) -> None:
         self._content_lay.addWidget(make_collapsible(self._build_project_parents_box()))
 
-    def _section_hermes_control(self) -> None:
-        self._content_lay.addWidget(make_collapsible(self._build_hermes_control_box()))
+    def _section_agent_control(self) -> None:
+        self._content_lay.addWidget(make_collapsible(self._build_agent_control_box()))
 
     def _section_setup_protocol(self) -> None:
         self._content_lay.addWidget(make_collapsible(self._build_setup_protocol_box()))
@@ -839,7 +827,7 @@ class SettingsDialog(QDialog):
             )
             backend = search_preset_by_id(active).hermes_backend
             if backend:
-                apply_hermes_search_backend(backend)
+                apply_iris_agent_search_backend(backend)
         if hasattr(self, "_calendar_api_key"):
             key = self._calendar_api_key.text().strip()
             save_calendar_api_key(key)
@@ -2059,7 +2047,7 @@ class SettingsDialog(QDialog):
         for path in self._effective_parents_for_ui():
             self._parents_list.addItem(QListWidgetItem(path))
 
-    def _build_hermes_control_box(self) -> QGroupBox:
+    def _build_agent_control_box(self) -> QGroupBox:
         box = QGroupBox("Iris Agent Control")
         lay = QVBoxLayout(box)
         lay.setSpacing(TOKENS.spacing_sm)
@@ -2073,7 +2061,7 @@ class SettingsDialog(QDialog):
         self._sync_status.setWordWrap(True)
         lay.addWidget(self._sync_status)
         self._sync_btn = QPushButton("지금 SpeakTools/스킬 동기화")
-        self._sync_btn.clicked.connect(self._run_hermes_control_sync)
+        self._sync_btn.clicked.connect(self._run_agent_control_sync)
         lay.addWidget(self._sync_btn)
         self._sync_worker = None
         return box
@@ -2320,8 +2308,8 @@ class SettingsDialog(QDialog):
             f"Ollama {'OK' if snap.get('ollama_exe') else '없음'}"
             + self._setup_running_suffix(snap.get("ollama_running")),
             f"로컬 모델 {int(snap.get('local_model_count') or 0)}개",
-            f"에이전트 {'OK' if snap.get('hermes_exe') else '없음'}"
-            + self._setup_running_suffix(snap.get("hermes_running")),
+            f"에이전트 {'OK' if (snap.get('agent_exe') or snap.get('hermes_exe')) else '없음'}"
+            + self._setup_running_suffix(snap.get("agent_running")),
             f"venv {'OK' if snap.get('venv_ok') else '없음'}",
             f"API 키 {'설정됨' if snap.get('api_key_set') else '없음'}",
             f"core_ready={'예' if is_core_ready() else '아니오'}",
@@ -2345,7 +2333,7 @@ class SettingsDialog(QDialog):
             ollama_base_url=self._ollama_url.text().strip()
             or self._settings.ollama_base_url,
             agent_base_url=self._settings.agent_base_url,
-            agent_command=self._settings.agent_command or "hermes",
+            agent_command=self._settings.agent_command or "iris-agent",
             min_model=self._ollama_model.text().strip() or self._settings.ollama_model,
         )
 
@@ -2353,7 +2341,7 @@ class SettingsDialog(QDialog):
         """실행 파일·venv·core_ready 중 하나라도 없으면 설치 필요."""
         return not (
             bool(snap.get("ollama_exe"))
-            and bool(snap.get("hermes_exe"))
+            and bool(snap.get("agent_exe") or snap.get("hermes_exe"))
             and bool(snap.get("venv_ok"))
             and bool(snap.get("core_ready"))
         )
@@ -2435,8 +2423,8 @@ class SettingsDialog(QDialog):
                     self.progress.emit("서비스 기동·연결 확인 중…")
                     _warm_core_services(
                         ollama_base_url=self._proto.ollama_base_url,
-                        agent_base_url=self._proto.hermes_base_url,
-                        agent_command=self._proto.hermes_command,
+                        agent_base_url=self._proto.agent_base_url,
+                        agent_command=self._proto.agent_command,
                         wait_sec=30.0,
                     )
                     ok, detail = self._proto.verify_core()
@@ -2504,20 +2492,20 @@ class SettingsDialog(QDialog):
             self._open_setup_wizard(mode="repair")
 
     def _load_sync_status_text(self) -> str:
-        return settings_service.load_hermes_sync_status_text()
+        return settings_service.load_iris_agent_sync_status_text()
 
-    def _run_hermes_control_sync(self) -> None:
+    def _run_agent_control_sync(self) -> None:
         from iris.agent import IrisAgentControlSyncWorker
-        from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
+        from iris.infrastructure.iris_agent_credentials import resolve_agent_api_key
 
         if self._sync_worker is not None and self._sync_worker.isRunning():
             return
-        base = (self._settings.agent_base_url or "").strip() or "http://127.0.0.1:8642/v1"
+        base = (self._settings.agent_base_url or "").strip()
         try:
-            key = resolve_hermes_api_key(self._settings.agent_api_key)
+            key = resolve_agent_api_key(self._settings.agent_api_key)
         except Exception:
             key = self._settings.agent_api_key or ""
-        cmd = (self._settings.agent_command or "").strip() or "hermes"
+        cmd = (self._settings.agent_command or "").strip() or "iris-agent"
         self._sync_btn.setEnabled(False)
         self._sync_status.setText("상태: 동기화 중…")
         worker = IrisAgentControlSyncWorker(
@@ -2525,10 +2513,10 @@ class SettingsDialog(QDialog):
         )
         self._sync_worker = worker
         worker.progress.connect(self._sync_status.setText)
-        worker.finished_ok.connect(self._on_hermes_control_sync_done)
+        worker.finished_ok.connect(self._on_agent_control_sync_done)
         worker.start()
 
-    def _on_hermes_control_sync_done(self, ok: bool, summary: str) -> None:
+    def _on_agent_control_sync_done(self, ok: bool, summary: str) -> None:
         self._sync_worker = None
         self._sync_btn.setEnabled(True)
         text = summary.strip() or ("동기화 완료" if ok else "동기화 실패")
@@ -2537,7 +2525,7 @@ class SettingsDialog(QDialog):
             QMessageBox.information(
                 self,
                 "SpeakTools 동기화",
-                "동기화 완료.\nIris Agent를 재기동했고 SpeakTools 자세가 반영됐습니다.\n"
+                "동기화 완료.\nSpeakTools 자세가 sidecar/home에 반영됐습니다.\n"
                 "Iris에서 새 채팅을 열어 테스트하세요.",
             )
         else:
@@ -2706,11 +2694,11 @@ class SettingsDialog(QDialog):
             notify = getattr(self, "_update_notify_box", None)
             if notify is not None:
                 save_update_notify_box(self._db, notify)
-            warm_box = getattr(self, "_hermes_login_warm_box", None)
+            warm_box = getattr(self, "_agent_login_warm_box", None)
             if warm_box is not None:
-                save_hermes_login_warm_box(self._db, warm_box)
+                save_iris_agent_login_warm_box(self._db, warm_box)
                 try:
-                    warm_status = sync_hermes_login_warm(warm_box.prefs().enabled)
+                    warm_status = sync_agent_login_warm(warm_box.prefs().enabled)
                 except Exception as exc:  # noqa: BLE001
                     warm_status = None
                     QMessageBox.warning(
@@ -2730,18 +2718,17 @@ class SettingsDialog(QDialog):
                     )
         self._persist_search_calendar_api_keys()
         try:
-            from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
+            from iris.infrastructure.iris_agent_credentials import resolve_agent_api_key
 
-            hermes_api_key = resolve_hermes_api_key(self._settings.agent_api_key)
+            agent_api_key = resolve_agent_api_key(self._settings.agent_api_key)
         except Exception:
-            hermes_api_key = self._settings.agent_api_key or ""
+            agent_api_key = self._settings.agent_api_key or ""
         self._result = LightSettingsSelection(
             ollama_base_url=self._ollama_url.text().strip() or "http://127.0.0.1:11434/v1",
             ollama_model=self._ollama_model.text().strip(),
-            agent_command=self._settings.agent_command or "hermes",
-            agent_base_url=self._settings.agent_base_url
-            or "http://127.0.0.1:8642/v1",
-            agent_api_key=hermes_api_key,
+            agent_command=self._settings.agent_command or "iris-agent",
+            agent_base_url=(self._settings.agent_base_url or "").strip(),
+            agent_api_key=agent_api_key,
             voice_prefs=voice_prefs,
             learning_prefs=learning_prefs,
         )

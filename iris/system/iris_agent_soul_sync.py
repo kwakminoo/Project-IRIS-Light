@@ -11,7 +11,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from iris.system.iris_agent_control_sync import hermes_home, project_root
+from iris.infrastructure.agent_runtime import iris_agent_home
+from iris.system.iris_agent_control_sync import project_root
 
 _MARKER = "# IRIS Light Persona"
 
@@ -20,11 +21,11 @@ def repo_soul_path() -> Path:
     return project_root() / "integrations" / "hermes-soul" / "SOUL.md"
 
 
-def hermes_soul_path(home: Path | None = None) -> Path:
+def agent_soul_path(home: Path | None = None) -> Path:
     """제품 홈 SOUL만. 레거시 Hermes 홈은 보지 않는다."""
     if home is not None:
         return Path(home) / "SOUL.md"
-    return hermes_home() / "SOUL.md"
+    return iris_agent_home() / "SOUL.md"
 
 
 def load_iris_persona_text() -> str:
@@ -48,7 +49,7 @@ def ensure_soul(home: Path | None = None) -> str:
         return "soul skip: repo SOUL.md missing Iris marker"
     desired_norm = desired.strip() + "\n"
 
-    dst = hermes_soul_path(home)
+    dst = agent_soul_path(home)
     dst.parent.mkdir(parents=True, exist_ok=True)
     existing = ""
     if dst.is_file():
@@ -70,9 +71,9 @@ if __name__ == "__main__":
     text = load_iris_persona_text()
     assert _MARKER in text
     assert "아이리스" in text
-    product = hermes_soul_path().read_text(encoding="utf-8", errors="replace")
+    product = agent_soul_path().read_text(encoding="utf-8", errors="replace")
     assert _MARKER in product
     assert "아이리스" in product
     assert "Hermes Agent" not in product
     assert "Nous Research" not in product
-    print("ok", hermes_soul_path(), len(product), "chars")
+    print("ok", agent_soul_path(), len(product), "chars")

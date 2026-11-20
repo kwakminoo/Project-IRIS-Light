@@ -74,7 +74,7 @@ def main() -> None:
         picker_tier_color(PickerModel("y", "y", requires_subscription=True))
         == _COLOR_MODEL_PRO
     )
-    # 계층은 제공자 이름이 아니라 모델 수로만 결정됨 (연번 16 관련)
+    # 원격 API는 모델 1개여도 브랜드 폴더 (이름이 아니라 provider id로 묶음)
     gemini_many = [
         PickerModel(
             f"api:gm:models/gemini-{i}",
@@ -83,7 +83,7 @@ def main() -> None:
             provider_name="Gemini",
             is_api=True,
         )
-        for i in range(BRAND_MIN_MODELS)
+        for i in range(3)
     ]
     local, ollama, brands, singles = split_picker_groups(
         [
@@ -102,9 +102,10 @@ def main() -> None:
     )
     assert [m.runtime for m in local] == ["llama3.2:latest"]
     assert [m.runtime for m in ollama] == ["a:cloud"]
-    assert list(brands) == ["gm"], brands  # Gemini는 이름이 아니라 개수로 묶임
-    assert len(brands["gm"]) == BRAND_MIN_MODELS
-    assert [m.provider_name for m in singles] == ["OpenAI"]  # 1개 제공자는 그대로 노출
+    assert set(brands) == {"gm", "oa"}, brands
+    assert len(brands["gm"]) == 3 and len(brands["oa"]) == 1
+    assert singles == []
+    assert BRAND_MIN_MODELS == 1
     print("model picker tiers self-check ok")
 
 

@@ -123,7 +123,7 @@ if __name__ == "__main__":
 
     step = decide_fallback("Ollama HTTP 429: rate limit", 0)
     assert step is not None and step.reason == "할당량 소진" and step.delay_ms == 1000
-    assert decide_fallback("Hermes HTTP 503: upstream", 2).delay_ms == 4000
+    assert decide_fallback("Iris Agent HTTP 503: upstream", 2).delay_ms == 4000
     assert decide_fallback("You exceeded your current quota", 0).status == 429
     assert decide_fallback("Iris Agent 연결 실패: refused", 0).status == 503
     # 원인을 모르면 넘어가지 않는다

@@ -40,7 +40,7 @@ def _assert_synced(home: Path) -> None:
 
 
 class SyncIrisControlHomeTests(TestCase):
-    def test_explicit_home_writes_tmp_not_user_hermes(self) -> None:
+    def test_explicit_home_writes_tmp_not_user_agent(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "engine"
@@ -48,15 +48,15 @@ class SyncIrisControlHomeTests(TestCase):
             sentinel.mkdir()
             with (
                 patch(
-                    "iris.system.iris_agent_control_sync.hermes_home",
+                    "iris.system.iris_agent_control_sync.iris_agent_home",
                     return_value=sentinel,
                 ),
                 patch(
-                    "iris.system.iris_agent_soul_sync.hermes_home",
+                    "iris.system.iris_agent_soul_sync.iris_agent_home",
                     return_value=sentinel,
                 ),
                 patch(
-                    "iris.system.iris_agent_memory_nudge.hermes_home",
+                    "iris.system.iris_agent_memory_nudge.iris_agent_home",
                     return_value=sentinel,
                 ),
             ):
@@ -66,20 +66,20 @@ class SyncIrisControlHomeTests(TestCase):
             _assert_synced(home)
             _assert_no_sync_artifacts(sentinel)
 
-    def test_default_sync_uses_hermes_home(self) -> None:
+    def test_default_sync_uses_agent_home(self) -> None:
         with TemporaryDirectory() as tmp:
             fake = Path(tmp) / "hermes"
             with (
                 patch(
-                    "iris.system.iris_agent_control_sync.hermes_home",
+                    "iris.system.iris_agent_control_sync.iris_agent_home",
                     return_value=fake,
                 ),
                 patch(
-                    "iris.system.iris_agent_soul_sync.hermes_home",
+                    "iris.system.iris_agent_soul_sync.iris_agent_home",
                     return_value=fake,
                 ),
                 patch(
-                    "iris.system.iris_agent_memory_nudge.hermes_home",
+                    "iris.system.iris_agent_memory_nudge.iris_agent_home",
                     return_value=fake,
                 ),
             ):
@@ -94,15 +94,15 @@ class SyncIrisControlHomeTests(TestCase):
             with (
                 patch.dict("os.environ", {"IRIS_CONTROL_MCP_COMPAT": "1"}),
                 patch(
-                    "iris.system.iris_agent_control_sync.hermes_home",
+                    "iris.system.iris_agent_control_sync.iris_agent_home",
                     return_value=home,
                 ),
                 patch(
-                    "iris.system.iris_agent_soul_sync.hermes_home",
+                    "iris.system.iris_agent_soul_sync.iris_agent_home",
                     return_value=home,
                 ),
                 patch(
-                    "iris.system.iris_agent_memory_nudge.hermes_home",
+                    "iris.system.iris_agent_memory_nudge.iris_agent_home",
                     return_value=home,
                 ),
             ):

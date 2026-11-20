@@ -1,4 +1,4 @@
-"""Read-only local filesystem actions guarded by the configured scope."""
+"""Local filesystem actions guarded by the configured scope (read / search / write)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from iris.storage.local_access_prefs import SYSTEM, load_local_read_scope
 from iris.system.control_surface import ActionRegistry, err_result, ok_result
 
 _MAX_READ_BYTES = 1_048_576
+_MAX_WRITE_BYTES = 1_048_576
 _MAX_SEARCH_ENTRIES = 20_000
 
 
@@ -52,9 +53,29 @@ def _absolute(raw: object, *, directory: bool = False) -> Path:
     return path
 
 
+def _absolute_write_target(raw: object) -> Path:
+    """Absolute file path for write; parent must exist; target may be new."""
+    path = Path(str(raw or "").strip()).expanduser()
+    if not path.is_absolute():
+        raise ValueError("절대경로가 필요합니다. Iris는 기본 CWD를 사용하지 않습니다.")
+    resolved = path.resolve()
+    if resolved.exists() and resolved.is_dir():
+        raise IsADirectoryError(str(resolved))
+    parent = resolved.parent
+    if not parent.is_dir():
+        raise NotADirectoryError(str(parent))
+    return resolved
+
+
 def register_local_file_actions(window: Any, reg: ActionRegistry) -> None:
     def local_read_file(args: dict[str, Any]) -> dict[str, Any]:
         path = _absolute(args.get("path"))
+        if path.suffix.casefold() == ".pdf":
+            return err_result(
+                "local.read_file",
+                "PDF is not readable via local.read_file; "
+                "use content.dump_lab_scripts or content.extract",
+            )
         if not _allowed(window, path):
             return err_result(
                 "local.read_file",
@@ -70,6 +91,32 @@ def register_local_file_actions(window: Any, reg: ActionRegistry) -> None:
         return ok_result(
             "local.read_file",
             {"path": str(path), "content": data.decode("utf-8-sig", errors="replace"), "bytes": size},
+        )
+
+    def local_write_file(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            path = _absolute_write_target(args.get("path"))
+        except (IsADirectoryError, NotADirectoryError, OSError, ValueError) as exc:
+            return err_result("local.write_file", str(exc))
+        if not _allowed(window, path):
+            return err_result(
+                "local.write_file",
+                "설정된 읽기 범위 밖입니다. 설정에서 로컬 읽기 범위를 System으로 바꾸거나 파일을 첨부하세요.",
+            )
+        if "content" not in args or args.get("content") is None:
+            return err_result("local.write_file", "content required")
+        content = args.get("content")
+        text = content if isinstance(content, str) else str(content)
+        data = text.encode("utf-8")
+        if len(data) > _MAX_WRITE_BYTES:
+            return err_result(
+                "local.write_file",
+                f"내용이 쓰기 한도({_MAX_WRITE_BYTES} bytes)를 넘습니다.",
+            )
+        path.write_bytes(data)
+        return ok_result(
+            "local.write_file",
+            {"path": str(path), "bytes": len(data)},
         )
 
     def local_search_files(args: dict[str, Any]) -> dict[str, Any]:
@@ -119,6 +166,16 @@ def register_local_file_actions(window: Any, reg: ActionRegistry) -> None:
         local_read_file,
         summary="Read one absolute local text path within the configured System or Workspace + Attachments scope.",
         risk="low",
+    )
+    reg.register(
+        "local.write_file",
+        local_write_file,
+        summary=(
+            "Write one absolute local text path within the configured System or "
+            "Workspace + Attachments scope. Required: path, content."
+        ),
+        risk="medium",
+        confirm_required=True,
     )
     reg.register(
         "local.search_files",

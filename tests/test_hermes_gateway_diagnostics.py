@@ -2,8 +2,8 @@
 
 실제 Hermes 기동 없이 mock/임시 파일로 판정 로직만 검증한다.
 실행:
-  .venv\\Scripts\\python.exe -m unittest tests.test_hermes_gateway_diagnostics -v
-  .venv\\Scripts\\python.exe -m iris.system._check_hermes_gateway_diagnostics
+  .venv\\Scripts\\python.exe -m unittest tests.test_agent_gateway_diagnostics -v
+  .venv\\Scripts\\python.exe -m iris.system._check_agent_gateway_diagnostics
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         os.environ["PYTHONPATH"] = str(self.root / "src")
         os.environ["PYTHONHOME"] = str(self.root / "pyhome")
         with (
-            patch.object(gw, "_hermes_venv_python", return_value=None),
-            patch.object(gw, "_hermes_venv_dir", return_value=self.root / "missing-venv"),
+            patch.object(gw, "_iris_agent_venv_python", return_value=None),
+            patch.object(gw, "_iris_agent_venv_dir", return_value=self.root / "missing-venv"),
         ):
             env = gw._gateway_child_env()
         self.assertNotEqual(env.get("VIRTUAL_ENV"), str(iris_venv))
@@ -57,14 +57,14 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         self.assertEqual(env.get("HERMES_HOME"), str(self.home))
         self.assertEqual(env.get("API_SERVER_ENABLED"), "true")
 
-    def test_g2_hermes_venv_overrides_iris(self) -> None:
+    def test_g2_agent_venv_overrides_iris(self) -> None:
         hermes_venv = self.root / "hermes-agent" / "venv"
         scripts = hermes_venv / "Scripts"
         scripts.mkdir(parents=True)
         (scripts / "python.exe").write_text("", encoding="utf-8")
         os.environ["VIRTUAL_ENV"] = str(self.root / ".venv-iris")
         os.environ["PYTHONPATH"] = "polluted"
-        with patch.object(gw, "_hermes_agent_dir", return_value=self.root / "hermes-agent"):
+        with patch.object(gw, "_iris_agent_dir", return_value=self.root / "hermes-agent"):
             env = gw._gateway_child_env()
         self.assertEqual(env["VIRTUAL_ENV"], str(hermes_venv))
         self.assertNotIn("PYTHONPATH", env)
@@ -81,7 +81,7 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         self.assertFalse(pid_path.exists())
         self.assertFalse(lock_path.exists())
 
-    def test_g3_live_hermes_lock_preserved(self) -> None:
+    def test_g3_live_agent_lock_preserved(self) -> None:
         lock_path = self.home / "gateway.lock"
         lock_path.write_text(json.dumps({"pid": 4242}), encoding="utf-8")
         with (
@@ -92,7 +92,7 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("gateway.lock", cleared)
         self.assertTrue(lock_path.exists())
 
-    def test_g3_pid_reuse_non_hermes_cleared(self) -> None:
+    def test_g3_pid_reuse_non_agent_cleared(self) -> None:
         lock_path = self.home / "gateway.lock"
         lock_path.write_text(json.dumps({"pid": 111}), encoding="utf-8")
         with (
@@ -168,43 +168,22 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         )
         self.assertTrue(alive and looks)
 
-    def test_g9_exe_missing(self) -> None:
-        with patch.object(gw, "_build_gateway_cmd", return_value=None):
-            ok = gw.start_hermes_gateway()
-        self.assertFalse(ok)
+    def test_unit2_start_ensure_restart_gutted(self) -> None:
+        """Unit 2 Delete: never spawn :8642 from start/ensure/restart."""
+        self.assertFalse(gw.start_agent_gateway())
         diag = gw.get_last_gateway_diagnosis()
         self.assertIsNotNone(diag)
         assert diag is not None
-        self.assertEqual(diag.code, gw.CODE_EXE_MISSING)
-
-    def test_g5_api_server_disabled(self) -> None:
-        with (
-            patch.object(
-                gw, "_build_gateway_cmd", return_value=["python", "-m", "hermes"]
-            ),
-            patch.object(
-                gw,
-                "_gateway_child_env",
-                return_value={"API_SERVER_ENABLED": "false", "HERMES_HOME": "x"},
-            ),
-            patch.object(
-                gw,
-                "probe_gateway_health",
-                return_value=HealthProbeResult(ok=False, code="connection_refused"),
-            ),
-            patch.object(gw, "_diagnose_port_conflict", return_value=None),
-            patch.object(gw, "_clear_stale_gateway_lock", return_value=[]),
-            patch.object(gw, "_windows_gateway_procs_alive", return_value=False),
-            patch.object(gw, "_gateway_lock_path", return_value=Path("no-lock-file")),
-        ):
-            ok = gw.ensure_hermes_gateway_running(
-                "http://127.0.0.1:8642/v1", wait_sec=1.0
-            )
-        self.assertFalse(ok)
-        diag = gw.get_last_gateway_diagnosis()
-        self.assertIsNotNone(diag)
-        assert diag is not None
-        self.assertEqual(diag.code, gw.CODE_ENV_POLLUTION)
+        self.assertEqual(diag.code, gw.CODE_START_FAILED)
+        self.assertFalse(
+            gw.ensure_agent_gateway_running("http://127.0.0.1:8642/v1", wait_sec=1.0)
+        )
+        self.assertFalse(
+            gw.restart_agent_gateway("http://127.0.0.1:8642/v1", wait_sec=1.0)
+        )
+        self.assertEqual(gw.prune_orphan_gateway_procs(), 0)
+        self.assertFalse(gw.is_agent_gateway_running(""))
+        self.assertFalse(gw.probe_gateway_health("").ok)
 
     def test_g10_user_message_no_secret_values(self) -> None:
         diag = gw.GatewayDiagnosis(
@@ -220,39 +199,39 @@ class GatewayDiagnosticsTests(unittest.TestCase):
 
     def test_trampoline_failure_detector(self) -> None:
         self.assertTrue(
-            gw.is_hermes_trampoline_failure(
+            gw.is_agent_trampoline_failure(
                 "error: uv trampoline failed to spawn Python child process\n"
                 "  Caused by: entity not found (os error 2)"
             )
         )
-        self.assertFalse(gw.is_hermes_trampoline_failure("connection refused"))
-        self.assertFalse(gw.is_hermes_trampoline_failure(""))
+        self.assertFalse(gw.is_agent_trampoline_failure("connection refused"))
+        self.assertFalse(gw.is_agent_trampoline_failure(""))
 
-    def test_is_hermes_cli_missing_failure(self) -> None:
+    def test_is_agent_cli_missing_failure(self) -> None:
         self.assertTrue(
-            gw.is_hermes_cli_missing_failure(
+            gw.is_agent_cli_missing_failure(
                 "Error while finding module specification for 'hermes_cli.main' "
                 "(ModuleNotFoundError: No module named 'hermes_cli')"
             )
         )
-        self.assertFalse(gw.is_hermes_cli_missing_failure("connection refused"))
+        self.assertFalse(gw.is_agent_cli_missing_failure("connection refused"))
 
-    def test_is_hermes_gateway_dep_missing_failure(self) -> None:
+    def test_is_agent_gateway_dep_missing_failure(self) -> None:
         self.assertTrue(
-            gw.is_hermes_gateway_dep_missing_failure(
+            gw.is_agent_gateway_dep_missing_failure(
                 "from aiohttp import web\nModuleNotFoundError: No module named 'aiohttp'"
             )
         )
         self.assertTrue(
-            gw.is_hermes_gateway_dep_missing_failure(
+            gw.is_agent_gateway_dep_missing_failure(
                 "requires the 'mcp' Python SDK, but it is not installed"
             )
         )
         self.assertFalse(
-            gw.is_hermes_gateway_dep_missing_failure("connection refused")
+            gw.is_agent_gateway_dep_missing_failure("connection refused")
         )
 
-    def test_probe_hermes_runtime_missing_pyvenv_home(self) -> None:
+    def test_probe_agent_runtime_missing_pyvenv_home(self) -> None:
         agent = self.home / "hermes-agent" / "venv"
         scripts = agent / "Scripts"
         scripts.mkdir(parents=True)
@@ -261,8 +240,8 @@ class GatewayDiagnosticsTests(unittest.TestCase):
             "home = C:\\definitely\\missing\\uv\\python\\cpython\n",
             encoding="utf-8",
         )
-        with patch.object(gw, "_hermes_agent_dir", return_value=self.home / "hermes-agent"):
-            ok, detail = gw.probe_hermes_runtime(timeout_sec=5.0)
+        with patch.object(gw, "_iris_agent_dir", return_value=self.home / "hermes-agent"):
+            ok, detail = gw.probe_agent_runtime(timeout_sec=5.0)
         self.assertFalse(ok)
         self.assertIn("pyvenv home", detail)
 
@@ -281,7 +260,8 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         data = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(data["code"], gw.CODE_PORT_CONFLICT)
 
-    def test_ensure_short_circuits_when_healthy(self) -> None:
+    def test_ensure_never_true_even_when_health_mocked(self) -> None:
+        """Unit 2 Delete: ensure is a stub — healthy mocks must not revive start."""
         healthy = HealthProbeResult(
             ok=True,
             code="ok",
@@ -301,16 +281,10 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         with (
             patch.object(gw, "probe_gateway_health", return_value=healthy),
             patch.object(gw, "probe_gateway_ready", return_value=ready),
-            patch.object(gw, "prune_orphan_gateway_procs", return_value=0),
         ):
-            self.assertTrue(
-                gw.ensure_hermes_gateway_running("http://127.0.0.1:8642/v1")
+            self.assertFalse(
+                gw.ensure_agent_gateway_running("http://127.0.0.1:8642/v1")
             )
-        diag = gw.get_last_gateway_diagnosis()
-        self.assertIsNotNone(diag)
-        assert diag is not None
-        self.assertTrue(diag.ok)
-        self.assertTrue(diag.models_ok)
 
     def test_clear_and_mark_already_running_clears_stale_timeout(self) -> None:
         stale = gw.GatewayDiagnosis(
@@ -334,29 +308,30 @@ class GatewayDiagnosticsTests(unittest.TestCase):
             looks_like_hermes=True,
             body_summary='{"status":"ok"}',
         )
+        ready = type(
+            "R",
+            (),
+            {
+                "ok": True,
+                "models_ok": True,
+                "detail": "/v1/models OK",
+                "code": "ok",
+                "key_weak": False,
+                "key_len": 40,
+            },
+        )()
         with patch.object(gw, "probe_gateway_health", return_value=healthy):
             with patch(
-                "iris.system.iris_agent_gateway.resolve_hermes_api_key",
+                "iris.system.iris_agent_gateway.resolve_agent_api_key",
                 return_value="x" * 40,
             ):
                 with patch.object(
-                    gw.HermesClient,
+                    gw.IrisAgentClient,
                     "probe_gateway_ready",
-                    return_value=type(
-                        "R",
-                        (),
-                        {
-                            "ok": True,
-                            "models_ok": True,
-                            "detail": "/v1/models OK",
-                            "code": "ok",
-                            "key_weak": False,
-                            "key_len": 40,
-                        },
-                    )(),
+                    return_value=ready,
                 ):
                     with patch.object(
-                        gw.HermesClient, "probe_chat_auth", return_value="ok"
+                        gw.IrisAgentClient, "probe_chat_auth", return_value="ok"
                     ):
                         diag = gw.mark_gateway_already_running(
                             "http://127.0.0.1:8642/v1"

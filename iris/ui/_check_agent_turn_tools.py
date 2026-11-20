@@ -14,19 +14,19 @@ from types import SimpleNamespace
 from iris.engine.runtime import Engine
 from iris.engine.types import EngineHome, InternalSidecar
 from iris.infrastructure.agent_tool_registry import speak_invoke_agent_tool
-from iris.infrastructure.speak_capability import (
+from iris.infrastructure.tool_capability import (
     bind_live_control_surface,
     engine_tool_action,
     engine_tool_schemas,
 )
 from iris.knowledge.pdf_export import verify_pdf_file
-from iris.runtime.agent_local_gate import hermes_owns_local_intents
+from iris.runtime.agent_local_gate import agent_owns_local_intents
 from iris.ui._check_control_action_split import _surface
 
 
 def main() -> None:
-    assert hermes_owns_local_intents(True) is True
-    assert hermes_owns_local_intents(False) is False
+    assert agent_owns_local_intents(True) is True
+    assert agent_owns_local_intents(False) is False
 
     window, reg = _surface()
     names = {item["name"] for item in reg.catalog()}

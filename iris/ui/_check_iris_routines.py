@@ -49,7 +49,7 @@ def main() -> None:
         win._db = db
         try:
             # 1) 상태 스냅샷이 IRIS 칸에 써지고 키는 안 새야 한다
-            win._settings.hermes_api_key = "sk-must-not-leak"
+            win._settings.agent_api_key = "sk-must-not-leak"
             win._sync_iris_wiki()
             index_path = wiki.user_root / IRIS_DIR / "index.md"
             assert index_path.is_file(), "IRIS/index.md 가 안 생김"

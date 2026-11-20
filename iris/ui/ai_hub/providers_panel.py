@@ -41,6 +41,7 @@ from iris.system.iris_agent_ollama_guard import note_after_provider_direct_ok
 from iris.ui.settings.free_llm_list import build_free_llm_list
 from iris.ui.settings.hud_dialog import configure_form, make_form_label, make_hint
 from iris.ui.shared.theme_tokens import TOKENS
+from iris.ui.widgets.activity_ring import ActivityRing
 from iris.ui.workers.api_provider_workers import ApiModelsVerifyWorker, ApiProbeWorker
 
 
@@ -139,10 +140,16 @@ class AiProvidersPanel(QGroupBox):
         row.addStretch(1)
         lay.addLayout(row)
 
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(6)
+        self._api_status_ring = ActivityRing()
+        status_row.addWidget(self._api_status_ring, 0, Qt.AlignmentFlag.AlignTop)
         self._api_status = QLabel("")
         self._api_status.setWordWrap(True)
         self._api_status.setObjectName("HudHint")
-        lay.addWidget(self._api_status)
+        status_row.addWidget(self._api_status, 1)
+        lay.addLayout(status_row)
 
         lay.addWidget(make_hint("등록된 API"))
         self._api_list_host = QVBoxLayout()
@@ -344,6 +351,9 @@ class AiProvidersPanel(QGroupBox):
         worker.finished_probe.connect(self._on_api_probe_done)
         worker.start()
 
+    def _set_verify_ring_working(self, working: bool) -> None:
+        self._api_status_ring.set_working(working)
+
     def _on_api_verify_models(self, provider_id: str) -> None:
         if self._db is None:
             return
@@ -358,6 +368,7 @@ class AiProvidersPanel(QGroupBox):
             self._api_status.setText("다른 모델 정리가 진행 중입니다…")
             return
         self._api_status.setText(f"{provider.name}: 모델 {len(provider.models)}개 확인 중…")
+        self._set_verify_ring_working(True)
         worker = ApiModelsVerifyWorker(provider, parent=self)
         worker.verified_one.connect(self._on_api_model_verified_one)
         worker.progress.connect(
@@ -380,6 +391,7 @@ class AiProvidersPanel(QGroupBox):
 
     def _on_api_models_verified_all(self, provider_id: str, usable: int, total: int) -> None:
         self._api_models_worker = None
+        self._set_verify_ring_working(False)
         if self._db is None:
             return
         self._api_providers = load_api_providers(self._db)
@@ -444,8 +456,8 @@ class AiProvidersPanel(QGroupBox):
                 extra = note_after_provider_direct_ok(
                     pnow,
                     db=self._db,
-                    hermes_enabled=bool(self._settings.agent_enabled),
-                    hermes_base_url=self._settings.agent_base_url,
+                    agent_enabled=bool(self._settings.agent_enabled),
+                    agent_base_url=self._settings.agent_base_url,
                 )
             self._api_status.setText(head if not extra else f"{head}\n{extra}")
         else:

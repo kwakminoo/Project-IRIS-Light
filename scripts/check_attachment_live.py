@@ -51,7 +51,7 @@ class DispatchHarness(QObject):
         self._turn_dispatcher.turn_ready.connect(self._execute_user_turn)
         self._settings = SimpleNamespace(ollama_model="gemma4:e2b", ollama_base_url="http://127.0.0.1:11434", hermes_base_url="http://127.0.0.1:8642/v1", hermes_api_key="", hermes_command="hermes")
         self._saved_model = "gemma4:e2b"
-        self._hermes_online = True
+        self._agent_online = True
         self._live_activity = Mock()
         self.payloads = []
         self.failures = []
@@ -67,7 +67,7 @@ class DispatchHarness(QObject):
     def _current_project_root(self):
         return str(OUT)
 
-    def _use_hermes_backend(self):
+    def _use_agent_backend(self):
         return True
 
     def _is_current_turn(self, tid):

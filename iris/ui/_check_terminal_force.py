@@ -8,7 +8,7 @@ from iris.runtime.turn_followthrough import counts_as_tool_ok
 from iris.system.project_ops import is_static_web_file
 
 
-def check_hermes_terminal_not_tool_ok() -> None:
+def check_agent_terminal_not_tool_ok() -> None:
     assert not counts_as_tool_ok("terminal ok")
     assert not counts_as_tool_ok("shell: python main.py ok")
     assert not counts_as_tool_ok("bash ok")
@@ -31,18 +31,18 @@ def check_project_run_requires_reveal() -> None:
     assert 'via == "bridge_fallback"' in text or "bridge_fallback" in text
 
 
-def check_hermes_disabled_config() -> None:
-    from iris.system.iris_agent_control_sync import verify_hermes_terminal_disabled
+def check_agent_disabled_config() -> None:
+    from iris.system.iris_agent_control_sync import verify_iris_agent_terminal_disabled
 
-    ok, msg = verify_hermes_terminal_disabled()
+    ok, msg = verify_iris_agent_terminal_disabled()
     assert ok, msg
 
 
 def main() -> None:
-    check_hermes_terminal_not_tool_ok()
+    check_agent_terminal_not_tool_ok()
     check_browser_preview_only_static()
     check_project_run_requires_reveal()
-    check_hermes_disabled_config()
+    check_agent_disabled_config()
     print("terminal_force check ok")
 
 

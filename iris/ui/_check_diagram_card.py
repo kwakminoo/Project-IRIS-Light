@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from urllib.parse import quote
+
+from PyQt6.QtCore import QUrl
 
 from iris.ui.chat.diagram_card import (
     card_height_px,
@@ -44,6 +47,15 @@ def _check_url_and_href() -> None:
     assert href.startswith("iris-diagram://")
     assert parse_diagram_href(href) == r"C:\iris\a b.html"
     assert parse_diagram_href("https://example.com") is None
+    # Drive letter + %2F must survive QUrl (opaque host form empties).
+    slashy = r"C:\iris\a/b.html"
+    href2 = diagram_href(slashy)
+    via = QUrl(href2).toString()
+    assert via, f"QUrl emptied diagram href: {href2!r}"
+    assert parse_diagram_href(via) == slashy, (href2, via)
+    # Legacy host form still parses when not emptied by QUrl.
+    legacy = "iris-diagram://" + quote(r"C:\iris\a b.html", safe="")
+    assert parse_diagram_href(legacy) == r"C:\iris\a b.html"
 
 
 def _check_preview() -> None:

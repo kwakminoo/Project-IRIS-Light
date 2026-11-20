@@ -9,6 +9,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import QApplication
 
 from iris.core.chat_citations import iris_message_to_chat_html
@@ -153,6 +154,20 @@ def _assert_fence_info_parse() -> None:
     assert junk.language or junk.path or junk.language == ""
 
 
+def _assert_copy_anchor_qurl_fidelity() -> None:
+    """QUrl must not lowercase / empty iris-copy payloads (opaque-host trap)."""
+    code = "AbC_mixed-CASE/payload"
+    href = copy_anchor_for(code)
+    via_qurl = QUrl(href).toString()
+    assert via_qurl, f"QUrl emptied copy href: {href!r}"
+    assert parse_copy_anchor(via_qurl) == code, (href, via_qurl)
+    # Legacy host form still parses when case survives (ChatLog without QUrl).
+    legacy = "iris-copy://YWJj"
+    assert parse_copy_anchor(legacy) == "abc"
+    # Lowercased host form must not be the only emission shape we build.
+    assert "iris-copy://_/" in href or href.startswith("iris-copy:///"), href
+
+
 def _assert_fenced_code() -> None:
     t = TOKENS
     block = FencedCodeBlock("print('hi')", language="python")
@@ -172,6 +187,7 @@ def _assert_fenced_code() -> None:
     )
     # 원본 코드(공백·줄바꿈 포함)는 강조와 무관하게 그대로 복사되어야 한다
     assert parse_copy_anchor(copy_anchor_for("print('hi')")) == "print('hi')"
+    _assert_copy_anchor_qurl_fidelity()
 
     meta = parse_fence_info("python:iris/ui/chat/chat_blocks.py")
     path_html = fenced_code_to_html(

@@ -1,6 +1,6 @@
 """P4 — 사용자·에이전트 노출 핫패스에서 Hermes/헤르메스 브랜드 0.
 
-실행: .venv\\Scripts\\python.exe -m iris.ui._check_hermes_user_branding_p4
+실행: .venv\\Scripts\\python.exe -m iris.ui._check_agent_user_branding_p4
 
 INTERNAL_OK (검사 제외): hermes_* 모듈명, HERMES_* env, hermes-agent checkout,
 LICENSE/NOTICE Nous MIT, 개발자 docstring·식별자.
@@ -23,8 +23,8 @@ HOT_PATH_FILES = (
     "iris/audio/text_normalizer.py",
     "iris/infrastructure/iris_agent_errors.py",
     "iris/system/iris_agent_memory_nudge.py",
-    "integrations/hermes-skills/iris-control/iris-vibe-code/SKILL.md",
-    "integrations/hermes-skills/iris-control/iris-mobile-mcp/SKILL.md",
+    "integrations/iris-skills/iris-agent/iris-vibe-code/SKILL.md",
+    "integrations/iris-skills/iris-agent/iris-mobile-mcp/SKILL.md",
 )
 
 BANNED = (
@@ -58,13 +58,13 @@ BANNED = (
 def main() -> None:
     from iris.infrastructure.iris_agent_errors import (
         explain_chat_error,
-        scrub_upstream_hermes_cli_hints,
+        scrub_upstream_cli_hints,
     )
 
     assert "[IRIS tool]" in (ROOT / "iris/ui/window/main_window.py").read_text(
         encoding="utf-8"
     )
-    scrubbed = scrub_upstream_hermes_cli_hints(
+    scrubbed = scrub_upstream_cli_hints(
         "custom rejected; run `hermes doctor` for details"
     )
     assert "hermes doctor" not in scrubbed.lower()

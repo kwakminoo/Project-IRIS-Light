@@ -57,13 +57,13 @@ class BootChecksWorker(QThread):
 
     def _check_wiki(self) -> None:
         try:
-            from iris.ui.chat.skill_mcp_dialogs import hermes_root, list_hermes_mcps, list_hermes_skills
+            from iris.ui.chat.skill_mcp_dialogs import iris_agent_root, list_agent_mcps, list_agent_skills
 
-            root = str(hermes_root())
-            skills = [(n, d) for n, d, _p in list_hermes_skills(limit=120)]
-            mcps = list_hermes_mcps(limit=40)
-            self._wiki.sync_skills_catalog(skills, hermes_root=root)
-            self._wiki.sync_mcp_catalog(mcps, hermes_root=root)
+            root = str(iris_agent_root())
+            skills = [(n, d) for n, d, _p in list_agent_skills(limit=120)]
+            mcps = list_agent_mcps(limit=40)
+            self._wiki.sync_skills_catalog(skills, iris_agent_root=root)
+            self._wiki.sync_mcp_catalog(mcps, iris_agent_root=root)
             count = len(self._wiki.list_notes())
             self.progress.emit(
                 f"Iris Wiki: 노트 {count}개 · 스킬 {len(skills)} · MCP {len(mcps)} 동기화"

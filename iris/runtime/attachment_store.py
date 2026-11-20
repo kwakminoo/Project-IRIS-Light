@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import fnmatch
+import mimetypes
 import os
+import re
 import shutil
 import uuid
 from dataclasses import dataclass, field
@@ -13,6 +15,46 @@ from .attachment_context import (
     MAX_FOLDER_ENTRIES, MAX_CONTEXT_CHARS, MAX_FILE_BYTES,
     MAX_FILES, _is_link, _read, query_terms,
 )
+
+_UUID_HEX = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+_USE_LIST_OR_STATE = "attachment.list 또는 get_state의 id를 쓰세요."
+
+
+@dataclass(frozen=True)
+class AttachmentRef:
+    """Model-facing attachment handle. Never carries a host full path."""
+
+    id: str
+    filename: str
+    size: int
+    mime: str
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "filename": self.filename,
+            "size": int(self.size),
+            "mime": self.mime,
+        }
+
+
+@dataclass(frozen=True)
+class AttachmentIdResolve:
+    id: str | None = None
+    error: str | None = None
+    candidates: tuple[dict, ...] = ()
+
+
+def _looks_like_host_path(token: str) -> bool:
+    raw = str(token or "").strip()
+    if not raw:
+        return False
+    if raw.startswith("~") or "/" in raw or "\\" in raw:
+        return True
+    try:
+        return Path(raw).expanduser().is_absolute() or bool(PureWindowsPath(raw).drive)
+    except (OSError, ValueError):
+        return False
 
 
 @dataclass
@@ -109,11 +151,72 @@ class AttachmentStore:
 
     def _index(self, root, relative, path):
         stat = path.stat()
-        import mimetypes
         root.files[relative] = dict(file_name=path.name, full_path=str(path), relative_path=relative,
             extension=path.suffix.lower().lstrip("."), mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
             size=stat.st_size, modified_time=stat.st_mtime, attachment_id=root.id,
             folder_root=str(root.path) if root.directory else "", extracted_text=False)
+
+    def list_refs(self) -> list[AttachmentRef]:
+        """Current chat attachments as model-facing refs (no host paths)."""
+        refs: list[AttachmentRef] = []
+        for root in self.roots.values():
+            if root.directory:
+                refs.append(
+                    AttachmentRef(
+                        id=root.id,
+                        filename=root.path.name,
+                        size=sum(int(m.get("size") or 0) for m in root.files.values()),
+                        mime="inode/directory",
+                    )
+                )
+                continue
+            meta = next(iter(root.files.values()), None)
+            if meta is None:
+                mime = mimetypes.guess_type(root.path.name)[0] or "application/octet-stream"
+                refs.append(
+                    AttachmentRef(id=root.id, filename=root.path.name, size=0, mime=mime)
+                )
+                continue
+            refs.append(
+                AttachmentRef(
+                    id=root.id,
+                    filename=str(meta.get("file_name") or root.path.name),
+                    size=int(meta.get("size") or 0),
+                    mime=str(meta.get("mime_type") or "application/octet-stream"),
+                )
+            )
+        return refs
+
+    def resolve_id(self, token: str) -> AttachmentIdResolve:
+        """Map uuid hex or unique basename to attachment id; refuse paths/unknown."""
+        raw = str(token or "").strip()
+        if not raw:
+            return AttachmentIdResolve(error=f"attachment_id가 필요합니다. {_USE_LIST_OR_STATE}")
+        if _UUID_HEX.fullmatch(raw):
+            key = raw.casefold()
+            for aid in self.roots:
+                if aid.casefold() == key:
+                    return AttachmentIdResolve(id=aid)
+            return AttachmentIdResolve(
+                error=f"첨부파일을 찾을 수 없습니다. {_USE_LIST_OR_STATE}"
+            )
+        if _looks_like_host_path(raw):
+            return AttachmentIdResolve(
+                error=f"호스트 경로가 아니라 {_USE_LIST_OR_STATE}"
+            )
+        matches = [
+            ref for ref in self.list_refs() if ref.filename.casefold() == raw.casefold()
+        ]
+        if len(matches) == 1:
+            return AttachmentIdResolve(id=matches[0].id)
+        if len(matches) > 1:
+            return AttachmentIdResolve(
+                error=f"파일명이 여러 첨부에 해당합니다. {_USE_LIST_OR_STATE}",
+                candidates=tuple(ref.as_dict() for ref in matches),
+            )
+        return AttachmentIdResolve(
+            error=f"알 수 없는 attachment_id입니다. {_USE_LIST_OR_STATE}"
+        )
 
     def list_attached_files(self, attachment_id=None):
         roots = [self.roots[attachment_id]] if attachment_id else self.roots.values()
@@ -150,6 +253,11 @@ class AttachmentStore:
         if not source.is_file():
             raise ValueError("첨부파일 원본이 없거나 파일이 아닙니다.")
         return root, source, relative
+
+    def absolute_file_path(self, attachment_id: str) -> Path:
+        """Resolved store id → absolute Path of the attached file. Refuses folders/missing."""
+        _root, source, _relative = self._transfer_source(attachment_id)
+        return source
 
     @staticmethod
     def _transfer_target(source: Path, destination: str | os.PathLike[str]) -> Path:

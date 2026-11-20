@@ -138,7 +138,7 @@ if __name__ == "__main__":
     assert state_from_http(503, "overloaded") == "unverified"
     assert state_from_http(400, "Unsupported parameter(s): options") == "unverified"
     assert state_from_http(400, "input must be text embedding") == "unavailable"
-    assert chat_error_hides_model("Hermes: HTTP 400 Unsupported parameter(s): options") is False
+    assert chat_error_hides_model("Iris Agent: HTTP 400 Unsupported parameter(s): options") is False
     assert chat_error_hides_model("HTTP 404 model not found") is True
     assert chat_error_hides_model(
         "HTTP 410: The model is end of life and no longer available."

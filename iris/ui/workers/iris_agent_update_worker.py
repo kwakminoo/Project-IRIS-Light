@@ -13,21 +13,21 @@ class IrisAgentUpdateCheckWorker(QThread):
     finished_ok = pyqtSignal(object)  # IrisAgentUpdateStatus
     failed = pyqtSignal(str)
 
-    def __init__(self, command: str = "hermes", parent=None) -> None:
+    def __init__(self, command: str = "iris-agent", parent=None) -> None:
         super().__init__(parent)
-        self._command = (command or "hermes").strip() or "hermes"
+        self._command = (command or "iris-agent").strip() or "iris-agent"
 
     def run(self) -> None:
         try:
-            from iris.system.iris_agent_update import check_hermes_update
+            from iris.system.iris_agent_update import check_iris_agent_update
 
-            self.finished_ok.emit(check_hermes_update(command=self._command))
+            self.finished_ok.emit(check_iris_agent_update(command=self._command))
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc)[:240])
 
 
 class IrisAgentUpdateApplyWorker(QThread):
-    """업데이트 버튼 — pin checkout 후 gateway 재시작."""
+    """업데이트 버튼 — pin checkout only (sidecar/home; no :8642 restart)."""
 
     finished_ok = pyqtSignal(str)
     failed = pyqtSignal(str)
@@ -36,21 +36,21 @@ class IrisAgentUpdateApplyWorker(QThread):
     def __init__(
         self,
         *,
-        command: str = "hermes",
+        command: str = "iris-agent",
         base_url: str = "",
         api_key: str = "",
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self._command = (command or "hermes").strip() or "hermes"
+        self._command = (command or "iris-agent").strip() or "iris-agent"
         self._base_url = (base_url or "").strip()
         self._api_key = (api_key or "").strip()
 
     def run(self) -> None:
         try:
-            from iris.system.iris_agent_update import apply_hermes_update
+            from iris.system.iris_agent_update import apply_iris_agent_update
 
-            msg = apply_hermes_update(
+            msg = apply_iris_agent_update(
                 command=self._command,
                 base_url=self._base_url,
                 api_key=self._api_key,
@@ -61,23 +61,16 @@ class IrisAgentUpdateApplyWorker(QThread):
             self.failed.emit(str(exc)[:400])
 
 
-# Compat aliases (Wave E).
-HermesUpdateCheckWorker = IrisAgentUpdateCheckWorker
-HermesUpdateApplyWorker = IrisAgentUpdateApplyWorker
-
-
 if __name__ == "__main__":
     from PyQt6.QtCore import QCoreApplication
 
-    from iris.system.iris_agent_update import IrisAgentUpdateStatus, hermes_update_argv
+    from iris.system.iris_agent_update import IrisAgentUpdateStatus, iris_agent_update_argv
 
     app = QCoreApplication([])
     w = IrisAgentUpdateCheckWorker()
     assert hasattr(w, "finished_ok")
-    assert hermes_update_argv("hermes") == ["hermes", "update", "--yes"]
+    assert iris_agent_update_argv("hermes") == ["hermes", "update", "--yes"]
     st = IrisAgentUpdateStatus(available=True, detail="abc → def")
     assert st.available
-    assert HermesUpdateCheckWorker is IrisAgentUpdateCheckWorker
-    assert HermesUpdateApplyWorker is IrisAgentUpdateApplyWorker
     assert Path(".").exists()
-    print("hermes_update_worker ok")
+    print("iris_agent_update_worker ok")

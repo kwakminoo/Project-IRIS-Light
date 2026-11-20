@@ -18,11 +18,7 @@ class IrisAgentLoginWarmPrefs:
     enabled: bool = True
 
 
-# Compat alias (Wave E).
-HermesLoginWarmPrefs = IrisAgentLoginWarmPrefs
-
-
-def load_hermes_login_warm(db: Database | None) -> IrisAgentLoginWarmPrefs:
+def load_iris_agent_login_warm(db: Database | None) -> IrisAgentLoginWarmPrefs:
     if db is None:
         return IrisAgentLoginWarmPrefs()
     raw = db.get_preference(HERMES_LOGIN_WARM_KEY, "")
@@ -39,7 +35,7 @@ def load_hermes_login_warm(db: Database | None) -> IrisAgentLoginWarmPrefs:
     return IrisAgentLoginWarmPrefs(enabled=bool(data.get("enabled")))
 
 
-def save_hermes_login_warm(db: Database, prefs: IrisAgentLoginWarmPrefs) -> None:
+def save_iris_agent_login_warm(db: Database, prefs: IrisAgentLoginWarmPrefs) -> None:
     db.set_preference(
         HERMES_LOGIN_WARM_KEY,
         json.dumps({"enabled": bool(prefs.enabled)}),
@@ -52,14 +48,13 @@ def _self_check() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         db = Database(Path(tmp) / "t.db")
-        assert load_hermes_login_warm(db).enabled is True
-        save_hermes_login_warm(db, IrisAgentLoginWarmPrefs(enabled=False))
-        assert load_hermes_login_warm(db).enabled is False
-        save_hermes_login_warm(db, IrisAgentLoginWarmPrefs(enabled=True))
-        assert load_hermes_login_warm(db).enabled is True
-        assert HermesLoginWarmPrefs is IrisAgentLoginWarmPrefs
+        assert load_iris_agent_login_warm(db).enabled is True
+        save_iris_agent_login_warm(db, IrisAgentLoginWarmPrefs(enabled=False))
+        assert load_iris_agent_login_warm(db).enabled is False
+        save_iris_agent_login_warm(db, IrisAgentLoginWarmPrefs(enabled=True))
+        assert load_iris_agent_login_warm(db).enabled is True
         db.close()
-    print("hermes_login_warm_prefs ok")
+    print("iris_agent_login_warm_prefs ok")
 
 
 if __name__ == "__main__":

@@ -94,15 +94,22 @@ def _with_emit_capture(events: list[dict], body: object, emit=None) -> None:
     sidecar._POST_TURN_END_GRACE_SEC = 0.2
     sidecar._TURN_ENDED_LOG_POLL_SEC = 0.05
     original_emit = sidecar._emit
+    original_install = sidecar._install_iris_engine_tools
 
     def capture(payload: dict) -> None:
         events.append(dict(payload))
 
+    def _stub_install(agent: object, *, surface: object = "home") -> tuple[str, ...]:
+        # Fake agents have no Hermes tools package; this check covers turn-end emit only.
+        return ()
+
     sidecar._emit = emit or capture  # type: ignore[method-assign]
+    sidecar._install_iris_engine_tools = _stub_install  # type: ignore[method-assign]
     try:
         body()
     finally:
         sidecar._emit = original_emit  # type: ignore[method-assign]
+        sidecar._install_iris_engine_tools = original_install  # type: ignore[method-assign]
         sidecar._POST_TURN_END_GRACE_SEC = previous_grace
         sidecar._TURN_ENDED_LOG_POLL_SEC = previous_poll
 

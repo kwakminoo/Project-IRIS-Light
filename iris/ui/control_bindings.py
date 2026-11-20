@@ -283,6 +283,67 @@ def _bound_session(window: MainWindow, *, require_workspace: bool = False) -> tu
     return session, ""
 
 
+def peek_bound_root(window: Any) -> Path | None:
+    """Companion-mounted workspace root, or None when unbound."""
+    try:
+        session = window._get_bound_ide_session(refresh=False)
+        raw = str(getattr(session, "workspace_root", "") or "").strip() if session else ""
+        if not raw:
+            return None
+        return Path(raw).expanduser().resolve()
+    except Exception:
+        return None
+
+
+# BoundRootFail codes — Companion/work_root 경계 실패 분류
+BOUND_ROOT_UNBOUND = "unbound"
+BOUND_ROOT_MISMATCH = "mismatch"
+BOUND_ROOT_ALIGN_FAILED = "align_failed"
+
+_MSG_BOUND_UNBOUND = (
+    "IDE Companion에 폴더가 연결되어 있지 않습니다. "
+    "Companion으로 들어간 뒤 ide.open_folder로 폴더를 열고 다시 시도하세요."
+)
+
+
+def bound_root_fail(
+    action: str,
+    code: str,
+    message: str,
+    *,
+    project_root: str | None = None,
+    bound_workspace_root: str | None = None,
+    hint: str = "ide.open_folder",
+    **extra: Any,
+) -> dict[str, Any]:
+    """Companion bound-root 실패. result에 code·hint·루트 경로를 넣는다."""
+    payload: dict[str, Any] = {
+        "code": code,
+        "hint": hint,
+        "project_root": project_root,
+        "bound_workspace_root": bound_workspace_root,
+    }
+    payload.update(extra)
+    return err_result(action, message, payload)
+
+
+def refuse_agent_workspace_switch(
+    action: str, bound_root: Path | None
+) -> dict[str, Any] | None:
+    """When Companion is bound, agent must not switch folders via open_similar/open_folder."""
+    if bound_root is None:
+        return None
+    return err_result(
+        action,
+        "IDE Companion workspace is locked; write under bound_root "
+        "(use content.dump_lab_scripts / content.extract for PDFs)",
+        {
+            "bound_root": str(bound_root),
+            "reason": "agent_workspace_locked",
+        },
+    )
+
+
 def resolve_bound_work_root(
     window: MainWindow,
     args: dict[str, Any] | None = None,
@@ -296,19 +357,11 @@ def resolve_bound_work_root(
     explicit = str(
         args.get("project_root") or args.get("root") or args.get("cwd") or ""
     ).strip()
-    bound = ""
-    try:
-        session = window._get_bound_ide_session(refresh=False)
-        if session is not None and str(session.workspace_root or "").strip():
-            bound = str(Path(str(session.workspace_root)).expanduser().resolve())
-    except Exception:
-        bound = ""
+    bound_path = peek_bound_root(window)
+    bound = str(bound_path) if bound_path is not None else ""
     raw = explicit or bound
     if not raw:
-        return (
-            "",
-            "bound IDE workspace required (open a folder in the IDE first)",
-        )
+        return "", _MSG_BOUND_UNBOUND
     from iris.runtime.chat_worktree import conversation_id_of, work_root_for
 
     rooted = work_root_for(conversation_id_of(window, args), raw)
@@ -340,15 +393,13 @@ def ensure_iris_ide_workspace(
         root_s = str(Path(str(work_root)).expanduser())
     session, session_err = _bound_session(window, require_workspace=True)
     if session_err or session is None:
-        return err_result(
+        return bound_root_fail(
             action,
-            session_err or "bound IDE workspace session required",
-            {
-                "project_root": root_s,
-                "bound_workspace_root": None,
-                "open_folder_path": root_s,
-                "hint": "ide.open_folder",
-            },
+            BOUND_ROOT_UNBOUND,
+            _MSG_BOUND_UNBOUND,
+            project_root=root_s,
+            bound_workspace_root=None,
+            open_folder_path=root_s,
         )
     try:
         bound = str(Path(session.workspace_root).resolve())
@@ -370,46 +421,50 @@ def ensure_iris_ide_workspace(
         open_err = str(exc)
     open_err_s = str(open_err or "").strip()
     if open_err_s:
-        return err_result(
+        return bound_root_fail(
             action,
-            f"failed to align IDE workspace to project_root: {open_err_s}",
-            {
-                "project_root": root_s,
-                "bound_workspace_root": bound,
-                "open_folder_path": root_s,
-                "error": open_err_s,
-                "hint": "ide.open_folder",
-            },
+            BOUND_ROOT_ALIGN_FAILED,
+            (
+                f"IDE 폴더를 project_root에 맞추지 못했습니다: {open_err_s}. "
+                f"Companion에서 ide.open_folder로 '{root_s}'를 연 뒤 다시 시도하세요."
+            ),
+            project_root=root_s,
+            bound_workspace_root=bound,
+            open_folder_path=root_s,
+            error=open_err_s,
         )
 
     session2, session2_err = _bound_session(window, require_workspace=True)
     if session2_err or session2 is None:
-        return err_result(
+        return bound_root_fail(
             action,
-            session2_err or "IDE workspace missing after open_folder",
-            {
-                "project_root": root_s,
-                "bound_workspace_root": bound,
-                "open_folder_path": root_s,
-                "error": session2_err or "missing session",
-                "hint": "ide.open_folder",
-            },
+            BOUND_ROOT_ALIGN_FAILED,
+            (
+                "폴더를 연 뒤에도 IDE Companion 워크스페이스가 없습니다. "
+                "Companion으로 들어가 ide.open_folder로 폴더를 다시 여세요."
+            ),
+            project_root=root_s,
+            bound_workspace_root=bound,
+            open_folder_path=root_s,
+            error=session2_err or "missing session",
         )
     try:
         bound2 = str(Path(session2.workspace_root).resolve())
     except OSError:
         bound2 = str(session2.workspace_root or "")
     if bound2 != root_s:
-        return err_result(
+        return bound_root_fail(
             action,
-            "IDE workspace still mismatched after open_folder",
-            {
-                "project_root": root_s,
-                "bound_workspace_root": bound2,
-                "open_folder_path": root_s,
-                "error": "workspace_root did not update",
-                "hint": "ide.open_folder",
-            },
+            BOUND_ROOT_MISMATCH,
+            (
+                f"채팅 work_root와 IDE bound root가 다릅니다 "
+                f"(project_root={root_s}, bound={bound2}). "
+                "Companion에서 ide.open_folder로 올바른 폴더를 연 뒤 다시 시도하세요."
+            ),
+            project_root=root_s,
+            bound_workspace_root=bound2,
+            open_folder_path=root_s,
+            error="workspace_root did not update",
         )
     return None
 
@@ -493,7 +548,7 @@ def start_control_surface(window: MainWindow) -> ControlSurface | None:
     # 데드락 나며 Windows "응답 없음"이 됨. IrisAgentHealthWorker가 백그라운드에서 동기화.
     window._control_surface = surface  # type: ignore[attr-defined]
     window._control_qt_invoker = qt  # type: ignore[attr-defined]
-    from iris.infrastructure.speak_capability import bind_live_control_surface
+    from iris.infrastructure.tool_capability import bind_live_control_surface
 
     bind_live_control_surface(surface)
     window._live_activity.append_instant_line(
@@ -510,7 +565,7 @@ def stop_control_surface(window: MainWindow) -> None:
         except Exception:
             pass
         window._control_surface = None  # type: ignore[attr-defined]
-        from iris.infrastructure.speak_capability import bind_live_control_surface
+        from iris.infrastructure.tool_capability import bind_live_control_surface
 
         bind_live_control_surface(None)
 
@@ -631,6 +686,51 @@ def _confirm_body(spec: Any, args: dict[str, Any]) -> str:
     return "\n".join(bits)[:800]
 
 
+# write/run: 채팅 카드 승인 가능하면 HUD 대신 (15s UI timeout·모달만 의존 금지)
+_CARD_CONFIRM_ACTIONS = frozenset(
+    {
+        "shell.run",
+        "project.run",
+        "local.write_file",
+        "project.write_file",
+    }
+)
+
+
+def human_confirm_decision(
+    spec: Any,
+    args: dict[str, Any],
+    *,
+    chat: Any | None,
+    ask_hud: Callable[[], bool],
+    on_ui: Callable[[Callable[[], Any]], Any],
+    wait: Callable[[str], str] | None = None,
+    load_approval: Callable[[], Any] | None = None,
+) -> bool:
+    """ConfirmPath: card gate(가능 시) → 아니면 HUD."""
+    name = str(getattr(spec, "name", "") or "")
+    if name in _CARD_CONFIRM_ACTIONS:
+        from iris.ui.chat.shell_approval import load, preview_command
+        from iris.ui.chat.shell_gate import take, try_card_confirm
+
+        approval_fn = load if load_approval is None else load_approval
+        wait_fn = take if wait is None else wait
+        payload = args if isinstance(args, dict) else {}
+        command = preview_command(payload)
+        title = "Write" if "write" in name else "Shell"
+        decided = try_card_confirm(
+            chat=chat,
+            command=command,
+            title=title,
+            approval=approval_fn(),
+            wait=wait_fn,
+            on_ui=on_ui,
+        )
+        if decided is not None:
+            return decided
+    return bool(ask_hud())
+
+
 def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     """기능별 등록 조립. 실행은 iris.ui.control_actions."""
     from iris.ui.control_actions.attachment import register_attachment_actions
@@ -649,6 +749,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     from iris.ui.control_actions.routine import register_routine_actions
     from iris.ui.control_actions.settings import register_settings_actions
     from iris.ui.control_actions.shell import register_shell_actions
+    from iris.ui.control_actions.web import register_web_actions
     from iris.ui.control_actions.wiki import register_wiki_actions
     from iris.ui.control_actions.workspace import register_workspace_actions
 
@@ -657,6 +758,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     register_attachment_actions(window, reg)
     register_local_file_actions(window, reg)
     register_shell_actions(window, reg)
+    register_web_actions(window, reg)
     register_ide_actions(window, reg)
     register_project_actions(window, reg)
     register_profile_actions(window, reg)
@@ -686,7 +788,13 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
                 default_ok=False,
             )
 
-        return bool(_call_on_ui_unbounded(window, _ask))
+        return human_confirm_decision(
+            spec,
+            args,
+            chat=getattr(window, "_chat", None),
+            ask_hud=lambda: bool(_call_on_ui_unbounded(window, _ask)),
+            on_ui=lambda fn: _call_on_ui_unbounded(window, fn),
+        )
 
     reg.set_human_confirm(_human_confirm)
     names = [a["name"] for a in reg.catalog()]

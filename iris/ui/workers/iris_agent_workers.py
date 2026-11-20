@@ -38,11 +38,7 @@ from iris.infrastructure.iris_agent_client import (
     resolve_hermes_inference,
     resolve_iris_agent_inference,
 )
-from iris.infrastructure.speak_capability import current_speak_surface
-from iris.system.iris_agent_gateway import (
-    restart_hermes_gateway,
-    verify_iris_mcp_tools,
-)
+from iris.infrastructure.tool_capability import current_speak_surface
 from iris.system.iris_agent_control_sync import sync_iris_control
 
 from iris.infrastructure.agent_runtime import (
@@ -123,7 +119,11 @@ class IrisAgentHealthWorker(QThread):
 
 
 class IrisAgentControlSyncWorker(QThread):
-    """설정창/수동 동기화 — UI 스레드에서 sync/restart 금지(데드락·프리즈)."""
+    """설정창/수동 동기화 — skills/config scrub only (no :8642 gateway).
+
+    UI 스레드에서 sync 금지(데드락·프리즈). base_url/api_key/command는
+    설정창 호환용이며 gateway를 기동하지 않는다.
+    """
 
     progress = pyqtSignal(str)
     finished_ok = pyqtSignal(bool, str)  # ok, summary
@@ -133,7 +133,7 @@ class IrisAgentControlSyncWorker(QThread):
         base_url: str,
         *,
         api_key: str = "",
-        command: str = "hermes",
+        command: str = "iris-agent",
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -144,8 +144,8 @@ class IrisAgentControlSyncWorker(QThread):
     def run(self) -> None:
         lines: list[str] = []
         try:
-            self.progress.emit("상태: MCP/스킬 동기화 중…")
-            report = sync_iris_control(reconnect_gateway=True)
+            self.progress.emit("상태: SpeakTools/스킬 동기화 중…")
+            report = sync_iris_control(reconnect_gateway=False)
             lines.append(report.summary_line())
             shown = list(report.messages[:8])
             for msg in report.messages:
@@ -159,33 +159,9 @@ class IrisAgentControlSyncWorker(QThread):
                 lines.append(f"  [{mark}] {s.get('name')}: {s.get('detail')}")
             if report.errors:
                 lines.append("오류: " + "; ".join(report.errors[:2]))
-
-            self.progress.emit("상태: Iris Agent gateway 재기동…")
-            ok = restart_hermes_gateway(
-                self._base_url,
-                api_key=self._api_key,
-                command=self._command,
-                wait_sec=60.0,
-            )
-            if not ok:
-                from iris.system.iris_agent_gateway import (
-                    get_last_gateway_diagnosis,
-                    hermes_runtime_report,
-                )
-
-                runtime = hermes_runtime_report(command=self._command)
-                diag = get_last_gateway_diagnosis()
-                why = diag.user_message() if diag is not None else runtime
-                lines.insert(0, why)
-                if diag is not None and runtime not in why:
-                    lines.insert(1, runtime)
-                self.finished_ok.emit(False, "\n".join(lines))
-                return
-
-            mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self._command)
-            lines.append(mcp_detail)
+            lines.append("Iris Agent: sidecar/home sync only")
             self.finished_ok.emit(
-                bool(report.ok and mcp_ok and report.mcp_fail_count == 0),
+                bool(report.ok and report.mcp_fail_count == 0),
                 "\n".join(lines),
             )
         except Exception as exc:  # noqa: BLE001
@@ -204,7 +180,7 @@ class IrisAgentModelSyncWorker(QThread):
         model: str,
         *,
         api_key: str = "",
-        command: str = "hermes",
+        command: str = "iris-agent",
         target: IrisAgentInferenceTarget | None = None,
         parent=None,
     ) -> None:
@@ -293,9 +269,9 @@ class IrisAgentChatWorker(QThread):
     @staticmethod
     def engine_tool_names() -> tuple[str, ...]:
         from iris.engine.types import IRIS_ENGINE_TOOLS
-        from iris.infrastructure.speak_capability import default_speak_tools
+        from iris.infrastructure.tool_capability import default_agent_tools
 
-        names = default_speak_tools().engine_names()
+        names = default_agent_tools().engine_names()
         assert names == IRIS_ENGINE_TOOLS
         return names
 
@@ -392,7 +368,9 @@ class IrisAgentChatWorker(QThread):
                         if event.text:
                             self.reasoning.emit(event.text)
                     elif isinstance(event, TurnFinished):
-                        text = "".join(content_parts) or event.text
+                        joined = "".join(content_parts)
+                        done = event.text or ""
+                        text = done if len(done) >= len(joined) else joined
                         _watch_trace(f"finished_ok text_len={len(text or '')}")
                         self.finished_ok.emit(text)
                         _watch_trace(f"finished_ok returned text_len={len(text or '')}")
@@ -522,22 +500,12 @@ class IrisAgentLoopStandinWorker(QThread):
             self.failed.emit(format_agent_loop_failure(e))
 
 
-# Compat aliases for pre-rename imports (Wave B). Canonical names are IrisAgent*.
-HermesHealthWorker = IrisAgentHealthWorker
-HermesChatWorker = IrisAgentChatWorker
-HermesControlSyncWorker = IrisAgentControlSyncWorker
-HermesModelSyncWorker = IrisAgentModelSyncWorker
-
 # re-export for callers that resolve targets in UI thread
 __all__ = [
     "IrisAgentHealthWorker",
     "IrisAgentControlSyncWorker",
     "IrisAgentModelSyncWorker",
     "IrisAgentChatWorker",
-    "HermesHealthWorker",
-    "HermesControlSyncWorker",
-    "HermesModelSyncWorker",
-    "HermesChatWorker",
     "IrisAgentLoopStandinWorker",
     "IRIS_AGENT_LOOP_UI_SIGNALS",
     "safe_agent_ui_slot",

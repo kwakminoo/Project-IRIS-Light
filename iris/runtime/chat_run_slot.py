@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from iris.runtime.chat_turn_gate import ChatTurnGate
 
-MAX_CONCURRENT = 10
+MAX_CONCURRENT = 5
 
 
 @dataclass

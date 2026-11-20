@@ -14,11 +14,12 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from iris.infrastructure.iris_agent_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import iris_agent_home
 from iris.ui.settings.hud_dialog import (
     configure_hud_dialog,
     make_hint,
@@ -28,13 +29,13 @@ from iris.ui.settings.hud_dialog import (
 from iris.ui.shared.theme_tokens import TOKENS
 
 _KNOWN_MCP_DESC = {
-    "iris-control": "Iris Control Surface — 상태/액션(iris_get_state, iris_invoke)",
+    # Product speak is SpeakTools; iris-control MCP is scrubbed and must not be listed here.
     "mobile-mcp": "Android 에뮬·앱 UI 조작 (@mobilenext/mobile-mcp)",
 }
 
 
-def hermes_root() -> Path:
-    return hermes_home()
+def iris_agent_root() -> Path:
+    return iris_agent_home()
 
 
 def _parse_skill_description(text: str) -> str:
@@ -68,9 +69,9 @@ def _parse_skill_description(text: str) -> str:
     return ""
 
 
-def list_hermes_skills(*, limit: int = 80) -> list[tuple[str, str, Path]]:
+def list_agent_skills(*, limit: int = 80) -> list[tuple[str, str, Path]]:
     """(name, description, skill.md path)."""
-    root = hermes_root() / "skills"
+    root = iris_agent_root() / "skills"
     if not root.is_dir():
         return []
     out: list[tuple[str, str, Path]] = []
@@ -93,9 +94,9 @@ def list_hermes_skills(*, limit: int = 80) -> list[tuple[str, str, Path]]:
     return out
 
 
-def list_hermes_mcps(*, limit: int = 40) -> list[tuple[str, str]]:
+def list_agent_mcps(*, limit: int = 40) -> list[tuple[str, str]]:
     """(name, description)."""
-    cfg = hermes_root() / "config.yaml"
+    cfg = iris_agent_root() / "config.yaml"
     if not cfg.is_file():
         return []
     try:
@@ -129,9 +130,9 @@ def list_hermes_mcps(*, limit: int = 40) -> list[tuple[str, str]]:
         return out
     except Exception:
         # fallback: keys only
-        from iris.ui.chat.composer_plus_menu import list_hermes_mcp_names
+        from iris.ui.chat.composer_plus_menu import list_agent_mcp_names
 
-        return [(n, _KNOWN_MCP_DESC.get(n, "(config.yaml)")) for n in list_hermes_mcp_names(limit=limit)]
+        return [(n, _KNOWN_MCP_DESC.get(n, "(config.yaml)")) for n in list_agent_mcp_names(limit=limit)]
 
 
 def _sync_wiki_catalog() -> None:
@@ -140,11 +141,11 @@ def _sync_wiki_catalog() -> None:
         from iris.knowledge.iris_wiki import IrisWiki
 
         wiki = IrisWiki()
-        root = str(hermes_root())
-        skills = [(n, d) for n, d, _p in list_hermes_skills(limit=120)]
-        mcps = list_hermes_mcps(limit=40)
-        wiki.sync_skills_catalog(skills, hermes_root=root)
-        wiki.sync_mcp_catalog(mcps, hermes_root=root)
+        root = str(iris_agent_root())
+        skills = [(n, d) for n, d, _p in list_agent_skills(limit=120)]
+        mcps = list_agent_mcps(limit=40)
+        wiki.sync_skills_catalog(skills, iris_agent_root=root)
+        wiki.sync_mcp_catalog(mcps, iris_agent_root=root)
     except Exception:
         pass
 
@@ -153,7 +154,7 @@ def add_custom_skill(name: str, description: str) -> Path:
     safe = re.sub(r"[^\w\-]+", "-", name.strip(), flags=re.UNICODE).strip("-").lower()
     if not safe:
         raise ValueError("스킬 이름이 비어 있습니다")
-    dest = hermes_root() / "skills" / "custom" / safe
+    dest = iris_agent_root() / "skills" / "custom" / safe
     dest.mkdir(parents=True, exist_ok=True)
     md = dest / "SKILL.md"
     desc = (description or "").strip() or safe
@@ -175,7 +176,7 @@ def add_mcp_server(name: str, command: str, args_text: str) -> None:
         import yaml
     except ImportError as exc:
         raise RuntimeError("PyYAML 필요") from exc
-    path = hermes_root() / "config.yaml"
+    path = iris_agent_root() / "config.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
         data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
@@ -276,6 +277,7 @@ class _StatusDot(QLabel):
 
 class _ItemCard(QFrame):
     use_clicked = pyqtSignal(str)
+    favorite_clicked = pyqtSignal()
 
     def __init__(
         self,
@@ -285,13 +287,25 @@ class _ItemCard(QFrame):
         *,
         status_ok: bool | None = None,
         title_color: str | None = None,
+        show_favorite: bool = False,
+        favorited: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("SkillMcpCard")
         self._name = name
+        self._star: QToolButton | None = None
         lay = QHBoxLayout(self)
         lay.setContentsMargins(10, 8, 10, 8)
         lay.setSpacing(8)
+        if show_favorite:
+            self._star = QToolButton()
+            self._star.setObjectName("ModelFavoriteStar")
+            self._star.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._star.setAutoRaise(True)
+            self._star.setFixedSize(22, 22)
+            self.set_favorited(favorited)
+            self._star.clicked.connect(self.favorite_clicked.emit)
+            lay.addWidget(self._star, 0, Qt.AlignmentFlag.AlignVCenter)
         if status_ok is not None:
             lay.addWidget(_StatusDot(status_ok), 0, Qt.AlignmentFlag.AlignVCenter)
         col = QVBoxLayout()
@@ -314,6 +328,18 @@ class _ItemCard(QFrame):
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(lambda: self.use_clicked.emit(self._name))
         lay.addWidget(btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def set_favorited(self, on: bool) -> None:
+        if self._star is None:
+            return
+        self._star.setText("★" if on else "☆")
+        color = "#fbbf24" if on else "#64748b"
+        self._star.setStyleSheet(
+            f"QToolButton#ModelFavoriteStar {{"
+            f" color: {color}; border: none; background: transparent;"
+            f" font-size: 14px; padding: 0;"
+            f" }}"
+        )
 
 
 class SkillsDialog(QDialog):
@@ -369,7 +395,7 @@ class SkillsDialog(QDialog):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        skills = list_hermes_skills()
+        skills = list_agent_skills()
         if not skills:
             empty = QLabel("연결된 스킬이 없습니다.")
             empty.setObjectName("HudDialogHint")
@@ -419,7 +445,7 @@ class McpDialog(QDialog):
         root.addWidget(
             make_hint(
                 "Iris Agent config.yaml의 mcp_servers입니다. 「사용」으로 채팅에 넣고, "
-                "추가 후 Iris Agent gateway 재연결을 권장합니다."
+                "추가 후 Iris Agent 재시작을 권장합니다."
             )
         )
 
@@ -457,7 +483,7 @@ class McpDialog(QDialog):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        mcps = list_hermes_mcps()
+        mcps = list_agent_mcps()
         if not mcps:
             empty = QLabel("등록된 MCP 서버가 없습니다.")
             empty.setObjectName("HudDialogHint")
@@ -491,7 +517,7 @@ class McpDialog(QDialog):
         QMessageBox.information(
             self,
             "MCP 추가",
-            "config.yaml에 저장했습니다.\nIris Agent gateway 재연결을 권장합니다.",
+            "config.yaml에 저장했습니다.\nIris Agent 재시작을 권장합니다.",
         )
 
 
@@ -510,13 +536,13 @@ description: >
     assert "second line" in d, d
     d2 = _parse_skill_description("---\nname: x\ndescription: one liner\n---\n\nBody\n")
     assert d2 == "one liner", d2
-    assert isinstance(list_hermes_skills(), list)
-    assert isinstance(list_hermes_mcps(), list)
+    assert isinstance(list_agent_skills(), list)
+    assert isinstance(list_agent_mcps(), list)
     assert callable(probe_mcp_ok)
     print(
         "skill_mcp_dialogs ok",
         "skills",
-        len(list_hermes_skills()),
+        len(list_agent_skills()),
         "mcp",
-        len(list_hermes_mcps()),
+        len(list_agent_mcps()),
     )

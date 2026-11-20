@@ -190,7 +190,7 @@
 | `docs/demo-video-script.md` | 데모 영상 촬영 대본 · 업로드 절차 |
 | `docs/code-review/조치-소요-사항-총괄표.md` | 코드 검토·조치 추적 대장 |
 | `docs/prompts/` | 구현·복구용 프롬프트(모델 연동, IDE Companion, Control Surface 등) |
-| `integrations/hermes-skills/README.md` | Iris Control Surface(Hermes ↔ UI) |
+| `integrations/iris-skills/README.md` | Iris Control Surface(Hermes ↔ UI) |
 | `integrations/iris-ide/README.md` | IRIS IDE(Theia) 빌드·브리지 |
 | `integrations/archify/README.md` | 다이어그램 렌더러 반입·계약 |
 | `LICENSE` · `LICENSE.md` | GPL 전문 · 라이선스 근거·서드파티 인벤토리 |

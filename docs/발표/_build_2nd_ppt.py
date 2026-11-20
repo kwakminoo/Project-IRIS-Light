@@ -221,7 +221,7 @@ def reuse(prs):
     header(s, "오픈소스", "남이 가져가는 길", "소스 공개만으로 끝나지 않게, 기여 경로를 열어 두었습니다.")
     rows = [
         ("01", "CONTRIBUTING.md", "기여 절차가 문서에 있습니다."),
-        ("02", "스킬과 MCP", "integrations/hermes-skills/  ·  코어 diff 0"),
+        ("02", "스킬과 MCP", "integrations/iris-skills/  ·  코어 diff 0"),
         ("03", "Good first issue", "첫 이슈부터 시작할 자리가 있습니다."),
     ]
     y = 2.35
@@ -232,7 +232,7 @@ def reuse(prs):
         add_text(s, 2.3, y + 0.68, 9.8, 0.4, body, 18, False, MUTED)
         y += 1.45
     footer(s, 5)
-    notes(s, "기여 문서는 CONTRIBUTING.md입니다. 스킬은 integrations/hermes-skills/에 넣고 코어 diff는 0으로 둡니다. 첫 이슈는 Good first issue입니다.")
+    notes(s, "기여 문서는 CONTRIBUTING.md입니다. 스킬은 integrations/iris-skills/에 넣고 코어 diff는 0으로 둡니다. 첫 이슈는 Good first issue입니다.")
 
 
 def core_ext(prs):

@@ -111,10 +111,10 @@ def sync_model_ollama_num_ctx(base_url: str) -> None:
     비-Ollama 는 키 삭제. Ollama 는 없거나 64K 미만이면 64000, 더 크면 유지.
     API 키는 인자로 받지 않는다.
     """
-    from iris.infrastructure.iris_agent_credentials import hermes_home
+    from iris.infrastructure.iris_agent_credentials import iris_agent_home
     from iris.system.setup_protocol import HERMES_MIN_OLLAMA_NUM_CTX
 
-    path = hermes_home() / "config.yaml"
+    path = iris_agent_home() / "config.yaml"
     if not path.is_file():
         return
     import yaml  # type: ignore
@@ -149,15 +149,15 @@ def note_after_provider_direct_ok(
     provider: Any,
     *,
     db: Any,
-    hermes_enabled: bool,
-    hermes_base_url: str,
+    agent_enabled: bool,
+    agent_base_url: str,
 ) -> str:
     """직접 연결 성공 뒤에 붙일 한 줄. 게이트웨이를 새로 띄우지 않는다."""
-    if not hermes_enabled:
+    if not agent_enabled:
         return ""
     from iris.system.iris_agent_gateway import probe_gateway_health
 
-    if not probe_gateway_health(hermes_base_url, timeout_sec=1.5).ok:
+    if not probe_gateway_health(agent_base_url, timeout_sec=1.5).ok:
         return "채팅 경로 미확인"
     models = list(getattr(provider, "models", None) or [])
     model = str(models[0] if models else "").strip()
@@ -169,19 +169,19 @@ def note_after_provider_direct_ok(
         from iris.storage.api_providers import runtime_model_id
 
         target = resolve_iris_agent_inference(runtime_model_id(str(provider.id), model), db=db)
-        client = IrisAgentClient(hermes_base_url, timeout_sec=20.0)
+        client = IrisAgentClient(agent_base_url, timeout_sec=20.0)
         client.set_inference_model(target.model, target=target)
         for ev in client.stream_chat(target.model, [{"role": "user", "content": "ping"}]):
             if ev.get("content"):
-                return "Hermes 채팅 경로 응답 있음"
+                return "Iris Agent 채팅 경로 응답 있음"
             if ev.get("done"):
                 break
-        return "Hermes 채팅 응답 없음"
+        return "Iris Agent 채팅 응답 없음"
     except Exception as exc:  # noqa: BLE001
         text = _redact(_error_blob(exc), secret)
         if _is_options_400(text):
-            return f"Hermes 채팅 실패 (options): {text[:160]}"
-        return f"Hermes 채팅 실패: {text[:160]}"
+            return f"Iris Agent 채팅 실패 (options): {text[:160]}"
+        return f"Iris Agent 채팅 실패: {text[:160]}"
 
 
 def _error_blob(exc: BaseException) -> str:

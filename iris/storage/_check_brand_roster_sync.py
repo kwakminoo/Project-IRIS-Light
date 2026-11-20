@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from iris.infrastructure.model_roster import apply_probe
+from iris.infrastructure.model_roster import DisplayTier, apply_probe, display_tier
 from iris.infrastructure.openai_compat_client import ProbeResult
 from iris.storage.api_providers import (
     ApiProvider,
+    is_nvidia_integrate_base,
     retire_provider_on_http,
     roster_from_provider,
     sync_provider_listing,
@@ -113,6 +114,43 @@ def main() -> None:
     assert u1.price_refetch_done is True
     assert priced.needs_price_refetch is False
     assert provider4.model_meta["u1"]["price_refetch_done"] is True
+
+    assert is_nvidia_integrate_base("https://integrate.api.nvidia.com/v1")
+    assert is_nvidia_integrate_base("https://INTEGRATE.API.NVIDIA.COM/v1/")
+    assert not is_nvidia_integrate_base("https://openrouter.ai/api/v1")
+    assert not is_nvidia_integrate_base("https://example.test/v1")
+
+    nvidia = ApiProvider(
+        id="nv",
+        name="NVIDIA",
+        base_url="https://integrate.api.nvidia.com/v1",
+        models=[],
+    )
+    nv_sync = sync_provider_listing(
+        nvidia,
+        [{"id": "nvidia/nemotron-mini"}],
+        confirm_missing=True,
+        now_iso="2026-11-13T12:00:00+09:00",
+    )
+    nv_entry = next(e for e in nv_sync.entries if e.model_id == "nvidia/nemotron-mini")
+    assert nv_entry.price_class == "free"
+    assert display_tier(nv_entry) == DisplayTier.FREE
+    assert nvidia.model_meta["nvidia/nemotron-mini"]["price_class"] == "free"
+
+    other = ApiProvider(
+        id="other",
+        name="Other",
+        base_url="https://example.test/v1",
+        models=[],
+    )
+    other_sync = sync_provider_listing(
+        other,
+        [{"id": "nvidia/nemotron-mini"}],
+        confirm_missing=True,
+        now_iso="2026-11-13T12:01:00+09:00",
+    )
+    other_entry = next(e for e in other_sync.entries if e.model_id == "nvidia/nemotron-mini")
+    assert other_entry.price_class == "unknown"
 
     print("brand_roster_sync self-check ok")
 

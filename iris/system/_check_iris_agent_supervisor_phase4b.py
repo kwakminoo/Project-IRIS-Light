@@ -22,9 +22,11 @@ def _check_public_ensure_symbol() -> None:
     assert callable(ensure_iris_agent_home)
     src = inspect.getsource(ensure_iris_agent_runtime)
     assert "ensure_iris_agent_home" in src
-    assert "ensure_hermes_gateway_running" in src
-    assert "ensure_hermes_provider_config" in src
-    # Lifetime policy documented on the supervisor module.
+    assert "ensure_agent_gateway_running" not in src
+    assert "ensure_iris_agent_gateway_running" not in src
+    assert "ensure_agent_provider_config" in src
+    assert "start_gateway" in src
+    # Lifetime policy documented on the supervisor module (legacy gateway note).
     mod = inspect.getsource(ar)
     assert "keep-background" in mod or "keep background" in mod.lower()
     assert issubclass(IrisAgentRuntimeEnsureResult, object)
@@ -33,14 +35,16 @@ def _check_public_ensure_symbol() -> None:
 
 
 def _check_three_entry_points_call_supervisor() -> None:
-    health_src = inspect.getsource(hw.HermesHealthWorker.run)
+    health_src = inspect.getsource(hw.IrisAgentHealthWorker.run)
     # Health path went through Engine.ensure_ready (sidecar); not a bare gateway start.
     assert "ensure_ready" in health_src
-    assert "ensure_hermes_gateway_running" not in health_src
+    assert "ensure_agent_gateway_running" not in health_src
+    assert "ensure_iris_agent_gateway_running" not in health_src
 
     warm_cli = (_ROOT / "iris" / "iris_agent_login_warm_cli.py").read_text(encoding="utf-8")
     assert "ensure_iris_agent_runtime" in warm_cli
-    assert "ensure_hermes_gateway_running" not in warm_cli
+    assert "ensure_agent_gateway_running" not in warm_cli
+    assert "ensure_iris_agent_gateway_running" not in warm_cli
 
     setup = (_ROOT / "iris" / "system" / "setup_protocol.py").read_text(encoding="utf-8")
     # Warm-core + step gateway start paths.
@@ -51,21 +55,24 @@ def _check_three_entry_points_call_supervisor() -> None:
         )._warm_core_services
     )
     assert "ensure_iris_agent_runtime" in warm_fn
-    assert "ensure_hermes_gateway_running" not in warm_fn
+    assert "ensure_agent_gateway_running" not in warm_fn
+    assert "ensure_iris_agent_gateway_running" not in warm_fn
 
     from iris.system.setup_protocol import SetupProtocol
 
-    step_src = inspect.getsource(SetupProtocol._step_hermes_gateway)
+    step_src = inspect.getsource(SetupProtocol._step_agent_runtime)
     assert "ensure_iris_agent_runtime" in step_src
     # Non-restart start must not bypass supervisor.
     assert (
-        "return ensure_hermes_gateway_running" not in step_src
-        and "ensure_hermes_gateway_running(" not in step_src
+        "return ensure_agent_gateway_running" not in step_src
+        and "ensure_agent_gateway_running(" not in step_src
+        and "ensure_iris_agent_gateway_running(" not in step_src
     )
 
 
-def _check_alias_optional() -> None:
-    assert hw.IrisAgentHealthWorker is hw.HermesHealthWorker
+def _check_no_agent_health_alias() -> None:
+    assert not hasattr(hw, "HermesHealthWorker")
+    assert hw.IrisAgentHealthWorker is not None
 
 
 def _check_no_legacy_log_path_in_setup() -> None:
@@ -77,7 +84,7 @@ def _check_no_legacy_log_path_in_setup() -> None:
 def main() -> None:
     _check_public_ensure_symbol()
     _check_three_entry_points_call_supervisor()
-    _check_alias_optional()
+    _check_no_agent_health_alias()
     _check_no_legacy_log_path_in_setup()
     print("iris_agent_supervisor_phase4b ok")
 

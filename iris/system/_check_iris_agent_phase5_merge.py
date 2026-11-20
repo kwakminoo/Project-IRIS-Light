@@ -1,16 +1,19 @@
-"""Phase 5 Merge decision self-check.
+"""Phase 5 Merge decision self-check — CLOSED / permanent NO-GO.
 
 Product speak stays on InternalSidecar (child process). Same-process AIAgent
-into the Qt process is declined. Run:
+into the Qt process is forbidden. MainWindow must not import AIAgent.
 
+Run:
   .venv\\Scripts\\python.exe -m iris.system._check_iris_agent_phase5_merge
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+_MAIN_WINDOW = ROOT / "iris" / "ui" / "window" / "main_window.py"
 
 
 def _check_default_source_is_internal_sidecar() -> None:
@@ -24,25 +27,27 @@ def _check_chat_worker_prefers_internal_path() -> None:
     from iris.ui.workers import iris_agent_workers as hw
     import inspect
 
-    run_src = inspect.getsource(hw.HermesChatWorker.run)
+    run_src = inspect.getsource(hw.IrisAgentChatWorker.run)
     assert "_run_internal" in run_src
     assert "ExternalGateway" not in run_src
-    assert "_run_external" not in inspect.getsource(hw.HermesChatWorker)
-    internal_src = inspect.getsource(hw.HermesChatWorker._run_internal)
+    assert "_run_external" not in inspect.getsource(hw.IrisAgentChatWorker)
+    internal_src = inspect.getsource(hw.IrisAgentChatWorker._run_internal)
     assert "shared_engine" in internal_src
     assert "8642" not in internal_src
 
 
-def _check_activity_english() -> None:
-    text = (ROOT / "iris" / "ui" / "window" / "main_window.py").read_text(
-        encoding="utf-8"
+def _check_mainwindow_forbids_aiagent() -> None:
+    """Qt process must never import or construct AIAgent (crash isolation)."""
+    text = _MAIN_WINDOW.read_text(encoding="utf-8")
+    assert "AIAgent" not in text, "MainWindow must not reference AIAgent"
+    assert not re.search(r"from\s+run_agent\s+import", text), (
+        "MainWindow must not import run_agent"
     )
-    assert 'append_instant_line("No tool calls")' in text
-    assert "도구 호출 없음" not in text
+    assert "run_agent" not in text, "MainWindow must not mention run_agent"
 
 
 def _check_merge_decision_doc() -> None:
-    path = ROOT / "docs" / "code-review" / "Iris-Agent-Phase5-merge.md"
+    path = ROOT / "docs" / "code-review" / "completed" / "Iris-Agent-Phase5-merge.md"
     text = path.read_text(encoding="utf-8")
     assert "Merge same-process AIAgent into the Qt process? NO." in text
     assert "InternalSidecar" in text
@@ -51,13 +56,14 @@ def _check_merge_decision_doc() -> None:
 def main() -> None:
     _check_default_source_is_internal_sidecar()
     _check_chat_worker_prefers_internal_path()
-    _check_activity_english()
+    _check_mainwindow_forbids_aiagent()
     _check_merge_decision_doc()
     print(
         "iris_agent_phase5_merge ok",
         "decision=DECLINE_SAME_PROCESS",
+        "status=CLOSED",
         "default=InternalSidecar",
-        "activity=english",
+        "mainwindow=no_AIAgent",
         "http8642=retired_from_product",
     )
 

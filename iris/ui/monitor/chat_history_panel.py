@@ -35,6 +35,14 @@ from iris.ui.shared.section_header import (
     apply_section_panel_layout,
 )
 from iris.ui.shared.theme_tokens import TOKENS
+from iris.ui.widgets.activity_ring import ActivityKind, ActivityRing
+
+_CHAT_ACTIVITY_KIND: dict[ChatActivity, ActivityKind] = {
+    ChatActivity.IDLE: ActivityKind.IDLE,
+    ChatActivity.WORKING: ActivityKind.WORKING,
+    ChatActivity.DONE: ActivityKind.DONE,
+    ChatActivity.FAILED: ActivityKind.FAILED,
+}
 
 
 class ChatHistoryPanel(QWidget):
@@ -375,56 +383,6 @@ class ChatHistoryPanel(QWidget):
             self.set_conversations(pending[0], active_id=pending[1], projects=pending[2])
 
 
-class _ActivityBadge(QWidget):
-    """Cursor-like status: spinning ring while working, soft blue dot when done."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setFixedSize(12, 16)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._activity = ChatActivity.IDLE
-        self._phase = 0.0
-        self.hide()
-
-    def set_activity(self, activity: ChatActivity, phase: float = 0.0) -> None:
-        self._activity = activity if isinstance(activity, ChatActivity) else ChatActivity.IDLE
-        self._phase = float(phase)
-        self.setVisible(self._activity != ChatActivity.IDLE)
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        del event
-        if self._activity == ChatActivity.IDLE:
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        cx = self.width() / 2.0
-        cy = self.height() / 2.0
-        if self._activity == ChatActivity.WORKING:
-            radius = 4.5
-            rect = QRectF(cx - radius, cy - radius, radius * 2, radius * 2)
-            pen = QPen(QColor(125, 211, 252, 230))
-            pen.setWidthF(1.7)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            span = int(100 * 16)
-            start = int((-self._phase * 360.0) * 16)
-            painter.drawArc(rect, start, span)
-            pen.setColor(QColor(125, 211, 252, 55))
-            painter.setPen(pen)
-            painter.drawArc(rect, start + span, int(260 * 16))
-        else:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(
-                QColor(248, 113, 113, 230)
-                if self._activity == ChatActivity.FAILED
-                else QColor(147, 197, 253, 210)
-            )
-            painter.drawEllipse(QPointF(cx, cy), 3.2, 3.2)
-        painter.end()
-
-
 class _ChatRow(QFrame):
     def __init__(
         self,
@@ -447,10 +405,6 @@ class _ChatRow(QFrame):
         self._edit = None
         self._badge = None
         self._activity = ChatActivity.IDLE
-        self._anim_phase = 0.0
-        self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(33)
-        self._anim_timer.timeout.connect(self._on_anim_tick)
         self._conv_id = conv.id
         self._title = (conv.title or DEFAULT_TITLE).strip() or DEFAULT_TITLE
         self._active = active
@@ -471,7 +425,7 @@ class _ChatRow(QFrame):
         h.setContentsMargins(16 if nested else 2, 2, 2, 2)
         h.setSpacing(2)
 
-        self._badge = _ActivityBadge()
+        self._badge = ActivityRing()
         h.addWidget(self._badge, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._btn = _ShrinkingTitleButton(self._title)
@@ -538,23 +492,12 @@ class _ChatRow(QFrame):
     def set_activity(self, activity: ChatActivity) -> None:
         next_activity = activity if isinstance(activity, ChatActivity) else ChatActivity.IDLE
         if next_activity == self._activity:
-            if next_activity == ChatActivity.WORKING:
-                if not self._anim_timer.isActive():
-                    self._anim_timer.start()
-            elif self._anim_timer.isActive():
-                self._anim_timer.stop()
             if self._badge is not None:
-                self._badge.set_activity(next_activity, self._anim_phase)
+                self._badge.set_kind(_CHAT_ACTIVITY_KIND[next_activity])
             return
         self._activity = next_activity
-        self._anim_phase = 0.0
-        if next_activity == ChatActivity.WORKING:
-            if not self._anim_timer.isActive():
-                self._anim_timer.start()
-        elif self._anim_timer.isActive():
-            self._anim_timer.stop()
         if self._badge is not None:
-            self._badge.set_activity(next_activity, self._anim_phase)
+            self._badge.set_kind(_CHAT_ACTIVITY_KIND[next_activity])
         self._refresh_btn_style()
 
     def _refresh_btn_style(self) -> None:
@@ -583,11 +526,6 @@ class _ChatRow(QFrame):
             }}
             """
         )
-
-    def _on_anim_tick(self) -> None:
-        self._anim_phase = (self._anim_phase + 0.06) % 1.0
-        if self._badge is not None:
-            self._badge.set_activity(self._activity, self._anim_phase)
 
     def _on_title_clicked(self) -> None:
         mods = QApplication.keyboardModifiers()

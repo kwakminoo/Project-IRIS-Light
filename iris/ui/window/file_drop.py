@@ -29,7 +29,14 @@ def arm_widget_tree(root: QWidget, filter_obj: object, armed: WeakSet) -> None:
             continue
         armed.add(w)
         try:
-            w.setAcceptDrops(True)
+            # QWebEngineView + AcceptDrops lets Chromium swallow CF_HDROP (H1 G18).
+            skip_accept = bool(w.property("irisSkipAcceptDrops")) or (
+                type(w).__name__ == "QWebEngineView"
+            )
+            if skip_accept:
+                w.setAcceptDrops(False)
+            else:
+                w.setAcceptDrops(True)
             w.installEventFilter(filter_obj)
             stack.extend(w.findChildren(QWidget))
         except RuntimeError:

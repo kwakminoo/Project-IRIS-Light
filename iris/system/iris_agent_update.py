@@ -19,6 +19,12 @@ from iris.system.win_subprocess import no_window_kwargs
 
 _UPDATE_TIMEOUT_SEC = 2400.0
 
+# Product path: pin checkout only. No :8642 restart — sidecar reads home next turn.
+_SIDECAR_AFTER_UPDATE = (
+    "Iris Agent 런타임이 pin에 맞춰졌습니다. "
+    "Iris Agent(sidecar) 다음 턴부터 home 설정을 읽습니다."
+)
+
 
 @dataclass(frozen=True)
 class IrisAgentUpdateStatus:
@@ -29,21 +35,19 @@ class IrisAgentUpdateStatus:
     repo: str = ""
 
 
-# Compat alias (Wave E).
-HermesUpdateStatus = IrisAgentUpdateStatus
+def iris_agent_repo_dir(command: str = "iris-agent") -> Path | None:
+    """실행 중인 agent 체크아웃. venv Scripts 위, 없으면 제품 홈 iris-agent(또는 hermes-agent)."""
+    from iris.infrastructure.iris_agent_credentials import iris_agent_home
+    from iris.system.iris_agent_gateway import agent_executable
 
-
-def hermes_repo_dir(command: str = "hermes") -> Path | None:
-    """실행 중인 hermes 체크아웃. venv Scripts 위, 없으면 제품 홈/hermes-agent."""
-    from iris.infrastructure.iris_agent_credentials import hermes_home
-    from iris.system.iris_agent_gateway import hermes_executable
-
-    exe = hermes_executable(command)
+    exe = agent_executable(command)
     if exe:
         for parent in Path(exe).resolve().parents:
             if (parent / ".git").exists() and (parent / "hermes_cli").is_dir():
                 return parent
-    repo = hermes_home() / "hermes-agent"
+    from iris.infrastructure.agent_runtime import iris_agent_checkout_dir
+
+    repo = iris_agent_checkout_dir(iris_agent_home())
     if (repo / ".git").exists():
         return repo
     return None
@@ -68,15 +72,15 @@ def _git(repo: Path, *args: str, timeout: float = 25.0) -> str:
     return (proc.stdout or "").strip()
 
 
-def fetch_hermes_remote_sha(repo: Path | None = None) -> str:
+def fetch_iris_agent_remote_sha(repo: Path | None = None) -> str:
     """제품 pin SHA. 네트워크를 타지 않는다 (floating main 금지)."""
     del repo  # pin 은 vendor 가 소유. 로컬 origin/main 무시.
     return load_pinned_sha()
 
 
-def check_hermes_update(
+def check_iris_agent_update(
     *,
-    command: str = "hermes",
+    command: str = "iris-agent",
     repo: Path | None = None,
     remote_sha: str | None = None,
 ) -> IrisAgentUpdateStatus:
@@ -84,7 +88,7 @@ def check_hermes_update(
 
     ``remote_sha`` 를 넘기면 그 값을 pin 대신 비교한다 (자검용).
     """
-    root = repo if repo is not None else hermes_repo_dir(command)
+    root = repo if repo is not None else iris_agent_repo_dir(command)
     if root is None or not (root / ".git").exists():
         return IrisAgentUpdateStatus(available=False, detail="Iris Agent git 설치 없음")
     local = _git(root, "rev-parse", "HEAD", timeout=15.0)
@@ -117,7 +121,7 @@ def check_hermes_update(
     )
 
 
-def hermes_update_argv(exe: str) -> list[str]:
+def iris_agent_update_argv(exe: str) -> list[str]:
     """레거시 UI 자검용. 실제 apply 는 git pin checkout 을 쓴다."""
     return [exe, "update", "--yes"]
 
@@ -178,75 +182,40 @@ def _checkout_pin(repo: Path, pin: str) -> None:
         raise RuntimeError(f"pin SHA 불일치 want={pin} got={got}")
 
 
-def apply_hermes_update(
+def apply_iris_agent_update(
     *,
-    command: str = "hermes",
+    command: str = "iris-agent",
     base_url: str = "",
     api_key: str = "",
     on_progress: Callable[[str], None] | None = None,
 ) -> str:
-    """제품 pin 으로 checkout 한 뒤 baseline overlay 를 적용하고 gateway 를 다시 띄운다.
+    """제품 pin 으로 checkout 한 뒤 baseline overlay 를 적용한다.
 
-    Windows 에서 gateway 가 venv 파일을 잠그므로 갱신 전에 먼저 내린다.
-    갱신이 실패해도 gateway 는 다시 올리려 한다.
+    Windows 에서 레거시 gateway 가 venv 파일을 잠글 수 있어 갱신 전에 내린다.
+    제품은 :8642 를 다시 띄우지 않는다 — sidecar 가 다음 턴에 home 을 읽는다.
+    ``base_url`` / ``api_key`` 는 호출부 호환용이며 gateway 기동에 쓰지 않는다.
     """
     from iris.system.iris_agent_gateway import (
-        get_last_gateway_diagnosis,
-        hermes_executable,
-        restart_hermes_gateway,
-        stop_hermes_gateway,
+        agent_executable,
+        stop_iris_agent_gateway,
     )
 
-    exe = hermes_executable(command)
+    del base_url, api_key  # call-site compat; no :8642 restart
+
+    exe = agent_executable(command)
     if not exe:
         raise RuntimeError("Iris Agent 실행 파일이 없습니다")
-    repo = hermes_repo_dir(command)
+    repo = iris_agent_repo_dir(command)
     if repo is None or not (repo / ".git").exists():
         raise RuntimeError("Iris Agent git 설치 없음 — pin checkout 불가")
 
     pin = load_pinned_sha()
-    _note(on_progress, "Iris Agent gateway 중지…")
-    stop_hermes_gateway(command, wait_sec=20.0)
+    _note(on_progress, "Iris Agent 파일 잠금 해제…")
+    stop_iris_agent_gateway(command, wait_sec=20.0)
 
     _note(on_progress, f"Iris Agent pin {pin[:7]} checkout…")
-    try:
-        _checkout_pin(repo, pin)
-        apply_iris_agent_baseline_overlays(repo)
-    except Exception as exc:
-        _restart_after(command, base_url, api_key, on_progress)
-        raise RuntimeError(str(exc)) from exc
+    _checkout_pin(repo, pin)
+    apply_iris_agent_baseline_overlays(repo)
 
-    _note(on_progress, "Iris Agent gateway 재시작…")
-    ok = restart_hermes_gateway(
-        base_url,
-        api_key=api_key,
-        command=command,
-        wait_sec=90.0,
-        on_progress=on_progress,
-    )
-    if not ok:
-        diag = get_last_gateway_diagnosis()
-        why = (diag.message if diag is not None else "") or "gateway 재시작 실패"
-        raise RuntimeError(f"업데이트는 적용됐으나 gateway 재시작 실패: {why[:240]}")
-    return "Iris Agent 런타임이 pin에 맞춰졌고 gateway를 재시작했습니다."
-
-
-def _restart_after(
-    command: str,
-    base_url: str,
-    api_key: str,
-    on_progress: Callable[[str], None] | None,
-) -> None:
-    from iris.system.iris_agent_gateway import restart_hermes_gateway
-
-    _note(on_progress, "Iris Agent gateway 재시작…")
-    try:
-        restart_hermes_gateway(
-            base_url,
-            api_key=api_key,
-            command=command,
-            wait_sec=90.0,
-            on_progress=on_progress,
-        )
-    except Exception:
-        return
+    _note(on_progress, "Iris Agent sidecar/home ready")
+    return _SIDECAR_AFTER_UPDATE

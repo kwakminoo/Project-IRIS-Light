@@ -48,7 +48,7 @@ def http(method: str, path: str, body: dict | None = None) -> dict:
         return {"http": 0, "ok": False, "error": str(exc)}
 
 
-def check_hermes_wiring() -> dict:
+def check_agent_wiring() -> dict:
     cfg = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / "config.yaml"
     text = cfg.read_text(encoding="utf-8", errors="replace") if cfg.is_file() else ""
     skills_root = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / "skills"
@@ -61,7 +61,7 @@ def check_hermes_wiring() -> dict:
             or "iris-work" in str(p).replace("\\", "/")
         ]
     repo_skills = list(
-        (ROOT / "integrations" / "hermes-skills" / "iris-control").rglob("SKILL.md")
+        (ROOT / "integrations" / "iris-skills" / "iris-control").rglob("SKILL.md")
     )
     return {
         "config_exists": cfg.is_file(),
@@ -145,7 +145,7 @@ def mcp_stdio_tools_list() -> dict:
 
 
 def main() -> int:
-    wiring = check_hermes_wiring()
+    wiring = check_agent_wiring()
     scenarios = []
 
     # S1 ping

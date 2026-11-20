@@ -14,19 +14,22 @@
 유지한 것: Iris Agent 홈·pin·native tool registry·설정 Hermes 필드 제거·Phase 5 Prove standin.  
 가져오지 않은 것: serin `.tmp`/`graphify` 산출물, 브라우저 전용 대량 diff(이미 main에 있는 것과 별개), 진짜 in-process `AIAgent` import.
 
-EngineHome 기본 경로 = `iris_agent_home()` (제품 홈과 동일). pin = `vendor/iris-agent-runtime/PIN`.
+EngineHome 기본 경로 = `iris_agent_home()` (제품 홈과 동일). pin = `vendor/iris-agent-runtime/PIN`.  
+제품 speak = `InternalSidecar` only (2026-11-19 PR-D: ExternalGateway 제품 opt-in 잔상 폐기).
 
 ## 2. 구조
 
 ```
 말 턴
-  └─ HermesChatWorker
-         ├─ InternalSidecar → shared_engine().run_turn (기본)
-         └─ ExternalGateway → HTTP :8642 (설정 플래그 시에만)
+  └─ HermesChatWorker (shim name)
+         └─ InternalSidecar → shared_engine().run_turn
+                = Iris Agent Runtime child
 
 설치
   └─ install_into(EngineHome)
          └─ install_hermes_with_system_python(home=…, sha=PIN, probe_gateway=False)
+            # on-disk checkout dirname remains hermes-agent (upstream tree);
+            # readers use iris_agent_checkout_dir (iris-agent → hermes-agent fallback)
 ```
 
 ## 3. 코드 리뷰

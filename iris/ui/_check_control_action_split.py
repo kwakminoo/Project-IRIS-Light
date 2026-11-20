@@ -1,6 +1,6 @@
 """연번 12 — 액션 이름·계약은 같고 등록만 기능별로 나뉘었는지.
 
-카탈로그 스냅샷은 register() 와 같다. 160건.
+카탈로그 스냅샷은 register() 와 같다. 169건.
 """
 
 from __future__ import annotations
@@ -60,15 +60,19 @@ def check_invalid_and_write(reg: ActionRegistry, window: MagicMock) -> None:
     assert attached["ok"] is False
     assert attached["error"] == "path required"
 
-    hermes = reg.invoke("settings.set", {"hermes_enabled": False})
-    assert hermes["ok"] is False
-    assert "cannot be disabled" in hermes["error"]
+    disabled = reg.invoke("settings.set", {"agent_enabled": False})
+    assert disabled["ok"] is False
+    assert "cannot be disabled" in disabled["error"]
+
+    # Legacy hermes_enabled is ignored (no-op), not a disable gate.
+    legacy = reg.invoke("settings.set", {"hermes_enabled": False})
+    assert legacy["ok"] is True, legacy.get("error")
 
     window._settings.ollama_base_url = "http://old"
     applied = reg.invoke("settings.set", {"ollama_base_url": "http://127.0.0.1:11434"})
     assert applied["ok"] is True
     assert window._settings.ollama_base_url == "http://127.0.0.1:11434"
-    window._refresh_hermes_health.assert_called()
+    window._refresh_agent_health.assert_called()
 
     with tempfile.TemporaryDirectory() as tmp:
         out = reg.invoke(
@@ -88,6 +92,7 @@ def check_invalid_and_write(reg: ActionRegistry, window: MagicMock) -> None:
 
 def check_threads() -> None:
     assert runs_off_ui_thread("project.run") is True
+    assert runs_off_ui_thread("shell.run") is True
     assert runs_off_ui_thread("note.export_pdf") is True
     assert runs_off_ui_thread("extension.install_github") is True
     assert runs_off_ui_thread("project.write_image_code") is True
@@ -97,7 +102,10 @@ def check_threads() -> None:
     assert runs_off_ui_thread("attachment.move_to") is True
     assert runs_off_ui_thread("project.import_attachment") is True
     assert runs_off_ui_thread("local.read_file") is True
+    assert runs_off_ui_thread("local.write_file") is True
     assert runs_off_ui_thread("local.search_files") is True
+    assert runs_off_ui_thread("web.run_search") is True
+    assert runs_off_ui_thread("web.run_extract") is True
     assert runs_off_ui_thread("emulator.tap") is True
     assert runs_off_ui_thread("email.list_messages") is True
     assert runs_off_ui_thread("ide.open_file") is False
@@ -127,11 +135,15 @@ def main() -> None:
     before = json.loads(_CATALOG.read_text(encoding="utf-8"))
     assert got == before, "action catalog drifted"
     names = [a["name"] for a in got]
-    assert len(names) == len(set(names)) == 160
+    assert len(names) == len(set(names)) == 169
     assert "project.delete" in names
+    assert "local.write_file" in names
+    assert "web.run_search" in names
+    assert "web.run_extract" in names
     assert reg.spec("attachment.copy_to").confirm_required is True
     assert reg.spec("attachment.move_to").confirm_required is True
     assert reg.spec("project.import_attachment").confirm_required is False
+    assert reg.spec("local.write_file").confirm_required is True
     assert runs_off_ui_thread("browser.click") is True
     assert runs_off_ui_thread("project.delete") is True
     check_invalid_and_write(reg, window)

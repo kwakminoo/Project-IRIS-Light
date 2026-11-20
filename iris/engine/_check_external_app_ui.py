@@ -106,8 +106,10 @@ def main() -> None:
             def _ask_app_consent_hook(self, **kwargs) -> bool:
                 return True
 
-            def show_app_host(self, html_path: str, title: str = "앱") -> bool:
-                opened.append((html_path, title))
+            def show_app_host(
+                self, html_path: str, title: str = "앱", *, offer_id: str = ""
+            ) -> bool:
+                opened.append((html_path, title, offer_id))
                 return True
 
             def show_attach_notice(self, message: str) -> None:
@@ -202,7 +204,7 @@ def main() -> None:
             host._ignore_chat_result = False
             host._chat = _Panel()
             opened.clear()
-            MainWindow._on_hermes_app_ui(host, "Remote host", "", resource_uri=_URI)
+            MainWindow._on_agent_app_ui(host, "Remote host", "", resource_uri=_URI)
             assert opened and opened[0][1] == "Remote host"
             assert Path(opened[0][0]).read_text(encoding="utf-8") == _STDIO_HTML
         finally:

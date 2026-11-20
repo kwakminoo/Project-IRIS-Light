@@ -20,7 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication
 
-from iris.engine import TurnFinished
+from iris.engine import ContentDelta, TurnFinished
 from iris.engine._home import engine_python
 from iris.engine._sidecar import encode_host_command, parse_turn_event
 from iris.engine.runtime import _read_terminal_file_impl
@@ -121,6 +121,7 @@ def _check_hang_after_turn_ended_emits_done() -> None:
         proc.stdin.flush()
         texts: list[str] = []
         done_text = None
+        via_udp = False
         deadline = time.monotonic() + 8.0
         while time.monotonic() < deadline and done_text is None:
             try:
@@ -134,6 +135,7 @@ def _check_hang_after_turn_ended_emits_done() -> None:
                 event = _parse_terminal_line(line)
                 if isinstance(event, TurnFinished):
                     done_text = event.text
+                    via_udp = True
                     break
             line = _readline(proc.stdout, 0.15)
             if line:
@@ -152,6 +154,8 @@ def _check_hang_after_turn_ended_emits_done() -> None:
                     break
         assert done_text is not None, f"no done after Turn ended hang; deltas={texts!r}"
         assert "hang-answer" in (done_text or "".join(texts)), (done_text, texts)
+        # Product path sets IRIS_TERMINAL_UDP_PORT; done must land on UDP (not stdout-only).
+        assert via_udp, "done after Turn ended must arrive via UDP when port is set"
     finally:
         try:
             udp_sock.close()
@@ -229,6 +233,49 @@ def _check_worker_turn_finished_emits_finished_ok() -> None:
     assert ok2 == [""], ok2
 
 
+def _check_worker_prefers_turn_finished_over_short_deltas() -> None:
+    """Short ContentDelta then long TurnFinished: finished_ok must emit the full done text."""
+    from iris.engine import EngineHome, InternalSidecar
+    from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
+    from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker
+
+    short = "LoRA(Low-Rank Adaptation)는 거대 언어 모델(LLM"
+    long_text = short + " … full explanation body"
+    assert len(long_text) > len(short), (len(short), len(long_text))
+
+    class _StubEngine:
+        def __init__(self, events):
+            self._events = list(events)
+            self.source = InternalSidecar(
+                home=EngineHome(Path.home() / ".iris-light" / "engine")
+            )
+
+        def run_turn(self, turn):
+            yield from self._events
+
+    engine = _StubEngine([ContentDelta(short), TurnFinished(long_text)])
+    worker = IrisAgentChatWorker(
+        "gemma4:26b-a4b-it-qat",
+        [{"role": "user", "content": "hi"}],
+        target=IrisAgentInferenceTarget(model="gemma4:26b-a4b-it-qat", provider="custom"),
+    )
+    ok: list[str] = []
+    failed: list[str] = []
+    worker.finished_ok.connect(ok.append)
+    worker.failed.connect(failed.append)
+    with (
+        patch("iris.ui.workers.iris_agent_workers.shared_engine", return_value=engine),
+        patch(
+            "iris.ui.workers.iris_agent_workers._engine_source",
+            return_value=engine.source,
+        ),
+        patch.object(IrisAgentChatWorker, "_wire_native_speak_tools", lambda self: None),
+    ):
+        worker.run()
+    assert failed == [], failed
+    assert ok == [long_text], ok
+
+
 def _check_empty_finished_persists_placeholder(app: QApplication) -> None:
     from iris.ui.window.main_window import MainWindow
 
@@ -253,6 +300,7 @@ def _check_empty_finished_persists_placeholder(app: QApplication) -> None:
 def main() -> None:
     _check_hang_after_turn_ended_emits_done()
     _check_worker_turn_finished_emits_finished_ok()
+    _check_worker_prefers_turn_finished_over_short_deltas()
     app = QApplication.instance() or QApplication(sys.argv)
     _check_empty_finished_persists_placeholder(app)
     print("sidecar done landing ok")

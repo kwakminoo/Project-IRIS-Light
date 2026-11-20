@@ -98,7 +98,7 @@ class RenderingPipelineTests(unittest.TestCase):
         self.assertEqual(overlaps, [1, 1, 1, 1])
         self.assertNotIn("command", GatewayDiagnosis(message="종료", command=["internal"]).chat_message())
 
-    def test_hermes_whitespace_deltas_reach_markdown_parser(self):
+    def test_agent_whitespace_deltas_reach_markdown_parser(self):
         from iris.infrastructure.iris_agent_client import _should_emit_assistant_content
         chunks = ["###", " ", "제목", "\n\n", "| A | B |", "\n", "|---|---|", "\n", "|1|2|"]
         kept = [chunk for chunk in chunks if _should_emit_assistant_content(chunk, {"delta": {"content": chunk}})]

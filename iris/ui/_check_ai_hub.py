@@ -39,6 +39,12 @@ def _check_ai_hub_dialog_toplevel_open() -> None:
     assert hasattr(mw.MainWindow, "_open_ai_hub_dialog")
     src = inspect.getsource(mw.MainWindow._open_ai_hub_dialog)
     assert "None" in src and ("0xC0000409" in src or "독립" in src or "top-level" in src or "parent" in src)
+    assert "model_use_requested.connect" in src
+    assert "_on_hub_model_use" in src
+    assert hasattr(mw.MainWindow, "_on_hub_model_use")
+    use_src = inspect.getsource(mw.MainWindow._on_hub_model_use)
+    assert "select_model_silent" in use_src
+    assert "_apply_selected_model" in use_src
 
 
 def _check_ai_hub_has_models_and_analytics() -> None:

@@ -1,4 +1,9 @@
-"""Hermes gateway 감지 및 자동 기동."""
+"""Iris Agent runtime helpers + opt-in gateway health.
+
+Product chat is InternalSidecar. :8642 start/ensure/restart are gutted (Unit 2 Delete).
+Keep: probe_agent_runtime, stop_iris_agent_gateway (install retire), provider/MCP helpers,
+and read-only health when IRIS_AGENT_BASE_URL is set.
+"""
 
 from __future__ import annotations
 
@@ -22,11 +27,14 @@ from iris.infrastructure.iris_agent_client import (
     IrisAgentClient,
     HealthProbeResult,
 )
-from iris.infrastructure.agent_runtime import ensure_iris_agent_home
+from iris.infrastructure.agent_runtime import (
+    ensure_iris_agent_home,
+    iris_agent_checkout_dir,
+)
 from iris.infrastructure.iris_agent_credentials import (
-    hermes_home,
-    load_hermes_dotenv,
-    resolve_hermes_api_key,
+    iris_agent_home,
+    load_iris_agent_dotenv,
+    resolve_agent_api_key,
 )
 
 # 진단 코드 — 설치 UI·로그에 노출 (시크릿 값 금지)
@@ -93,7 +101,7 @@ class GatewayDiagnosis:
     port_owner_pid: int | None = None
     port_owner_name: str = ""
     health: dict[str, object] = field(default_factory=dict)
-    hermes_home: str = ""
+    agent_home: str = ""
     api_server_enabled: str = ""
     has_api_key: bool = False
     models_ok: bool | None = None
@@ -175,7 +183,7 @@ def clear_last_gateway_diagnosis() -> None:
 def mark_gateway_already_running(base_url: str) -> GatewayDiagnosis:
     """이미 /health OK인 gateway — ready(/v1/models)·chat_auth 까지 스냅샷."""
     health = probe_gateway_health(base_url, timeout_sec=2.0)
-    key = resolve_hermes_api_key()
+    key = resolve_agent_api_key()
     client = IrisAgentClient(base_url, api_key=key)
     ready = client.probe_gateway_ready(timeout_sec=3.0)
     chat = ""
@@ -206,7 +214,7 @@ def mark_gateway_already_running(base_url: str) -> GatewayDiagnosis:
                 "summary": health.body_summary,
             },
             has_api_key=bool(key),
-            api_server_enabled=load_hermes_dotenv().get("API_SERVER_ENABLED", "true"),
+            api_server_enabled=load_iris_agent_dotenv().get("API_SERVER_ENABLED", "true"),
             port=gateway_port_from_base_url(base_url),
             models_ok=ready.models_ok,
             chat_auth=chat,
@@ -219,7 +227,7 @@ def probe_gateway_ready(
     base_url: str, *, api_key: str = "", timeout_sec: float = 5.0
 ) -> GatewayReadyResult:
     return IrisAgentClient(
-        base_url, api_key=resolve_hermes_api_key(api_key)
+        base_url, api_key=resolve_agent_api_key(api_key)
     ).probe_gateway_ready(timeout_sec=timeout_sec)
 
 
@@ -230,7 +238,7 @@ def gateway_diagnosis_path() -> Path:
 def _set_diagnosis(diag: GatewayDiagnosis) -> GatewayDiagnosis:
     global _LAST_DIAGNOSIS
     diag.timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    diag.hermes_home = diag.hermes_home or str(hermes_home())
+    diag.agent_home = diag.agent_home or str(iris_agent_home())
     _LAST_DIAGNOSIS = diag
     try:
         path = gateway_diagnosis_path()
@@ -252,7 +260,7 @@ def _set_diagnosis(diag: GatewayDiagnosis) -> GatewayDiagnosis:
 
 
 def _gateway_log_dir() -> Path:
-    d = hermes_home() / "logs" / "iris-gateway"
+    d = iris_agent_home() / "logs" / "iris-gateway"
     try:
         d.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -266,22 +274,31 @@ def _new_gateway_log_paths() -> tuple[Path, Path]:
     return base.with_suffix(".out.log"), base.with_suffix(".err.log")
 
 
-def _windows_hermes_candidates() -> list[Path]:
-    """venv Scripts 와 공식 설치 심(hermes/bin, hermes-agent/bin)."""
-    home = hermes_home()
-    scripts = home / "hermes-agent" / "venv" / "Scripts"
+def _windows_agent_candidates() -> list[Path]:
+    """venv Scripts 와 공식 설치 심(iris-agent* + legacy hermes*)."""
+    home = iris_agent_home()
+    checkout = iris_agent_checkout_dir(home)
+    scripts = checkout / "venv" / "Scripts"
     return [
+        scripts / "iris-agent.exe",
         scripts / "hermes.exe",
         scripts / "hermes-agent.exe",
-        home / "hermes-agent" / "bin" / "hermes.exe",
+        checkout / "bin" / "iris-agent.exe",
+        checkout / "bin" / "hermes.exe",
+        home / "bin" / "iris-agent.exe",
+        home / "bin" / "iris-agent.cmd",
         home / "bin" / "hermes.exe",
         home / "bin" / "hermes.cmd",
     ]
 
 
-def hermes_executable(command: str = "hermes") -> str | None:
-    """PATH·설정 경로·Windows 기본 설치 위치에서 hermes 실행 파일 찾기."""
-    cmd = (command or "hermes").strip() or "hermes"
+def agent_executable(command: str = "iris-agent") -> str | None:
+    """PATH·설정 경로·Windows 설치 위치에서 Iris Agent 실행 파일 찾기.
+
+    Product default is iris-agent. Legacy hermes binaries remain discoverable
+    via Windows candidates and an explicit hermes PATH fallback.
+    """
+    cmd = (command or "iris-agent").strip() or "iris-agent"
     as_path = Path(cmd)
     if as_path.is_file():
         return str(as_path)
@@ -289,9 +306,14 @@ def hermes_executable(command: str = "hermes") -> str | None:
     if found:
         return found
     if sys.platform == "win32":
-        for candidate in _windows_hermes_candidates():
+        for candidate in _windows_agent_candidates():
             if candidate.is_file():
                 return str(candidate)
+    # Product brand miss → legacy hermes on PATH (Windows home candidates already scanned).
+    if cmd == "iris-agent":
+        found_legacy = shutil.which("hermes")
+        if found_legacy:
+            return found_legacy
     return None
 
 
@@ -302,21 +324,24 @@ def gateway_port_from_base_url(base_url: str) -> int:
             return int(parsed.port)
     except (ValueError, TypeError):
         pass
-    env_port = load_hermes_dotenv().get("API_SERVER_PORT", "").strip()
+    env_port = load_iris_agent_dotenv().get("API_SERVER_PORT", "").strip()
     if env_port.isdigit():
         return int(env_port)
     return _GATEWAY_PORT_DEFAULT
 
 
-def is_hermes_gateway_running(
+def is_iris_agent_gateway_running(
     base_url: str,
     *,
     api_key: str = "",
     timeout_sec: float | None = None,
 ) -> bool:
+    # Product sidecar: empty URL is not a gateway endpoint — never invent :8642.
+    if not (base_url or "").strip():
+        return False
     client = IrisAgentClient(
         base_url,
-        api_key=resolve_hermes_api_key(api_key),
+        api_key=resolve_agent_api_key(api_key),
     )
     if timeout_sec is not None:
         # 설정창 등 빠른 핑 — /models까지는 보지 않는다.
@@ -327,29 +352,35 @@ def is_hermes_gateway_running(
 def probe_gateway_health(
     base_url: str, *, timeout_sec: float = 2.0
 ) -> HealthProbeResult:
+    if not (base_url or "").strip():
+        return HealthProbeResult(
+            ok=False,
+            code="unreachable",
+            detail="empty base_url (InternalSidecar; no HTTP gateway)",
+        )
     return IrisAgentClient(base_url, api_key="").probe_health(timeout_sec=timeout_sec)
 
 
-def _hermes_agent_dir() -> Path:
-    return hermes_home() / "hermes-agent"
+def _iris_agent_dir() -> Path:
+    return iris_agent_checkout_dir(iris_agent_home())
 
 
-def _hermes_venv_dir() -> Path:
-    return _hermes_agent_dir() / "venv"
+def _iris_agent_venv_dir() -> Path:
+    return _iris_agent_dir() / "venv"
 
 
-def _hermes_venv_python() -> Path | None:
+def _iris_agent_venv_python() -> Path | None:
     """Hermes 전용 venv python — uv trampoline 오염 회피용."""
     if sys.platform == "win32":
-        py = _hermes_venv_dir() / "Scripts" / "python.exe"
+        py = _iris_agent_venv_dir() / "Scripts" / "python.exe"
     else:
-        py = _hermes_venv_dir() / "bin" / "python"
+        py = _iris_agent_venv_dir() / "bin" / "python"
     return py if py.is_file() else None
 
 
-def _hermes_committed_python() -> Path | None:
+def _iris_agent_committed_python() -> Path | None:
     """PM이 고른 의존성 venv. 3.12 트리에서 이 site-packages를 쓰면 pydantic_core가 깨진다."""
-    root = hermes_home() / "installs"
+    root = iris_agent_home() / "installs"
     if not root.is_dir():
         return None
     for facts in root.glob("*/facts.json"):
@@ -367,11 +398,11 @@ def _hermes_committed_python() -> Path | None:
     return None
 
 
-def _hermes_runtime_python() -> Path | None:
-    return _hermes_committed_python() or _hermes_venv_python()
+def _iris_agent_runtime_python() -> Path | None:
+    return _iris_agent_committed_python() or _iris_agent_venv_python()
 
 
-def is_hermes_trampoline_failure(text: str) -> bool:
+def is_iris_agent_trampoline_failure(text: str) -> bool:
     """uv trampoline이 베이스 Python을 못 찾는 실패(os error 2)인지."""
     t = (text or "").lower()
     if "uv trampoline" in t:
@@ -394,7 +425,7 @@ def _pyvenv_home_path(venv_dir: Path) -> Path | None:
     return None
 
 
-def is_hermes_cli_missing_failure(text: str) -> bool:
+def is_iris_agent_cli_missing_failure(text: str) -> bool:
     """gateway/venv 가 hermes_cli 없이 기동돼 ModuleNotFoundError 나는 경우."""
     t = (text or "").lower()
     if not t:
@@ -404,43 +435,46 @@ def is_hermes_cli_missing_failure(text: str) -> bool:
     return "hermes_cli" in t and "modulenotfounderror" in t
 
 
-def is_hermes_gateway_dep_missing_failure(text: str) -> bool:
-    """API gateway 필수 의존성(aiohttp 등) 누락으로 즉시 죽는 경우."""
+def is_iris_agent_gateway_dep_missing_failure(text: str) -> bool:
+    """Sidecar 턴 의존성(mcp/run_agent 등) 또는 구 gateway aiohttp 누락."""
     t = (text or "").lower()
     if not t:
         return False
     if "requires the 'mcp' python sdk" in t:
         return True
-    if "modulenotfounderror" not in t:
+    if "modulenotfounderror" not in t and "importerror" not in t:
         return False
-    for mod in ("aiohttp", "hermes_cli", "mcp", "ruamel", "dotenv"):
+    for mod in ("aiohttp", "hermes_cli", "mcp", "ruamel", "dotenv", "run_agent"):
         if f"no module named '{mod}'" in t or f'no module named "{mod}"' in t:
             return True
+    if "aiagent is missing" in t:
+        return True
     return False
 
 
-def probe_hermes_runtime(
-    *, command: str = "hermes", timeout_sec: float = 25.0
+def probe_agent_runtime(
+    *, command: str = "iris-agent", timeout_sec: float = 25.0
 ) -> tuple[bool, str]:
-    """Hermes venv/exe가 실제로 gateway를 띄울 수 있는지.
+    """Agent venv가 InternalSidecar 턴 deps를 import할 수 있는지.
 
     파일만 있고 베이스 인터프리터가 사라진 경우(uv trampoline os error 2)와
-    venv만 있고 hermes_cli/aiohttp 가 없는 껍데기 설치를 설치·gateway 전에 잡는다.
+    venv만 있고 hermes_cli / run_agent 가 없는 껍데기 설치를 setup·repair 전에 잡는다.
+    Product readiness ≠ :8642 bind.
     """
-    venv_py = _hermes_runtime_python()
-    venv_dir = venv_py.parent.parent if venv_py is not None else _hermes_venv_dir()
+    venv_py = _iris_agent_runtime_python()
+    venv_dir = venv_py.parent.parent if venv_py is not None else _iris_agent_venv_dir()
     if venv_py is not None:
         home = _pyvenv_home_path(venv_dir)
         if home is not None and not home.is_dir():
             return False, f"pyvenv home 없음: {home}"
-        # gateway 는 python -m hermes_cli.main + aiohttp(tcp_site).
-        # print('ok')/hermes_cli 만 보면 껍데기·extras 누락을 통과시킨다.
+        # Sidecar turn deps: hermes_cli + mcp + yaml/dotenv + AIAgent.
         try:
             proc = subprocess.run(
                 [
                     str(venv_py),
                     "-c",
-                    "import hermes_cli, aiohttp, mcp, ruamel.yaml, dotenv; print('ok')",
+                    "import hermes_cli, mcp, ruamel.yaml, dotenv; "
+                    "from run_agent import AIAgent; print('ok')",
                 ],
                 capture_output=True,
                 text=True,
@@ -449,6 +483,7 @@ def probe_hermes_runtime(
                 timeout=max(5.0, timeout_sec),
                 check=False,
                 env=_gateway_child_env(),
+                cwd=str(_iris_agent_dir()) if _iris_agent_dir().is_dir() else None,
                 creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 if sys.platform == "win32"
                 else 0,
@@ -456,20 +491,20 @@ def probe_hermes_runtime(
         except (OSError, subprocess.TimeoutExpired) as exc:
             return False, f"venv python 실행 실패: {exc}"
         err = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
-        if proc.returncode != 0 or is_hermes_trampoline_failure(err):
+        if proc.returncode != 0 or is_iris_agent_trampoline_failure(err):
             detail = err[:400] if err else f"exit {proc.returncode}"
-            if is_hermes_cli_missing_failure(detail):
-                return False, f"hermes_cli 없음: {detail[:240]}"
-            if is_hermes_gateway_dep_missing_failure(detail):
-                return False, f"gateway 의존성 없음: {detail[:240]}"
+            if is_iris_agent_cli_missing_failure(detail):
+                return False, f"iris-agent CLI (hermes_cli) 없음: {detail[:240]}"
+            if is_iris_agent_gateway_dep_missing_failure(detail):
+                return False, f"sidecar 의존성 없음: {detail[:240]}"
             return False, detail
         if "ok" not in (proc.stdout or ""):
-            return False, f"hermes_cli import 응답 이상: {err[:240]}"
+            return False, f"iris-agent CLI (hermes_cli) import 응답 이상: {err[:240]}"
         return True, f"venv ok ({venv_py.name})"
 
-    exe = hermes_executable(command)
+    exe = agent_executable(command)
     if not exe:
-        return False, "hermes 실행 파일 없음"
+        return False, "Iris Agent 실행 파일 없음"
     try:
         proc = subprocess.run(
             [exe, "--version"],
@@ -485,9 +520,9 @@ def probe_hermes_runtime(
             else 0,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"hermes 실행 실패: {exc}"
+        return False, f"Iris Agent 실행 실패: {exc}"
     err = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
-    if proc.returncode != 0 or is_hermes_trampoline_failure(err):
+    if proc.returncode != 0 or is_iris_agent_trampoline_failure(err):
         detail = err[:400] if err else f"exit {proc.returncode}"
         return False, detail
     return True, f"exe ok ({Path(exe).name})"
@@ -514,12 +549,12 @@ def _gateway_child_env() -> dict[str, str]:
     # G2: Iris/IDE 오염을 먼저 제거한 뒤 Hermes 전용 값만 넣는다
     _strip_pollution(env)
 
-    home = hermes_home()
+    home = iris_agent_home()
     env["HERMES_HOME"] = str(home)
     env["HERMES_ACCEPT_HOOKS"] = "1"
     # Iris가 pip로 깐 트리. 매 기동마다 source-update를 돌리면 /health가 안 뜬다.
     env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
-    dotenv = load_hermes_dotenv()
+    dotenv = load_iris_agent_dotenv()
     for key, val in dotenv.items():
         # Iris 프로세스 값이 있어도 Hermes 전용 키는 파일 값을 쓴다
         env[key] = val
@@ -527,8 +562,8 @@ def _gateway_child_env() -> dict[str, str]:
     env.setdefault("API_SERVER_HOST", "127.0.0.1")
     env.setdefault("API_SERVER_PORT", str(_GATEWAY_PORT_DEFAULT))
 
-    venv_py = _hermes_runtime_python()
-    venv = venv_py.parent.parent if venv_py is not None else _hermes_venv_dir()
+    venv_py = _iris_agent_runtime_python()
+    venv = venv_py.parent.parent if venv_py is not None else _iris_agent_venv_dir()
     if venv.is_dir() and venv_py is not None:
         env["VIRTUAL_ENV"] = str(venv)
         scripts = str(venv_py.parent)
@@ -554,25 +589,25 @@ def _env_snapshot_safe(env: dict[str, str]) -> dict[str, str]:
 def _windows_hidden_cmd(hermes_exe: str) -> list[str]:
     """콘솔 창 없이 기동.
 
-    venv python -m hermes_cli.main 우선 — hermes.exe(uv trampoline)만 쓰면
+    venv python -m iris_agent_cli.main 우선 — hermes.exe(uv trampoline)만 쓰면
     Iris VIRTUAL_ENV 오염 시 base Python 으로 re-exec 되어 pydantic_core 가 빠진다.
     """
-    venv_py = _hermes_runtime_python()
+    venv_py = _iris_agent_runtime_python()
     if venv_py is not None:
-        return [str(venv_py), "-m", "hermes_cli.main", *_gateway_argv()]
+        return [str(venv_py), "-m", "iris_agent_cli.main", *_gateway_argv()]
     return [hermes_exe, *_gateway_argv()]
 
 
-def _build_gateway_cmd(command: str = "hermes") -> list[str] | None:
-    exe = hermes_executable(command)
-    venv_py = _hermes_runtime_python()
+def _build_gateway_cmd(command: str = "iris-agent") -> list[str] | None:
+    exe = agent_executable(command)
+    venv_py = _iris_agent_runtime_python()
     if not exe and venv_py is None:
         return None
     if sys.platform == "win32":
-        return _windows_hidden_cmd(exe or "hermes")
+        return _windows_hidden_cmd(exe or "iris-agent")
     if venv_py is not None:
-        return [str(venv_py), "-m", "hermes_cli.main", *_gateway_argv()]
-    return [exe or "hermes", *_gateway_argv()]
+        return [str(venv_py), "-m", "iris_agent_cli.main", *_gateway_argv()]
+    return [exe or "iris-agent", *_gateway_argv()]
 
 
 def _popen_hidden(
@@ -647,42 +682,42 @@ def _child_exit_code() -> int | None:
     return proc.poll()
 
 
-def hermes_runtime_report(*, command: str = "hermes") -> str:
+def iris_agent_runtime_report(*, command: str = "iris-agent") -> str:
     """gateway 시도의 실행 파일·cwd·명령·종료코드·로그. 시크릿 값은 넣지 않는다."""
-    exe = hermes_executable(command)
-    venv_py = _hermes_runtime_python()
-    agent = _hermes_agent_dir()
+    exe = agent_executable(command)
+    venv_py = _iris_agent_runtime_python()
+    agent = _iris_agent_dir()
     cmd = _build_gateway_cmd(command)
     cwd = str(agent) if agent.is_dir() else ""
     lines = [
-        f"[Hermes] executable={exe or 'MISSING'}",
-        f"[Hermes] venv_python={venv_py or 'MISSING'}",
-        f"[Hermes] cwd={cwd or 'MISSING'}",
-        f"[Hermes] command={' '.join(cmd) if cmd else 'MISSING'}",
+        f"[Iris Agent] executable={exe or 'MISSING'}",
+        f"[Iris Agent] venv_python={venv_py or 'MISSING'}",
+        f"[Iris Agent] cwd={cwd or 'MISSING'}",
+        f"[Iris Agent] command={' '.join(cmd) if cmd else 'MISSING'}",
     ]
     scripts = "Scripts" if sys.platform == "win32" else "bin"
     py_name = "python.exe" if sys.platform == "win32" else "python"
     required: list[Path] = []
     if not exe:
-        required.extend(_windows_hermes_candidates() if sys.platform == "win32" else [])
+        required.extend(_windows_agent_candidates() if sys.platform == "win32" else [])
     if venv_py is None:
         required.append(agent / "venv" / scripts / py_name)
     mcp_tool = agent / "tools" / "mcp_tool.py"
     if not mcp_tool.is_file():
         required.append(mcp_tool)
     if not agent.is_dir():
-        lines.append(f"[Hermes] missing={agent}")
+        lines.append(f"[Iris Agent] missing={agent}")
     for path in required:
         if not path.is_file():
-            lines.append(f"[Hermes] missing={path}")
+            lines.append(f"[Iris Agent] missing={path}")
     code = _child_exit_code()
-    lines.append(f"[Hermes] return_code={code if code is not None else 'none'}")
+    lines.append(f"[Iris Agent] return_code={code if code is not None else 'none'}")
     if _LAST_LOG_PATHS:
-        lines.append(f"[Hermes] stdout={_tail_log(_LAST_LOG_PATHS[0], limit=400) or '(empty)'}")
-        lines.append(f"[Hermes] stderr={_tail_log(_LAST_LOG_PATHS[1], limit=400) or '(empty)'}")
+        lines.append(f"[Iris Agent] stdout={_tail_log(_LAST_LOG_PATHS[0], limit=400) or '(empty)'}")
+        lines.append(f"[Iris Agent] stderr={_tail_log(_LAST_LOG_PATHS[1], limit=400) or '(empty)'}")
     else:
-        lines.append("[Hermes] stdout=(no log)")
-        lines.append("[Hermes] stderr=(no log)")
+        lines.append("[Iris Agent] stdout=(no log)")
+        lines.append("[Iris Agent] stderr=(no log)")
     text = "\n".join(lines)
     try:
         path = _gateway_log_dir() / "hermes-iris.log"
@@ -694,75 +729,22 @@ def hermes_runtime_report(*, command: str = "hermes") -> str:
 
 
 @_serialized_lifecycle
-def start_hermes_gateway(command: str = "hermes") -> bool:
-    """`hermes gateway run`을 창 없이 백그라운드로 기동. 실행 파일이 없으면 False."""
-    global _LAST_CMD
-    cmd = _build_gateway_cmd(command)
-    if cmd is None:
-        _LAST_CMD = []
-        report = hermes_runtime_report(command=command)
-        _set_diagnosis(
-            GatewayDiagnosis(
-                code=CODE_EXE_MISSING,
-                message="Iris Agent 실행 파일/venv python을 찾지 못했습니다.",
-                action="시작 프로토콜에서 Iris Agent 설치를 다시 실행하거나 PATH를 확인하세요.",
-                detail=report,
-                log_dir=str(_gateway_log_dir()),
-            )
+def start_iris_agent_gateway(command: str = "iris-agent") -> bool:
+    """Unit 2 Delete: product never starts :8642. Stub kept for import safety."""
+    del command
+    _set_diagnosis(
+        GatewayDiagnosis(
+            code=CODE_START_FAILED,
+            message="Iris Agent product path is InternalSidecar; :8642 gateway start is removed.",
+            action="Leave agent_base_url empty for chat. Opt-in health only if IRIS_AGENT_BASE_URL is set.",
         )
-        return False
-    _LAST_CMD = list(cmd)
-    env = _gateway_child_env()
-    cwd = str(_hermes_agent_dir())
-    if not Path(cwd).is_dir():
-        cwd = None
-    out_log, err_log = _new_gateway_log_paths()
-    try:
-        # 기동 직전 스냅샷 (키 값 없음)
-        snap = _env_snapshot_safe(env)
-        try:
-            (out_log.parent / "gateway-last-env.json").write_text(
-                json.dumps(snap, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-        _popen_hidden(cmd, env=env, cwd=cwd, stdout_path=out_log, stderr_path=err_log)
-        # Popen 성공 ≠ 기동 성공 — 즉시 크래시는 ensure 루프에서 판정(G1)
-        _set_diagnosis(
-            GatewayDiagnosis(
-                code=CODE_OK,
-                ok=False,
-                message="gateway 프로세스 기동 요청됨 — health 대기 중",
-                command=cmd,
-                log_dir=str(_gateway_log_dir()),
-                stdout_log=str(out_log),
-                stderr_log=str(err_log),
-                api_server_enabled=snap.get("API_SERVER_ENABLED", ""),
-                has_api_key=snap.get("has_API_SERVER_KEY") == "yes",
-                detail=json.dumps(snap, ensure_ascii=False),
-            )
-        )
-        return True
-    except OSError as exc:
-        _set_diagnosis(
-            GatewayDiagnosis(
-                code=CODE_START_FAILED,
-                message=f"gateway 기동 실패: {exc}",
-                action="백신/EDR이 차단했는지, 실행 파일 권한을 확인하세요.",
-                command=cmd,
-                log_dir=str(_gateway_log_dir()),
-                stdout_log=str(out_log),
-                stderr_log=str(err_log),
-                detail=str(exc)[:400],
-            )
-        )
-        return False
+    )
+    return False
 
 
 @_serialized_lifecycle
-def stop_hermes_gateway(
-    command: str = "hermes",
+def stop_iris_agent_gateway(
+    command: str = "iris-agent",
     *,
     wait_sec: float = 20.0,
     should_abort: Callable[[], bool] | None = None,
@@ -772,7 +754,7 @@ def stop_hermes_gateway(
     ponytail: `--replace`만으로는 Windows에서 lock 보유 인스턴스가 남을 수 있음.
     천장: CLI stop 실패 시 taskkill + stale gateway.lock 제거.
     """
-    exe = hermes_executable(command)
+    exe = agent_executable(command)
     if exe and not (should_abort and should_abort()):
         try:
             # ponytail: CLI stop이 길면 설치 위저드가 '멈춤'으로 보인다 — 상한을 짧게.
@@ -809,11 +791,11 @@ def stop_hermes_gateway(
 
 
 def _gateway_lock_path() -> Path:
-    return hermes_home() / "gateway.lock"
+    return iris_agent_home() / "gateway.lock"
 
 
 def _gateway_pid_path() -> Path:
-    return hermes_home() / "gateway.pid"
+    return iris_agent_home() / "gateway.pid"
 
 
 def _read_pid_file(path: Path) -> int:
@@ -898,6 +880,7 @@ def _pid_looks_like_hermes(pid: int) -> bool:
             return False
         return (
             name.startswith("hermes")
+            or "iris_agent_cli.main" in cmdline
             or "hermes_cli.main" in cmdline
             or "\\hermes" in cmdline
             or "/hermes" in cmdline
@@ -917,7 +900,7 @@ def _clear_stale_gateway_lock() -> list[str]:
     살아 있는 Hermes PID의 lock/pid는 삭제하지 않는다 (G3).
     """
     cleared: list[str] = []
-    home = hermes_home()
+    home = iris_agent_home()
     pid_path = home / "gateway.pid"
     lock_path = home / "gateway.lock"
 
@@ -1087,13 +1070,14 @@ def _gateway_process_pids() -> list[int]:
             cmdline = " ".join(cmdline_list).lower()
             if " -m iris" in cmdline or "iris_launcher" in cmdline:
                 continue
-            looks_hermes = (
+            looks_agent = (
                 name.startswith("hermes")
+                or "iris_agent_cli.main" in cmdline
                 or "hermes_cli.main" in cmdline
                 or "\\hermes" in cmdline
                 or "/hermes" in cmdline
             )
-            if looks_hermes and "gateway" in cmdline and "run" in cmdline:
+            if looks_agent and "gateway" in cmdline and "run" in cmdline:
                 pids.add(int(proc.info["pid"]))
         except (psutil.Error, TypeError, ValueError):
             continue
@@ -1105,51 +1089,9 @@ def _windows_gateway_procs_alive() -> bool:
 
 
 def prune_orphan_gateway_procs(base_url: str = "") -> int:
-    """포트 LISTEN 소유자가 아닌 gateway run 좀비를 종료. 반환=종료 시도 수.
-
-    health OK인데 venv/runtime 이중 기동이 남아 있으면 재시작·키 교체 시 혼선.
-    """
-    try:
-        import psutil  # type: ignore
-    except Exception:
-        return 0
-    port = gateway_port_from_base_url(base_url)
-    owners: set[int] = set()
-    try:
-        for c in psutil.net_connections(kind="inet"):
-            if not c.laddr or int(getattr(c.laddr, "port", 0) or 0) != port:
-                continue
-            if str(c.status).upper() != "LISTEN":
-                continue
-            if c.pid:
-                owners.add(int(c.pid))
-    except (psutil.Error, OSError, AttributeError):
-        return 0
-    if not owners:
-        return 0
-    me = os.getpid()
-    killed = 0
-    for pid in _gateway_process_pids():
-        if pid == me or pid in owners:
-            continue
-        try:
-            if sys.platform == "win32":
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
-                    creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
-                )
-            else:
-                import signal
-
-                os.kill(pid, signal.SIGTERM)
-            killed += 1
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    return killed
+    """Unit 2 Delete: orphan prune only served ensure_* — no-op."""
+    del base_url
+    return 0
 
 
 def _force_kill_windows_gateway_procs() -> None:
@@ -1224,7 +1166,7 @@ def _wait_until_healthy(
     delay = 0.25
     last_health: HealthProbeResult | None = None
     last_ready: GatewayReadyResult | None = None
-    key = resolve_hermes_api_key(api_key)
+    key = resolve_agent_api_key(api_key)
     grace_used = False
     while True:
         while time.monotonic() < deadline:
@@ -1255,7 +1197,7 @@ def _wait_until_healthy(
                         has_api_key=bool(key),
                     )
                 )
-                hermes_runtime_report()
+                iris_agent_runtime_report()
                 return False
             health = probe_gateway_health(base_url, timeout_sec=min(2.0, delay + 1.0))
             last_health = health
@@ -1275,7 +1217,7 @@ def _wait_until_healthy(
                             stdout_log=str(_LAST_LOG_PATHS[0]) if _LAST_LOG_PATHS else "",
                             stderr_log=str(_LAST_LOG_PATHS[1]) if _LAST_LOG_PATHS else "",
                             has_api_key=bool(key),
-                            api_server_enabled=load_hermes_dotenv().get(
+                            api_server_enabled=load_iris_agent_dotenv().get(
                                 "API_SERVER_ENABLED", "true"
                             ),
                         )
@@ -1300,7 +1242,7 @@ def _wait_until_healthy(
                             stdout_log=str(_LAST_LOG_PATHS[0]) if _LAST_LOG_PATHS else "",
                             stderr_log=str(_LAST_LOG_PATHS[1]) if _LAST_LOG_PATHS else "",
                             has_api_key=bool(key),
-                            api_server_enabled=load_hermes_dotenv().get(
+                            api_server_enabled=load_iris_agent_dotenv().get(
                                 "API_SERVER_ENABLED", "true"
                             ),
                             models_ok=True,
@@ -1330,7 +1272,7 @@ def _wait_until_healthy(
                             },
                             port=gateway_port_from_base_url(base_url),
                             has_api_key=bool(key),
-                            api_server_enabled=load_hermes_dotenv().get(
+                            api_server_enabled=load_iris_agent_dotenv().get(
                                 "API_SERVER_ENABLED", ""
                             ),
                             models_ok=False,
@@ -1391,7 +1333,7 @@ def _wait_until_healthy(
                 },
                 port=gateway_port_from_base_url(base_url),
                 has_api_key=bool(key),
-                api_server_enabled=load_hermes_dotenv().get("API_SERVER_ENABLED", ""),
+                api_server_enabled=load_iris_agent_dotenv().get("API_SERVER_ENABLED", ""),
                 models_ok=False,
                 ready_detail=last_ready.detail,
             )
@@ -1424,7 +1366,7 @@ def _wait_until_healthy(
             detail=err_tail[:1500],
             port=gateway_port_from_base_url(base_url),
             has_api_key=bool(key),
-            api_server_enabled=load_hermes_dotenv().get("API_SERVER_ENABLED", ""),
+            api_server_enabled=load_iris_agent_dotenv().get("API_SERVER_ENABLED", ""),
             command=list(_LAST_CMD),
             exit_code=_child_exit_code(),
         )
@@ -1440,7 +1382,7 @@ def _apply_ollama_options_guard_now() -> bool:
             ollama_options_guard_present,
         )
 
-        root = _hermes_agent_dir()
+        root = _iris_agent_dir()
         if ollama_options_guard_present(root):
             return False
         changed = bool(apply_ollama_options_guard(root))
@@ -1454,258 +1396,77 @@ def _apply_ollama_options_guard_now() -> bool:
 
 
 @_serialized_lifecycle
-def ensure_hermes_gateway_running(
+def ensure_iris_agent_gateway_running(
     base_url: str,
     *,
     api_key: str = "",
-    command: str = "hermes",
+    command: str = "iris-agent",
     wait_sec: float = 45.0,
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> bool:
-    """켜져 있으면 즉시 True. 아니면 기동 후 /health·/v1/models 준비까지 대기."""
-    ensure_iris_agent_home()
-    key = resolve_hermes_api_key(api_key)
-    guard_changed = _apply_ollama_options_guard_now()
-
-    def _note(msg: str) -> None:
-        if on_progress:
-            on_progress(msg)
-
-    def _aborted() -> bool:
-        return bool(should_abort and should_abort())
-
-    # 이미 Hermes ready OK
-    health = probe_gateway_health(base_url, timeout_sec=2.0)
-    if health.ok and guard_changed:
-        _note("Ollama options 가드 반영 — gateway 1회 재시작")
-        return restart_hermes_gateway(
-            base_url,
-            api_key=key,
-            command=command,
-            wait_sec=wait_sec,
-            should_abort=should_abort,
-            on_progress=on_progress,
+    """Unit 2 Delete: never start/restart :8642 for product readiness."""
+    del base_url, api_key, command, wait_sec, should_abort
+    if on_progress:
+        on_progress("Iris Agent product path is InternalSidecar (no :8642 ensure)")
+    _set_diagnosis(
+        GatewayDiagnosis(
+            code=CODE_START_FAILED,
+            message="ensure_iris_agent_gateway_running removed; use ensure_iris_agent_runtime(start_gateway=False).",
+            action="Product chat uses InternalSidecar. Opt-in: set IRIS_AGENT_BASE_URL for read-only /health.",
         )
-    if health.ok:
-        n = prune_orphan_gateway_procs(base_url)
-        if n:
-            _note(f"orphan gateway {n}개 정리")
-        ready = probe_gateway_ready(base_url, api_key=key, timeout_sec=3.0)
-        if ready.ok:
-            _set_diagnosis(
-                GatewayDiagnosis(
-                    code=CODE_OK,
-                    ok=True,
-                    message="gateway 이미 실행 중 (ready OK)",
-                    health={
-                        "code": health.code,
-                        "url": health.url,
-                        "summary": health.body_summary,
-                    },
-                    has_api_key=bool(key),
-                    models_ok=True,
-                    ready_detail=ready.detail,
-                )
-            )
-            return True
-        # health만 OK · models 실패 — 키/라우트 불일치 좀비. 재기동으로 이어감
-        _note(f"gateway /health OK · ready 실패 ({ready.code}) — 재기동…")
-        stop_hermes_gateway(
-            command,
-            wait_sec=min(12.0, wait_sec / 2),
-            should_abort=should_abort,
-        )
-        if _aborted():
-            return False
-        # stop 후 아래 start 경로로 계속
-    if _aborted():
-        return False
-
-    # G6: 타 프로세스 포트 점유
-    conflict = _diagnose_port_conflict(base_url)
-    if conflict is not None:
-        _note(conflict.message)
-        _set_diagnosis(conflict)
-        return False
-
-    # G3: stale lock/pid 정리 (살아 있는 Hermes는 유지)
-    cleared = _clear_stale_gateway_lock()
-    if cleared:
-        _note(f"stale lock 정리: {', '.join(cleared)}")
-        _set_diagnosis(
-            GatewayDiagnosis(
-                code=CODE_STALE_LOCK,
-                message=f"죽은 프로세스 잔재 제거: {', '.join(cleared)}",
-                action="재기동을 계속합니다.",
-                detail=",".join(cleared),
-            )
-        )
-
-    # 좀비 Hermes만 있으면 정리 후 재기동
-    if _windows_gateway_procs_alive() or _gateway_lock_path().is_file():
-        # lock이 살아 있는 Hermes인데 health 실패 → 재시작 경로
-        _note("좀비 gateway 정리 중…")
-        stop_hermes_gateway(
-            command,
-            wait_sec=min(12.0, wait_sec / 2),
-            should_abort=should_abort,
-        )
-        ready_now = probe_gateway_ready(base_url, api_key=key, timeout_sec=2.0)
-        if ready_now.ok:
-            return True
-    if _aborted():
-        return False
-
-    # G5/G9: 실행 경로·env 사전 점검
-    if _build_gateway_cmd(command) is None:
-        return start_hermes_gateway(command)
-    env = _gateway_child_env()
-    if env.get("API_SERVER_ENABLED", "").lower() in ("0", "false", "no"):
-        _set_diagnosis(
-            GatewayDiagnosis(
-                code=CODE_ENV_POLLUTION,
-                message="API_SERVER_ENABLED가 꺼져 있습니다.",
-                action=f"{hermes_home() / '.env'} 에서 API_SERVER_ENABLED=true 로 설정하세요.",
-                api_server_enabled=env.get("API_SERVER_ENABLED", ""),
-                has_api_key=bool(env.get("API_SERVER_KEY")),
-            )
-        )
-        return False
-    if not env.get("API_SERVER_KEY", "").strip():
-        _set_diagnosis(
-            GatewayDiagnosis(
-                code=CODE_ENV_POLLUTION,
-                message="API_SERVER_KEY가 없어 api_server(/v1/models)가 기동되지 않습니다.",
-                action="시작 프로토콜 hermes_env 단계에서 키를 동기화하세요.",
-                api_server_enabled=env.get("API_SERVER_ENABLED", ""),
-                has_api_key=False,
-            )
-        )
-        return False
-
-    _note("Iris Agent gateway 기동…")
-    if not start_hermes_gateway(command):
-        return False
-    return _wait_until_healthy(
-        base_url,
-        wait_sec=wait_sec,
-        should_abort=should_abort,
-        on_progress=on_progress,
-        require_ready=True,
-        api_key=key,
     )
+    return False
 
 
 @_serialized_lifecycle
-def restart_hermes_gateway(
+def restart_iris_agent_gateway(
     base_url: str,
     *,
     api_key: str = "",
-    command: str = "hermes",
+    command: str = "iris-agent",
     wait_sec: float = 60.0,
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> bool:
-    """구 gateway를 완전히 내리고 새로 기동 — MCP 서브프로세스를 다시 붙인다.
-
-    `--replace`만 쓰면 Windows에서 'runtime lock already held'로 신 프로세스가
-    죽고, 오전부터 떠 있던 구 gateway(MCP 0 tools)가 그대로 남는 문제가 있었다.
-    """
-    key = resolve_hermes_api_key(api_key)
-
-    def _note(msg: str) -> None:
-        if on_progress:
-            on_progress(msg)
-
-    def _aborted() -> bool:
-        return bool(should_abort and should_abort())
-
-    # exe가 없으면 stop이 떠 있는 gateway만 죽이고 재기동은 실패한다.
-    if _build_gateway_cmd(command) is None:
-        return start_hermes_gateway(command)
-
-    # 재시작 전 스냅샷
-    pre = probe_gateway_health(base_url, timeout_sec=1.5)
-    _note("기존 gateway 중지…")
-    stop_hermes_gateway(
-        command,
-        wait_sec=min(12.0, wait_sec / 3),
-        should_abort=should_abort,
+    """Unit 2 Delete: never restart :8642 from product surfaces."""
+    del base_url, api_key, command, wait_sec, should_abort
+    if on_progress:
+        on_progress("Iris Agent product path is InternalSidecar (no :8642 restart)")
+    _set_diagnosis(
+        GatewayDiagnosis(
+            code=CODE_START_FAILED,
+            message="restart_iris_agent_gateway removed; sidecar/home reload next turn.",
+            action="Product chat uses InternalSidecar. Install/update uses stop_iris_agent_gateway only.",
+        )
     )
-    if _aborted():
-        return False
-
-    down_deadline = time.monotonic() + 10.0
-    while time.monotonic() < down_deadline:
-        if _aborted():
-            return False
-        if not probe_gateway_health(base_url, timeout_sec=1.0).ok:
-            break
-        time.sleep(0.3)
-
-    cleared = _clear_stale_gateway_lock()
-    if cleared:
-        _note(f"stale lock 정리: {', '.join(cleared)}")
-
-    conflict = _diagnose_port_conflict(base_url)
-    if conflict is not None:
-        # stop 후에도 타 프로세스가 점유
-        _set_diagnosis(conflict)
-        return False
-
-    _note("gateway 재기동…")
-    if not start_hermes_gateway(command):
-        hermes_runtime_report(command=command)
-        return False
-
-    ok = _wait_until_healthy(
-        base_url,
-        wait_sec=wait_sec,
-        should_abort=should_abort,
-        on_progress=on_progress,
-        require_ready=True,
-        api_key=key,
-    )
-    report = hermes_runtime_report(command=command)
-    if not ok and _LAST_DIAGNOSIS is not None:
-        d = _LAST_DIAGNOSIS
-        d.detail = (
-            (d.detail or "")
-            + f"\npre_restart_health={pre.code}:{pre.body_summary}\n"
-            + report
-        )[:2000]
-        if not d.action:
-            d.action = report
-        d.has_api_key = bool(key)
-        _set_diagnosis(d)
-    return ok
+    return False
 
 
-def _hermes_module_cmd(*args: str) -> list[str] | None:
-    """PM python -m hermes_cli.main. 3.12로 3.14 site-packages를 열면 pydantic_core가 깨진다."""
-    py = _hermes_runtime_python()
+def _iris_agent_module_cmd(*args: str) -> list[str] | None:
+    """PM python -m iris_agent_cli.main. 3.12로 3.14 site-packages를 열면 pydantic_core가 깨진다."""
+    py = _iris_agent_runtime_python()
     if py is not None:
-        return [str(py), "-m", "hermes_cli.main", *args]
-    exe = hermes_executable()
+        return [str(py), "-m", "iris_agent_cli.main", *args]
+    exe = agent_executable()
     if not exe:
         return None
     return [exe, *args]
 
 
-def verify_iris_mcp_tools(*, command: str = "hermes", timeout_sec: float = 45.0) -> tuple[bool, str]:
+def verify_iris_mcp_tools(*, command: str = "iris-agent", timeout_sec: float = 45.0) -> tuple[bool, str]:
     """Product speak is SpeakTools. iris-control MCP is removed."""
     return True, "SpeakTools product path (iris-control MCP not product-required)"
 
 
-def ensure_hermes_provider_config() -> None:
+def ensure_agent_provider_config() -> None:
     """config.yaml provider 정리 — Iris API id / 잘못된 openrouter 오염 복구.
 
     - `ollama` → `custom` (Hermes 0.19+ 로컬 OpenAI-compat)
     - `default`가 Iris `api:{id}:{model}` 이면 Ollama custom으로 되돌림
     - provider=openrouter + base_url이 :11434 이면 로컬 custom으로 복구
     """
-    path = hermes_home() / "config.yaml"
+    path = iris_agent_home() / "config.yaml"
     if not path.is_file():
         return
     try:
@@ -1782,18 +1543,18 @@ def _fallback_ollama_model_name() -> str:
 
 
 if __name__ == "__main__":
-    ensure_hermes_provider_config()
-    assert is_hermes_gateway_running("http://127.0.0.1:1/v1") is False
+    ensure_agent_provider_config()
+    assert is_iris_agent_gateway_running("http://127.0.0.1:1/v1") is False
     # Iris VIRTUAL_ENV 오염 시에도 Hermes venv 로 고정되는지
     os.environ["VIRTUAL_ENV"] = str(Path.cwd() / ".venv-fake-iris")
     os.environ["PYTHONPATH"] = str(Path.cwd())
     cleaned = _gateway_child_env()
-    venv_py = _hermes_runtime_python()
+    venv_py = _iris_agent_runtime_python()
     assert "PYTHONPATH" not in cleaned
     if venv_py is not None:
         assert cleaned.get("VIRTUAL_ENV") == str(venv_py.parent.parent)
-        cmd = _windows_hidden_cmd(hermes_executable("hermes") or "hermes")
-        assert cmd[:3] == [str(venv_py), "-m", "hermes_cli.main"]
+        cmd = _windows_hidden_cmd(agent_executable() or "iris-agent")
+        assert cmd[:3] == [str(venv_py), "-m", "iris_agent_cli.main"]
     else:
         assert "VIRTUAL_ENV" not in cleaned
     # health parse / diagnosis path
@@ -1802,21 +1563,21 @@ if __name__ == "__main__":
     assert parse_health_payload({"status": "ok", "platform": "hermes-agent"})[0]
     assert parse_health_payload({"status": "healthy"})[0]
     assert not parse_health_payload({"status": "down"})[0]
-    exe = hermes_executable("hermes")
-    report = hermes_runtime_report(command="hermes")
-    assert "[Hermes] command=" in report
-    assert "[Hermes] return_code=" in report
+    exe = agent_executable()
+    report = iris_agent_runtime_report(command="hermes")
+    assert "[Iris Agent] command=" in report
+    assert "[Iris Agent] return_code=" in report
     print(
-        "hermes_gateway ok - exe:",
+        "iris_agent_gateway ok - exe:",
         exe,
         "venv_py:",
         venv_py,
         "home:",
-        hermes_home(),
+        iris_agent_home(),
         "key_set:",
-        bool(resolve_hermes_api_key()),
+        bool(resolve_agent_api_key()),
         "running:",
-        is_hermes_gateway_running("http://127.0.0.1:8642/v1"),
+        is_iris_agent_gateway_running("http://127.0.0.1:8642/v1"),
         "log_dir:",
         _gateway_log_dir(),
     )

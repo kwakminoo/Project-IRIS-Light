@@ -20,6 +20,11 @@ _EMBED_ID_MARKERS: tuple[str, ...] = (
     "bge-",
     "e5-",
 )
+_CONTENT_SAFETY_ID_MARKERS: tuple[str, ...] = (
+    "content-safety",
+    "content_safety",
+    "guardrail",
+)
 
 
 class DisplayTier(str, Enum):
@@ -104,6 +109,41 @@ def _price_positive(val: object) -> bool:
         return False
 
 
+def _flag_bool(item: Mapping[str, object], *keys: str) -> bool | None:
+    for key in keys:
+        if key not in item:
+            continue
+        val = item.get(key)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)) and val in (0, 1):
+            return bool(val)
+        if isinstance(val, str):
+            low = val.strip().lower()
+            if low in ("1", "true", "yes"):
+                return True
+            if low in ("0", "false", "no"):
+                return False
+    return None
+
+
+def _endpoint_price_flags(item: Mapping[str, object]) -> tuple[bool | None, bool | None]:
+    """Return (free_endpoint, partner_endpoint) from flat or one nested mapping."""
+    free_ep = _flag_bool(item, "free_endpoint", "freeEndpoint")
+    partner_ep = _flag_bool(item, "partner_endpoint", "partnerEndpoint")
+    if free_ep is not None or partner_ep is not None:
+        return free_ep, partner_ep
+    for nest_key in ("endpoint", "endpoints", "availability", "meta"):
+        nested = item.get(nest_key)
+        if not isinstance(nested, Mapping):
+            continue
+        free_ep = _flag_bool(nested, "free_endpoint", "freeEndpoint")
+        partner_ep = _flag_bool(nested, "partner_endpoint", "partnerEndpoint")
+        if free_ep is not None or partner_ep is not None:
+            return free_ep, partner_ep
+    return None, None
+
+
 def _infer_price_class(model_id: str, item: Mapping[str, object]) -> PriceClass:
     mid = (model_id or "").strip().lower()
     if mid.endswith(":free"):
@@ -122,6 +162,11 @@ def _infer_price_class(model_id: str, item: Mapping[str, object]) -> PriceClass:
             if not _price_positive(prompt) and not _price_positive(completion):
                 if prompt is not None or completion is not None:
                     return "free"
+    free_ep, partner_ep = _endpoint_price_flags(item)
+    if free_ep is True:
+        return "free"
+    if partner_ep is True:
+        return "paid"
     return "unknown"
 
 
@@ -129,16 +174,22 @@ def _modality_from_token(token: str) -> Modality | None:
     t = token.strip().lower()
     if not t:
         return None
+    # a->b: classify by output side (text+image->text is chat, text->image is image)
+    if "->" in t:
+        t = t.rsplit("->", 1)[-1].strip()
+        if not t:
+            return None
     if "embed" in t:
         return "embedding"
+    # text before image: output "text+image" (or mixed token) stays chat-capable
+    if "chat" in t or "text" in t or t in ("llm", "language"):
+        return "chat"
     if "image" in t or t in ("vision", "img"):
         return "image"
     if "audio" in t or "speech" in t or "tts" in t or "asr" in t:
         return "audio"
     if "video" in t:
         return "video"
-    if "chat" in t or t in ("text", "text->text", "llm", "language"):
-        return "chat"
     return None
 
 
@@ -167,10 +218,16 @@ def _collect_modality_tokens(item: Mapping[str, object]) -> list[str]:
 
 
 def _infer_modality(model_id: str, item: Mapping[str, object]) -> Modality:
+    hits: list[Modality] = []
     for token in _collect_modality_tokens(item):
         hit = _modality_from_token(token)
         if hit is not None:
-            return hit
+            hits.append(hit)
+    # any text/chat output => chat (e.g. output_modalities ["image","text"])
+    if "chat" in hits:
+        return "chat"
+    if hits:
+        return hits[0]
     mid = (model_id or "").lower()
     if any(m in mid for m in _EMBED_ID_MARKERS):
         return "embedding"
@@ -204,6 +261,18 @@ def parse_listings(payload: object) -> list[ListingModel]:
         if parsed.id:
             out.append(parsed)
     return out
+
+
+def is_chat_picker_model(model_id: str, modality: str = "unknown") -> bool:
+    """True when the id belongs in a chat model picker (not embed/safety/off-domain)."""
+    if modality in _OFF_DOMAIN:
+        return False
+    mid = (model_id or "").lower()
+    if any(m in mid for m in _EMBED_ID_MARKERS):
+        return False
+    if any(m in mid for m in _CONTENT_SAFETY_ID_MARKERS):
+        return False
+    return True
 
 
 def display_tier(entry: RosterEntry) -> DisplayTier:

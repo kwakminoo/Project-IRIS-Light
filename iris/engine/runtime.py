@@ -45,7 +45,12 @@ from iris.engine.types import (
     TurnFinished,
     parse_engine_source,
 )
-from iris.system.iris_agent_ollama_guard import looks_like_ollama_endpoint
+from iris.infrastructure.agent_runtime import iris_agent_checkout_dir
+from iris.system.iris_agent_ollama_guard import (
+    apply_ollama_options_guard,
+    looks_like_ollama_endpoint,
+    ollama_options_guard_present,
+)
 from iris.system.win_subprocess import no_window_kwargs
 
 _SIDECAR_MAIN = Path(__file__).resolve().parent / "_sidecar_main.py"
@@ -54,6 +59,17 @@ _HELLO_TIMEOUT_SEC = 5.0
 _TURN_IDLE_SEC = 600.0
 _CANCEL_POLL_SEC = 0.2
 _WATCH_LOG = Path.home() / ".iris-light" / "logs" / "turn_end_watch.log"
+
+
+def _apply_ollama_options_guard_now(home: Path) -> bool:
+    """가드 부재 시 제품 checkout에 1회 적용. True면 파일이 바뀜(sidecar 재기동 신호)."""
+    try:
+        root = iris_agent_checkout_dir(Path(home))
+        if ollama_options_guard_present(root):
+            return False
+        return bool(apply_ollama_options_guard(root))
+    except Exception:
+        return False
 
 
 def _watch_trace(msg: str) -> None:
@@ -143,9 +159,12 @@ _SHARED: Engine | None = None
 
 def _settings_from_env() -> object:
     # Unit 2: external-gateway env is ignored by parse_engine_source.
+    # :8642 BASE_URL values are stripped at the same boundary as load_settings.
+    from iris.config.settings import _product_agent_base_url_from_env
+
     return SimpleNamespace(
-        hermes_base_url=os.environ.get("IRIS_HERMES_BASE_URL", ""),
-        hermes_api_key=os.environ.get("IRIS_HERMES_API_KEY", ""),
+        agent_base_url=_product_agent_base_url_from_env(),
+        agent_api_key=os.environ.get("IRIS_AGENT_API_KEY", ""),
     )
 
 
@@ -424,13 +443,19 @@ class Engine:
     def ensure_ready(self) -> EngineEnsureResult:
         try:
             with self._lock:
+                home = self._source.home
+                # Product chat never hits gateway ensure; soft-patch before spawn/reuse.
+                guard_changed = _apply_ollama_options_guard_now(home)
                 if self._child is not None:
                     if self._child.poll() is None:
-                        return EngineReady(self._source, "engine is ready")
-                    _close_pipes(self._child)
-                    self._child = None
-                    self._child_hello_pid = None
-                home = self._source.home
+                        if not guard_changed:
+                            return EngineReady(self._source, "engine is ready")
+                        # Patched custom provider must load in a fresh child.
+                        self._forget_child()
+                    else:
+                        _close_pipes(self._child)
+                        self._child = None
+                        self._child_hello_pid = None
                 probe = probe_engine_python(home)
                 if probe is not None and probe.code in (
                     EngineErrorCode.NOT_INSTALLED,

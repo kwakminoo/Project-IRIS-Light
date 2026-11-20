@@ -127,7 +127,7 @@ class AiRoutingPanel(QGroupBox):
         lay.addLayout(add_row)
         lay.addWidget(
             make_hint(
-                "Iris Agent가 켜져 있으면(기본값) 모든 후보를 Iris Agent 게이트웨이로 시도합니다. "
+                "Iris Agent가 켜져 있으면(기본값) 모든 후보를 Iris Agent sidecar로 시도합니다. "
                 "Iris Agent를 끄면 지금 쓰는 모델과 같은 종류의 후보만 쓸 수 있습니다 — "
                 "Ollama 모델이면 Ollama 후보만, 커스텀 API 모델이면 API 후보만 시도합니다."
             )

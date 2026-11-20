@@ -1,7 +1,7 @@
 # Iris Agent — Skills 카탈로그 요약
 
 > 정리일: 2026-10-28  
-> 소스: `integrations/hermes-skills/iris-control/`
+> 소스: `integrations/iris-skills/iris-agent/`
 
 | 스킬 | 역할 |
 |------|------|

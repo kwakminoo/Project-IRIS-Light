@@ -80,7 +80,7 @@
 | Presentation | `iris/ui/` (PyQt6 HUD) | GPL 결합 근원 · 에이전트 UI 어필 대상 |
 | Runtime | `iris/runtime/`, `iris/core/`, Gateway | 코어(불변) 쪽 — 확장과 분리 증명에 사용 |
 | Agent/Model | Hermes(:8642) · Ollama(:11434) — 외부 위임 | “라이브러리/런타임으로 제품 만들기” 스토리 |
-| 확장 | `iris/mcp/`, `integrations/hermes-skills/`, `integrations/iris-ide/`, archify | Core≠Extension 증거 |
+| 확장 | `iris/mcp/`, `integrations/iris-skills/`, `integrations/iris-ide/`, archify | Core≠Extension 증거 |
 | 회귀 | `iris/**/_check_*.py` (50+), `scripts/run_core_smoke.ps1` | 휘발성 코드 반증 |
 | 도메인 문서 | `docs/domain.md`, `docs/ia/IA.md`, `docs/api/` | AI×인간 맥락 문서 (No.6) |
 | 라이선스 | `LICENSE`, `LICENSE.md`, `THIRD_PARTY_NOTICES.md`, `docs/검증/license-scan-report.md` | No.10·12 |

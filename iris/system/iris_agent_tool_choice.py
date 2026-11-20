@@ -177,9 +177,18 @@ def _ensure_side_question(agent_root: Path) -> str:
     return "side_question_request already wired"
 
 
+def _config_defaults_path(agent_root: Path) -> Path | None:
+    root = Path(agent_root)
+    for pkg in ("iris_agent_cli", "hermes_cli"):
+        path = root / pkg / "config_defaults.py"
+        if path.is_file():
+            return path
+    return None
+
+
 def _ensure_config_defaults(agent_root: Path) -> str:
-    path = Path(agent_root) / "hermes_cli" / "config_defaults.py"
-    if not path.is_file():
+    path = _config_defaults_path(agent_root)
+    if path is None:
         return "config_defaults missing"
     text = path.read_text(encoding="utf-8")
     if _MARKER_DEFAULT in text:
@@ -196,7 +205,7 @@ def _ensure_config_defaults(agent_root: Path) -> str:
     return "config_defaults patched (tool_choice default)"
 
 
-def apply_hermes_tool_choice_overlay(agent_root: Path) -> list[str]:
+def apply_iris_agent_tool_choice_overlay(agent_root: Path) -> list[str]:
     """Copy tool_choice.py and wire call sites. Idempotent."""
     root = Path(agent_root)
     messages: list[str] = []
@@ -226,7 +235,7 @@ def apply_hermes_tool_choice_overlay(agent_root: Path) -> list[str]:
     return messages
 
 
-def load_hermes_tool_choice(*, home: Path | None = None) -> str:
+def load_iris_agent_tool_choice(*, home: Path | None = None) -> str:
     """Return the configured choice, falling back to the product default."""
     try:
         import yaml  # type: ignore
@@ -234,9 +243,9 @@ def load_hermes_tool_choice(*, home: Path | None = None) -> str:
         return TOOL_CHOICE_AUTO
 
     if home is None:
-        from iris.infrastructure.iris_agent_credentials import hermes_home
+        from iris.infrastructure.iris_agent_credentials import iris_agent_home
 
-        home = hermes_home()
+        home = iris_agent_home()
     path = Path(home) / "config.yaml"
     if not path.is_file():
         return TOOL_CHOICE_AUTO
@@ -249,7 +258,7 @@ def load_hermes_tool_choice(*, home: Path | None = None) -> str:
     return value if value in TOOL_CHOICE_VALUES else TOOL_CHOICE_AUTO
 
 
-def set_hermes_tool_choice(value: str) -> tuple[bool, str]:
+def set_iris_agent_tool_choice(value: str) -> tuple[bool, str]:
     """Persist ``auto`` or ``required``. Returns ``(changed, status)``."""
     choice = str(value or "").strip().lower()
     if choice not in TOOL_CHOICE_VALUES:
@@ -259,9 +268,9 @@ def set_hermes_tool_choice(value: str) -> tuple[bool, str]:
     except ImportError:
         return False, "PyYAML missing — cannot set agent.tool_choice"
 
-    from iris.infrastructure.iris_agent_credentials import hermes_home
+    from iris.infrastructure.iris_agent_credentials import iris_agent_home
 
-    path = hermes_home() / "config.yaml"
+    path = iris_agent_home() / "config.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
         try:
@@ -278,7 +287,7 @@ def set_hermes_tool_choice(value: str) -> tuple[bool, str]:
         agent = {}
     current = str(agent.get("tool_choice") or TOOL_CHOICE_AUTO).strip().lower()
     if current == choice and path.is_file():
-        return False, f"hermes agent.tool_choice already {choice}"
+        return False, f"Iris Agent tool_choice already {choice}"
     agent["tool_choice"] = choice
     data["agent"] = agent
     bak = path.with_name("config.yaml.bak-iris-tool-choice")
@@ -299,13 +308,13 @@ def set_hermes_tool_choice(value: str) -> tuple[bool, str]:
         (written.get("agent") or {}).get("tool_choice") or ""
     ).strip().lower()
     if written_value != choice:
-        return False, f"hermes agent.tool_choice write missing {choice}"
-    return True, f"hermes agent.tool_choice: {choice}"
+        return False, f"Iris Agent tool_choice write missing {choice}"
+    return True, f"Iris Agent tool_choice: {choice}"
 
 
 def iris_tool_force_policy() -> dict[str, Any]:
     """Iris-side ToolForcePolicy snapshot for self-checks / UI notes."""
-    choice = load_hermes_tool_choice()
+    choice = load_iris_agent_tool_choice()
     return {
         "first_llm_step": choice,
         "exit_tool": "respond" if choice == TOOL_CHOICE_REQUIRED else "",
@@ -330,7 +339,7 @@ def note_tool_choice_400(
     try:
         from types import SimpleNamespace
 
-        agent_root = hermes_home_agent_root()
+        agent_root = iris_agent_checkout_home()
         if not tool_choice_overlay_present(agent_root):
             return ""
         # Load installed overlay (same demotion file Hermes uses).
@@ -355,7 +364,9 @@ def note_tool_choice_400(
         return ""
 
 
-def hermes_home_agent_root() -> Path:
-    from iris.infrastructure.iris_agent_credentials import hermes_home
+def iris_agent_checkout_home() -> Path:
+    # Lazy: avoid import cycle with credentials ↔ sync ↔ tool_choice at module load.
+    from iris.infrastructure.agent_runtime import iris_agent_checkout_dir
+    from iris.infrastructure.iris_agent_credentials import iris_agent_home
 
-    return hermes_home() / "hermes-agent"
+    return iris_agent_checkout_dir(iris_agent_home())

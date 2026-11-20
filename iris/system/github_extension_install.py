@@ -26,6 +26,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from iris.infrastructure.agent_runtime import iris_agent_home
+
 _URL_RE = re.compile(r"https?://[^\s<>\"')\]]+", re.IGNORECASE)
 _SAFE_PART = re.compile(r"^[A-Za-z0-9._-]+$")
 _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -103,12 +105,6 @@ class InstallResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-def hermes_home() -> Path:
-    from iris.system.iris_agent_control_sync import hermes_home as _home
-
-    return _home()
 
 
 def parse_extension_request(text: str) -> ExtensionRequest | None:
@@ -221,7 +217,7 @@ def install_from_request(
         home.mkdir(parents=True, exist_ok=True)
         (home / "PROJECT").write_text(str(root), encoding="utf-8")
     else:
-        home = (home or hermes_home()).expanduser()
+        home = (home or iris_agent_home()).expanduser()
     secrets = _accepted_secrets(secrets or {})
     try:
         snap = (fetch or fetch_github)(req.url)
@@ -418,7 +414,7 @@ def _apply_skills(
         notes.append(
             "Skill "
             + ", ".join(f"'{n}'" for n in result.skill_names)
-            + "을 설치했습니다. Hermes skills 폴더에서 다음 요청부터 인식합니다.\n"
+            + "을 설치했습니다. Iris Agent skills 폴더에서 다음 요청부터 인식합니다.\n"
             + "\n".join(result.skill_paths)
         )
         if result.status == "refused":

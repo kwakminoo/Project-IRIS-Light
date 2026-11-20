@@ -12,13 +12,25 @@ export function parentDir(absPath: string): string {
     return absPath.includes('\\') ? parent.replace(/\//g, '\\') : parent;
 }
 
+function isWinPathStyle(path: string): boolean {
+    const trimmed = path.replace(/[\\/]+$/, '');
+    return /^[a-zA-Z]:[\\/]/.test(trimmed) || trimmed.includes('\\');
+}
+
 export function venvPythonAt(root: string): string {
     const trimmed = root.replace(/[\\/]+$/, '');
-    const win = /^[a-zA-Z]:[\\/]/.test(trimmed) || trimmed.includes('\\');
-    if (win) {
+    if (isWinPathStyle(trimmed)) {
         return `${trimmed}\\.venv\\Scripts\\python.exe`;
     }
     return `${trimmed}/.venv/bin/python`;
+}
+
+/** Prefer user/system launcher when no project .venv — never bare `python` (Iris PATH). */
+export function defaultPythonArgv(absPath: string): string[] {
+    if (isWinPathStyle(absPath)) {
+        return ['py', '-3', absPath];
+    }
+    return ['python3', absPath];
 }
 
 function underRoot(fileAbs: string, root: string): boolean {
@@ -79,7 +91,7 @@ export async function argvForRunnableFile(
         if (hit) {
             return { argv: [hit.python, absPath], cwd: hit.root };
         }
-        return { argv: ['python', absPath], cwd: fileDir };
+        return { argv: defaultPythonArgv(absPath), cwd: fileDir };
     }
     if (ext === 'js' || ext === 'mjs' || ext === 'cjs') {
         return { argv: ['node', absPath], cwd: fileDir };

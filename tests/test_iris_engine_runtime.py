@@ -202,8 +202,8 @@ class ParseEngineSourceTests(TestCase):
         source = parse_engine_source(
             SimpleNamespace(
                 hermes_external_gateway=True,
-                hermes_base_url="http://127.0.0.1:8642/v1",
-                hermes_api_key="k",
+                agent_base_url="http://127.0.0.1:8642/v1",
+                agent_api_key="k",
             )
         )
         self.assertIsInstance(source, InternalSidecar)

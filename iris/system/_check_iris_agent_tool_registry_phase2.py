@@ -71,8 +71,8 @@ def _main() -> None:
     assert "Hermes Agent가 아니다" not in soul
 
     skill_dirs = [
-        root / "integrations" / "hermes-skills" / "iris-control" / "iris-session-status",
-        root / "integrations" / "hermes-skills" / "iris-control" / "iris-work-start",
+        root / "integrations" / "iris-skills" / "iris-control" / "iris-session-status",
+        root / "integrations" / "iris-skills" / "iris-control" / "iris-work-start",
     ]
     for skill_dir in skill_dirs:
         text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")

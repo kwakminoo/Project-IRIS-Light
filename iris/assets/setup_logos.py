@@ -16,11 +16,11 @@ STEP_BRAND: dict[str, str] = {
     "ollama_install": "ollama",
     "ollama_model": "ollama",
     "ollama_cloud": "ollama",
-    "hermes_install": "hermes",
-    "hermes_env": "hermes",
-    "hermes_provider": "hermes",
+    "agent_install": "hermes",
+    "agent_env": "hermes",
+    "agent_provider": "hermes",
     "iris_control_sync": "hermes",
-    "hermes_gateway": "hermes",
+    "agent_runtime": "hermes",
     "core_smoke": "iris",
     "emulator": "iris",
     "voice": "iris",
@@ -85,7 +85,8 @@ def _monogram_pixmap(brand: str, size: int) -> QPixmap:
         rad = max(4, size // 5)
         p.drawRoundedRect(0, 0, size, size, rad, rad)
         p.setPen(QColor("#ffffff"))
-    letter = {"ollama": "O", "hermes": "H", "iris": "I"}.get(brand, "?")
+    # brand key "hermes" stays for step_id compat; monogram shows Iris Agent "I"
+    letter = {"ollama": "O", "hermes": "I", "iris": "I"}.get(brand, "?")
     font = QFont("Segoe UI", max(8, int(size * 0.42)))
     font.setBold(True)
     p.setFont(font)
@@ -95,7 +96,7 @@ def _monogram_pixmap(brand: str, size: int) -> QPixmap:
 
 
 if __name__ == "__main__":
-    assert brand_for_step("hermes_gateway") == "hermes"
+    assert brand_for_step("agent_runtime") == "hermes"
     assert brand_for_step("core_smoke") == "iris"
     assert brand_for_step("ollama_install") == "ollama"
     pm = setup_brand_pixmap("hermes", size=32)

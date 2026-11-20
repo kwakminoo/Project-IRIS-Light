@@ -8,6 +8,7 @@ from iris.infrastructure.model_roster import (
     RosterEntry,
     apply_probe,
     display_tier,
+    is_chat_picker_model,
     mark_price_refetch_done,
     needs_price_refetch,
     parse_listing,
@@ -25,6 +26,30 @@ def main() -> None:
     assert bare.description == ""
     assert bare.price_class == "unknown"
     assert bare.modality == "unknown"
+
+    partner_only = parse_listing(
+        {"id": "nvidia/partner-only", "partner_endpoint": True}
+    )
+    assert partner_only.price_class == "paid"
+    partner_nested = parse_listing(
+        {
+            "id": "nvidia/partner-nested",
+            "endpoint": {"partnerEndpoint": True, "freeEndpoint": False},
+        }
+    )
+    assert partner_nested.price_class == "paid"
+    free_endpoint = parse_listing(
+        {"id": "nvidia/free-ep", "free_endpoint": True}
+    )
+    assert free_endpoint.price_class == "free"
+    # OpenRouter :free / pricing still win over partner flags
+    free_beats_partner = parse_listing(
+        {
+            "id": "org/model:free",
+            "partner_endpoint": True,
+        }
+    )
+    assert free_beats_partner.price_class == "free"
 
     free_suffix = parse_listing(
         {
@@ -54,6 +79,48 @@ def main() -> None:
     )
     assert paid.price_class == "paid"
     assert paid.modality == "chat"
+    assert display_tier(
+        RosterEntry(
+            model_id=paid.id,
+            price_class=paid.price_class,
+            modality=paid.modality,
+        )
+    ) == DisplayTier.PAID
+
+    # VLM / multimodal chat: input may include image; output text => chat, not off_domain
+    vlm = parse_listing(
+        {
+            "id": "anthropic/claude-opus-4",
+            "pricing": {"prompt": "0.000015", "completion": "0.000075"},
+            "architecture": {"modality": "text+image->text"},
+        }
+    )
+    assert vlm.modality == "chat"
+    assert vlm.price_class == "paid"
+    assert display_tier(
+        RosterEntry(
+            model_id=vlm.id,
+            price_class=vlm.price_class,
+            modality=vlm.modality,
+        )
+    ) == DisplayTier.PAID
+
+    gpt4o = parse_listing(
+        {
+            "id": "openai/gpt-4o",
+            "pricing": {"prompt": "0.0000025", "completion": "0.00001"},
+            "architecture": {"modality": "text+image->text"},
+            "output_modalities": ["text", "image"],
+        }
+    )
+    assert gpt4o.modality == "chat"
+    assert display_tier(
+        RosterEntry(
+            model_id=gpt4o.id,
+            price_class=gpt4o.price_class,
+            modality=gpt4o.modality,
+        )
+    ) == DisplayTier.PAID
 
     embed = parse_listing(
         {
@@ -64,6 +131,13 @@ def main() -> None:
     )
     assert embed.modality == "embedding"
     assert embed.price_class == "free"
+    assert display_tier(
+        RosterEntry(
+            model_id=embed.id,
+            price_class=embed.price_class,
+            modality=embed.modality,
+        )
+    ) == DisplayTier.OFF_DOMAIN
 
     image = parse_listing(
         {
@@ -72,6 +146,29 @@ def main() -> None:
         }
     )
     assert image.modality == "image"
+    assert display_tier(
+        RosterEntry(
+            model_id=image.id,
+            price_class=image.price_class,
+            modality=image.modality,
+        )
+    ) == DisplayTier.OFF_DOMAIN
+
+    text_to_image = parse_listing(
+        {
+            "id": "provider/flux",
+            "architecture": {"modality": "text->image"},
+            "pricing": {"prompt": "0.0001", "completion": "0"},
+        }
+    )
+    assert text_to_image.modality == "image"
+    assert display_tier(
+        RosterEntry(
+            model_id=text_to_image.id,
+            price_class=text_to_image.price_class,
+            modality=text_to_image.modality,
+        )
+    ) == DisplayTier.OFF_DOMAIN
 
     listings = parse_listings(
         {
@@ -201,6 +298,16 @@ def main() -> None:
 
     empty_blurb = parse_listing({"id": "x", "name": "not-a-description"})
     assert empty_blurb.description == ""
+
+    # Chat picker: embed / content-safety out; normal chat ids in (even if meta unknown)
+    assert is_chat_picker_model("nvidia/nemotron-3.5-embed-1b") is False
+    assert is_chat_picker_model("nvidia/nemotron-3.5-embed-8b") is False
+    assert is_chat_picker_model("provider/text-embedding-3") is False
+    assert is_chat_picker_model("nvidia/nemotron-3.5-content-safety") is False
+    assert is_chat_picker_model("openai/gpt-4o") is True
+    assert is_chat_picker_model("nvidia/llama-3.1-nemotron-70b-instruct") is True
+    assert is_chat_picker_model("paid-chat", "embedding") is False
+    assert is_chat_picker_model("vision-only", "image") is False
 
     print("model_roster self-check ok")
 

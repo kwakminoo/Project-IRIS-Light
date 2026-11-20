@@ -1,6 +1,6 @@
 # How to close the useful Aside gaps in IRIS
 
-Goal: make Hermes better at the existing in-window browser without replacing `BrowserSession`, Qt WebEngine, `ViewHost`, or `iris_invoke` → `browser.*`.
+Goal: make Hermes better at the existing in-window browser without replacing `BrowserSession`, Qt WebEngine, `ViewHost`, or SpeakTools `control.invoke` → `browser.*`.
 
 Do not install Aside, fork Chromium, or add a Playwright REPL unless a later brief says so.
 
@@ -9,8 +9,8 @@ Each phase ends in one check you can run. Stop if that check fails.
 ## Preconditions
 
 - Read `04_IRIS_GAP_ANALYSIS.md` for the keep/drop list.
-- Keep `integrations/hermes-skills/iris-control/iris-browser/SKILL.md` true: one visible page, refs from PAGE TEXT, no sibling Playwright MCP.
-- Keep Hermes `browser` and `terminal` toolsets disabled (`iris/system/hermes_iris_control_sync.py`).
+- Keep `integrations/iris-skills/iris-control/iris-browser/SKILL.md` true: one visible page, refs from PAGE TEXT, no sibling Playwright MCP.
+- Keep Hermes `browser` and `terminal` toolsets disabled (`iris/system/iris_agent_control_sync.py`; legacy note: was `hermes_iris_control_sync.py`).
 
 ## Phase 0. Live Aside only if you want binary evidence
 
@@ -36,13 +36,13 @@ Check: `python -m iris.browser._check_intent`, `_check_bridge_snapshot`, and the
 
 ## Hermes multi-step (do not implement)
 
-Hermes already plans, runs, and checks a chain of `iris_invoke` → `browser.*` calls. IRIS must not add a second planner, loop, or agent framework.
+Hermes already plans, runs, and checks a chain of SpeakTools `control.invoke` → `browser.*` calls. IRIS must not add a second planner, loop, or agent framework.
 
 The path is:
 
 1. Hermes `AIAgent` tool loop (`turn_tool_round.py`) posts each tool result back into the conversation and starts the next iteration.
-2. The only page-driving tools are MCP `iris_get_state`, `iris_get_catalog`, and `iris_invoke`. Hermes built-in `browser` and `terminal` toolsets stay disabled (`hermes_iris_control_sync.py`).
-3. `iris_invoke` POSTs to Control Surface `/v1/invoke`. `_handle` in `iris/ui/control_actions/browser.py` parses, optionally asks the human, then calls `session.execute`.
+2. Product page-driving tools are SpeakTools (`PHASE4_ALLOWLIST`): `get_state`, `get_catalog`, `control.invoke`, …. Hermes built-in `browser` and `terminal` toolsets stay disabled (`iris_agent_control_sync.py`). The older iris-control MCP triple was removed; `iris/mcp/iris_control_stdio.py` is a tombstone (`TOOLS=[]`).
+3. `control.invoke` with `action=browser.*` goes SpeakTools → ActionRegistry → `_handle` in `iris/ui/control_actions/browser.py` (parse, optional ask_human, `session.execute`). Control Surface HTTP `:8765` `/v1/invoke` may still exist for non-seed/compat; do not claim Hermes talks via three MCP tools.
 4. `pack_hermes_result` returns `ok, command_kind, detail, trusted, page_text, url, phase, playing, gen`. PAGE TEXT is untrusted input.
 5. Teaching and recipes already say search then click then extract, copy `{ref}` from the last PAGE TEXT, and snapshot on `stale_ref`.
 
@@ -50,7 +50,7 @@ Loop caps and cancel live in Hermes:
 
 - Main-agent `max_iterations` defaults to `sys.maxsize`. `IterationBudget` stops the turn when that budget is spent.
 - `HermesChatWorker.request_cancel` stops the SSE stream. It does not abort an in-flight `session.execute`.
-- IRIS already times out navigate (45s), reload (30s), play (90s), and MCP `urlopen` (120s).
+- IRIS already times out navigate (45s), reload (30s), play (90s), and compat invoke `urlopen` (120s).
 
 Do not add an IRIS Observe-Act-Verify class, a per-turn browser command counter, or a second cancel path. Those would reimplement Hermes.
 

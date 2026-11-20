@@ -261,21 +261,35 @@ def _request_native_tool(name: str, args: dict) -> str:
 def _install_iris_engine_tools(
     agent: object, *, surface: object = "home"
 ) -> tuple[str, ...]:
-    """Register Iris schemas in Hermes and expose them on this AIAgent instance."""
-    from iris.infrastructure.speak_capability import (
+    """Register Iris schemas in Hermes and expose them on this AIAgent instance.
+
+    Speak tools stay on toolset ``iris``. Iris-backed model names
+    (write_file/read_file/search_files/terminal) replace Hermes file/terminal
+    handlers via ``override=True`` + the same ownership marker.
+    """
+    # File-location load: package import iris.engine → runtime → PyQt6 (engine venv has none).
+    model_names = _load_local_helper("model_tool_names")
+    IRIS_MODEL_TOOLSET = model_names.IRIS_MODEL_TOOLSET
+    as_model_surface = model_names.as_model_surface
+    adapt_control_invoke = model_names.adapt_control_invoke
+    iris_model_registrations = model_names.iris_model_registrations
+    from iris.infrastructure.tool_capability import (
         engine_tool_action,
         engine_tool_schemas,
         normalize_speak_surface,
     )
     from tools.registry import registry
 
-    schemas = engine_tool_schemas(surface=normalize_speak_surface(surface))
+    speak_surface = normalize_speak_surface(surface)
+    model_surface = as_model_surface(speak_surface)
+    schemas = engine_tool_schemas(surface=speak_surface)
     tools = list(getattr(agent, "tools", None) or [])
     existing = {
         str(row.get("function", {}).get("name") or "")
         for row in tools
         if isinstance(row, dict) and isinstance(row.get("function"), dict)
     }
+    installed: list[str] = []
     for schema in schemas:
         name = str(schema["name"])
         action = engine_tool_action(name)
@@ -292,13 +306,44 @@ def _install_iris_engine_tools(
         )
         if name not in existing:
             tools.append({"type": "function", "function": dict(schema)})
+            existing.add(name)
+        installed.append(name)
+    # Hermes file/terminal stay disabled; re-expose model names as Iris Control.
+    for name, action, body in iris_model_registrations(model_surface):
+        registry.register(
+            name=name,
+            toolset=IRIS_MODEL_TOOLSET,
+            schema={
+                "description": body["description"],
+                "parameters": body["parameters"],
+            },
+            handler=lambda args, _name=name, _surf=model_surface, **_kwargs: (
+                _request_native_tool(
+                    *adapt_control_invoke(_name, _surf, dict(args or {}))
+                )
+            ),
+            override=True,
+        )
+        if name not in existing:
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": body["description"],
+                        "parameters": body["parameters"],
+                    },
+                }
+            )
+            existing.add(name)
+        installed.append(name)
     agent.tools = tools
     agent.valid_tool_names = {
         str(row.get("function", {}).get("name") or "")
         for row in tools
         if isinstance(row, dict) and isinstance(row.get("function"), dict)
     }
-    return tuple(str(schema["name"]) for schema in schemas)
+    return tuple(installed)
 
 
 _AGENT_CLS: type | None = None
@@ -759,6 +804,21 @@ def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
         "tool_complete_callback": on_tool_complete,
         "reasoning_callback": _on_reasoning,
         "quiet_mode": True,
+        "disabled_toolsets": [
+            "file",
+            "terminal",
+            "web",
+            "code_execution",
+            "memory",
+            "delegation",
+            "clarify",
+            "browser",
+            "browser-use",
+            "browser-cdp",
+            "computer_use",
+            "tts",
+            "vision",
+        ],
     }
     model = raw.get("model")
     if isinstance(model, str) and model:

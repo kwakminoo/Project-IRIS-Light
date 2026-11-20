@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal, NewType, Union
 
 from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
-from iris.infrastructure.speak_capability import (
+from iris.infrastructure.tool_capability import (
     PHASE4_ALLOWLIST,
     SpeakSurface,
     assert_engine_tools_match_allowlist,
@@ -235,7 +235,7 @@ def _default_engine_home() -> EngineHome:
 def parse_engine_source(settings: object) -> EngineSource:
     """Settings boundary. Product path is always InternalSidecar.
 
-    agent_enabled (alias hermes_enabled) is the 'use the engine' flag.
+    agent_enabled is the 'use the engine' flag.
     It does not mean ':8642 is up'. hermes_external_gateway / IRIS_HERMES_EXTERNAL_GATEWAY
     no longer select a product source.
     """

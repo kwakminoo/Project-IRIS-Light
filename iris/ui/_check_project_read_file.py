@@ -13,7 +13,7 @@ _CATALOG = Path(__file__).resolve().parent / "control_actions" / "action_catalog
 _VIBE_SKILL = (
     _ROOT
     / "integrations"
-    / "hermes-skills"
+    / "iris-skills"
     / "iris-control"
     / "iris-vibe-code"
     / "SKILL.md"

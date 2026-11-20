@@ -6,9 +6,16 @@ import sys
 import tempfile
 from pathlib import Path
 
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
+
+# ChatPanel → H1 WebEngine: ShareOpenGLContexts before QApplication (0xC0000409).
+ensure_qt_webengine_ready()
+
 from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
 from PyQt6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDropEvent, QMouseEvent
 from PyQt6.QtWidgets import QApplication, QLabel
+
+_APP = QApplication.instance() or QApplication(sys.argv)
 
 from iris.ui.chat.chat_panel import ChatPanel, _quote_at_ref
 from iris.ui.chat.chat_renderer import render_user_message
@@ -24,7 +31,7 @@ from iris.ui.chat.at_path_refs import resolve_at_kind
 
 
 def main() -> None:
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = QApplication.instance() or _APP
     panel = ChatPanel()
     root = Path(__file__).resolve().parents[3]
     panel.set_workspace_root(str(root))
@@ -52,6 +59,11 @@ def main() -> None:
     assert composer_chip_label(lined) == "chat_panel.py", composer_chip_label(lined)
     assert panel.acceptDrops() is True
     assert panel._log.acceptDrops() is True
+    # G18: H1 (or its drop catcher) must accept Explorer drops; WebEngine must not.
+    h1 = panel.transcript()
+    catcher = h1.drop_catcher()
+    assert catcher.acceptDrops() is True
+    assert h1.acceptDrops() is True
     py = root / "iris" / "ui" / "chat" / "chat_panel.py"
     meta = composer_chip_meta(str(py), workspace_root=str(root))
     assert meta.startswith("PY · "), meta

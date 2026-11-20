@@ -1,7 +1,7 @@
 """Hermes uv mount failure detection / wipe helpers / pip 꼬리 메시지.
 
 실행:
-  .venv\\Scripts\\python.exe -m unittest tests.test_hermes_install_bypass -v
+  .venv\\Scripts\\python.exe -m unittest tests.test_agent_install_bypass -v
   .venv\\Scripts\\python.exe -m iris.system.iris_agent_install
 """
 
@@ -126,10 +126,10 @@ class HermesInstallBypassTests(unittest.TestCase):
             (agent / ".git" / "objects" / "pack.idx").write_text("x", encoding="utf-8")
             with (
                 patch.object(hi.gw, "hermes_home", return_value=home),
-                patch.object(hi.gw, "stop_hermes_gateway", return_value=True),
-                patch.object(hi, "_kill_hermes_tree_holders"),
+                patch.object(hi.gw, "stop_iris_agent_gateway", return_value=True),
+                patch.object(hi, "_kill_agent_tree_holders"),
             ):
-                msg = hi.force_retire_hermes_agent()
+                msg = hi.force_retire_iris_agent()
             self.assertFalse(agent.exists())
             self.assertTrue("치움" in msg or "삭제" in msg, msg)
 
@@ -146,10 +146,10 @@ class HermesInstallBypassTests(unittest.TestCase):
             (keep / "y" / "f").write_text("2", encoding="utf-8")
             with (
                 patch.object(hi.gw, "hermes_home", return_value=home),
-                patch.object(hi.gw, "stop_hermes_gateway", return_value=True),
-                patch.object(hi, "_kill_hermes_tree_holders"),
+                patch.object(hi.gw, "stop_iris_agent_gateway", return_value=True),
+                patch.object(hi, "_kill_agent_tree_holders"),
             ):
-                hi.force_retire_hermes_agent(keep_staging=keep.name)
+                hi.force_retire_iris_agent(keep_staging=keep.name)
             self.assertFalse(old.exists())
             self.assertTrue(keep.exists())
 
@@ -202,12 +202,12 @@ class HermesInstallBypassTests(unittest.TestCase):
         self.assertLessEqual(len(clipped), hi._NEEDS_USER_MSG_LIMIT)
         self.assertIn("ERROR:", clipped)
 
-    def test_install_hermes_skips_official_when_prefer_bypass(self) -> None:
+    def test_install_agent_skips_official_when_prefer_bypass(self) -> None:
         """R1(a): prefer_bypass면 공식 설치기 미호출."""
         from iris.system.setup_protocol import SetupProtocol
 
         proto = SetupProtocol(dry_run=False, simulate=False)
-        proto._hermes_prefer_bypass = True
+        proto._agent_prefer_bypass = True
         called: list[str] = []
 
         def fake_bypass() -> object:
@@ -222,15 +222,15 @@ class HermesInstallBypassTests(unittest.TestCase):
             )
 
         with (
-            patch.object(proto, "_install_hermes_bypass", side_effect=fake_bypass),
-            patch.object(proto, "_run_hermes_official_installer") as official,
+            patch.object(proto, "_install_agent_bypass", side_effect=fake_bypass),
+            patch.object(proto, "_run_agent_official_installer") as official,
             patch(
-                "iris.system.setup_protocol.probe_hermes_runtime",
+                "iris.system.setup_protocol.probe_agent_runtime",
                 return_value=(False, "missing"),
             ),
-            patch.object(proto, "_wipe_hermes_agent_runtime", return_value=""),
+            patch.object(proto, "_wipe_agent_runtime", return_value=""),
         ):
-            result = proto._install_hermes()
+            result = proto._install_agent()
         self.assertEqual(result.status, "done")
         self.assertEqual(called, ["bypass"])
         official.assert_not_called()
@@ -268,7 +268,7 @@ class HermesInstallLogAndStagingTests(unittest.TestCase):
                 patch("iris.system.iris_agent_control_sync.project_root", return_value=root),
                 patch.object(hi.shutil, "which", side_effect=which),
                 patch.object(hi, "_run", side_effect=run),
-                patch.object(hi, "is_supported_hermes_python", return_value=True),
+                patch.object(hi, "is_supported_agent_python", return_value=True),
                 patch.object(hi.sys, "platform", "win32"),
             ):
                 self.assertEqual(hi.find_bootstrap_python(), py311)
@@ -285,13 +285,13 @@ class HermesInstallLogAndStagingTests(unittest.TestCase):
 
             with (
                 patch.object(hi.gw, "hermes_home", return_value=home),
-                patch.object(hi.gw, "probe_hermes_runtime", return_value=(False, "missing")),
+                patch.object(hi.gw, "probe_agent_runtime", return_value=(False, "missing")),
                 patch.object(hi, "ensure_system_python_winget", return_value=Path("python")),
                 patch.object(hi, "python_version", return_value=(3, 11)),
                 patch.object(hi.shutil, "which", side_effect=lambda n: "git" if n == "git" else None),
                 patch.object(hi, "_run", side_effect=run),
             ):
-                result = hi.install_hermes_with_system_python()
+                result = hi.install_agent_with_system_python()
             self.assertFalse(result.ok)
             self.assertIn("ERROR:", result.message)
             self.assertTrue((live / "KEEP").is_file())
@@ -341,7 +341,7 @@ class HermesInstallLogAndStagingTests(unittest.TestCase):
             staging = home / "hermes-agent.staging-1"
             staging.mkdir()
             (staging / "NEW").write_text("x", encoding="utf-8")
-            with patch.object(hi.gw, "probe_hermes_runtime", return_value=(False, "import failed")):
+            with patch.object(hi.gw, "probe_agent_runtime", return_value=(False, "import failed")):
                 ok, detail = hi._activate_staged(home, staging, "1", "hermes")
             self.assertFalse(ok)
             self.assertIn("import failed", detail)
@@ -370,16 +370,16 @@ class HermesInstallProtocolTests(unittest.TestCase):
 
         def bypass():
             calls["n"] += 1
-            return proto._hermes_done("bypass ok")
+            return proto._agent_done("bypass ok")
 
         proc = subprocess.CompletedProcess(["ps"], 1, "ERROR: official\n", "")
         with (
-            patch("iris.system.setup_protocol.probe_hermes_runtime", return_value=(False, "no")),
-            patch.object(proto, "_run_hermes_official_installer", return_value=proc),
-            patch.object(proto, "_install_hermes_bypass", side_effect=bypass),
+            patch("iris.system.setup_protocol.probe_agent_runtime", return_value=(False, "no")),
+            patch.object(proto, "_run_agent_official_installer", return_value=proc),
+            patch.object(proto, "_install_agent_bypass", side_effect=bypass),
             patch("iris.system.iris_agent_install.write_install_log", return_value=Path("C:/t.log")),
         ):
-            result = proto._install_hermes()
+            result = proto._install_agent()
         self.assertEqual(calls["n"], 1)
         self.assertEqual(result.status, "done")
         self.assertEqual(proto._state.get("last_error_detail"), {})
@@ -390,17 +390,17 @@ class HermesInstallProtocolTests(unittest.TestCase):
 
         def bypass():
             calls["n"] += 1
-            return proto._hermes_done("bypass ok")
+            return proto._agent_done("bypass ok")
 
         proc = subprocess.CompletedProcess(["ps"], 0, "script done\n", "")
         with (
-            patch("iris.system.setup_protocol.probe_hermes_runtime", return_value=(False, "import fail")),
-            patch.object(proto, "_run_hermes_official_installer", return_value=proc),
-            patch.object(proto, "_install_hermes_bypass", side_effect=bypass),
+            patch("iris.system.setup_protocol.probe_agent_runtime", return_value=(False, "import fail")),
+            patch.object(proto, "_run_agent_official_installer", return_value=proc),
+            patch.object(proto, "_install_agent_bypass", side_effect=bypass),
             patch("iris.system.iris_agent_install.write_install_log", return_value=Path("C:/t.log")),
-            patch.object(SetupProtocol, "_install_hermes") if False else patch("iris.system.setup_protocol.sys.platform", "win32"),
+            patch.object(SetupProtocol, "_install_agent") if False else patch("iris.system.setup_protocol.sys.platform", "win32"),
         ):
-            result = proto._install_hermes()
+            result = proto._install_agent()
         self.assertEqual(calls["n"], 1)
         self.assertEqual(result.status, "done")
 
@@ -409,12 +409,12 @@ class HermesInstallProtocolTests(unittest.TestCase):
 
         proto = self._proto()
         with (
-            patch("iris.system.setup_protocol.probe_hermes_runtime", return_value=(False, "no")),
-            patch.object(proto, "_run_hermes_official_installer", side_effect=UserCancelled("사용자가 중단함")),
-            patch.object(proto, "_install_hermes_bypass") as bypass,
+            patch("iris.system.setup_protocol.probe_agent_runtime", return_value=(False, "no")),
+            patch.object(proto, "_run_agent_official_installer", side_effect=UserCancelled("사용자가 중단함")),
+            patch.object(proto, "_install_agent_bypass") as bypass,
             patch("iris.system.setup_protocol.sys.platform", "win32"),
         ):
-            result = proto._install_hermes()
+            result = proto._install_agent()
         bypass.assert_not_called()
         self.assertEqual(result.status, "failed")
         self.assertEqual(proto._state["last_error_detail"]["kind"], "cancel")
@@ -424,10 +424,10 @@ class HermesInstallProtocolTests(unittest.TestCase):
         blob = "Obtaining file:///hermes-agent\n" + ("x\n" * 20) + "ERROR: wheel build failed\n"
         result_obj = hi.InstallResult(False, hi.format_install_failure("pip 설치 실패", blob, Path("C:/iris-install.log"), "exit"), "exit", "C:/iris-install.log")
         with (
-            patch("iris.system.iris_agent_install.install_hermes_with_system_python", return_value=result_obj),
+            patch("iris.system.iris_agent_install.install_agent_with_system_python", return_value=result_obj),
             patch("iris.system.setup_protocol.refresh_process_path"),
         ):
-            result = proto._install_hermes_bypass()
+            result = proto._install_agent_bypass()
         self.assertIn("ERROR:", result.message)
         self.assertNotIn("Obtaining file", hi.error_log_tail(blob))
         self.assertEqual(result.log_path, "C:/iris-install.log")
@@ -521,21 +521,21 @@ class HermesPythonRangeTests(unittest.TestCase):
             finish = MagicMock(return_value=hi.InstallResult(True, "ok", "ok"))
             with (
                 patch.object(hi, "ensure_iris_agent_home", return_value=home),
-                patch.object(hi.gw, "probe_hermes_runtime", return_value=(False, "missing")),
+                patch.object(hi.gw, "probe_agent_runtime", return_value=(False, "missing")),
                 patch.object(hi, "ensure_system_python_winget", side_effect=ensure),
                 patch.object(hi, "python_version", side_effect=lambda p: (3, 14) if str(p) == "py314" else (3, 11)),
                 patch.object(hi.shutil, "which", side_effect=lambda n: "git" if n == "git" else None),
                 patch.object(hi, "_run", side_effect=run),
                 patch.object(hi, "_finish_staged_install", finish),
             ):
-                result = hi.install_hermes_with_system_python()
+                result = hi.install_agent_with_system_python()
             self.assertTrue(result.ok)
             self.assertEqual(seen, [None, ((3, 14), (3, 15))])
             self.assertEqual(finish.call_args.kwargs["py"], Path("py314"))
 
 
 class HermesInstallHomeArgTests(unittest.TestCase):
-    def test_explicit_home_does_not_read_gateway_hermes_home(self) -> None:
+    def test_explicit_home_does_not_read_gateway_agent_home(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             engine_home = Path(td) / "engine"
             engine_home.mkdir()
@@ -557,7 +557,7 @@ class HermesInstallHomeArgTests(unittest.TestCase):
             with (
                 patch.object(hi, "ensure_iris_agent_home", side_effect=AssertionError("product home")),
                 patch.object(
-                    hi.gw, "probe_hermes_runtime", side_effect=AssertionError("probe HermesHome")
+                    hi.gw, "probe_agent_runtime", side_effect=AssertionError("probe HermesHome")
                 ),
                 patch.object(hi, "ensure_system_python_winget", return_value=Path("python")),
                 patch.object(hi, "python_version", return_value=(3, 11)),
@@ -565,7 +565,7 @@ class HermesInstallHomeArgTests(unittest.TestCase):
                 patch.object(hi, "_run", side_effect=run),
                 patch.object(hi, "_finish_staged_install", finish),
             ):
-                result = hi.install_hermes_with_system_python(home=engine_home)
+                result = hi.install_agent_with_system_python(home=engine_home)
             self.assertTrue(result.ok)
             self.assertEqual(finish.call_args.kwargs["home"], engine_home)
             self.assertFalse(finish.call_args.kwargs["probe_gateway"])
@@ -600,7 +600,7 @@ class HermesInstallHomeArgTests(unittest.TestCase):
                 patch.object(hi, "_run", side_effect=run),
                 patch.object(hi, "_finish_staged_install", finish),
             ):
-                result = hi.install_hermes_with_system_python(home=engine_home, sha=pin)
+                result = hi.install_agent_with_system_python(home=engine_home, sha=pin)
             self.assertTrue(result.ok)
             joined = [" ".join(c) for c in cmds]
             self.assertTrue(any("fetch" in j and pin in j for j in joined))
@@ -748,6 +748,30 @@ class HermesInstallDeclaredExtrasTests(unittest.TestCase):
             self.assertEqual(len(boosts), 1)
             self.assertTrue(any("aiohttp==3.14.3" in part for part in boosts[0]))
             self.assertEqual(len(edits), 1)
+
+    def test_python_version_skips_windowsapps_stub_without_run(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            stub = Path(td) / "Microsoft" / "WindowsApps" / "python3.exe"
+            stub.parent.mkdir(parents=True)
+            stub.write_bytes(b"")
+            with patch.object(hi, "_run") as run:
+                self.assertIsNone(hi.python_version(stub))
+                run.assert_not_called()
+
+    def test_python_version_still_runs_real_exe(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "Python311" / "python.exe"
+            real.parent.mkdir(parents=True)
+            real.write_bytes(b"x" * 2048)
+            fake = subprocess.CompletedProcess(
+                args=[str(real), "-c", ""],
+                returncode=0,
+                stdout="3.11\n",
+                stderr="",
+            )
+            with patch.object(hi, "_run", return_value=fake) as run:
+                self.assertEqual(hi.python_version(real), (3, 11))
+                run.assert_called_once()
 
 
 if __name__ == "__main__":

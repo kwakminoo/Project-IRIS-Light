@@ -17,6 +17,28 @@ GATEWAY_AUTH_USER_MSG = (
     "시작 프로토콜 「다시 설정」으로 API_SERVER_KEY를 맞추세요."
 )
 
+# 413: TPM(분당 한도) vs 컨텍스트/페이로드 크기 — 문구를 섞지 않는다
+TPM_RATE_USER_MSG = (
+    "모델의 분당 토큰(TPM) 사용 한도에 도달했습니다. "
+    "대화를 줄이거나 잠시 기다린 뒤 다시 시도하거나, 다른 모델로 바꾸세요."
+)
+CONTEXT_LENGTH_USER_MSG = (
+    "대화가 모델이 한 번에 받을 수 있는 길이를 넘었습니다. 새 채팅을 시작하세요."
+)
+_TPM_413_HINTS = (
+    "tpm",
+    "tokens per minute",
+    "request too large for model",
+    "organization service tier tpm",
+)
+_CONTEXT_LENGTH_HINTS = (
+    "context length",
+    "context_length",
+    "maximum context",
+    "too many tokens",
+    "prompt is too long",
+)
+
 
 def is_cloud_runtime_name(name: str) -> bool:
     from iris.infrastructure.ollama_client import OllamaModelInfo
@@ -45,8 +67,8 @@ def looks_like_no_tools_error(err_msg: str) -> bool:
     return "does not support tools" in s or "not support tools" in s
 
 
-def format_hermes_sse_error(err_msg: str, *, model: str = "") -> str:
-    """SSE error.message → 사용자용 RuntimeError 본문 (앞에 'Hermes: ' 붙이지 않음)."""
+def format_agent_sse_error(err_msg: str, *, model: str = "") -> str:
+    """SSE error.message → 사용자용 RuntimeError 본문 (앞에 'Iris Agent: ' 붙이지 않음)."""
     raw = (err_msg or "").strip()
     if looks_like_upstream_unauthorized(raw):
         if is_cloud_runtime_name(model) or ":cloud" in raw.lower() or "-cloud" in raw.lower():
@@ -70,12 +92,12 @@ def format_hermes_sse_error(err_msg: str, *, model: str = "") -> str:
     return raw
 
 
-def format_hermes_http_401() -> str:
+def format_agent_http_401() -> str:
     """urllib HTTPError 401 — 게이트웨이 Bearer 실패 전용."""
     return GATEWAY_AUTH_USER_MSG
 
 
-def scrub_upstream_hermes_cli_hints(text: str) -> str:
+def scrub_upstream_cli_hints(text: str) -> str:
     """업스트림 format_error 의 `hermes doctor` 등 CLI 힌트를 Iris 안내로 가린다."""
     out = text or ""
     if "hermes doctor" not in out.lower() and "hermes " not in out.lower():
@@ -94,10 +116,12 @@ def explain_chat_error(err: str) -> str:
 
     할당량 전환(`status_for_error`)은 이 함수 이전의 원문을 본다.
     """
-    raw = scrub_upstream_hermes_cli_hints((err or "").strip())
+    raw = scrub_upstream_cli_hints((err or "").strip())
     if not raw:
         return "모델이 응답하지 않았습니다. 다시 시도하세요."
     if CLOUD_AUTH_ERROR_PREFIX in raw or GATEWAY_AUTH_ERROR_PREFIX in raw:
+        return raw
+    if raw in (TPM_RATE_USER_MSG, CONTEXT_LENGTH_USER_MSG):
         return raw
     if raw.startswith("이 모델은 도구"):
         return raw
@@ -147,17 +171,14 @@ def explain_chat_error(err: str) -> str:
         h in low for h in ("credits", "billing", "entitlement", "크레딧")
     ):
         return _billing_ui
-    if status == 413 or any(
-        h in low
-        for h in (
-            "context length",
-            "context_length",
-            "maximum context",
-            "too many tokens",
-            "prompt is too long",
-        )
-    ):
-        return "대화가 모델이 한 번에 받을 수 있는 길이를 넘었습니다. 새 채팅을 시작하세요."
+    _tpm_413 = any(h in low for h in _TPM_413_HINTS)
+    _context_overflow = any(h in low for h in _CONTEXT_LENGTH_HINTS)
+    _bare_413 = status == 413 or bool(re.search(r"\b413\b", low))
+    if _tpm_413 or _context_overflow or _bare_413:
+        # TPM/rate형 413을 컨텍스트 초과 문장으로 덮지 않는다
+        if _tpm_413:
+            return TPM_RATE_USER_MSG
+        return CONTEXT_LENGTH_USER_MSG
     if status == 404 or "model not found" in low or ("not found" in low and "model" in low):
         return "선택한 모델을 서버에서 찾지 못했습니다. 다른 모델을 고르세요."
     if "error 1010" in low or "http 클라이언트 식별자가 차단" in low:
@@ -236,11 +257,11 @@ if __name__ == "__main__":
     assert not looks_like_upstream_unauthorized("Invalid gateway API key")
     assert is_cloud_runtime_name("gemma4:31b-cloud")
     assert not is_cloud_runtime_name("exaone3.5:2.4b")
-    assert CLOUD_AUTH_ERROR_PREFIX in format_hermes_sse_error(
+    assert CLOUD_AUTH_ERROR_PREFIX in format_agent_sse_error(
         "HTTP 401: Unauthorized", model="gemma4:31b-cloud"
     )
-    assert GATEWAY_AUTH_ERROR_PREFIX in format_hermes_http_401()
-    assert "도구" in format_hermes_sse_error(
+    assert GATEWAY_AUTH_ERROR_PREFIX in format_agent_http_401()
+    assert "도구" in format_agent_sse_error(
         "registry.ollama.ai/library/exaone3.5:2.4b does not support tools"
     )
     quota = (
@@ -253,12 +274,12 @@ if __name__ == "__main__":
         "Hermes: HTTP 400 Unsupported parameter(s): options"
     )
     assert explain_chat_error(CLOUD_AUTH_USER_MSG) == CLOUD_AUTH_USER_MSG
-    assert "연결하지 못했습니다" in explain_chat_error("Hermes 연결 실패: refused")
-    assert "Iris Agent" in explain_chat_error("Hermes 연결 실패: refused")
+    assert "연결하지 못했습니다" in explain_chat_error("Iris Agent 연결 실패: refused")
+    assert "Iris Agent" in explain_chat_error("Iris Agent 연결 실패: refused")
     assert "hermes doctor" not in explain_chat_error(
         "custom rejected; run `hermes doctor` for details"
     ).lower()
-    assert "Iris" in scrub_upstream_hermes_cli_hints("run hermes doctor now")
+    assert "Iris" in scrub_upstream_cli_hints("run hermes doctor now")
     _billing_ui = (
         "Ollama 클라우드 크레딧이 부족합니다. "
         "요금을 충전하거나 다른 모델로 바꾸세요."
@@ -305,4 +326,4 @@ if __name__ == "__main__":
             )
             == "gemma4:31b-cloud"
         )
-    print("hermes_errors self-check ok")
+    print("iris_agent_errors self-check ok")

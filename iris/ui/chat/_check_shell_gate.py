@@ -61,7 +61,33 @@ def main() -> int:
     assert should_auto_run(allowed, "   ") is False
     assert preview_command({"command": " git status "}) == "git status"
     assert preview_command({"file": "main.py"}) == "main.py"
+    assert preview_command({"path": "src/a.py"}) == "src/a.py"
     assert preview_command({}) == "project.run"
+
+    from iris.ui.chat.shell_gate import try_card_confirm
+
+    card_chat = _Chat()
+    assert (
+        try_card_confirm(
+            chat=card_chat,
+            command="git status",
+            title="Shell",
+            approval=ApprovalState(),
+            wait=lambda _bid: "run",
+        )
+        is True
+    )
+    assert len(card_chat.inserts) == 1
+    assert (
+        try_card_confirm(
+            chat=None,
+            command="git status",
+            title="Shell",
+            approval=ApprovalState(),
+            wait=_boom,
+        )
+        is None
+    )
 
     arm("gate-run")
     found: list[str] = []
@@ -184,8 +210,9 @@ def main() -> int:
         status="ok",
         phase="pending",
     )
-    assert panel._log._tool_blocks[stored_id].phase == "pending"
-    assert "iris-run://" in panel._log.toHtml()
+    stored = panel._tool_blocks[stored_id]
+    assert stored.phase == "pending"
+    assert "iris-run://" in marked_tool_shell_to_html(stored)
 
     card_html = code_card_to_html(
         CodeCardModel(

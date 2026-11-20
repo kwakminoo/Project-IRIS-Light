@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from iris.infrastructure.speak_capability import (
+from iris.infrastructure.tool_capability import (
     PHASE4_ALLOWLIST,
-    default_speak_tools,
+    default_agent_tools,
     set_speak_surface,
 )
 from iris.system.iris_shell import parse_shell_job, run_shell_job
@@ -15,7 +15,7 @@ from iris.ui.control_actions.shell import _ide_companion_active
 def main() -> None:
     set_speak_surface("home")
     assert PHASE4_ALLOWLIST.grant("shell.run") is not None
-    names = default_speak_tools().engine_names()
+    names = default_agent_tools().engine_names()
     assert "shell.run" in names, names
 
     job = parse_shell_job({"command": "echo shell-action-ok"})
@@ -54,7 +54,7 @@ def main() -> None:
     assert _ide_companion_active(_Home()) is False
 
     set_speak_surface("ide_companion")
-    hidden = default_speak_tools().invoke("shell.run", {"command": "echo nope"})
+    hidden = default_agent_tools().invoke("shell.run", {"command": "echo nope"})
     assert hidden.ok is False
     assert "not_allowed" in (hidden.error or ""), hidden
     set_speak_surface("home")

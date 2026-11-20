@@ -22,6 +22,7 @@ from iris.system import iris_agent_memory_nudge as nudge
 from iris.system.iris_agent_control_sync import (
     ensure_mcp_in_config,
     project_root,
+    repo_skills_iris_agent_dir,
     sync_iris_control,
     verify_install,
 )
@@ -34,10 +35,21 @@ _MCP_TEACH = re.compile(r"mcp__iris_control__|IRIS_CONTROL_MCP_COMPAT", re.I)
 
 def _assert_memory_nudge_speak_tools_product() -> None:
     assert nudge._MARKER in nudge._BLOCK, "nudge version marker drift"
+    assert nudge._NUDGE_VERSION >= 44, nudge._NUDGE_VERSION
     block = nudge._nudge_block()
     assert "Prefer product **SpeakTools**" in block
     assert "IRIS_CONTROL_MCP_COMPAT" not in block
     assert "mcp__iris_control__" not in block
+    # Unit 5: familiar FS/shell names; no "disabled terminal → Speak shell.run only" sermon.
+    assert "familiar Iris-backed" in block or "familiar `write_file`" in block
+    for familiar in ("write_file", "read_file", "search_files", "terminal"):
+        assert f"`{familiar}`" in block, familiar
+    assert "Do NOT use Iris Agent built-in" not in block
+    assert "it is disabled for Iris" not in block
+    item5 = block.split("\n5.", 1)[-1].split("\n6.", 1)[0]
+    assert "shell.run" not in item5, item5
+    assert "SpeakTools `shell.run`" not in block
+    assert "SpeakTools `project.write_file`" not in block
     for line in block.splitlines():
         head = line.strip()
         if not head:
@@ -103,15 +115,15 @@ def _assert_scrub_even_with_compat_env() -> None:
         with (
             patch.dict("os.environ", {"IRIS_CONTROL_MCP_COMPAT": "1"}),
             patch(
-                "iris.system.iris_agent_control_sync.hermes_home",
+                "iris.system.iris_agent_control_sync.iris_agent_home",
                 return_value=home,
             ),
             patch(
-                "iris.system.iris_agent_soul_sync.hermes_home",
+                "iris.system.iris_agent_soul_sync.iris_agent_home",
                 return_value=home,
             ),
             patch(
-                "iris.system.iris_agent_memory_nudge.hermes_home",
+                "iris.system.iris_agent_memory_nudge.iris_agent_home",
                 return_value=home,
             ),
         ):
@@ -128,6 +140,8 @@ def _assert_scrub_even_with_compat_env() -> None:
             report = sync_iris_control(home=home, reconnect_gateway=False)
             assert report.mcp_installed
             assert "SpeakTools" in report.summary_line()
+            assert report.summary_line().startswith("Iris↔Agent:")
+            assert "Iris↔Hermes" not in report.summary_line()
             assert "MCP iris-control ok" not in report.summary_line()
             assert "iris-control" not in (
                 (yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {})
@@ -137,6 +151,10 @@ def _assert_scrub_even_with_compat_env() -> None:
             assert all(
                 "iris-control MCP still listed" not in e for e in report.errors
             ), report.errors
+            # PR-D: product skills source is iris-agent only (not legacy iris-control).
+            src = repo_skills_iris_agent_dir(project_root())
+            assert src.is_dir(), src
+            assert src.name == "iris-agent", src
 
 
 def _main() -> None:
@@ -149,15 +167,15 @@ def _main() -> None:
         )
         with (
             patch(
-                "iris.system.iris_agent_control_sync.hermes_home",
+                "iris.system.iris_agent_control_sync.iris_agent_home",
                 return_value=home,
             ),
             patch(
-                "iris.system.iris_agent_soul_sync.hermes_home",
+                "iris.system.iris_agent_soul_sync.iris_agent_home",
                 return_value=home,
             ),
             patch(
-                "iris.system.iris_agent_memory_nudge.hermes_home",
+                "iris.system.iris_agent_memory_nudge.iris_agent_home",
                 return_value=home,
             ),
         ):
@@ -175,6 +193,8 @@ def _main() -> None:
             report = sync_iris_control(home=home, reconnect_gateway=False)
             assert report.mcp_installed
             assert "SpeakTools" in report.summary_line()
+            assert report.summary_line().startswith("Iris↔Agent:")
+            assert "Iris↔Hermes" not in report.summary_line()
             assert "MCP iris-control ok" not in report.summary_line()
             assert "iris-control" not in (
                 yaml.safe_load(

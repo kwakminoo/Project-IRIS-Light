@@ -34,6 +34,10 @@ def register_session_actions(window: SessionHost, reg: ActionRegistry, surface: 
             {"id": a.id, "address": a.address, "label": a.label}
             for a in load_email_accounts(window._db)
         ]
+        store = getattr(getattr(window, "_chat_session", None), "attachments", None)
+        attachments = (
+            [ref.as_dict() for ref in store.list_refs()] if store is not None else []
+        )
         return ok_result(
             "get_state",
             {
@@ -68,13 +72,12 @@ def register_session_actions(window: SessionHost, reg: ActionRegistry, surface: 
                         "last_seen_at": 0.0,
                     }
                 ),
-                "hermes_online": bool(getattr(window, "_hermes_online", False)),
+                "agent_online": bool(getattr(window, "_agent_online", False)),
                 "agent_enabled": bool(window._settings.agent_enabled),
-                # Dual key for MCP clients still reading hermes_enabled.
-                "hermes_enabled": bool(window._settings.agent_enabled),
                 "model": window._settings.model_name or window._settings.ollama_model,
                 "email_accounts": accounts,
                 "selected_email_account_id": window._selected_email_account_id,
+                "attachments": attachments,
                 "calendar": {
                     "year": getattr(getattr(window, "_calendar_page", None), "year", None),
                     "month": getattr(getattr(window, "_calendar_page", None), "month", None),

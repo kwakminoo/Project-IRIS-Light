@@ -6,8 +6,8 @@ from unittest.mock import patch
 import yaml
 
 from iris.system.iris_agent_tool_choice import (
-    load_hermes_tool_choice,
-    set_hermes_tool_choice,
+    load_agent_tool_choice,
+    set_agent_tool_choice,
 )
 
 
@@ -19,13 +19,13 @@ class HermesToolChoiceTests(TestCase):
                 "iris.infrastructure.iris_agent_credentials.hermes_home",
                 return_value=home,
             ):
-                self.assertEqual(load_hermes_tool_choice(), "auto")
-                changed, _ = set_hermes_tool_choice("required")
+                self.assertEqual(load_agent_tool_choice(), "auto")
+                changed, _ = set_agent_tool_choice("required")
                 self.assertTrue(changed)
-                self.assertEqual(load_hermes_tool_choice(), "required")
-                changed, _ = set_hermes_tool_choice("auto")
+                self.assertEqual(load_agent_tool_choice(), "required")
+                changed, _ = set_agent_tool_choice("auto")
                 self.assertTrue(changed)
-                self.assertEqual(load_hermes_tool_choice(), "auto")
+                self.assertEqual(load_agent_tool_choice(), "auto")
                 data = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
                 self.assertEqual(data["agent"]["tool_choice"], "auto")
 
@@ -36,7 +36,7 @@ class HermesToolChoiceTests(TestCase):
                 "iris.infrastructure.iris_agent_credentials.hermes_home",
                 return_value=home,
             ):
-                changed, status = set_hermes_tool_choice("always")
+                changed, status = set_agent_tool_choice("always")
                 self.assertFalse(changed)
                 self.assertIn("invalid", status)
                 self.assertFalse((home / "config.yaml").exists())

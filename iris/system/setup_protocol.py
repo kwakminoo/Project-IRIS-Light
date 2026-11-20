@@ -24,19 +24,19 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from iris.agent import ensure_iris_agent_runtime
-from iris.infrastructure.iris_agent_credentials import is_weak_hermes_api_key
+from iris.infrastructure.agent_runtime import iris_agent_checkout_dir
+from iris.infrastructure.iris_agent_credentials import is_weak_iris_agent_api_key
 from iris.system.iris_agent_gateway import (
-    CODE_PROCESS_CRASH,
-    ensure_hermes_provider_config,
-    hermes_executable,
-    hermes_home,
-    is_hermes_cli_missing_failure,
-    is_hermes_gateway_dep_missing_failure,
-    is_hermes_gateway_running,
-    is_hermes_trampoline_failure,
-    load_hermes_dotenv,
-    probe_hermes_runtime,
-    resolve_hermes_api_key,
+    ensure_agent_provider_config,
+    agent_executable,
+    iris_agent_home,
+    is_iris_agent_cli_missing_failure,
+    is_iris_agent_gateway_dep_missing_failure,
+    is_iris_agent_gateway_running,
+    is_iris_agent_trampoline_failure,
+    load_iris_agent_dotenv,
+    probe_agent_runtime,
+    resolve_agent_api_key,
     verify_iris_mcp_tools,
 )
 from iris.system.iris_agent_control_sync import (
@@ -59,7 +59,9 @@ DEFAULT_CLOUD_MODEL = "gemma4:e2b-cloud"
 
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download/windows"
 OLLAMA_INSTALL_PS1 = "https://ollama.com/install.ps1"
-HERMES_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.ps1"
+# Upstream install.ps1 host stays factual; product name is Iris Agent.
+IRIS_AGENT_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.ps1"
+HERMES_INSTALL_URL = IRIS_AGENT_INSTALL_URL  # thin legacy alias
 ANDROID_STUDIO_URL = "https://developer.android.com/studio"
 OLLAMA_SIGNIN_URL = "https://ollama.com/signin"
 NODE_DOWNLOAD_URL = "https://nodejs.org/en/download"
@@ -136,11 +138,11 @@ CORE_STEP_IDS: tuple[str, ...] = (
     "mcp_venv",
     "ollama_install",
     "ollama_model",
-    "hermes_install",
-    "hermes_env",
-    "hermes_provider",
+    "agent_install",
+    "agent_env",
+    "agent_provider",
     "iris_control_sync",
-    "hermes_gateway",
+    "agent_runtime",
     "core_smoke",
 )
 
@@ -149,11 +151,11 @@ CORE_STEP_LABELS: dict[str, str] = {
     "mcp_venv": "MCP용 Python 가상환경",
     "ollama_install": "Ollama 설치·기동",
     "ollama_model": "추론 모델 준비",
-    "hermes_install": "Iris Agent 설치",
-    "hermes_env": "Iris Agent API 키·서버 설정",
-    "hermes_provider": "Iris Agent ↔ Ollama 연결",
+    "agent_install": "Iris Agent 설치",
+    "agent_env": "Iris Agent API 키·서버 설정",
+    "agent_provider": "Iris Agent ↔ Ollama 연결",
     "iris_control_sync": "SpeakTools·스킬·mobile-mcp",
-    "hermes_gateway": "Iris Agent gateway 기동",
+    "agent_runtime": "Iris Agent 런타임 준비",
     "core_smoke": "Core 연결 검증",
 }
 
@@ -184,11 +186,37 @@ OPTIONAL_LABELS: dict[str, str] = {
 # winget/UAC 승격용 — 콘솔 창을 숨기지 않는 단계 (_run_streamed hidden=False 와 동일).
 # UI 안내 문구와 공유한다 (setup_wizard VISIBLE_CONSOLE_STEPS).
 VISIBLE_CONSOLE_STEPS: frozenset[str] = frozenset(
-    {"ollama_install", "hermes_install", "emulator"}
+    {"ollama_install", "agent_install", "emulator"}
 )
 
+# Persisted setup_state.json may still key steps with pre-branding ids.
+STEP_ID_ALIASES: dict[str, str] = {
+    "hermes_install": "agent_install",
+    "hermes_env": "agent_env",
+    "hermes_provider": "agent_provider",
+}
+
+
+def normalize_setup_step_id(step_id: str) -> str:
+    """Map legacy hermes_* step ids to agent_* on read."""
+    key = (step_id or "").strip()
+    return STEP_ID_ALIASES.get(key, key)
+
+
+def _migrate_step_ids(steps: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite steps dict keys from legacy → current ids (one migration table)."""
+    out: dict[str, Any] = {}
+    for raw_id, payload in steps.items():
+        new_id = normalize_setup_step_id(str(raw_id))
+        if new_id in out and raw_id != new_id:
+            # Prefer already-migrated / new key if both present
+            continue
+        out[new_id] = payload
+    return out
+
+
 # Ready 기준 (문서화):
-# - core_ready / 부팅 게이트: verify_core_quick (Ollama 응답·가용 모델·Hermes /health)
+# - core_ready / 부팅 게이트: verify_core_quick (Ollama 응답·가용 모델·Iris Agent /health)
 # - 설정「검사」·core_smoke: verify_core (quick + 채팅 401 + MCP stdio)
 # last_verify 에 최근 검사 수준이 기록되며 HUD/설정에 표시한다.
 
@@ -272,9 +300,10 @@ def redact_secrets(text: str) -> str:
         return text
     out = _BEARER_RE.sub("Bearer ***", text)
     out = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}=***", out)
-    live_key = (os.environ.get("IRIS_HERMES_API_KEY") or "").strip()
-    if len(live_key) >= 8 and live_key in out:
-        out = out.replace(live_key, "***")
+    for env_name in ("IRIS_AGENT_API_KEY", "IRIS_HERMES_API_KEY"):
+        live_key = (os.environ.get(env_name) or "").strip()
+        if len(live_key) >= 8 and live_key in out:
+            out = out.replace(live_key, "***")
     return out
 
 
@@ -373,6 +402,8 @@ def load_setup_state(
     base.update({k: data.get(k, base[k]) for k in base})
     if not isinstance(base.get("steps"), dict):
         base["steps"] = {}
+    else:
+        base["steps"] = _migrate_step_ids(base["steps"])
     if not isinstance(base.get("optional"), dict):
         base["optional"] = {}
     # 새 optional 키가 추가돼도 기존 state와 병합
@@ -419,12 +450,11 @@ def clear_ollama_model_cleanup_pending() -> None:
 
 def needs_setup_wizard(
     *,
-    hermes_command: str | None = None,
     agent_command: str | None = None,
 ) -> bool:
     """시작 프로토콜 위저드가 필요한지 — 미설치 또는 한 번도 Core 완료 안 함."""
-    cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
-    if not ollama_executable() or not hermes_executable(cmd):
+    cmd = agent_command or "iris-agent"
+    if not ollama_executable() or not agent_executable(cmd):
         return True
     return not is_core_ready()
 
@@ -432,26 +462,20 @@ def needs_setup_wizard(
 def _warm_core_services(
     *,
     ollama_base_url: str,
-    hermes_base_url: str | None = None,
-    hermes_command: str | None = None,
-    agent_base_url: str | None = None,
-    agent_command: str | None = None,
+    agent_base_url: str = "",
+    agent_command: str = "iris-agent",
     wait_sec: float = 25.0,
 ) -> None:
     """재부팅 직후 꺼져 있을 수 있는 Ollama/Iris Agent를 조용히 기동 시도."""
-    base = (
-        agent_base_url
-        if agent_base_url is not None
-        else (hermes_base_url or "http://127.0.0.1:8642/v1")
-    )
-    cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
+    base = (agent_base_url or "").strip()
+    cmd = agent_command or "iris-agent"
     half = max(8.0, wait_sec / 2)
     if ollama_executable():
         ensure_ollama_running(ollama_base_url, wait_sec=half)
-    if hermes_executable(cmd):
+    if agent_executable(cmd):
         ensure_iris_agent_runtime(
             base,
-            api_key=resolve_hermes_api_key(),
+            api_key=resolve_agent_api_key(),
             command=cmd,
             wait_sec=half,
         )
@@ -460,16 +484,16 @@ def _warm_core_services(
 def mark_core_ready_if_healthy(
     *,
     ollama_base_url: str = "http://127.0.0.1:11434/v1",
-    hermes_base_url: str | None = None,
-    hermes_command: str | None = None,
-    agent_base_url: str | None = None,
-    agent_command: str | None = None,
+    agent_base_url: str = "",
+    agent_command: str = "iris-agent",
     min_model: str = "",
 ) -> bool:
     """부팅 게이트 — True면 시작 프로토콜 없이 runtime boot.
 
     Ready 기준 (quick):
-    - Ollama 응답 + 가용 추론(로컬 모델 또는 클라우드 로그인) + Hermes /health
+    - Ollama 응답 + 가용 추론(로컬 모델 또는 클라우드 로그인)
+    - Product sidecar: HTTP gateway /health 불필요 (agent_base_url 비어 있음)
+    - Opt-in gateway URL이 있으면 그 엔드포인트 /health도 본다
     - MCP stdio·채팅 401은 포함하지 않음 (느림) — 그건 verify_core(full)
 
     - Ollama/Iris Agent 실행 파일이 없으면 False (위저드).
@@ -477,13 +501,9 @@ def mark_core_ready_if_healthy(
       시도한 뒤 True (재부팅 직후 일시 미응답은 일반 부팅에서 복구).
     - core_ready가 아니면 기동 시도 후 verify_core_quick 통과 시에만 core_ready 기록.
     """
-    base = (
-        agent_base_url
-        if agent_base_url is not None
-        else (hermes_base_url or "http://127.0.0.1:8642/v1")
-    )
-    cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
-    if not ollama_executable() or not hermes_executable(cmd):
+    base = (agent_base_url or "").strip()
+    cmd = agent_command or "iris-agent"
+    if not ollama_executable() or not agent_executable(cmd):
         return False
 
     proto = SetupProtocol(
@@ -666,7 +686,7 @@ def format_inference_report(
     if gateway_failure and local_models:
         lines.append(
             "참고: 로컬 모델이 있으면 Core에 클라우드 로그인은 필수가 아닙니다. "
-            "위 gateway/API 키 메시지를 먼저 보세요. "
+            "위 Iris Agent API 키·opt-in 진단 메시지를 먼저 보세요. "
             "(앱 UI 로그인과 데몬 /api/me 판정이 다를 수 있음)"
         )
     elif cloud_signed_in and not local_models:
@@ -719,12 +739,12 @@ def _upsert_dotenv(path: Path, updates: dict[str, str]) -> None:
 HERMES_MIN_OLLAMA_NUM_CTX = 64000
 
 
-def _guard_fresh_hermes_tree() -> None:
-    """공식 설치가 hermes-agent 트리를 만든 직후 Iris Agent baseline overlay 1회."""
+def _guard_fresh_agent_tree() -> None:
+    """공식 설치가 checkout 트리를 만든 직후 Iris Agent baseline overlay 1회."""
     try:
         from iris.infrastructure.agent_runtime import apply_iris_agent_baseline_overlays
 
-        apply_iris_agent_baseline_overlays(hermes_home() / "hermes-agent")
+        apply_iris_agent_baseline_overlays(iris_agent_checkout_dir(iris_agent_home()))
     except Exception:
         return
 
@@ -735,7 +755,7 @@ def _ollama_provider_model(
     *,
     force_local_if_unsigned: bool = True,
 ) -> dict[str, Any]:
-    """Hermes config.yaml model 섹션을 Ollama 설정으로 명확히 덮어쓴다.
+    """Iris Agent config.yaml model 섹션을 Ollama 설정으로 명확히 덮어쓴다.
 
     setdefault를 쓰면 예전 provider(openai 등)의 base_url/model이 그대로 남는다 —
     항상 명시적으로 대입해 stale 값이 남지 않게 한다.
@@ -835,10 +855,8 @@ class SetupProtocol:
         self,
         *,
         ollama_base_url: str = "http://127.0.0.1:11434/v1",
-        hermes_base_url: str | None = None,
-        hermes_command: str | None = None,
-        agent_base_url: str | None = None,
-        agent_command: str | None = None,
+        agent_base_url: str = "",
+        agent_command: str = "iris-agent",
         min_model: str = "",
         simulate: bool | None = None,
         dry_run: bool | None = None,
@@ -847,14 +865,10 @@ class SetupProtocol:
         self.ollama_base_url = ollama_base_url
         from iris.infrastructure.iris_agent_client import normalize_iris_agent_openai_base_url
 
-        base = (
-            agent_base_url
-            if agent_base_url is not None
-            else (hermes_base_url or "http://127.0.0.1:8642/v1")
-        )
-        cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
-        self.hermes_base_url = normalize_iris_agent_openai_base_url(base)
-        self.hermes_command = cmd
+        base = (agent_base_url or "").strip()
+        cmd = agent_command or "iris-agent"
+        self.agent_base_url = normalize_iris_agent_openai_base_url(base)
+        self.agent_command = cmd
         self.min_model = (min_model or default_min_model()).strip() or DEFAULT_MIN_MODEL
         self.simulate = is_setup_demo() if simulate is None else bool(simulate)
         self.dry_run = is_setup_dry_run() if dry_run is None else bool(dry_run)
@@ -867,12 +881,12 @@ class SetupProtocol:
         self._active_proc: subprocess.Popen[bytes] | None = None
         self._cloud_without_local_confirmed = False
         # ponytail: Iris Agent 런타임 자동 재설치는 세션당 1회 — 무한 루프 천장
-        self._hermes_runtime_repaired = False
-        self._hermes_official_failed = False
+        self._agent_runtime_repaired = False
+        self._agent_official_failed = False
         # NeedsUser「우회로 다시 설치」— 공식 스크립트 루프 탈출
-        self._hermes_prefer_bypass = False
-        # hermes_env 가 키를 바꿨으면 gateway 가 already-running 이어도 restart
-        self._hermes_key_rotated = False
+        self._agent_prefer_bypass = False
+        # agent_env 가 키를 바꿨으면 gateway 가 already-running 이어도 restart
+        self._agent_key_rotated = False
 
     def bind_stream(self, fn: StreamFn | None) -> None:
         self._on_stream = fn
@@ -907,11 +921,11 @@ class SetupProtocol:
             ("mcp_venv", self._step_mcp_venv),
             ("ollama_install", self._step_ollama_install),
             ("ollama_model", self._step_ollama_model),
-            ("hermes_install", self._step_hermes_install),
-            ("hermes_env", self._step_hermes_env),
-            ("hermes_provider", self._step_hermes_provider),
+            ("agent_install", self._step_agent_install),
+            ("agent_env", self._step_agent_env),
+            ("agent_provider", self._step_agent_provider),
             ("iris_control_sync", self._step_iris_control_sync),
-            ("hermes_gateway", self._step_hermes_gateway),
+            ("agent_runtime", self._step_agent_runtime),
             ("core_smoke", self._step_core_smoke),
         ]
 
@@ -948,7 +962,7 @@ class SetupProtocol:
 
         timeout: 마지막 출력 이후 유휴 초(진행 로그가 있으면 연장).
         hard_timeout: 벽시계 절대 상한. None이면 timeout만 사용(구형 호환).
-        abort_when: 누적 stdout에 대해 True면 조기 kill (Hermes 448 등).
+        abort_when: 누적 stdout에 대해 True면 조기 kill (Iris Agent 설치 exit 448 등).
         """
         kwargs: dict[str, Any] = {
             "stdout": subprocess.PIPE,
@@ -1091,7 +1105,7 @@ class SetupProtocol:
     def detect(self) -> dict[str, Any]:
         """현재 환경 스냅샷 (설치 여부·준비 여부)."""
         exe_o = ollama_executable()
-        exe_h = hermes_executable(self.hermes_command)
+        exe_h = agent_executable(self.agent_command)
         repo = project_root()
         venv_py = repo / ".venv" / "Scripts" / "python.exe"
         if not venv_py.is_file():
@@ -1104,18 +1118,18 @@ class SetupProtocol:
             "state_dir": str(iris_state_dir()),
             "ollama_exe": exe_o,
             "ollama_running": ollama_up,
-            "hermes_exe": exe_h,
-            "hermes_running": is_hermes_gateway_running(self.hermes_base_url),
+            "agent_exe": exe_h,
+            "agent_running": is_iris_agent_gateway_running(self.agent_base_url),
             "venv_ok": venv_py.is_file(),
             "min_model": self.min_model,
-            "api_key_set": bool(resolve_hermes_api_key()),
+            "api_key_set": bool(resolve_agent_api_key()),
             "local_model_count": len(local),
         }
 
     def detect_local(self) -> dict[str, Any]:
         """로컬 파일·설정만 — 네트워크 헬스는 enrich_detect_network."""
         exe_o = ollama_executable()
-        exe_h = hermes_executable(self.hermes_command)
+        exe_h = agent_executable(self.agent_command)
         repo = project_root()
         venv_py = repo / ".venv" / "Scripts" / "python.exe"
         if not venv_py.is_file():
@@ -1125,11 +1139,11 @@ class SetupProtocol:
             "state_dir": str(iris_state_dir()),
             "ollama_exe": exe_o,
             "ollama_running": None,
-            "hermes_exe": exe_h,
-            "hermes_running": None,
+            "agent_exe": exe_h,
+            "agent_running": None,
             "venv_ok": venv_py.is_file(),
             "min_model": self.min_model,
-            "api_key_set": bool(resolve_hermes_api_key()),
+            "api_key_set": bool(resolve_agent_api_key()),
         }
 
     def enrich_detect_network(
@@ -1144,8 +1158,8 @@ class SetupProtocol:
             self.ollama_base_url,
             timeout_sec=timeout_sec,
         )
-        out["hermes_running"] = is_hermes_gateway_running(
-            self.hermes_base_url,
+        out["agent_running"] = is_iris_agent_gateway_running(
+            self.agent_base_url,
             timeout_sec=timeout_sec,
         )
         return out
@@ -1237,8 +1251,9 @@ class SetupProtocol:
         }
 
     def verify_core_quick(self) -> tuple[bool, str]:
-        """빠른 헬스체크 — Ollama 응답·min_model 존재·Iris Agent gateway만 본다.
+        """빠른 헬스체크 — Ollama 응답·min_model. Opt-in gateway URL이면 /health도.
 
+        Product sidecar (agent_base_url empty): HTTP gateway 불필요.
         MCP stdio 핸드셰이크(최대 수십 초, 프로세스 스폰)는 느리므로 뺀다.
         앱 시작 시 core_ready 여부를 판단할 때처럼 자주 호출되는 경로에서 쓴다.
         Ready(core_ready) 기준 = 이 quick 수준.
@@ -1257,17 +1272,22 @@ class SetupProtocol:
             detail = report or "사용 가능한 Ollama 모델이 없습니다"
             self._record_last_verify("quick", False, detail)
             return False, detail
-        key = resolve_hermes_api_key()
-        if not is_hermes_gateway_running(self.hermes_base_url, api_key=key, timeout_sec=3.0):
+        gw = (self.agent_base_url or "").strip()
+        if not gw:
+            detail = "Ollama·Iris Agent(sidecar) 정상"
+            self._record_last_verify("quick", True, detail)
+            return True, detail
+        key = resolve_agent_api_key()
+        if not is_iris_agent_gateway_running(gw, api_key=key, timeout_sec=3.0):
             from iris.system.iris_agent_gateway import probe_gateway_health
 
             # 잔상 TIMEOUT 진단을 그대로 쓰지 않는다 — 지금 /health 를 다시 본다.
-            health = probe_gateway_health(self.hermes_base_url, timeout_sec=3.0)
+            health = probe_gateway_health(gw, timeout_sec=3.0)
             if health.ok:
                 from iris.system.iris_agent_gateway import probe_gateway_ready
 
                 ready = probe_gateway_ready(
-                    self.hermes_base_url, api_key=key, timeout_sec=3.0
+                    gw, api_key=key, timeout_sec=3.0
                 )
                 detail = (
                     f"[READY] /health OK 이지만 gateway_ready 실패 ({ready.code}).\n"
@@ -1276,7 +1296,7 @@ class SetupProtocol:
                 )
             else:
                 detail = (
-                    f"[HEALTH] Iris Agent gateway /health 실패 ({health.code})\n"
+                    f"[HEALTH] Iris Agent opt-in gateway /health 실패 ({health.code})\n"
                     "조치: 시작 프로토콜을 다시 실행하거나 "
                     "~/.iris-light/agent/logs/iris-gateway 로그를 확인하세요."
                 )
@@ -1305,13 +1325,14 @@ class SetupProtocol:
         if not info.get("usable"):
             self._record_last_verify("full", False, report)
             return False, report
-        key = resolve_hermes_api_key()
-        if not is_hermes_gateway_running(self.hermes_base_url, api_key=key):
+        key = resolve_agent_api_key()
+        gw = (self.agent_base_url or "").strip()
+        if gw and not is_iris_agent_gateway_running(gw, api_key=key):
             from iris.system.iris_agent_gateway import probe_gateway_health, probe_gateway_ready
 
-            health = probe_gateway_health(self.hermes_base_url, timeout_sec=3.0)
+            health = probe_gateway_health(gw, timeout_sec=3.0)
             ready = probe_gateway_ready(
-                self.hermes_base_url, api_key=key, timeout_sec=3.0
+                gw, api_key=key, timeout_sec=3.0
             )
             report_gw = format_inference_report(
                 local_models=list(info.get("local_models") or []),
@@ -1338,7 +1359,7 @@ class SetupProtocol:
                     )
             else:
                 health_msg = (
-                    f"[HEALTH] Iris Agent gateway /health 실패 ({health.code})"
+                    f"[HEALTH] Iris Agent opt-in gateway /health 실패 ({health.code})"
                 )
             detail = health_msg + "\n" + report_gw
             self._record_last_verify("full", False, detail)
@@ -1349,7 +1370,7 @@ class SetupProtocol:
             try:
                 import yaml  # type: ignore
 
-                cfg = hermes_home() / "config.yaml"
+                cfg = iris_agent_home() / "config.yaml"
                 if cfg.is_file():
                     loaded = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
                     m = loaded.get("model") if isinstance(loaded, dict) else {}
@@ -1365,23 +1386,24 @@ class SetupProtocol:
             )
             self._record_last_verify("full", False, detail)
             return False, detail
-        from iris.infrastructure.iris_agent_client import IrisAgentClient
+        if gw:
+            from iris.infrastructure.iris_agent_client import IrisAgentClient
 
-        auth = IrisAgentClient(self.hermes_base_url, api_key=key).probe_chat_auth()
-        if auth == "unauthorized":
-            detail = (
-                "[API_KEY] Iris Agent 게이트웨이 채팅 401 Unauthorized "
-                "(gateway /health 생존과는 별개).\n"
-                "API 키가 게이트웨이(.env API_SERVER_KEY)와 다릅니다.\n"
-                + report
-            )
-            self._record_last_verify("full", False, detail)
-            return False, detail
-        if auth == "unreachable":
-            detail = "Iris Agent 채팅 엔드포인트에 연결할 수 없습니다\n" + report
-            self._record_last_verify("full", False, detail)
-            return False, detail
-        mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self.hermes_command)
+            auth = IrisAgentClient(gw, api_key=key).probe_chat_auth()
+            if auth == "unauthorized":
+                detail = (
+                    "[API_KEY] Iris Agent opt-in gateway 채팅 401 Unauthorized "
+                    "(gateway /health 생존과는 별개).\n"
+                    "API 키가 게이트웨이(.env API_SERVER_KEY)와 다릅니다.\n"
+                    + report
+                )
+                self._record_last_verify("full", False, detail)
+                return False, detail
+            if auth == "unreachable":
+                detail = "Iris Agent 채팅 엔드포인트에 연결할 수 없습니다\n" + report
+                self._record_last_verify("full", False, detail)
+                return False, detail
+        mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self.agent_command)
         if not mcp_ok:
             detail = f"MCP 검증 실패: {mcp_detail}\n{report}"
             self._record_last_verify("full", False, detail)
@@ -1483,7 +1505,7 @@ class SetupProtocol:
         on_progress: ProgressFn | None,
         on_user: UserActionFn | None,
     ) -> bool:
-        """UI 데모 — sleep + NeedsUser만. winget/pip/.env/Hermes 디스크 미변경."""
+        """UI 데모 — sleep + NeedsUser만. winget/pip/.env/Iris Agent 디스크 미변경."""
         # NeedsUser를 한 번씩 보여 줄 Core 단계
         need_user_once = {
             "ollama_install": (
@@ -1491,9 +1513,9 @@ class SetupProtocol:
                 OLLAMA_DOWNLOAD_URL,
                 "「열기」는 참고용입니다. 「완료했어요」를 누르면 다음으로 갑니다.",
             ),
-            "hermes_install": (
+            "agent_install": (
                 "[데모] Iris Agent 설치 확인이 필요합니다. 실제로는 설치하지 않습니다.",
-                HERMES_INSTALL_URL,
+                IRIS_AGENT_INSTALL_URL,
                 "데모이므로 「완료했어요」만 누르면 됩니다.",
             ),
         }
@@ -1539,11 +1561,11 @@ class SetupProtocol:
                     "mcp_venv": "[데모] .venv 준비됨 (실제 pip 없음)",
                     "ollama_install": "[데모] Ollama 연결됨",
                     "ollama_model": f"[데모] 모델 {self.min_model} 준비됨",
-                    "hermes_install": "[데모] Iris Agent 실행 파일 확인",
-                    "hermes_env": "[데모] API 키 동기화됨 (파일 미기록)",
-                    "hermes_provider": "[데모] provider 설정됨 (config 미변경)",
+                    "agent_install": "[데모] Iris Agent 실행 파일 확인",
+                    "agent_env": "[데모] API 키 동기화됨 (파일 미기록)",
+                    "agent_provider": "[데모] provider 설정됨 (config 미변경)",
                     "iris_control_sync": "[데모] SpeakTools·스킬 OK",
-                    "hermes_gateway": "[데모] gateway /health + MCP OK",
+                    "agent_runtime": "[데모] sidecar 런타임 + MCP OK",
                     "core_smoke": "[데모] Core smoke 통과",
                 }.get(step_id, "[데모] 완료")
                 result = self._record_step(step_id, "done", done_msg)
@@ -1561,7 +1583,7 @@ class SetupProtocol:
         on_progress: ProgressFn | None,
         on_user: UserActionFn | None,
     ) -> bool:
-        """실제 프로토콜 UI 문구로 흐름만 재현. winget/pip/.env/Hermes 디스크 미변경."""
+        """실제 프로토콜 UI 문구로 흐름만 재현. winget/pip/.env/Iris Agent 디스크 미변경."""
         # 미설치 상황을 가정해 NeedsUser+설치 버튼을 보여 줄 단계
         need_install = {
             "ollama_install": (
@@ -1569,9 +1591,9 @@ class SetupProtocol:
                 OLLAMA_DOWNLOAD_URL,
                 "UAC가 뜨면 허용하세요. 수동 설치 시 「열기」 후 「완료했어요」.",
             ),
-            "hermes_install": (
+            "agent_install": (
                 "Iris Agent가 없습니다. 「설치」를 누르면 공식 설치 스크립트를 실행합니다.",
-                HERMES_INSTALL_URL,
+                IRIS_AGENT_INSTALL_URL,
                 "설치에 수 분이 걸릴 수 있습니다. 수동이면 「열기」 후 「완료했어요」.",
             ),
         }
@@ -1579,10 +1601,10 @@ class SetupProtocol:
             "state_init": "상태 디렉터리 준비됨",
             "mcp_venv": "venv OK (python.exe)",
             "ollama_model": f"{self.min_model} 준비됨",
-            "hermes_env": "API_SERVER_ENABLED·키 동기화됨",
-            "hermes_provider": "provider → Ollama(custom) 설정",
+            "agent_env": "API_SERVER_ENABLED·키 동기화됨",
+            "agent_provider": "provider → Ollama(custom) 설정",
             "iris_control_sync": "Iris↔Agent: SpeakTools ok, skills 6/6",
-            "hermes_gateway": "iris-control tools ok (iris_get_state/catalog/invoke)",
+            "agent_runtime": "SpeakTools ok (get_state/get_catalog/control.invoke)",
             "core_smoke": "Ollama·Iris Agent·MCP 정상",
         }
         for step_id in CORE_STEP_IDS:
@@ -1971,8 +1993,8 @@ class SetupProtocol:
                 return self._record_step(
                     "ollama_install", "done", "공식 스크립트로 Ollama 설치됨"
                 )
-            if step_id == "hermes_install":
-                return self._record_step("hermes_install", "done", "Iris Agent 설치됨")
+            if step_id == "agent_install":
+                return self._record_step("agent_install", "done", "Iris Agent 설치됨")
             label = OPTIONAL_LABELS.get(step_id, step_id)
             done_msg = {
                 "emulator": "실행 가능 (AVD IrisLight_Pixel)",
@@ -1987,10 +2009,10 @@ class SetupProtocol:
             return SetupStepResult(step_id, "done", done_msg, label=label)
         if step_id == "ollama_install":
             return self._install_ollama()
-        if step_id == "hermes_install":
-            if self._hermes_prefer_bypass:
-                return self._install_hermes_bypass()
-            return self._install_hermes()
+        if step_id == "agent_install":
+            if self._agent_prefer_bypass:
+                return self._install_agent_bypass()
+            return self._install_agent()
         if step_id == "emulator":
             return self._install_emulator()
         if step_id == "voice":
@@ -2446,45 +2468,45 @@ class SetupProtocol:
             return str(exc)[:200]
         return None
 
-    def _step_hermes_install(self) -> SetupStepResult:
-        ok, detail = probe_hermes_runtime(command=self.hermes_command)
+    def _step_agent_install(self) -> SetupStepResult:
+        ok, detail = probe_agent_runtime(command=self.agent_command)
         if ok:
             return self._record_step(
-                "hermes_install", "done", f"Iris Agent 사용 가능 ({detail})"
+                "agent_install", "done", f"Iris Agent 사용 가능 ({detail})"
             )
-        broken = bool(hermes_executable(self.hermes_command)) or (
-            hermes_home() / "hermes-agent"
+        broken = bool(agent_executable(self.agent_command)) or (
+            iris_agent_checkout_dir(iris_agent_home())
         ).is_dir()
         if broken:
             return SetupStepResult(
-                step_id="hermes_install",
+                step_id="agent_install",
                 status="needs_user",
                 message=(
                     "Iris Agent 실행 파일은 있으나 런타임이 깨져 있습니다 "
                     f"({detail[:160]}). 자동으로 재설치합니다."
                 ),
-                action_url=HERMES_INSTALL_URL,
+                action_url=IRIS_AGENT_INSTALL_URL,
                 action_hint="재설치에 수 분이 걸릴 수 있습니다. .env·API 키는 유지됩니다.",
-                label=CORE_STEP_LABELS["hermes_install"],
+                label=CORE_STEP_LABELS["agent_install"],
                 can_install=sys.platform == "win32",
             )
         return SetupStepResult(
-            step_id="hermes_install",
+            step_id="agent_install",
             status="needs_user",
             message="Iris Agent가 없습니다. 공식 설치 스크립트를 자동 실행합니다.",
-            action_url=HERMES_INSTALL_URL,
+            action_url=IRIS_AGENT_INSTALL_URL,
             action_hint="설치에 수 분이 걸릴 수 있습니다. 실패 시에만 수동 「열기」/「완료했어요」가 필요합니다.",
-            label=CORE_STEP_LABELS["hermes_install"],
+            label=CORE_STEP_LABELS["agent_install"],
             can_install=sys.platform == "win32",
         )
 
-    def _wipe_hermes_agent_runtime(self) -> str:
+    def _wipe_agent_runtime(self) -> str:
         """깨진 hermes-agent 트리 정리 (.env·config.yaml 유지). 잠금 시 rename 우회."""
-        from iris.system.iris_agent_install import force_retire_hermes_agent
+        from iris.system.iris_agent_install import force_retire_iris_agent
 
-        return force_retire_hermes_agent(command=self.hermes_command)
+        return force_retire_iris_agent(command=self.agent_command)
 
-    def _run_hermes_official_installer(self) -> subprocess.CompletedProcess[str]:
+    def _run_agent_official_installer(self) -> subprocess.CompletedProcess[str]:
         """공식 install.ps1 — HTTPS clone은 스크립트가 SSH 실패 후 처리.
 
         R1(c): 스트림에 uv 448 마커가 보이면 조기 abort → 호출부가 우회로.
@@ -2494,12 +2516,12 @@ class SetupProtocol:
         ps = (
             "$ProgressPreference='SilentlyContinue'; "
             "& ([scriptblock]::Create((irm '"
-            + HERMES_INSTALL_URL
+            + IRIS_AGENT_INSTALL_URL
             + "'))) -SkipSetup -NonInteractive"
         )
         # uv junction(WinError 448) 완화를 위해 LOCALAPPDATA 쪽 힌트만 세팅.
         # 공식 스크립트가 UV_PYTHON_INSTALL_DIR 을 checkout 전용으로 덮어쓰므로
-        # 근본 우회는 _install_hermes_bypass 가 담당한다.
+        # 근본 우회는 _install_agent_bypass 가 담당한다.
         env = os.environ.copy()
         local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         env.setdefault("UV_DATA_DIR", str(Path(local) / "uv"))
@@ -2520,17 +2542,17 @@ class SetupProtocol:
             abort_when=looks_like_uv_python_mount_failure,
         )
 
-    def _hermes_done(self, message: str) -> SetupStepResult:
-        self._hermes_official_failed = False
-        self._hermes_prefer_bypass = False
+    def _agent_done(self, message: str) -> SetupStepResult:
+        self._agent_official_failed = False
+        self._agent_prefer_bypass = False
         self._state["last_error"] = ""
         self._state["last_error_detail"] = {}
-        return self._record_step("hermes_install", "done", message[:240])
+        return self._record_step("agent_install", "done", message[:240])
 
-    def _hermes_cancelled(self) -> SetupStepResult:
-        result = self._record_step("hermes_install", "failed", "사용자가 중단함")
+    def _agent_cancelled(self) -> SetupStepResult:
+        result = self._record_step("agent_install", "failed", "사용자가 중단함")
         self._state["last_error_detail"] = {
-            "step": "hermes_install",
+            "step": "agent_install",
             "kind": "cancel",
             "log_path": "",
             "tail": "사용자가 중단함",
@@ -2538,77 +2560,77 @@ class SetupProtocol:
         self._save_state()
         return result
 
-    def _hermes_user_fail(
+    def _agent_user_fail(
         self, message: str, kind: str, log_path: str, tail: str
     ) -> SetupStepResult:
         from iris.system.iris_agent_install import clip_needs_user_message
 
         message = clip_needs_user_message(redact_secrets(message))
         self._set_structured_last_error(
-            step="hermes_install",
+            step="agent_install",
             kind=kind,
             log_path=log_path,
             tail=tail or message,
         )
         self._state["last_error_detail"] = dict(self._state.get("last_error") or {})
         steps = self._state.setdefault("steps", {})
-        steps["hermes_install"] = {
+        steps["agent_install"] = {
             "status": "needs_user",
             "message": message[:500],
             "updated_at": _utc_now(),
         }
         self._save_state()
         return SetupStepResult(
-            step_id="hermes_install",
+            step_id="agent_install",
             status="needs_user",
             message=message,
-            action_url=HERMES_INSTALL_URL,
+            action_url=IRIS_AGENT_INSTALL_URL,
             action_hint="「로그 열기」로 전체 로그를 보고, 「우회로 다시 설치」로 재시도하세요.",
             can_install=True,
             install_label="우회로 다시 설치",
             log_path=log_path,
         )
 
-    def _install_hermes_bypass(self) -> SetupStepResult:
+    def _install_agent_bypass(self) -> SetupStepResult:
         """공식 설치가 끝났거나 실패했을 때 1회. 호출당 우회 한 번."""
         from iris.system.iris_agent_install import (
             error_log_tail,
-            install_hermes_with_system_python,
+            install_agent_with_system_python,
             last_bypass_log_path,
         )
 
         if self._abort:
-            return self._hermes_cancelled()
-        self._hermes_prefer_bypass = True
+            return self._agent_cancelled()
+        self._agent_prefer_bypass = True
         self._emit_stream(
             "시스템 Python으로 Iris Agent 우회 설치 (staging)…",
             None,
             replace=False,
         )
         try:
-            result = install_hermes_with_system_python(
-                command=self.hermes_command,
+            result = install_agent_with_system_python(
+                command=self.agent_command,
                 on_stream=lambda m: self._emit_stream(m, None, replace=False),
                 run_streamed=self._run_streamed,
                 should_abort=lambda: self._abort,
             )
         except UserCancelled:
-            return self._hermes_cancelled()
+            return self._agent_cancelled()
         refresh_process_path()
         if result.ok:
-            self._hermes_runtime_repaired = True
-            return self._hermes_done(result.message)
+            self._agent_runtime_repaired = True
+            return self._agent_done(result.message)
         if result.kind == "cancel":
-            return self._hermes_cancelled()
+            return self._agent_cancelled()
         log_path = result.log_path or last_bypass_log_path()
-        return self._hermes_user_fail(
+        return self._agent_user_fail(
             result.message,
             result.kind or "exit",
             log_path,
             error_log_tail(result.message),
         )
 
-    def _install_hermes(self) -> SetupStepResult:
+    def _install_agent(self) -> SetupStepResult:
         from iris.system.iris_agent_install import (
             error_log_tail,
             should_skip_official_installer,
@@ -2616,22 +2638,25 @@ class SetupProtocol:
         )
 
         if self._abort:
-            return self._hermes_cancelled()
-        ok, detail = probe_hermes_runtime(command=self.hermes_command)
+            return self._agent_cancelled()
+        ok, detail = probe_agent_runtime(command=self.agent_command)
         if ok:
-            return self._hermes_done(f"Iris Agent 이미 사용 가능 ({detail})")
+            return self._agent_done(f"Iris Agent 이미 사용 가능 ({detail})")
         if sys.platform != "win32":
             return SetupStepResult(
-                step_id="hermes_install",
+                step_id="agent_install",
                 status="needs_user",
-                message="Windows 외에서는 수동 설치가 필요합니다.",
+                message=(
+                    "Windows 외에서는 Iris Agent를 수동으로 설치해 주세요. "
+                    "(업스트림 런타임 문서 링크)"
+                ),
                 action_url="https://hermes-agent.nousresearch.com/docs/",
-                action_hint="설치 후 「완료했어요」.",
-                label=CORE_STEP_LABELS["hermes_install"],
+                action_hint="Iris Agent 런타임 설치 후 「완료했어요」.",
+                label=CORE_STEP_LABELS["agent_install"],
                 can_install=False,
             )
         if should_skip_official_installer(
-            prefer_bypass=self._hermes_prefer_bypass or self._hermes_official_failed,
+            prefer_bypass=self._agent_prefer_bypass or self._agent_official_failed,
             last_error=self._state.get("last_error"),
         ):
             self._emit_stream(
@@ -2639,43 +2664,43 @@ class SetupProtocol:
                 None,
                 replace=False,
             )
-            return self._install_hermes_bypass()
-        if (hermes_home() / "hermes-agent").is_dir() or hermes_executable(
-            self.hermes_command
+            return self._install_agent_bypass()
+        if iris_agent_checkout_dir(iris_agent_home()).is_dir() or agent_executable(
+            self.agent_command
         ):
-            wipe_msg = self._wipe_hermes_agent_runtime()
+            wipe_msg = self._wipe_agent_runtime()
             self._emit_stream(f"깨진 Iris Agent 런타임 정리… {wipe_msg}", None, replace=False)
-            self._hermes_runtime_repaired = True
+            self._agent_runtime_repaired = True
 
         self._emit_stream("Iris Agent 공식 설치 스크립트 실행 중…", None, replace=False)
         proc: subprocess.CompletedProcess[str] | None = None
         try:
-            proc = self._run_hermes_official_installer()
+            proc = self._run_agent_official_installer()
         except UserCancelled:
-            return self._hermes_cancelled()
+            return self._agent_cancelled()
         except (OSError, subprocess.TimeoutExpired) as exc:
             refresh_process_path()
-            ok_after, detail_after = probe_hermes_runtime(command=self.hermes_command)
+            ok_after, detail_after = probe_agent_runtime(command=self.agent_command)
             if ok_after:
-                return self._hermes_done(f"시간 초과 후 Iris Agent 사용 가능 ({detail_after})")
+                return self._agent_done(f"시간 초과 후 Iris Agent 사용 가능 ({detail_after})")
             kind = getattr(exc, "kind", "") or "exit"
             if kind not in ("idle", "hard"):
                 kind = "hard" if isinstance(exc, subprocess.TimeoutExpired) else "exit"
             blob = f"{kind}\n{exc}"
             log_path = write_install_log(blob, prefix="iris-official")
-            self._hermes_official_failed = True
-            self._hermes_prefer_bypass = True
+            self._agent_official_failed = True
+            self._agent_prefer_bypass = True
             self._emit_stream(
                 f"공식 설치 실패 ({kind}). 로그: {log_path}\n우회 설치 1회…",
                 None,
                 replace=False,
             )
-            return self._install_hermes_bypass()
+            return self._install_agent_bypass()
         refresh_process_path()
-        ok_after, detail_after = probe_hermes_runtime(command=self.hermes_command)
+        ok_after, detail_after = probe_agent_runtime(command=self.agent_command)
         if ok_after:
-            _guard_fresh_hermes_tree()
-            return self._hermes_done(f"Iris Agent 설치됨 ({detail_after})")
+            _guard_fresh_agent_tree()
+            return self._agent_done(f"Iris Agent 설치됨 ({detail_after})")
         official_out = (proc.stdout or "") if proc is not None else ""
         blob = "\n".join(
             p
@@ -2683,28 +2708,28 @@ class SetupProtocol:
             if p
         )
         write_install_log(blob, prefix="iris-official")
-        self._hermes_official_failed = True
+        self._agent_official_failed = True
         rc = proc.returncode if proc is not None else -1
         self._emit_stream(
             f"공식 설치 rc={rc}, probe 실패 — 우회 1회…\n" + error_log_tail(blob),
             None,
             replace=False,
         )
-        return self._install_hermes_bypass()
+        return self._install_agent_bypass()
 
-    def _step_hermes_env(self, *, force_rotate: bool = False) -> SetupStepResult:
-        home = hermes_home()
+    def _step_agent_env(self, *, force_rotate: bool = False) -> SetupStepResult:
+        home = iris_agent_home()
         home.mkdir(parents=True, exist_ok=True)
         env_path = home / ".env"
-        existing = load_hermes_dotenv()
+        existing = load_iris_agent_dotenv()
         key = (existing.get("API_SERVER_KEY") or "").strip()
         if not key:
-            key = (os.environ.get("IRIS_HERMES_API_KEY") or "").strip()
+            key = (os.environ.get("IRIS_AGENT_API_KEY") or "").strip()
         key_rotated = False
-        if force_rotate or is_weak_hermes_api_key(key):
+        if force_rotate or is_weak_iris_agent_api_key(key):
             key = secrets.token_urlsafe(32)
             key_rotated = True
-        self._hermes_key_rotated = bool(self._hermes_key_rotated or key_rotated)
+        self._agent_key_rotated = bool(self._agent_key_rotated or key_rotated)
         _upsert_dotenv(
             env_path,
             {
@@ -2712,24 +2737,24 @@ class SetupProtocol:
                 "API_SERVER_KEY": key,
             },
         )
-        _upsert_dotenv(_iris_env_path(), {"IRIS_HERMES_API_KEY": key})
-        os.environ["IRIS_HERMES_API_KEY"] = key
+        _upsert_dotenv(_iris_env_path(), {"IRIS_AGENT_API_KEY": key})
+        os.environ["IRIS_AGENT_API_KEY"] = key
         # 확인만 — 키 값은 메시지에 넣지 않음
-        if not resolve_hermes_api_key():
-            return self._record_step("hermes_env", "failed", "API 키 동기화 실패")
+        if not resolve_agent_api_key():
+            return self._record_step("agent_env", "failed", "API 키 동기화 실패")
         msg = "API_SERVER_ENABLED·키 동기화됨"
         if key_rotated:
             msg += " (재발급)"
-        return self._record_step("hermes_env", "done", msg)
+        return self._record_step("agent_env", "done", msg)
 
-    def _step_hermes_provider(self) -> SetupStepResult:
-        path = hermes_home() / "config.yaml"
-        hermes_home().mkdir(parents=True, exist_ok=True)
+    def _step_agent_provider(self) -> SetupStepResult:
+        path = iris_agent_home() / "config.yaml"
+        iris_agent_home().mkdir(parents=True, exist_ok=True)
         try:
             import yaml  # type: ignore
         except Exception:
             return self._record_step(
-                "hermes_provider",
+                "agent_provider",
                 "failed",
                 "PyYAML 없음 — .venv에 requirements 설치를 확인하세요",
             )
@@ -2740,7 +2765,7 @@ class SetupProtocol:
                 if isinstance(loaded, dict):
                     data = loaded
             except OSError as exc:
-                return self._record_step("hermes_provider", "failed", f"config 읽기 실패: {exc}")
+                return self._record_step("agent_provider", "failed", f"config 읽기 실패: {exc}")
         names = _list_ollama_model_names(self.ollama_base_url)
         signed = ollama_cloud_signed_in()
         want = (self.min_model or "").strip()
@@ -2762,17 +2787,17 @@ class SetupProtocol:
                 self.min_model = local
             else:
                 self._record_step(
-                    "hermes_provider",
+                    "agent_provider",
                     "needs_user",
                     f"기본 모델 '{want}'은 클라우드인데 Ollama 미로그인입니다.",
                 )
-                card = self._ollama_login_or_min_model_card("hermes_provider")
+                card = self._ollama_login_or_min_model_card("agent_provider")
                 card.message = (
                     f"기본 모델 '{want}'은 클라우드인데 Ollama 미로그인입니다. "
                     "로그인하거나 로컬 최소 모델을 설치하세요."
                 )
                 return card
-        # Ollama OpenAI-compat — ensure_hermes_provider_config가 ollama→custom 변환
+        # Ollama OpenAI-compat — ensure_agent_provider_config가 ollama→custom 변환
         data["model"] = _ollama_provider_model(
             existing_model if isinstance(existing_model, dict) else {},
             want,
@@ -2794,8 +2819,8 @@ class SetupProtocol:
                 encoding="utf-8",
             )
         except OSError as exc:
-            return self._record_step("hermes_provider", "failed", f"config 쓰기 실패: {exc}")
-        ensure_hermes_provider_config()
+            return self._record_step("agent_provider", "failed", f"config 쓰기 실패: {exc}")
+        ensure_agent_provider_config()
         # Iris .env 모델도 클라우드 불가면 로컬로 맞춤
         if self.min_model and not is_cloud_runtime_name(self.min_model):
             try:
@@ -2807,7 +2832,7 @@ class SetupProtocol:
         msg = f"provider → Ollama(custom)·ollama_num_ctx≥{ctx}"
         if note:
             msg = f"{msg} · {note}"
-        return self._record_step("hermes_provider", "done", msg)
+        return self._record_step("agent_provider", "done", msg)
 
     def _step_iris_control_sync(self) -> SetupStepResult:
         if self._abort:
@@ -2815,7 +2840,7 @@ class SetupProtocol:
         self._emit_stream("SpeakTools·스킬 동기화…", None, replace=False)
         try:
             # 시작 프로토콜 중에는 Control Surface가 아직 없음 — 강제 gateway 재기동 표시만
-            # 하고 실제 restart는 hermes_gateway 단계에서 수행한다.
+            # 하고 실제 runtime ensure는 agent_runtime 단계에서 수행한다.
             report = sync_iris_control(reconnect_gateway=False)
         except Exception as exc:  # noqa: BLE001
             return self._record_step("iris_control_sync", "failed", str(exc)[:240])
@@ -2827,205 +2852,81 @@ class SetupProtocol:
         self._emit_stream(report.summary_line(), None, replace=False)
         return self._record_step("iris_control_sync", "done", report.summary_line())
 
-    def _step_hermes_gateway(self, *, force_restart: bool = False) -> SetupStepResult:
-        if self._abort:
-            return self._record_step("hermes_gateway", "failed", "사용자가 중단함")
-        key = resolve_hermes_api_key()
-        from iris.system.iris_agent_gateway import (
-            get_last_gateway_diagnosis,
-            is_hermes_gateway_running,
-            restart_hermes_gateway,
-        )
+    def _step_agent_runtime(self, *, force_restart: bool = False) -> SetupStepResult:
+        """Product setup: home + provider only. No HTTP :8642 gateway start/restart.
 
-        def _aborting() -> bool:
-            return bool(self._abort)
+        Sidecar path still auto-repairs a broken checkout (missing hermes_cli /
+        uv trampoline) once per session via ``_install_agent``.
+        """
+        _ = force_restart
+        if self._abort:
+            return self._record_step("agent_runtime", "failed", "사용자가 중단함")
 
         def _progress(msg: str) -> None:
             self._emit_stream(msg, None, replace=False)
 
-        def _try_start(*, prefer_restart: bool) -> bool:
-            if prefer_restart:
-                # Home + provider via supervisor; restart is a lifecycle variant.
-                ensure_iris_agent_runtime(
-                    self.hermes_base_url,
-                    api_key=key,
-                    command=self.hermes_command,
-                    start_gateway=False,
-                )
-                return restart_hermes_gateway(
-                    self.hermes_base_url,
-                    api_key=key,
-                    command=self.hermes_command,
-                    wait_sec=60.0,
-                    should_abort=_aborting,
-                    on_progress=_progress,
-                )
-            return ensure_iris_agent_runtime(
-                self.hermes_base_url,
-                api_key=key,
-                command=self.hermes_command,
-                wait_sec=55.0,
-                should_abort=_aborting,
-                on_progress=_progress,
-            ).ok
-
-        def _should_auto_repair_runtime() -> bool:
-            if self._hermes_runtime_repaired or self.simulate or self.dry_run:
+        def _should_auto_repair_runtime(detail: str) -> bool:
+            if self._agent_runtime_repaired or self.simulate or self.dry_run:
                 return False
             if sys.platform != "win32":
                 return False
-            diag = get_last_gateway_diagnosis()
-            if diag is None:
-                return False
-            blob = f"{diag.code}\n{diag.message}\n{diag.detail}"
-            if is_hermes_trampoline_failure(blob):
+            blob = detail or ""
+            if is_iris_agent_trampoline_failure(blob):
                 return True
-            if is_hermes_cli_missing_failure(blob) or is_hermes_gateway_dep_missing_failure(
+            if is_iris_agent_cli_missing_failure(blob) or is_iris_agent_gateway_dep_missing_failure(
                 blob
             ):
                 return True
-            # PROCESS_CRASH만 추가 probe — timeout/포트 충돌마다 25초 낭비 금지
-            if diag.code != CODE_PROCESS_CRASH:
-                return False
-            ok_rt, detail_rt = probe_hermes_runtime(
-                command=self.hermes_command, timeout_sec=12.0
-            )
-            return (not ok_rt) and (
-                is_hermes_trampoline_failure(detail_rt)
-                or is_hermes_cli_missing_failure(detail_rt)
-                or is_hermes_gateway_dep_missing_failure(detail_rt)
-                or "pyvenv home" in detail_rt
-                or "hermes_cli" in detail_rt
-                or "gateway 의존성" in detail_rt
+            return (
+                "pyvenv home" in blob
+                or "hermes_cli" in blob
+                or "sidecar 의존성" in blob
+                or "gateway 의존성" in blob
             )
 
-        need_restart = bool(force_restart or self._hermes_key_rotated)
-        _progress("Iris Agent gateway 상태 확인…")
-        # health-only(timeout)와 ready(/v1/models)를 분리 — 예전엔 health만으로 done
-        health_up = is_hermes_gateway_running(
-            self.hermes_base_url, api_key=key, timeout_sec=2.0
+        ok_rt, detail_rt = probe_agent_runtime(
+            command=self.agent_command, timeout_sec=12.0
         )
-        ready_up = (
-            is_hermes_gateway_running(self.hermes_base_url, api_key=key)
-            if health_up
-            else False
-        )
-        ok = False
-        if health_up and ready_up and need_restart and not _aborting():
-            # 키 rotate / 401 복구 — 프로세스 메모리의 옛 키와 불일치 방지
-            _progress("API 키 변경 — gateway 재기동…")
-            ok = _try_start(prefer_restart=True)
-            if ok:
-                self._hermes_key_rotated = False
-        elif health_up and ready_up and not _aborting():
-            from iris.system.iris_agent_gateway import mark_gateway_already_running
-
-            diag = mark_gateway_already_running(self.hermes_base_url)
-            if diag.ok:
-                _progress("gateway 이미 실행 중 — ready OK, 유지")
-                ok = True
-            else:
-                _progress(f"gateway ready 재확인 실패 — 재기동… ({diag.ready_detail})")
-                ok = _try_start(prefer_restart=True)
-        elif health_up and not ready_up and not _aborting():
-            # /health OK · /v1/models 실패 (키 불일치·좀비 프로세스)
-            from iris.system.iris_agent_gateway import probe_gateway_ready
-
-            ready = probe_gateway_ready(
-                self.hermes_base_url, api_key=key, timeout_sec=3.0
-            )
-            _progress(
-                f"gateway /health OK · ready 실패 ({ready.code}: {ready.detail}) — 재기동…"
-            )
-            if ready.code == "models_404" or ready.http_status == 404:
-                from iris.infrastructure.iris_agent_client import (
-                    normalize_iris_agent_openai_base_url,
-                )
-
-                self.hermes_base_url = normalize_iris_agent_openai_base_url(
-                    self.hermes_base_url
-                )
-                os.environ["IRIS_HERMES_BASE_URL"] = self.hermes_base_url
-                _upsert_dotenv(
-                    _iris_env_path(),
-                    {"IRIS_HERMES_BASE_URL": self.hermes_base_url},
-                )
-                # 404 ≠ 약한 키 — rotate 금지, .env 키·ENABLED만 보강
-                self._step_hermes_env(force_rotate=False)
-            elif ready.key_weak or ready.code == "no_key" or ready.http_status == 401:
-                self._step_hermes_env(force_rotate=True)
-                key = resolve_hermes_api_key()
-            ok = _try_start(prefer_restart=True)
-            if ok:
-                self._hermes_key_rotated = False
-        elif not _aborting():
-            _progress("gateway 기동…")
-            ok = _try_start(prefer_restart=False)
-            if not ok and not _aborting():
-                diag = get_last_gateway_diagnosis()
-                if diag:
-                    _progress(f"기동 실패 스냅샷: [{diag.code}] {diag.message}")
-                if _should_auto_repair_runtime():
-                    _progress(
-                        "깨진 Iris Agent 런타임 감지 — 자동 재설치 후 재시도…"
-                    )
-                    repaired = self._install_hermes()
-                    self._emit_stream(repaired.message, None, replace=False)
-                    if repaired.status == "done" and not _aborting():
-                        _progress("재설치 완료 — gateway 재기동…")
-                        ok = _try_start(prefer_restart=True)
-                elif not _aborting():
-                    _progress("gateway 재기동 시도…")
-                    ok = _try_start(prefer_restart=True)
-                    # 재기동도 trampoline이면 한 번 더 복구
-                    if (
-                        not ok
-                        and not _aborting()
-                        and _should_auto_repair_runtime()
-                    ):
-                        _progress(
-                            "재기동도 런타임 실패 — 자동 재설치 후 최종 재시도…"
-                        )
-                        repaired = self._install_hermes()
-                        self._emit_stream(repaired.message, None, replace=False)
-                        if repaired.status == "done" and not _aborting():
-                            ok = _try_start(prefer_restart=True)
-            if ok:
-                self._hermes_key_rotated = False
-        if _aborting():
-            return self._record_step("hermes_gateway", "failed", "사용자가 중단함")
-        if not ok:
-            diag = get_last_gateway_diagnosis()
-            if diag is not None:
-                hint = (
-                    "「진단 정보 복사」로 지원용 요약을 복사할 수 있습니다. "
-                    "API 키 문제는 /health 생존과 별개입니다."
-                )
+        if self._abort:
+            return self._record_step("agent_runtime", "failed", "사용자가 중단함")
+        if (not ok_rt) and _should_auto_repair_runtime(detail_rt):
+            _progress("깨진 Iris Agent 런타임 감지 — 자동 재설치 후 재시도…")
+            repaired = self._install_agent()
+            self._emit_stream(repaired.message, None, replace=False)
+            if repaired.status != "done":
                 return self._record_step(
-                    "hermes_gateway",
+                    "agent_runtime",
                     "failed",
-                    diag.user_message()[:500],
-                    action_hint=hint,
+                    (repaired.message or detail_rt)[:240],
                 )
-            return self._record_step(
-                "hermes_gateway",
-                "failed",
-                "[HEALTH] gateway /health 실패 — 로그: ~/.iris-light/agent/logs/iris-gateway",
-                action_hint="다시 시도하거나 로그 폴더를 확인하세요.",
-            )
-        _progress("SpeakTools 자세 검증…")
-        mcp_ok, mcp_detail = verify_iris_mcp_tools(
-            command=self.hermes_command, timeout_sec=25.0
+            if self._abort:
+                return self._record_step("agent_runtime", "failed", "사용자가 중단함")
+
+        _progress("Iris Agent home/provider 준비 (sidecar)…")
+        result = ensure_iris_agent_runtime(
+            self.agent_base_url,
+            api_key=resolve_agent_api_key(),
+            command=self.agent_command,
+            wait_sec=55.0,
+            should_abort=lambda: bool(self._abort),
+            on_progress=_progress,
+            start_gateway=False,
         )
-        if _aborting():
-            return self._record_step("hermes_gateway", "failed", "사용자가 중단함")
-        if not mcp_ok:
-            # 설치 중 Control Surface 미기동 등으로 stdio 검증이 실패할 수 있음 —
-            # /health 통과면 Core는 진행하고, 상세는 메시지에 남긴다.
-            soft = f"gateway OK · MCP 검증 보류: {mcp_detail}"
-            _progress(soft)
-            return self._record_step("hermes_gateway", "done", soft[:240])
-        return self._record_step("hermes_gateway", "done", mcp_detail)
+        if self._abort:
+            return self._record_step("agent_runtime", "failed", "사용자가 중단함")
+        if not result.ok:
+            detail = "; ".join(result.messages[-3:]) if result.messages else "runtime ensure fail"
+            return self._record_step("agent_runtime", "failed", detail[:240])
+        self._agent_key_rotated = False
+        _progress("SpeakTools 자세 검증…")
+        _mcp_ok, mcp_detail = verify_iris_mcp_tools(
+            command=self.agent_command, timeout_sec=25.0
+        )
+        if self._abort:
+            return self._record_step("agent_runtime", "failed", "사용자가 중단함")
+        summary = "Iris Agent sidecar ready · " + mcp_detail
+        _progress(summary)
+        return self._record_step("agent_runtime", "done", summary[:240])
 
     def _step_core_smoke(self) -> SetupStepResult:
         if self._abort:
@@ -3048,8 +2949,8 @@ class SetupProtocol:
         ) and "[CLOUD]" not in detail_s
         if auth_fail and not self._abort:
             self._emit_stream("채팅 401 — API 키 강제 재발급 후 gateway 재기동…", None, replace=False)
-            self._step_hermes_env(force_rotate=True)
-            self._step_hermes_gateway(force_restart=True)
+            self._step_agent_env(force_rotate=True)
+            self._step_agent_runtime(force_restart=True)
             ok, detail = self.verify_core()
             detail_s = detail or ""
         elif ready_fail and not self._abort:
@@ -3058,7 +2959,7 @@ class SetupProtocol:
             from iris.infrastructure.iris_agent_client import normalize_iris_agent_openai_base_url
 
             ready = probe_gateway_ready(
-                self.hermes_base_url, timeout_sec=3.0
+                self.agent_base_url, timeout_sec=3.0
             )
             # 404는 키 불일치가 아님 — base_url 정규화 + 강제 재기동만
             is_404 = ready.code == "models_404" or ready.http_status == 404
@@ -3066,14 +2967,18 @@ class SetupProtocol:
                 ready.code == "models_http" and "401" in (ready.detail or "")
             )
             if is_404:
-                self.hermes_base_url = normalize_iris_agent_openai_base_url(
-                    self.hermes_base_url
+                self.agent_base_url = normalize_iris_agent_openai_base_url(
+                    self.agent_base_url
                 )
-                os.environ["IRIS_HERMES_BASE_URL"] = self.hermes_base_url
-                _upsert_dotenv(
-                    _iris_env_path(),
-                    {"IRIS_HERMES_BASE_URL": self.hermes_base_url},
-                )
+                # Product path keeps agent_base_url empty (InternalSidecar).
+                # Opt-in gateway recovery persists IRIS_AGENT_BASE_URL only.
+                if (self.agent_base_url or "").strip():
+                    os.environ["IRIS_AGENT_BASE_URL"] = self.agent_base_url
+                    _upsert_dotenv(
+                        _iris_env_path(),
+                        {"IRIS_AGENT_BASE_URL": self.agent_base_url},
+                    )
+                    os.environ.pop("IRIS_HERMES_BASE_URL", None)
                 self._emit_stream(
                     "gateway /v1/models 404 — base_url 정규화 후 gateway 재기동"
                     " (키 재발급 없음)…",
@@ -3081,14 +2986,14 @@ class SetupProtocol:
                     replace=False,
                 )
                 # API_SERVER_KEY는 유지하되 .env에 ENABLED·키가 없으면 보강
-                self._step_hermes_env(force_rotate=False)
+                self._step_agent_env(force_rotate=False)
             elif is_401 or ready.key_weak or ready.code == "no_key":
                 self._emit_stream(
                     "gateway ready 401/키 없음 — API 키 재발급 후 gateway 재기동…",
                     None,
                     replace=False,
                 )
-                self._step_hermes_env(force_rotate=True)
+                self._step_agent_env(force_rotate=True)
             else:
                 self._emit_stream(
                     "gateway ready 실패 — 키 점검 후 gateway 재기동…",
@@ -3096,8 +3001,8 @@ class SetupProtocol:
                     replace=False,
                 )
                 if ready.code == "models_http":
-                    self._step_hermes_env(force_rotate=False)
-            self._step_hermes_gateway(force_restart=True)
+                    self._step_agent_env(force_rotate=False)
+            self._step_agent_runtime(force_restart=True)
             ok, detail = self.verify_core()
             detail_s = detail or ""
         if self._abort:
@@ -3746,7 +3651,7 @@ def _self_check() -> None:
     # --- 3/9) verify_core_quick은 실제 네트워크 헬스체크 (죽은 포트면 False) ---
     dead_proto = SetupProtocol(
         ollama_base_url="http://127.0.0.1:1/v1",
-        hermes_base_url="http://127.0.0.1:2/v1",
+        agent_base_url="http://127.0.0.1:2/v1",
         simulate=False,
         dry_run=False,
     )
@@ -3769,16 +3674,16 @@ def _self_check() -> None:
         try:
             boot_ok = mark_core_ready_if_healthy(
                 ollama_base_url="http://127.0.0.1:1/v1",
-                hermes_base_url="http://127.0.0.1:2/v1",
-                hermes_command="hermes",
+                agent_base_url="http://127.0.0.1:2/v1",
+                agent_command="iris-agent",
             )
         finally:
             globals()["_warm_core_services"] = orig_warm
         assert boot_ok is True
         assert load_setup_state().get("core_ready") is True
         assert warm_calls["n"] == 1
-        if ollama_executable() and hermes_executable("hermes"):
-            assert needs_setup_wizard(hermes_command="hermes") is False
+        if ollama_executable() and agent_executable("iris-agent"):
+            assert needs_setup_wizard(agent_command="iris-agent") is False
     finally:
         save_setup_state(saved_gate)
 
@@ -3902,17 +3807,17 @@ def _self_check() -> None:
     assert "abcDEF123456" not in redact_secrets("API_SERVER_KEY=abcDEF123456789")
     assert "***" in redact_secrets("API_SERVER_KEY=abcDEF123456789")
     assert "supersecrettoken" not in redact_secrets("Authorization: Bearer supersecrettoken")
-    prev_env_key = os.environ.get("IRIS_HERMES_API_KEY")
-    os.environ["IRIS_HERMES_API_KEY"] = "live-secret-value-1234567890"
+    prev_env_key = os.environ.get("IRIS_AGENT_API_KEY")
+    os.environ["IRIS_AGENT_API_KEY"] = "live-secret-value-1234567890"
     try:
         assert "live-secret-value-1234567890" not in redact_secrets(
             "some output live-secret-value-1234567890 embedded"
         )
     finally:
         if prev_env_key is None:
-            os.environ.pop("IRIS_HERMES_API_KEY", None)
+            os.environ.pop("IRIS_AGENT_API_KEY", None)
         else:
-            os.environ["IRIS_HERMES_API_KEY"] = prev_env_key
+            os.environ["IRIS_AGENT_API_KEY"] = prev_env_key
 
     # --- 음성 런타임: 실제 TTS(torch/qwen) 설치 여부는 returncode가 아니라
     #     site-packages 실물로 판별해야 한다 ---

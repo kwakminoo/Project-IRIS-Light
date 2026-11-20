@@ -124,17 +124,21 @@ class SidecarMainTests(TestCase):
 
 class SidecarExportTests(TestCase):
     def test_engine_tool_names_are_provider_safe_and_reversible(self) -> None:
-        from iris.infrastructure.speak_capability import (
+        from iris.infrastructure.tool_capability import (
             PHASE4_ALLOWLIST,
+            engine_names_hidden_from_model,
             engine_tool_action,
             engine_tool_schemas,
         )
 
         schemas = engine_tool_schemas()
-        self.assertEqual(len(schemas), len(PHASE4_ALLOWLIST.grants))
+        hidden = engine_names_hidden_from_model()
+        # Model schemas omit hide_from_model overlaps; grants stay full.
+        self.assertEqual(len(schemas), len(PHASE4_ALLOWLIST.grants) - len(hidden))
         for schema in schemas:
             name = schema["name"]
             self.assertRegex(name, re.compile(r"^[A-Za-z0-9_-]+$"))
+            self.assertNotIn(name, hidden)
             self.assertIsNotNone(PHASE4_ALLOWLIST.grant(engine_tool_action(name)))
         self.assertEqual(engine_tool_action("settings_get"), "settings.get")
 

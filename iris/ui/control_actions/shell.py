@@ -27,7 +27,8 @@ def register_shell_actions(window: Any, reg: ActionRegistry) -> None:
         if _ide_companion_active(window):
             return err_result(
                 "shell.run",
-                "IDE Companion에서는 shell.run 대신 SpeakTools project.run을 쓰세요.",
+                "IDE Companion에서는 shell.run 대신 familiar terminal "
+                "(Iris tools terminal)을 쓰세요.",
             )
         try:
             job = parse_shell_job(args if isinstance(args, dict) else {})
@@ -45,7 +46,8 @@ def register_shell_actions(window: Any, reg: ActionRegistry) -> None:
         summary=(
             "Run a shell command on the Iris home surface (no console window; "
             "output appears as an Iris Shell chat card). cwd must be under the user home. "
-            "When IDE Companion is active, use project.run instead."
+            "When IDE Companion is active, use familiar terminal "
+            "(Iris tools terminal) instead."
         ),
         risk="high",
         confirm_required=True,

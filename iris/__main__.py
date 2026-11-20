@@ -14,10 +14,15 @@ from PyQt6.QtWidgets import QApplication
 def _boot_trace(msg: str) -> None:
     """pid/ppid breadcrumb for dual-GUI hunts (pythonw has no console)."""
     try:
+        import time
+
         path = Path.home() / ".iris-light" / "logs" / "boot_trace.log"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(f"pid={os.getpid()} ppid={os.getppid()} {msg}\n")
+            fh.write(
+                f"pid={os.getpid()} ppid={os.getppid()} "
+                f"t={time.monotonic():.3f} {msg}\n"
+            )
     except Exception:
         pass
 
@@ -26,7 +31,7 @@ def _maybe_elevate_on_startup() -> bool:
     """관리자 재실행이 필요하면 UAC 후 True(현재 프로세스 종료).
 
     - 제한 없음 권한
-    - 실행 프로토콜(첫 설치·Core 미완료) — winget/Hermes 등이 관리자에서만 정상
+    - 실행 프로토콜(첫 설치·Core 미완료) — winget/Iris Agent 등이 관리자에서만 정상
     elevate 는 singleton 보다 먼저: 부모가 mutex 를 쥔 채 자식만 죽이면 GUI 가 0이 된다.
     성공 시 부모는 반드시 exit — Local\\ mutex 는 integrity 가 다르면 자식을 막지 못한다.
     """
@@ -175,7 +180,9 @@ def main() -> None:
         app.setWindowIcon(icon)
     app.setFont(QFont("Noto Sans KR", 10))
     win = MainWindow()
+    _boot_trace("MainWindow constructed")
     win.show()
+    _boot_trace("win.show done")
     for _ in range(3):
         app.processEvents()
     sys.exit(app.exec())

@@ -43,7 +43,7 @@ def preview_command(args: dict) -> str:
         command = args.get("command")
         if isinstance(command, str) and command.strip():
             return command.strip()
-        for key in ("file", "rel_path"):
+        for key in ("file", "rel_path", "path"):
             value = args.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()

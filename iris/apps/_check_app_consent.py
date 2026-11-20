@@ -107,8 +107,10 @@ def main() -> None:
                 asks.append(str(kwargs.get("app_id") or ""))
                 return self._allow
 
-            def show_app_host(self, html_path: str, title: str = "앱") -> bool:
-                opened.append((html_path, title))
+            def show_app_host(
+                self, html_path: str, title: str = "앱", *, offer_id: str = ""
+            ) -> bool:
+                opened.append((html_path, title, offer_id))
                 return True
 
             def show_attach_notice(self, message: str) -> None:
@@ -133,7 +135,7 @@ def main() -> None:
         asks.clear()
         panel._allow = True
         assert ChatPanel._open_directory_app(panel, installed)
-        assert opened == [(str(html), "Weather")]
+        assert opened == [(str(html), "Weather", "weather")]
         assert is_allowed("weather", path=consent)
 
         asks.clear()
@@ -148,7 +150,7 @@ def main() -> None:
             source=SOURCE_BUILTIN,
         )
         assert ChatPanel._open_directory_app(panel, builtin_local)
-        assert opened == [(str(builtin_html), builtin.title)]
+        assert opened == [(str(builtin_html), builtin.title, builtin.id)]
         assert asks == []
 
         opened.clear()

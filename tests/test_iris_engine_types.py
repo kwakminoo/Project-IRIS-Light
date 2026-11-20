@@ -105,7 +105,7 @@ class EngineTypeExportTests(TestCase):
             ),
         )
 
-    def test_stateless_turn_reuses_hermes_inference_target(self) -> None:
+    def test_stateless_turn_reuses_agent_inference_target(self) -> None:
         from iris.engine import CancelToken, StatelessTurn
 
         turn = StatelessTurn(

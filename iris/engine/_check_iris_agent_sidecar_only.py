@@ -1,7 +1,8 @@
-"""Unit 2 — Product engine source is InternalSidecar only.
+"""Unit 2 — Product engine source is InternalSidecar only (CLOSED with Qt merge NO-GO).
 
 Fails when parse_engine_source / settings / env can reopen ExternalGateway
-as the product default. Phase 5 in-process merge stays out of scope.
+as the product default. Phase 5 / Phase1 in-process AIAgent merge remains
+forbidden — see _check_iris_agent_phase5_merge and _check_agent_merge_policy_closed.
 
 Run:
   .venv\\Scripts\\python.exe -m iris.engine._check_iris_agent_sidecar_only
@@ -23,8 +24,8 @@ def _check_parse_ignores_external_flag() -> None:
 
     flagged = SimpleNamespace(
         hermes_external_gateway=True,
-        hermes_base_url="http://127.0.0.1:8642/v1",
-        hermes_api_key="k",
+        agent_base_url="http://127.0.0.1:8642/v1",
+        agent_api_key="k",
     )
     source = parse_engine_source(flagged)
     assert isinstance(source, InternalSidecar), type(source)

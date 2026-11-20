@@ -881,6 +881,16 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
 
     def project_open_similar(args: dict[str, Any]) -> dict[str, Any]:
         from iris.system.project_ops import pick_similar_project
+        from iris.ui.control_bindings import (
+            peek_bound_root,
+            refuse_agent_workspace_switch,
+        )
+
+        locked = refuse_agent_workspace_switch(
+            "project.open_similar", peek_bound_root(window)
+        )
+        if locked is not None:
+            return locked
 
         query = str(args.get("query") or args.get("name") or "").strip()
         if not query:
@@ -1055,7 +1065,10 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
                 {"diagnostics": rendered.get("diagnostics") or [], "stage": rendered.get("stage")},
             )
         rendered["opened"] = open_diagram_preview(
-            window, str(rendered["html_path"]), title=title
+            window,
+            str(rendered["html_path"]),
+            title=title,
+            kind=kind,
         )
         _log(window, "diagram.render", True)
         return ok_result("diagram.render", rendered)

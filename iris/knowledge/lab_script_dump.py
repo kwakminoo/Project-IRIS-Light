@@ -21,6 +21,10 @@ def collapse_ocr_gaps(text: str) -> str:
 _LABEL_RE = re.compile(
     r"(?m)^[ \t]*(?:프로그램[ \t]+)?(\d+)\s*[-–]\s*(\d+)(?:\.py)?[ \t]*$"
 )
+# (실습) YOLO…  or  실습 타이틀 — line-start titles only
+_PRACTICE_TITLE_RE = re.compile(
+    r"(?m)^[ \t]*(\(실습\)[^\n]+|실습[ \t]+[^\n]+)$"
+)
 _PAGE_HDR_RE = re.compile(r"^\[쪽\s+(\d+)(?:\s+이미지)?\]\s*\n?", re.MULTILINE)
 
 _CREATE_CUES = (
@@ -52,22 +56,38 @@ _EXCLUDE = (
     "note.export",
 )
 
+_NO_BOUNDARY_ERR = (
+    "PDF에서 실습 경계를 찾지 못했습니다. "
+    "프로그램 N-M 라벨도, (실습)/실습 제목도 없고, segmenter도 없습니다."
+)
+
 
 @dataclass(frozen=True)
-class LabProgram:
+class LabBlock:
     """One practice block carved from PDF page text."""
 
-    label: str
-    filename: str
-    body: str
+    title: str
+    filename: str  # safe single-segment *.py
+    body: str  # code text (may be empty if extract failed)
     pages: tuple[int, ...]
+
+    @property
+    def label(self) -> str:
+        """Legacy alias used by Hermes summary `labels`."""
+        return self.title
+
+
+# Callers / tests that still say LabProgram
+LabProgram = LabBlock
+
+LabSegmenter = Callable[[Sequence[str]], Sequence[LabBlock]]
 
 
 @dataclass(frozen=True)
 class LabDumpResult:
     """In-process dump outcome. programs may hold bodies; strip before Hermes."""
 
-    programs: tuple[LabProgram, ...]
+    programs: tuple[LabBlock, ...]
     written: tuple[str, ...]
     errors: tuple[str, ...]
     truncated_pages: bool
@@ -146,7 +166,7 @@ def pdf_paths_from(attachments: Sequence[str]) -> tuple[str, ...]:
 
 
 def filename_for_label(label: str) -> str:
-    """Map PDF label → safe single-segment basename (e.g. '프로그램 7-7' → '7-7.py')."""
+    """Map PDF label/title → safe single-segment basename (e.g. '프로그램 7-7' → '7-7.py')."""
     s = (label or "").strip()
     m = re.search(r"(\d+)\s*[-–]\s*(\d+)", s)
     if m:
@@ -158,8 +178,8 @@ def filename_for_label(label: str) -> str:
     return f"{base}.py"
 
 
-def parse_lab_programs(page_texts: Sequence[str]) -> list[LabProgram]:
-    """Split page texts into LabProgram list. Pure. No I/O."""
+def _page_pieces(page_texts: Sequence[str]) -> tuple[str, list[tuple[int, int]]]:
+    """Join page bodies into one blob + (offset, page) map. Pure."""
     pieces: list[tuple[int, str]] = []
     for index, raw in enumerate(page_texts or ()):
         text = collapse_ocr_gaps(raw or "")
@@ -179,36 +199,105 @@ def parse_lab_programs(page_texts: Sequence[str]) -> list[LabProgram]:
         page_at.append((offset, page))
         parts.append(body)
         offset += len(body) + 2
-    blob = "\n\n".join(parts)
+    return "\n\n".join(parts), page_at
 
-    def page_for(pos: int) -> int:
-        cur = page_at[0][1] if page_at else 1
-        for start, page in page_at:
-            if start <= pos:
-                cur = page
-            else:
-                break
-        return cur
 
+def _page_for(page_at: list[tuple[int, int]], pos: int) -> int:
+    cur = page_at[0][1] if page_at else 1
+    for start, page in page_at:
+        if start <= pos:
+            cur = page
+        else:
+            break
+    return cur
+
+
+def parse_lab_programs(page_texts: Sequence[str]) -> list[LabBlock]:
+    """Split by `프로그램 N-M` / `N-M` line labels. Pure. No I/O."""
+    blob, page_at = _page_pieces(page_texts)
     matches = list(_LABEL_RE.finditer(blob))
-    programs: list[LabProgram] = []
+    programs: list[LabBlock] = []
     for idx, match in enumerate(matches):
         num = f"{match.group(1)}-{match.group(2)}"
         raw_label = match.group(0).strip()
-        label = raw_label if raw_label else num
+        title = raw_label if raw_label else num
         start = match.end()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(blob)
         body = blob[start:end].strip()
-        pages = sorted({page_for(match.start()), page_for(max(start, end - 1))})
+        pages = sorted(
+            {_page_for(page_at, match.start()), _page_for(page_at, max(start, end - 1))}
+        )
         programs.append(
-            LabProgram(
-                label=label,
-                filename=filename_for_label(label),
+            LabBlock(
+                title=title,
+                filename=filename_for_label(title),
                 body=body,
                 pages=tuple(pages),
             )
         )
     return programs
+
+
+def parse_practice_title_blocks(page_texts: Sequence[str]) -> list[LabBlock]:
+    """Split by `(실습)…` / `실습 …` title lines. Pure. No I/O."""
+    blob, page_at = _page_pieces(page_texts)
+    matches = list(_PRACTICE_TITLE_RE.finditer(blob))
+    blocks: list[LabBlock] = []
+    for idx, match in enumerate(matches):
+        title = match.group(1).strip()
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(blob)
+        body = blob[start:end].strip()
+        pages = sorted(
+            {_page_for(page_at, match.start()), _page_for(page_at, max(start, end - 1))}
+        )
+        blocks.append(
+            LabBlock(
+                title=title,
+                filename=filename_for_label(title),
+                body=body,
+                pages=tuple(pages),
+            )
+        )
+    return blocks
+
+
+def _normalize_blocks(blocks: Sequence[LabBlock]) -> list[LabBlock]:
+    """Fill missing filenames from title. Pure."""
+    out: list[LabBlock] = []
+    for block in blocks or ():
+        name = (block.filename or "").strip() or filename_for_label(block.title)
+        if name != block.filename:
+            block = LabBlock(
+                title=block.title,
+                filename=name,
+                body=block.body,
+                pages=tuple(block.pages),
+            )
+        out.append(block)
+    return out
+
+
+def resolve_lab_blocks(
+    page_texts: Sequence[str],
+    *,
+    segmenter: LabSegmenter | None = None,
+) -> tuple[list[LabBlock], str | None]:
+    """Parse order: N-M labels → (실습) titles → segmenter. Pure.
+
+    Returns (blocks, error_if_empty).
+    """
+    blocks = parse_lab_programs(page_texts)
+    if blocks:
+        return blocks, None
+    blocks = parse_practice_title_blocks(page_texts)
+    if blocks:
+        return blocks, None
+    if segmenter is not None:
+        blocks = _normalize_blocks(segmenter(page_texts))
+        if blocks:
+            return blocks, None
+    return [], _NO_BOUNDARY_ERR
 
 
 def _as_list_vision(reader: VisionReader | None):
@@ -232,8 +321,13 @@ def extract_pdf_page_texts(
     *,
     page_limit: int | None = None,
     vision_reader: VisionReader | None = None,
+    vision_all: bool | None = None,
 ) -> tuple[list[str], bool]:
-    """Page-by-page extract via read_pdf_pages. Honors MAX_PDF_PAGES."""
+    """Page-by-page extract via read_pdf_pages. Honors MAX_PDF_PAGES.
+
+    When vision_reader is set, defaults vision_all=True so sparse title+image
+    lab pages still get per-page OCR/vision (does not raise VISION_PAGE_CAP).
+    """
     path = Path(pdf_path).expanduser()
     if not path.is_file():
         raise FileNotFoundError(f"PDF not found: {path}")
@@ -250,10 +344,12 @@ def extract_pdf_page_texts(
         total = int(doc.page_count)
     finally:
         doc.close()
+    use_all = bool(vision_reader is not None) if vision_all is None else bool(vision_all)
     data = read_pdf_pages(
         path,
         page_limit=limit,
         vision_reader=_as_list_vision(vision_reader),
+        vision_all=use_all,
     )
     text = str(data.get("text") or "").strip()
     if not text:
@@ -270,8 +366,14 @@ def dump_lab_scripts(
     page_limit: int | None = None,
     out_subdir: str = "labs",
     vision_reader: VisionReader | None = None,
+    segmenter: LabSegmenter | None = None,
 ) -> LabDumpResult:
-    """Extract → parse → write_project_file. Never returns bodies for model stuffing."""
+    """Extract → parse (N-M → 실습 title → segmenter) → write_project_file.
+
+    ``segmenter`` is optional and injectable (tests / later model boundary).
+    Control action does not wire a live model segmenter yet — pass explicitly.
+    Never returns bodies for model stuffing.
+    """
     path = Path(pdf_path).expanduser()
     root = Path(project_root).expanduser()
     errors: list[str] = []
@@ -289,12 +391,12 @@ def dump_lab_scripts(
             truncated_pages=False,
             source_pdf=str(path),
         )
-    programs = parse_lab_programs(page_texts)
-    if not programs:
-        errors.append("PDF에서 실습 프로그램 라벨을 찾지 못했습니다.")
+    programs, boundary_err = resolve_lab_blocks(page_texts, segmenter=segmenter)
+    if boundary_err:
+        errors.append(boundary_err)
     written: list[str] = []
     sub = (out_subdir or "").strip().strip("/\\")
-    by_name: dict[str, LabProgram] = {}
+    by_name: dict[str, LabBlock] = {}
     for prog in programs:
         by_name[prog.filename] = prog
     for prog in by_name.values():
@@ -345,9 +447,9 @@ def format_lab_dump_reply(result: LabDumpResult) -> LabDumpReply:
     )
 
 
-def to_hermes_summary(result: LabDumpResult) -> LabDumpSummary:
+def to_agent_summary(result: LabDumpResult) -> LabDumpSummary:
     """Boundary strip: drop bodies before any tool result reaches the model."""
-    labels = tuple(p.label for p in result.programs)
+    labels = tuple(p.title for p in result.programs)
     return LabDumpSummary(
         written=tuple(result.written),
         labels=labels,
@@ -364,6 +466,7 @@ def try_handle_lab_dump(
     *,
     vision_reader: VisionReader | None = None,
     out_subdir: str = "labs",
+    segmenter: LabSegmenter | None = None,
 ) -> LabDumpReply | None:
     """Facade for non-Qt callers/tests. None if not lab-dump intent or no PDF."""
     pdfs = pdf_paths_from(attachments)
@@ -380,5 +483,6 @@ def try_handle_lab_dump(
         project_root,
         out_subdir=out_subdir,
         vision_reader=vision_reader,
+        segmenter=segmenter,
     )
     return format_lab_dump_reply(result)

@@ -1,4 +1,4 @@
-"""Hermes에 Iris Control 스킬·MCP 자세를 자동 설치·검증.
+"""Iris Agent 홈에 Iris Control 스킬·MCP 자세를 자동 설치·검증.
 
 제품 경로의 SpeakTools다. iris-control MCP는 완전 제거(동기화 시 항상 scrub).
 mobile-mcp와 skills는 계속 sync한다.
@@ -17,7 +17,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from iris.infrastructure.iris_agent_credentials import hermes_home as _product_hermes_home
+from iris.infrastructure.agent_runtime import (
+    iris_agent_checkout_dir,
+    iris_agent_home,
+)
 
 
 SKILL_NAMES = (
@@ -31,6 +34,7 @@ SKILL_NAMES = (
     "iris-learning",
     "iris-calendar",
     "iris-wiki",
+    "iris-pdf",
     "iris-past-chats",
     "iris-email",
 )
@@ -106,25 +110,64 @@ def project_root() -> Path:
     return root
 
 
-def hermes_home() -> Path:
-    """제품 런타임 홈. credentials / agent_runtime 과 동일 경로."""
-    return _product_hermes_home()
-
-
 def _resolved_home(home: Path | None = None) -> Path:
-    return Path(home) if home is not None else hermes_home()
+    return Path(home) if home is not None else iris_agent_home()
 
 
-def hermes_config_path(home: Path | None = None) -> Path:
+def agent_config_path(home: Path | None = None) -> Path:
     return _resolved_home(home) / "config.yaml"
 
 
-def hermes_skills_iris_control_dir(home: Path | None = None) -> Path:
+def agent_skills_dir(home: Path | None = None) -> Path:
+    """Canonical agent home skills dir: ``skills/iris-agent``."""
+    return _resolved_home(home) / "skills" / "iris-agent"
+
+
+def agent_skills_legacy_dir(home: Path | None = None) -> Path:
+    """One-release legacy home path ``skills/iris-control`` (migrate/fallback)."""
     return _resolved_home(home) / "skills" / "iris-control"
 
 
-def repo_skills_iris_control_dir() -> Path:
-    return project_root() / "integrations" / "hermes-skills" / "iris-control"
+def repo_skills_iris_agent_dir(repo: Path | None = None) -> Path:
+    """Repo source for Iris Agent skills (``integrations/iris-skills/iris-agent``)."""
+    root = Path(repo) if repo is not None else project_root()
+    preferred = root / "integrations" / "iris-skills" / "iris-agent"
+    if preferred.is_dir():
+        return preferred
+    # Transient alias while a checkout still has the old folder name.
+    return root / "integrations" / "iris-skills" / "iris-control"
+
+
+def repo_skills_iris_control_dir(repo: Path | None = None) -> Path:
+    """Alias for :func:`repo_skills_iris_agent_dir` (one-release)."""
+    return repo_skills_iris_agent_dir(repo)
+
+
+def migrate_legacy_agent_skills(*, home: Path | None = None) -> list[str]:
+    """Copy ``skills/iris-control/*`` into canonical ``skills/iris-agent`` when missing.
+
+    Does not delete the legacy tree. Returns skill names copied.
+    """
+    legacy = agent_skills_legacy_dir(home)
+    canonical = agent_skills_dir(home)
+    if not legacy.is_dir():
+        return []
+    copied: list[str] = []
+    canonical.mkdir(parents=True, exist_ok=True)
+    for child in sorted(legacy.iterdir()):
+        if not child.is_dir():
+            continue
+        skill_md = child / "SKILL.md"
+        if not skill_md.is_file():
+            continue
+        dest = canonical / child.name
+        if (dest / "SKILL.md").is_file():
+            continue
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        shutil.copytree(child, dest)
+        copied.append(child.name)
+    return copied
 
 
 @dataclass
@@ -149,7 +192,7 @@ class SyncReport:
 
     def summary_line(self) -> str:
         if self.errors and not self.mcp_installed:
-            return f"Iris↔Hermes control sync fail: {self.errors[0][:100]}"
+            return f"Iris↔Agent control sync fail: {self.errors[0][:100]}"
         bits = []
         if self.mcp_installed:
             bits.append(
@@ -164,7 +207,7 @@ class SyncReport:
         bits.append(f"skills {len(self.skills_ok)}/{len(SKILL_NAMES)}")
         if self.mcp_servers:
             bits.append(f"mcp {self.mcp_ok_count}/{len(self.mcp_servers)} healthy")
-        return "Iris↔Hermes: " + ", ".join(bits)
+        return "Iris↔Agent: " + ", ".join(bits)
 
 
 def _is_gui_frozen_exe(path: str | Path) -> bool:
@@ -274,10 +317,11 @@ def desired_mcp_block(repo: Path) -> dict[str, Any]:
     return block
 
 
-def _hermes_mcp_tool_candidates(home: Path | None = None) -> list[Path]:
-    agent = _resolved_home(home) / "hermes-agent"
+def _agent_mcp_tool_candidates(home: Path | None = None) -> list[Path]:
+    agent = iris_agent_checkout_dir(_resolved_home(home))
     found = [
         agent / "tools" / "mcp_tool.py",
+        agent / "iris_agent_cli" / "tools" / "mcp_tool.py",
         agent / "hermes_cli" / "tools" / "mcp_tool.py",
     ]
     site = agent / "venv" / "Lib" / "site-packages"
@@ -287,8 +331,8 @@ def _hermes_mcp_tool_candidates(home: Path | None = None) -> list[Path]:
     return found
 
 
-def _hermes_mcp_tool_path(home: Path | None = None) -> Path | None:
-    for path in _hermes_mcp_tool_candidates(home):
+def _agent_mcp_tool_path(home: Path | None = None) -> Path | None:
+    for path in _agent_mcp_tool_candidates(home):
         if path.is_file():
             return path
     return None
@@ -308,10 +352,11 @@ _DEAD_CHECK_FIXED = (
 
 def _mcp_tool_path_for_agent(agent_root: Path | None) -> Path | None:
     if agent_root is None:
-        return _hermes_mcp_tool_path()
+        return _agent_mcp_tool_path()
     root = Path(agent_root)
     candidates = [
         root / "tools" / "mcp_tool.py",
+        root / "iris_agent_cli" / "tools" / "mcp_tool.py",
         root / "hermes_cli" / "tools" / "mcp_tool.py",
     ]
     site = root / "venv" / "Lib" / "site-packages"
@@ -324,7 +369,7 @@ def _mcp_tool_path_for_agent(agent_root: Path | None) -> Path | None:
     return None
 
 
-def verify_hermes_stdio_dead_check(*, agent_root: Path | None = None) -> str:
+def verify_iris_agent_stdio_dead_check(*, agent_root: Path | None = None) -> str:
     """dead-check 상태만 보고한다. 디스크를 쓰지 않는다."""
     path = _mcp_tool_path_for_agent(agent_root)
     if path is None:
@@ -343,7 +388,7 @@ def verify_hermes_stdio_dead_check(*, agent_root: Path | None = None) -> str:
     return "hermes dead-check: pattern unknown — ok at pin (upstream polarity fix)"
 
 
-def ensure_hermes_stdio_dead_check_patch(
+def ensure_iris_agent_stdio_dead_check_patch(
     home: Path | None = None, *, agent_root: Path | None = None, mutate: bool | None = None
 ) -> str:
     """stdio dead-check. home= 이면 그 트리에 패치. mutate 기본은 install baseline 만.
@@ -355,28 +400,28 @@ def ensure_hermes_stdio_dead_check_patch(
     if mutate is None:
         mutate = home is not None
     if agent_root is None and home is not None:
-        agent_root = _resolved_home(home) / "hermes-agent"
-    status = verify_hermes_stdio_dead_check(agent_root=agent_root)
+        agent_root = iris_agent_checkout_dir(_resolved_home(home))
+    status = verify_iris_agent_stdio_dead_check(agent_root=agent_root)
     if not mutate:
         return status
     if "broken pattern" not in status:
         return status
     path = _mcp_tool_path_for_agent(agent_root)
     if path is None:
-        agent = _resolved_home(home) / "hermes-agent"
-        checked = "\n".join(f"  - {p}" for p in _hermes_mcp_tool_candidates(home))
+        agent = iris_agent_checkout_dir(_resolved_home(home))
+        checked = "\n".join(f"  - {p}" for p in _agent_mcp_tool_candidates(home))
         if not agent.is_dir():
             return (
-                "hermes mcp_tool.py missing — "
+                "Iris Agent mcp_tool.py missing — "
                 f"설치 디렉터리 없음: {agent}\n확인한 경로:\n{checked}"
             )
-        return f"hermes mcp_tool.py missing\n확인한 경로:\n{checked}"
+        return f"Iris Agent mcp_tool.py missing\n확인한 경로:\n{checked}"
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         return f"hermes dead-check patch read fail: {exc}"
     if _DEAD_CHECK_BROKEN not in text:
-        return verify_hermes_stdio_dead_check(agent_root=agent_root)
+        return verify_iris_agent_stdio_dead_check(agent_root=agent_root)
     bak = path.with_suffix(path.suffix + ".bak-iris-deadcheck")
     try:
         if not bak.is_file():
@@ -466,7 +511,7 @@ def ensure_mcp_in_config(
         )
 
     repo = repo or project_root()
-    path = hermes_config_path(home)
+    path = agent_config_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     desired_mobile = desired_mobile_mcp_block()
 
@@ -524,8 +569,25 @@ def ensure_mcp_in_config(
     return True, True, msg
 
 
-_IRIS_DISABLED_TOOLSETS = ("terminal", "browser")
-# hermes-api-server composite drops computer_use; Iris chat is api_server — pin both.
+# Product chat owns familiars via Iris Control; Hermes natives stay disabled.
+# web = search/extract (Iris web.run_*). browser* = page driving (Iris QWebEngine).
+# code_execution → Iris execute_code / chat.exec_python. Do not re-enable these.
+_IRIS_DISABLED_TOOLSETS = (
+    "file",
+    "terminal",
+    "web",
+    "code_execution",
+    "memory",
+    "delegation",
+    "clarify",
+    "browser",
+    "browser-use",
+    "browser-cdp",
+    "computer_use",
+    "tts",
+    "vision",
+)
+# hermes-api-server composite label kept for platform pin; computer_use is disabled above.
 _IRIS_API_SERVER_TOOLSETS = ("hermes-api-server", "computer_use")
 
 
@@ -545,17 +607,18 @@ def _merge_api_server_toolsets(existing: list[object]) -> list[str]:
     return merged
 
 
-def ensure_hermes_disabled_terminal(*, home: Path | None = None) -> tuple[bool, str]:
-    """Keep today's name. Merge terminal and the Hermes page-driving browser toolset.
+def ensure_iris_agent_disabled_terminal(*, home: Path | None = None) -> tuple[bool, str]:
+    """Keep today's name. Merge Iris product disabled Hermes toolsets into config.
 
-    Do not disable the `web` toolset (web_search / web_extract).
+    Product chat owns familiars via Iris Control; Hermes file/terminal/web/
+    code_execution/memory/delegation/clarify/browser*/computer_use/tts/vision stay off.
     """
     try:
         import yaml  # type: ignore
     except ImportError:
         return False, "PyYAML missing — cannot set agent.disabled_toolsets"
 
-    path = hermes_config_path(home)
+    path = agent_config_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
         try:
@@ -576,7 +639,10 @@ def ensure_hermes_disabled_terminal(*, home: Path | None = None) -> tuple[bool, 
     merged = _merge_disabled_toolsets(disabled)
     already = all(name in [str(x).strip() for x in disabled] for name in _IRIS_DISABLED_TOOLSETS)
     if already:
-        return False, "hermes disabled_toolsets already includes terminal and browser"
+        return False, (
+            "hermes disabled_toolsets already includes Iris product set "
+            "(file/terminal/web/code_execution/…)"
+        )
     agent["disabled_toolsets"] = merged
     data["agent"] = agent
 
@@ -596,18 +662,23 @@ def ensure_hermes_disabled_terminal(*, home: Path | None = None) -> tuple[bool, 
     written = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
     written_disabled = (written.get("agent") or {}).get("disabled_toolsets") or []
     written_names = [str(x).strip() for x in written_disabled]
-    if "terminal" not in written_names or "browser" not in written_names:
-        return False, "hermes disabled_toolsets write missing terminal or browser"
-    return True, "hermes disabled_toolsets: terminal, browser (IDE terminal via project.run; Iris QWebEngine for pages)"
+    missing = [n for n in _IRIS_DISABLED_TOOLSETS if n not in written_names]
+    if missing:
+        return False, f"hermes disabled_toolsets write missing {missing}"
+    return True, (
+        "hermes disabled_toolsets: Iris product set "
+        "(file/terminal/web/code_execution/memory/delegation/clarify/"
+        "browser*/computer_use/tts/vision)"
+    )
 
 
-def read_hermes_disabled_toolsets() -> list[str]:
+def read_iris_agent_disabled_toolsets() -> list[str]:
     """Product Hermes config.yaml 의 agent.disabled_toolsets (없으면 빈 목록)."""
     try:
         import yaml  # type: ignore
     except ImportError:
         return []
-    path = hermes_config_path()
+    path = agent_config_path()
     if not path.is_file():
         return []
     try:
@@ -625,23 +696,23 @@ def read_hermes_disabled_toolsets() -> list[str]:
     return [str(x).strip() for x in disabled if str(x).strip()]
 
 
-def verify_hermes_terminal_disabled() -> tuple[bool, str]:
-    """Ensure write 직후·기동 시 terminal+browser 가 실제로 disabled 목록에 있다."""
-    names = read_hermes_disabled_toolsets()
+def verify_iris_agent_terminal_disabled() -> tuple[bool, str]:
+    """Ensure write 직후·기동 시 Iris product disabled set 이 실제로 목록에 있다."""
+    names = read_iris_agent_disabled_toolsets()
     missing = [n for n in _IRIS_DISABLED_TOOLSETS if n not in names]
     if missing:
         return False, f"hermes disabled_toolsets missing {missing}; have={names}"
-    return True, "hermes disabled_toolsets verified: terminal, browser"
+    return True, "hermes disabled_toolsets verified: Iris product set"
 
 
-def ensure_hermes_api_server_computer_use(*, home: Path | None = None) -> tuple[bool, str]:
+def ensure_iris_agent_api_server_computer_use(*, home: Path | None = None) -> tuple[bool, str]:
     """Upsert platform_toolsets.api_server to include hermes-api-server + computer_use."""
     try:
         import yaml  # type: ignore
     except ImportError:
         return False, "PyYAML missing — cannot set platform_toolsets.api_server"
 
-    path = hermes_config_path(home)
+    path = agent_config_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
         try:
@@ -688,13 +759,13 @@ def ensure_hermes_api_server_computer_use(*, home: Path | None = None) -> tuple[
     return True, "hermes platform_toolsets.api_server: hermes-api-server + computer_use"
 
 
-def read_hermes_api_server_toolsets(*, home: Path | None = None) -> list[str]:
+def read_iris_agent_api_server_toolsets(*, home: Path | None = None) -> list[str]:
     """Product Hermes config.yaml 의 platform_toolsets.api_server (없으면 빈 목록)."""
     try:
         import yaml  # type: ignore
     except ImportError:
         return []
-    path = hermes_config_path(home)
+    path = agent_config_path(home)
     if not path.is_file():
         return []
     try:
@@ -712,9 +783,9 @@ def read_hermes_api_server_toolsets(*, home: Path | None = None) -> list[str]:
     return [str(x).strip() for x in raw if str(x).strip()]
 
 
-def verify_hermes_api_server_computer_use(*, home: Path | None = None) -> tuple[bool, str]:
+def verify_iris_agent_api_server_computer_use(*, home: Path | None = None) -> tuple[bool, str]:
     """api_server list must include hermes-api-server and computer_use."""
-    names = read_hermes_api_server_toolsets(home=home)
+    names = read_iris_agent_api_server_toolsets(home=home)
     missing = [n for n in _IRIS_API_SERVER_TOOLSETS if n not in names]
     if missing:
         return False, f"hermes platform_toolsets.api_server missing {missing}; have={names}"
@@ -728,8 +799,9 @@ def _skill_md_sha256(path: Path) -> str:
 def skills_content_stale(repo: Path | None = None, *, home: Path | None = None) -> list[str]:
     """SKILL.md bytes/hash differ from repo (presence alone is not enough)."""
     repo = repo or project_root()
-    src_root = repo / "integrations" / "hermes-skills" / "iris-control"
-    dst_root = hermes_skills_iris_control_dir(home)
+    migrate_legacy_agent_skills(home=home)
+    src_root = repo_skills_iris_agent_dir(repo)
+    dst_root = agent_skills_dir(home)
     stale: list[str] = []
     if not src_root.is_dir():
         return list(SKILL_NAMES)
@@ -752,10 +824,14 @@ def skills_content_stale(repo: Path | None = None, *, home: Path | None = None) 
 def ensure_skills_installed(
     repo: Path | None = None, *, home: Path | None = None
 ) -> tuple[list[str], list[str], list[str]]:
-    """Returns (copied, ok, missing). Force re-copy when SKILL.md hash differs."""
+    """Returns (copied, ok, missing). Force re-copy when SKILL.md hash differs.
+
+    Writes canonical ``skills/iris-agent``. Migrates legacy ``skills/iris-control`` first.
+    """
     repo = repo or project_root()
-    src_root = repo / "integrations" / "hermes-skills" / "iris-control"
-    dst_root = hermes_skills_iris_control_dir(home)
+    migrate_legacy_agent_skills(home=home)
+    src_root = repo_skills_iris_agent_dir(repo)
+    dst_root = agent_skills_dir(home)
     copied: list[str] = []
     ok: list[str] = []
     missing: list[str] = []
@@ -794,7 +870,7 @@ def load_mcp_servers_config(home: Path | None = None) -> dict[str, Any]:
         import yaml
     except ImportError:
         return {}
-    path = hermes_config_path(home)
+    path = agent_config_path(home)
     if not path.is_file():
         return {}
     try:
@@ -940,18 +1016,18 @@ def verify_install(repo: Path | None = None, *, home: Path | None = None) -> Syn
     try:
         import yaml
     except ImportError:
-        report = SyncReport(config_path=str(hermes_config_path(home)), ok=False)
+        report = SyncReport(config_path=str(agent_config_path(home)), ok=False)
         report.errors.append(
             "PyYAML 패키지(모듈) 없음 — `.venv`에서 `pip install PyYAML` 후 다시 시도"
         )
         return report
 
     repo = repo or project_root()
-    report = SyncReport(config_path=str(hermes_config_path(home)))
-    path = hermes_config_path(home)
+    report = SyncReport(config_path=str(agent_config_path(home)))
+    path = agent_config_path(home)
     if not path.is_file():
         report.ok = False
-        report.errors.append("Hermes config.yaml missing")
+        report.errors.append("Iris Agent config.yaml missing")
         return report
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
@@ -975,13 +1051,19 @@ def verify_install(repo: Path | None = None, *, home: Path | None = None) -> Syn
         report.errors.append("mcp mobile-mcp not present or stale")
     if not shutil.which("npx"):
         report.messages.append(
-            "npx not found - install Node 20+ so Hermes can spawn mobile-mcp"
+            "npx not found - install Node 20+ so Iris Agent can spawn mobile-mcp"
         )
 
-    dst = hermes_skills_iris_control_dir(home)
+    migrate_legacy_agent_skills(home=home)
+    dst = agent_skills_dir(home)
+    legacy = agent_skills_legacy_dir(home)
     for name in SKILL_NAMES:
         if (dst / name / "SKILL.md").is_file():
             report.skills_ok.append(name)
+        elif (legacy / name / "SKILL.md").is_file():
+            # One-release read fallback before next ensure_skills_installed.
+            report.skills_ok.append(name)
+            report.messages.append(f"skills legacy fallback: {name} (iris-control)")
         else:
             report.skills_missing.append(name)
             report.ok = False
@@ -1003,17 +1085,18 @@ def sync_iris_control(
     reconnect_gateway: bool = False,
     home: Path | None = None,
 ) -> SyncReport:
-    """스킬·MCP 자세 설치 후 검증. Hermes 디스크에 남겨 Iris 재시작에도 유지.
+    """스킬·MCP 자세 설치 후 검증. Agent home 디스크에 남겨 Iris 재시작에도 유지.
 
     - iris-control 항상 scrub, SpeakTools 자세
     - mobile-mcp upsert (이미 동일하면 유지)
     - 등록된 모든 mcp_servers 사전 점검
-    - reconnect_gateway=True 이면 gateway가 MCP를 다시 붙이도록 표시
-    - home=None 이면 hermes_home(). Internal sidecar passes EngineHome.
+    - reconnect_gateway는 레거시 플래그(기본 False). True여도 :8642를 기동하지 않고
+      needs_gateway_reload 메시지 표시만 한다. 제품 호출은 False만 쓴다.
+    - home=None 이면 iris_agent_home(). Internal sidecar passes EngineHome.
     """
     repo = repo or project_root()
     target = _resolved_home(home)
-    report = SyncReport(config_path=str(hermes_config_path(target)))
+    report = SyncReport(config_path=str(agent_config_path(target)))
 
     try:
         installed, changed, msg = ensure_mcp_in_config(repo, home=target)
@@ -1033,11 +1116,11 @@ def sync_iris_control(
         report.errors.append(f"mcp sync: {exc}")
 
     try:
-        term_changed, term_msg = ensure_hermes_disabled_terminal(home=target)
+        term_changed, term_msg = ensure_iris_agent_disabled_terminal(home=target)
         report.messages.append(term_msg)
         if term_changed:
             report.needs_gateway_reload = True
-        ok_term, verify_msg = verify_hermes_terminal_disabled()
+        ok_term, verify_msg = verify_iris_agent_terminal_disabled()
         report.messages.append(verify_msg)
         if not ok_term:
             report.ok = False
@@ -1046,11 +1129,11 @@ def sync_iris_control(
         report.messages.append(f"terminal policy skip: {exc}")
 
     try:
-        cu_changed, cu_msg = ensure_hermes_api_server_computer_use(home=target)
+        cu_changed, cu_msg = ensure_iris_agent_api_server_computer_use(home=target)
         report.messages.append(cu_msg)
         if cu_changed:
             report.needs_gateway_reload = True
-        ok_cu, verify_cu = verify_hermes_api_server_computer_use(home=target)
+        ok_cu, verify_cu = verify_iris_agent_api_server_computer_use(home=target)
         report.messages.append(verify_cu)
         if not ok_cu:
             report.ok = False
@@ -1059,7 +1142,7 @@ def sync_iris_control(
         report.messages.append(f"computer_use policy skip: {exc}")
 
     try:
-        dead_patch = ensure_hermes_stdio_dead_check_patch(home=target)
+        dead_patch = ensure_iris_agent_stdio_dead_check_patch(home=target)
         report.messages.append(dead_patch)
         if "patched" in dead_patch and "already" not in dead_patch:
             report.needs_gateway_reload = True
@@ -1068,25 +1151,24 @@ def sync_iris_control(
 
     try:
         from iris.system.iris_agent_tool_choice import (
-            apply_hermes_tool_choice_overlay,
-            load_hermes_tool_choice,
+            apply_iris_agent_tool_choice_overlay,
+            load_iris_agent_tool_choice,
             tool_choice_overlay_present,
         )
 
-        # hermes_home() already product agent home; avoid agent_runtime import cycle.
-        agent_root = hermes_home() / "hermes-agent"
+        agent_root = iris_agent_checkout_dir(target)
         if agent_root.is_dir() and not tool_choice_overlay_present(agent_root):
-            for line in apply_hermes_tool_choice_overlay(agent_root):
+            for line in apply_iris_agent_tool_choice_overlay(agent_root):
                 report.messages.append(line)
                 if "patched" in line or "installed" in line:
                     report.needs_gateway_reload = True
         elif agent_root.is_dir():
-            report.messages.append("hermes tool_choice overlay present")
+            report.messages.append("Iris Agent tool_choice overlay present")
         report.messages.append(
-            f"hermes agent.tool_choice: {load_hermes_tool_choice(home=target)}"
+            f"Iris Agent tool_choice: {load_iris_agent_tool_choice(home=target)}"
         )
     except Exception as exc:  # noqa: BLE001
-        report.messages.append(f"hermes tool_choice skip: {exc}")
+        report.messages.append(f"Iris Agent tool_choice skip: {exc}")
 
     try:
         copied, ok, missing = ensure_skills_installed(repo, home=target)
@@ -1192,8 +1274,21 @@ def _self_check() -> None:
     assert (root / "iris" / "mcp" / "iris_control_stdio.py").is_file()
     entry = root / "integrations" / "hermes-mcp" / "iris_control_stdio_entry.py"
     assert entry.is_file(), entry
-    src = repo_skills_iris_control_dir()
+    skills_src = root / "integrations" / "iris-skills"
+    assert skills_src.is_dir(), skills_src
+    assert not (root / "integrations" / "hermes-skills").exists(), (
+        "legacy integrations/hermes-skills must be renamed to iris-skills"
+    )
+    src = repo_skills_iris_agent_dir(root)
     assert src.is_dir(), src
+    assert "integrations/iris-skills/iris-agent" in src.as_posix().replace("\\", "/")
+    assert agent_skills_dir().name == "iris-agent"
+    assert agent_skills_legacy_dir().name == "iris-control"
+    fail_line = SyncReport(ok=False, mcp_installed=False, errors=["boom"]).summary_line()
+    assert fail_line.startswith("Iris↔Agent control sync fail:"), fail_line
+    ok_line = SyncReport(ok=True, mcp_installed=True).summary_line()
+    assert ok_line.startswith("Iris↔Agent:"), ok_line
+    assert "Iris↔Hermes" not in fail_line and "Iris↔Hermes" not in ok_line
     for name in SKILL_NAMES:
         assert (src / name / "SKILL.md").is_file(), name
     block = desired_mcp_block(root)
@@ -1205,7 +1300,7 @@ def _self_check() -> None:
         assert str(block["command"]).lower().endswith("pythonw.exe"), block["command"]
     assert _mcp_equivalent(block, block)
     # ponytail: dead-check 는 verify-only (install baseline 에서만 mutate)
-    patch_msg = ensure_hermes_stdio_dead_check_patch()
+    patch_msg = ensure_iris_agent_stdio_dead_check_patch()
     assert "fail" not in patch_msg.lower() or "missing" in patch_msg, patch_msg
     assert "patched (" not in patch_msg, patch_msg
     mobile = desired_mobile_mcp_block()
@@ -1232,7 +1327,7 @@ def _self_check() -> None:
 
 if __name__ == "__main__":
     if "--apply" in sys.argv:
-        r = sync_iris_control(reconnect_gateway=True)
+        r = sync_iris_control(reconnect_gateway=False)
         payload = json.dumps(asdict(r), ensure_ascii=False, indent=2)
         try:
             print(payload)

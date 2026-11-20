@@ -1,6 +1,6 @@
-"""Unit2 — SpeakAllowlist / SpeakTools (PHASE4 grants) 자검.
+"""Unit2 — ToolAllowlist / SpeakTools (PHASE4 grants) 자검.
 
-Fails first without speak_capability; green when SpeakTools routes
+Fails first without tool_capability; green when SpeakTools routes
 Control action names natively (no MCP/HTTP on speak path).
 """
 
@@ -10,18 +10,24 @@ from iris.infrastructure.agent_tool_registry import (
     speak_invoke_agent_tool,
     try_native_control_invoke,
 )
-from iris.infrastructure.speak_capability import (
+from iris.engine.model_tool_names import (
+    catalog_uses_model_tool_names,
+    names_hidden_from_model,
+)
+from iris.infrastructure.tool_capability import (
     PHASE4_ALLOWLIST,
     ExecKind,
-    SpeakAllowlist,
-    SpeakGrant,
+    ToolAllowlist,
+    ToolGrant,
     SpeakTools,
     ToolResult,
     assert_engine_tools_match_allowlist,
-    default_speak_tools,
+    default_agent_tools,
+    engine_tool_name,
+    engine_tool_schemas,
     resolve_legacy_name,
 )
-from iris.ui.workers.iris_agent_workers import HermesChatWorker
+from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker
 
 
 _REQUIRED = frozenset(
@@ -29,6 +35,7 @@ _REQUIRED = frozenset(
         "ping",
         "get_catalog",
         "get_state",
+        "control.invoke",
         "settings.get",
         "wiki.list_notes",
         "wiki.search",
@@ -36,14 +43,31 @@ _REQUIRED = frozenset(
         "email.list_accounts",
         "calendar.list_events",
         "ide.open_folder",
+        "ide.open_file",
         "project.open_similar",
         "project.run",
+        "project.write_file",
+        "project.read_file",
+        "project.list_files",
+        "project.rename_file",
         "chat.set_title",
         "chat.search_past",
         "chat.new_session",
         "diagram.render",
     }
 )
+
+# Twin map (Hermes file/terminal disabled → Iris Speak Control action).
+# Engine schemas expose dotted actions as provider-safe underscores.
+_FILE_TERMINAL_TWINS = (
+    ("write_file", "project.write_file"),
+    ("read_file", "project.read_file"),
+    ("", "project.list_files"),
+    ("", "ide.open_file"),
+    ("", "project.rename_file"),
+    ("terminal", "project.run"),
+)
+_HERMES_FILE_BARE = frozenset({"write_file", "read_file", "search_files"})
 
 
 class _FakeActions:
@@ -57,6 +81,26 @@ class _FakeActions:
                     "summary": "Run in IDE terminal",
                     "risk": "medium",
                     "confirm_required": True,
+                },
+            )(),
+            "project.write_file": type(
+                "S",
+                (),
+                {
+                    "name": "project.write_file",
+                    "summary": "Write file under bound workspace",
+                    "risk": "medium",
+                    "confirm_required": True,
+                },
+            )(),
+            "project.read_file": type(
+                "S",
+                (),
+                {
+                    "name": "project.read_file",
+                    "summary": "Read UTF-8 file from bound workspace",
+                    "risk": "low",
+                    "confirm_required": False,
                 },
             )(),
             "wiki.write_user_note": type(
@@ -97,6 +141,36 @@ class _FakeActions:
                     "summary": "Open folder",
                     "risk": "low",
                     "confirm_required": False,
+                },
+            )(),
+            "ide.open_file": type(
+                "S",
+                (),
+                {
+                    "name": "ide.open_file",
+                    "summary": "Open file in IDE",
+                    "risk": "medium",
+                    "confirm_required": False,
+                },
+            )(),
+            "project.list_files": type(
+                "S",
+                (),
+                {
+                    "name": "project.list_files",
+                    "summary": "List workspace files",
+                    "risk": "low",
+                    "confirm_required": False,
+                },
+            )(),
+            "project.rename_file": type(
+                "S",
+                (),
+                {
+                    "name": "project.rename_file",
+                    "summary": "Rename file under workspace",
+                    "risk": "medium",
+                    "confirm_required": True,
                 },
             )(),
         }
@@ -158,9 +232,56 @@ def _main() -> None:
     rows = {r.name: r for r in tools.catalog()}
     assert "wiki.write_user_note" in rows
     assert rows["wiki.write_user_note"].needs_ui is True
-    assert rows["project.run"].confirm_required is True
-    assert rows["project.run"].risk == "medium"
     assert rows["ping"].needs_ui is False
+    # Folded Speak twins leave the model catalog; grant + ActionSpec still define risk.
+    run_grant = PHASE4_ALLOWLIST.grant("project.run")
+    assert run_grant is not None
+    run_spec = _FakeActions().spec("project.run")
+    assert run_spec is not None
+    assert run_spec.confirm_required is True
+    assert run_spec.risk == "medium"
+    write_grant = PHASE4_ALLOWLIST.grant("project.write_file")
+    assert write_grant is not None
+    write_spec = _FakeActions().spec("project.write_file")
+    assert write_spec is not None
+    assert write_spec.confirm_required is True
+    assert write_spec.risk == "medium"
+    read_grant = PHASE4_ALLOWLIST.grant("project.read_file")
+    assert read_grant is not None
+    assert read_grant.kind is ExecKind.SURFACE
+    assert PHASE4_ALLOWLIST.grant("local.read_file") is not None
+    assert PHASE4_ALLOWLIST.grant("local.search_files") is not None
+
+    schema_names = {str(row["name"]) for row in engine_tool_schemas()}
+    folded = catalog_uses_model_tool_names()
+    hidden = names_hidden_from_model() if folded else {}
+    for _agent, iris_action in _FILE_TERMINAL_TWINS:
+        assert iris_action in names, f"twin missing grant: {iris_action}"
+        eng = engine_tool_name(iris_action)
+        if folded and eng in hidden:
+            assert eng not in schema_names, f"folded twin still on model schema: {eng}"
+        else:
+            assert eng in schema_names, iris_action
+    if folded:
+        assert "project_write_file" not in schema_names
+        assert "project_read_file" not in schema_names
+        assert "control_invoke" not in schema_names
+        assert "project_run" not in schema_names
+        assert "local_read_file" not in schema_names
+        assert "local_search_files" not in schema_names
+    else:
+        assert "project_write_file" in schema_names
+        assert "project_read_file" in schema_names
+        assert "project_run" in schema_names
+    # Grants stay even when model schemas fold the overlap names.
+    assert "project.run" in names
+    assert "local.read_file" in names
+    assert "local.search_files" in names
+    # Models must use Iris Speak twins; Hermes bare file tools are not engine schemas.
+    assert not (_HERMES_FILE_BARE & schema_names), (
+        f"Hermes bare file tools must not appear in engine schemas: "
+        f"{sorted(_HERMES_FILE_BARE & schema_names)}"
+    )
 
     assert tools.engine_names() == PHASE4_ALLOWLIST.names()
     try:
@@ -242,11 +363,11 @@ def _main() -> None:
     assert listed.get("ok") is True, listed
     assert listed.get("call_path") == "native"
 
-    legacy = HermesChatWorker.invoke_native_tool("iris.wiki.list_notes", {"limit": 1})
+    legacy = IrisAgentChatWorker.invoke_native_tool("iris.wiki.list_notes", {"limit": 1})
     assert legacy.get("ok") is True, legacy
     assert legacy.get("call_path") == "native"
 
-    live = default_speak_tools()
+    live = default_agent_tools()
     assert "chat.set_title" in live.engine_names()
     assert "project.run" in live.engine_names()
 
@@ -259,7 +380,7 @@ def _main() -> None:
         }
     )
     confirm_tools = SpeakTools(
-        SpeakAllowlist(grants=(SpeakGrant("project.run", ExecKind.SURFACE),)),
+        ToolAllowlist(grants=(ToolGrant("project.run", ExecKind.SURFACE),)),
         surface=confirm_surface,
         actions=_FakeActions(),
     )

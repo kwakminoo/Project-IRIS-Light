@@ -23,7 +23,7 @@ from iris.infrastructure.agent_tool_registry import (
 )
 from iris.mcp import iris_control_stdio
 from iris.system.iris_agent_control_sync import project_root
-from iris.ui.workers.iris_agent_workers import HermesChatWorker
+from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker
 
 
 def _block_network(*_a: object, **_k: object) -> None:
@@ -77,7 +77,7 @@ def _main() -> None:
 
     with mock.patch("socket.socket", side_effect=_block_network):
         with mock.patch("socket.create_connection", side_effect=_block_network):
-            mail = HermesChatWorker.invoke_native_tool("iris.mail.list_accounts", {})
+            mail = IrisAgentChatWorker.invoke_native_tool("iris.mail.list_accounts", {})
             cal = speak_invoke_agent_tool(
                 "calendar.list_events", {"limit": 2}, registry=reg
             )
@@ -163,7 +163,7 @@ def _main() -> None:
         skill = (
             root
             / "integrations"
-            / "hermes-skills"
+            / "iris-skills"
             / "iris-control"
             / skill_name
             / "SKILL.md"

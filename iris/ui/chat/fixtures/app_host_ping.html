@@ -24,6 +24,13 @@
     if (method === "iris.app/pong") {
       setStatus("pong ok");
       document.title = "iris-app-pong";
+      return;
+    }
+    if (method === "iris.app/host.info") {
+      window.__irisLastHostInfo = msg;
+      if (statusEl.textContent !== "pong ok") {
+        setStatus("host.info ok");
+      }
     }
   };
 

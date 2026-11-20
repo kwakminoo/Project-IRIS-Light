@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -17,11 +18,12 @@ from iris.storage.database import Database
 from iris.system.iris_agent_tool_choice import (
     TOOL_CHOICE_AUTO,
     TOOL_CHOICE_REQUIRED,
-    load_hermes_tool_choice,
-    set_hermes_tool_choice,
+    load_iris_agent_tool_choice,
+    set_iris_agent_tool_choice,
 )
 from iris.ui.ai_hub.analytics_panel import AiAnalyticsPanel
 from iris.ui.ai_hub.catalog_panel import AiCatalogPanel
+from iris.ui.ai_hub.ollama_panel import AiOllamaPanel
 from iris.ui.ai_hub.providers_panel import AiProvidersPanel
 from iris.ui.ai_hub.routing_panel import AiRoutingPanel
 from iris.ui.settings.hud_dialog import (
@@ -37,6 +39,10 @@ from iris.ui.shared.theme_tokens import TOKENS
 
 class AiHubDialog(QDialog):
     """Iris AI Hub. Open with parent=None from frameless MainWindow (0xC0000409)."""
+
+    # Re-export so MainWindow can refresh the picker after an in-hub Pull.
+    ollama_models_changed = pyqtSignal()
+    model_use_requested = pyqtSignal(str)
 
     def __init__(
         self,
@@ -70,6 +76,9 @@ class AiHubDialog(QDialog):
         )
 
         scroll, content_lay = make_scroll_body()
+        self._ollama = AiOllamaPanel(settings, self)
+        self._ollama.models_changed.connect(self.ollama_models_changed.emit)
+        self._ollama.model_use_requested.connect(self.model_use_requested.emit)
         self._providers = AiProvidersPanel(db, settings, self)
         self._catalog = AiCatalogPanel(db, self)
         self._routing = AiRoutingPanel(db, self)
@@ -87,11 +96,12 @@ class AiHubDialog(QDialog):
         self._tool_choice = QComboBox()
         self._tool_choice.addItem("Auto (권장)", TOOL_CHOICE_AUTO)
         self._tool_choice.addItem("Required", TOOL_CHOICE_REQUIRED)
-        index = self._tool_choice.findData(load_hermes_tool_choice())
+        index = self._tool_choice.findData(load_iris_agent_tool_choice())
         self._tool_choice.setCurrentIndex(max(0, index))
         self._tool_choice.setMinimumHeight(32)
         tool_choice_form.addRow(make_form_label("Tool choice"), self._tool_choice)
         tool_choice_lay.addLayout(tool_choice_form)
+        content_lay.addWidget(self._ollama)
         content_lay.addWidget(tool_choice_box)
         content_lay.addWidget(self._providers)
         content_lay.addWidget(self._catalog)
@@ -107,9 +117,13 @@ class AiHubDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
+    def done(self, result: int) -> None:  # noqa: N802
+        self._ollama.shutdown()
+        super().done(result)
+
     def _accept(self) -> None:
-        _, status = set_hermes_tool_choice(str(self._tool_choice.currentData() or ""))
-        if not status.startswith("hermes agent.tool_choice"):
+        _, status = set_iris_agent_tool_choice(str(self._tool_choice.currentData() or ""))
+        if not status.startswith("Iris Agent tool_choice"):
             QMessageBox.warning(self, "Tool choice 저장 실패", status)
             return
         self._providers.persist()

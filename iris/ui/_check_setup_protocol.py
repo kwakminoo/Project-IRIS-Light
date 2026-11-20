@@ -35,6 +35,8 @@ def main() -> None:
     proto = SetupProtocol()
     snap = proto.detect()
     assert "ollama_exe" in snap
+    assert "agent_exe" in snap
+    assert "hermes_exe" not in snap
     assert "local_model_count" in snap
     assert local_inference_models(["llama3.2:latest", "gemma4:31b-cloud"]) == ["llama3.2:latest"]
     assert not has_usable_inference_backend(["minimax-m3:cloud"], cloud_signed_in=False)
@@ -57,10 +59,21 @@ def main() -> None:
     assert parse_install_percent("pulling manifest") is None
     from iris.ui.window.setup_wizard import _STREAM_STEPS
 
-    assert "hermes_gateway" in _STREAM_STEPS and "core_smoke" in _STREAM_STEPS
+    assert "agent_runtime" in _STREAM_STEPS and "core_smoke" in _STREAM_STEPS
+    assert "agent_install" in CORE_STEP_IDS
+    assert "agent_env" in CORE_STEP_IDS
+    assert "agent_provider" in CORE_STEP_IDS
+    for legacy in ("hermes_install", "hermes_env", "hermes_provider"):
+        assert legacy not in CORE_STEP_IDS
+        assert legacy not in _STREAM_STEPS
     assert VISIBLE_CONSOLE_STEPS == frozenset(
-        {"ollama_install", "hermes_install", "emulator"}
+        {"ollama_install", "agent_install", "emulator"}
     )
+    assert {"agent_install", "agent_env", "agent_provider"} <= _STREAM_STEPS
+    from iris.system.setup_protocol import normalize_setup_step_id
+
+    assert normalize_setup_step_id("hermes_install") == "agent_install"
+    assert normalize_setup_step_id("agent_env") == "agent_env"
     assert core_needs_user_next("skip", allow_skip=False) == "reverify"
     assert core_needs_user_next("skip", allow_skip=True) == "skip"
     assert "last_verify" in st

@@ -47,6 +47,54 @@ def take(block_id: str) -> str:
     return slot.decision
 
 
+def try_card_confirm(
+    *,
+    chat: Any | None,
+    command: str,
+    title: str,
+    approval: ApprovalState,
+    wait: Callable[[str], str],
+    on_ui: Callable[[Callable[[], Any]], Any] | None = None,
+) -> bool | None:
+    """채팅 pending 카드로 승인. None이면 호출자가 HUD 등으로 폴백.
+
+    True/False는 승인·거절. insert 불가·실패만 None.
+    """
+    can_insert = chat is not None and callable(getattr(chat, "insert_tool_block", None))
+    if not can_insert:
+        return None
+    if should_auto_run(approval, command):
+        return True
+
+    def _ui(fn: Callable[[], Any]) -> Any:
+        if on_ui is None:
+            return fn()
+        return on_ui(fn)
+
+    def _post() -> str:
+        block_id = str(
+            chat.insert_tool_block(
+                title=title,
+                command=command,
+                output="",
+                status="ok",
+                phase="pending",
+            )
+            or ""
+        ).strip()
+        if block_id:
+            arm(block_id)
+        return block_id
+
+    try:
+        block_id = str(_ui(_post) or "").strip()
+    except Exception:
+        block_id = ""
+    if not block_id:
+        return None
+    return wait(block_id) in ("run", "always")
+
+
 def _skipped() -> dict[str, Any]:
     return {
         "ok": False,

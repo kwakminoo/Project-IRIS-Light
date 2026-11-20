@@ -38,7 +38,7 @@ IRIS (.env: IRIS_*) → Hermes :8642 (.env: API keys)
 
 - HTTP: `127.0.0.1:8765` + Bearer token (`~/.iris-light/control_token`)
 - MCP: `iris.mcp.iris_control_stdio` → `iris_get_state` / `iris_get_catalog` / `iris_invoke`
-- 가이드: `integrations/hermes-skills/README.md`
+- 가이드: `integrations/iris-skills/README.md`
 
 ## SerpApi
 

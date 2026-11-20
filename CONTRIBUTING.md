@@ -22,7 +22,7 @@ cd Project-IRIS-Light
 
 | 우선 | 경로 | 설명 |
 |------|------|------|
-| 권장 | `integrations/hermes-skills/` | 새 스킬 — **코어 diff=0** |
+| 권장 | `integrations/iris-skills/` | 새 스킬 — **코어 diff=0** |
 | 권장 | `docs/` · `_check_*.py` | 문서·회귀 |
 | 주의 | `iris/ui/` | HUD — PyQt6 GPL 결합 |
 | 최소화 | `iris/runtime/`, `iris/system/`, `iris/infrastructure/` | Core — 버그/보안 위주 |

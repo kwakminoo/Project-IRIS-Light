@@ -22,6 +22,7 @@ from iris.engine._home import (
     install_into,
     probe_engine_python,
 )
+from iris.infrastructure.agent_runtime import load_pinned_sha, vendor_runtime_root
 
 
 def _child_pids() -> set[int]:
@@ -60,8 +61,19 @@ def _write_fake_python(home: Path, *, ok: bool) -> Path:
 
 
 class EngineHomePinTests(TestCase):
-    def test_engine_hermes_sha_is_the_how_pin(self) -> None:
-        self.assertEqual(ENGINE_HERMES_SHA, "4787e4d56fc8d9265d4c7d3c0fe5accee86b4078")
+    def test_engine_agent_sha_is_the_how_pin(self) -> None:
+        # Pin drifts with vendor/iris-agent-runtime/PIN; assert live load, not a frozen literal.
+        pin = (
+            vendor_runtime_root()
+            .joinpath("PIN")
+            .read_text(encoding="utf-8")
+            .strip()
+            .splitlines()[0]
+            .split()[0]
+        )
+        self.assertEqual(ENGINE_HERMES_SHA, pin)
+        self.assertEqual(ENGINE_HERMES_SHA, load_pinned_sha())
+        self.assertEqual(len(ENGINE_HERMES_SHA), 40)
 
     def test_home_helpers_stay_private(self) -> None:
         import iris.engine as engine
@@ -193,16 +205,16 @@ class EnsureReadyInstallTests(TestCase):
             seen.append((dest, sha, clone))
 
         with patch(
-            "iris.system.iris_agent_install.install_hermes_with_system_python",
+            "iris.system.iris_agent_install.install_agent_with_system_python",
         ) as inst:
             install_into(self.home, runner=runner, clone="repo")
         inst.assert_not_called()
-        self.assertEqual(seen, [(Path(self.home) / "hermes-agent", ENGINE_HERMES_SHA, "repo")])
+        self.assertEqual(seen, [(Path(self.home) / "iris-agent", ENGINE_HERMES_SHA, "repo")])
 
     def test_install_into_without_runner_does_not_clone(self) -> None:
         with (
             patch(
-                "iris.system.iris_agent_install.install_hermes_with_system_python",
+                "iris.system.iris_agent_install.install_agent_with_system_python",
                 return_value=None,
             ) as inst,
             patch("iris.system.iris_agent_gateway.hermes_home") as hermes_home,
@@ -223,7 +235,7 @@ class EnsureReadyInstallTests(TestCase):
             called.append("runner")
 
         with patch(
-            "iris.system.iris_agent_install.install_hermes_with_system_python",
+            "iris.system.iris_agent_install.install_agent_with_system_python",
         ) as inst:
             install_into(self.home, runner=runner)
         inst.assert_not_called()

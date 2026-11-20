@@ -32,7 +32,7 @@ alwaysApply: true
 
 폴더 기록(`ide-recent-folders.json`) 직후 같은 오프셋이면 채팅 슬롯이 아니다. `_open_iris_ide_folder` 안이다.
 
-- `QFileDialog` 부모는 `None`. 히어로·웰컴·`ide.pick_open_folder`·`ide.pick_open_file`를 frameless `MainWindow`나 그 자식에 붙이지 않는다. 닫힌 네이티브 대화상자가 다음 `processEvents`에서 걷히면 `qFatal`이다.
+- `QFileDialog` 부모는 `None`. 히어로·웰컴·`ide.pick_open_folder`·`ide.pick_open_file`·Composer `_pick_photos`/`_pick_files`/`_pick_folder`를 frameless `MainWindow`나 그 자식에 붙이지 않는다. 닫힌 네이티브 대화상자가 다음 `processEvents`에서 걷히면 `qFatal`이다.
 - 그 슬롯에서 `apply_frameless_chrome` / `show` / `winId`를 `set_embedded`보다 먼저 호출하지 않는다. 네이티브 HWND를 만든 뒤 `setParent`하면 같은 코드로 죽는다. 이미 보이는 IDE 창은 숨긴 다음 붙인다.
 - 고친 뒤 `python -m iris.ui._check_iris_ide_window`를 실행한다.
 

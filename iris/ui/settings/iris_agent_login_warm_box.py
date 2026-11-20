@@ -7,8 +7,8 @@ from PyQt6.QtWidgets import QCheckBox, QGroupBox, QVBoxLayout
 from iris.storage.database import Database
 from iris.storage.iris_agent_login_warm_prefs import (
     IrisAgentLoginWarmPrefs,
-    load_hermes_login_warm,
-    save_hermes_login_warm,
+    load_iris_agent_login_warm,
+    save_iris_agent_login_warm,
 )
 from iris.ui.settings.hud_dialog import make_hint
 from iris.ui.shared.theme_tokens import TOKENS
@@ -17,7 +17,7 @@ from iris.ui.shared.theme_tokens import TOKENS
 class IrisAgentLoginWarmBox(QGroupBox):
     def __init__(self, db: Database | None) -> None:
         super().__init__("Iris Agent 미리 기동")
-        prefs = load_hermes_login_warm(db)
+        prefs = load_iris_agent_login_warm(db)
         lay = QVBoxLayout(self)
         lay.setSpacing(TOKENS.spacing_sm)
         lay.addWidget(
@@ -34,9 +34,5 @@ class IrisAgentLoginWarmBox(QGroupBox):
         return IrisAgentLoginWarmPrefs(enabled=self.enabled.isChecked())
 
 
-# Compat alias (Wave E).
-HermesLoginWarmBox = IrisAgentLoginWarmBox
-
-
-def save_hermes_login_warm_box(db: Database, box: IrisAgentLoginWarmBox) -> None:
-    save_hermes_login_warm(db, box.prefs())
+def save_iris_agent_login_warm_box(db: Database, box: IrisAgentLoginWarmBox) -> None:
+    save_iris_agent_login_warm(db, box.prefs())

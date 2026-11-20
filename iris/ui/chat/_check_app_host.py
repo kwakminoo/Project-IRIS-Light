@@ -8,11 +8,14 @@ from PyQt6.QtCore import QEventLoop, QTimer
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from iris.ui.chat.app_host_bridge import (
+    METHOD_HOST_INFO,
     METHOD_PING,
     METHOD_PONG,
+    METHOD_UI_INITIALIZED,
     AppHostMessage,
     AppHostOffer,
     AppHostPhase,
+    host_info_message,
     parse_message,
     pong_for,
     serialize_message,
@@ -33,6 +36,21 @@ def _check_bridge_roundtrip() -> None:
     pong = pong_for(parsed)
     assert pong.method == METHOD_PONG
     assert pong.id == 7
+    info = host_info_message(title="데모", offer_id="demo-ping")
+    assert info.method == METHOD_HOST_INFO
+    info_parsed = parse_message(serialize_message(info))
+    assert info_parsed is not None
+    assert info_parsed.method == METHOD_HOST_INFO
+    assert info_parsed.params == {
+        "title": "데모",
+        "offer_id": "demo-ping",
+        "offer_count": 0,
+    }
+    ui_init = AppHostMessage(method=METHOD_UI_INITIALIZED, params={})
+    assert parse_message(serialize_message(ui_init)).method == METHOD_UI_INITIALIZED
+    offer = AppHostOffer(title="앱", html_path="x.html", offer_id="oid-1")
+    assert offer.offer_id == "oid-1"
+    assert AppHostOffer(title="앱", html_path="x.html").offer_id == ""
     assert parse_message("") is None
     assert parse_message("{not-json") is None
 
@@ -64,9 +82,10 @@ def _check_card_handshake(app: QApplication) -> None:
     host.resize(480, 640)
     card = AppHostCard(host)
     card.setFixedHeight(240)
-    offer = AppHostOffer(title="앱", html_path=str(fixture))
+    offer = AppHostOffer(title="앱", html_path=str(fixture), offer_id="check-oid")
     assert card.show_offer(offer) is True
     assert card.phase is AppHostPhase.LOADING
+    assert card._offer_id == "check-oid"
     assert _wait_handshake(card), (
         f"handshake timeout phase={card.phase.value} pong={card._pong_delivered}"
     )

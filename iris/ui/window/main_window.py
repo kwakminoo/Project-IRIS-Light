@@ -52,10 +52,12 @@ from iris.core.activity_sink import push_activity_line, register_activity_sink
 from iris.core.state_machine import AppState, StateMachine
 from iris.infrastructure.api_model_meta import should_skip_api_model_verify
 from iris.infrastructure.ollama_client import OllamaModelInfo, apply_ollama_cleanup
-from iris.infrastructure.speak_capability import set_speak_surface
+from iris.infrastructure.tool_capability import set_speak_surface
 from iris.knowledge.iris_wiki import IrisWiki
 from iris.runtime.agent_log_activity import AGENT_LOG_POLL_MS, AgentLogTailer
 from iris.runtime.backend_route import AGENT_BACKEND, is_agent_backend
+from iris.runtime.agent_tool_activity import agent_tool_activity_footer
+from iris.ui.chat.no_toolcalls_gate import turn_notice
 from iris.runtime.model_failover import RouteCooldownBook, RouteTarget
 from iris.runtime.context_handoff import (
     build_successor_messages,
@@ -92,6 +94,7 @@ from iris.runtime.stream_usage import TokenUsage
 from iris.runtime.voice_intents import IntentContext, VoiceIntent, match_intent
 from iris.storage.ai_analytics import AiCallSample, record_sample
 from iris.storage.database import Database
+from iris.storage.model_favorite_prefs import load_model_favorites, toggle_model_favorite
 from iris.storage.model_prefs import (
     load_ollama_model_probes,
     load_selected_model,
@@ -133,6 +136,7 @@ from iris.system.ide_tiler import (
 )
 from iris.system.iris_ide_runtime import shared_iris_ide_runtime
 from iris.system.metrics_worker import MetricsWorker
+from iris.apps.offer import path_offer
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.widgets.context_ring import estimate_messages_tokens
 from iris.ui.window.cyberspace_background import CyberspaceBackground
@@ -397,19 +401,19 @@ class MainWindow(QMainWindow):
         self._ollama_cleanup_worker: OllamaModelsVerifyWorker | None = None
         self._listed_models: list[OllamaModelInfo] = []
         self._api_verify_worker: QThread | None = None
-        self._hermes_health_worker: IrisAgentHealthWorker | None = None
-        self._hermes_model_worker: IrisAgentModelSyncWorker | None = None
+        self._agent_health_worker: IrisAgentHealthWorker | None = None
+        self._agent_model_worker: IrisAgentModelSyncWorker | None = None
         self._app_update_check_worker: QThread | None = None
         self._app_update_apply_worker: QThread | None = None
         self._pending_update_remote_sha = ""
         self._iris_update_checked_cids: set[int] = set()
         self._iris_update_recheck = False
         self._iris_update_check_cid = 0
-        self._hermes_update_check_worker: QThread | None = None
-        self._hermes_update_apply_worker: QThread | None = None
-        self._hermes_update_checked_cids: set[int] = set()
-        self._hermes_update_recheck = False
-        self._hermes_update_check_cid = 0
+        self._iris_agent_update_check_worker: QThread | None = None
+        self._iris_agent_update_apply_worker: QThread | None = None
+        self._iris_agent_update_checked_cids: set[int] = set()
+        self._iris_agent_update_recheck = False
+        self._iris_agent_update_check_cid = 0
         self._email_inbox_worker: EmailInboxWorker | None = None
         self._email_idle_worker: EmailIdleWorker | None = None
         self._email_message_worker: EmailMessageWorker | None = None
@@ -447,7 +451,7 @@ class MainWindow(QMainWindow):
         self._email_view: tuple[str, str] = ("inbox", "")  # (folder_key, gmail_category)
         self._email_folder = "inbox"  # 메시지 조회용 메일함 키
         self._selected_email_account_id = ""
-        self._hermes_online = False
+        self._agent_online = False
         self._quota_by_key: dict[str, object] = {}
         self._last_ollama_quota_refresh = 0.0
         self._workspace_mode = "assistant"
@@ -495,6 +499,7 @@ class MainWindow(QMainWindow):
         self._models_list_ready = False
         self._ollama_login_watch = None
         self._cloud_model_pending_login = ""
+        self._hub_use_pending = ""
         # 미로그인 클라우드를 초기 선택으로 두지 않음 — 목록 로드 후 로컬로 확정.
         # 로그인 확인 시 이 이름으로 되돌린다.
         try:
@@ -721,7 +726,7 @@ class MainWindow(QMainWindow):
         self._routine_in_flight = None
         self._iris_state_cache: dict[str, str] = {}
         self._routine_wake_wanted = None
-        self._hermes_login_warm_wanted = None
+        self._agent_login_warm_wanted = None
         self._obsidian_page.set_wiki(self._iris_wiki)
         self._left_sidebar.obsidian_detail.set_wiki(self._iris_wiki)
         self._left_sidebar.obsidian_detail.note_selected.connect(self._obsidian_page.show_note)
@@ -763,7 +768,7 @@ class MainWindow(QMainWindow):
             # 토스트 클릭용 URI 스킴 — 앱이 꺼진 뒤에 눌러도 동작하려면
             # 켜져 있는 동안 미리 걸어 둬야 한다.
             QTimer.singleShot(15_000, self._register_toast_click)
-            QTimer.singleShot(16_000, self._sync_hermes_login_warm)
+            QTimer.singleShot(16_000, self._sync_agent_login_warm)
 
         left_lay = self._assistant_page.center_layout
         right_lay = self._assistant_page.right_layout
@@ -807,6 +812,7 @@ class MainWindow(QMainWindow):
         self._chat.stop_clicked.connect(self._on_chat_stop)
         self._chat.typing_finished.connect(self._sync_chat_stop_for_presentation)
         self._chat.model_changed.connect(self._on_model_changed)
+        self._chat.model_favorite_toggled.connect(self._on_model_favorite_toggled)
         self._chat.files_attached.connect(self._on_composer_files)
         self._chat.skill_inserted.connect(self._on_composer_skill)
         self._chat.mcp_inserted.connect(self._on_composer_mcp)
@@ -816,7 +822,7 @@ class MainWindow(QMainWindow):
         self._chat.mic_clicked.connect(self._warm_embedder_soon)
         self._chat.speaker_clicked.connect(self._on_chat_speaker_clicked)
         self._chat.update_action_clicked.connect(self._on_chat_update_action)
-        self._chat.hermes_update_action_clicked.connect(self._on_hermes_update_action)
+        self._chat.iris_agent_update_action_clicked.connect(self._on_iris_agent_update_action)
         self._chat.ollama_login_clicked.connect(self._on_ollama_cloud_login_clicked)
         left_lay.addWidget(self._chat, 3)
 
@@ -1139,6 +1145,15 @@ class MainWindow(QMainWindow):
         self._runtime_boot_started = True
         # ponytail: control/Hermes는 intro 끝난 뒤(_on_intro_finished) — MCP→/v1/state가
         # UI 스레드를 붙잡아 Windows「응답하지 않음」이 나던 경로를 피한다.
+        self._arm_boot_intro()
+        self._intro.finished.connect(self._on_intro_finished)
+        # ponytail: prepare_hidden은 _arm_boot_intro에서 즉시(첫 show 전 플래시 방지).
+        # _begin_boot_sequence가 레이아웃 후 재-arm + start — 폭 0 arm 회귀는 여기서 막음.
+        QTimer.singleShot(40, self._begin_boot_sequence)
+        QTimer.singleShot(900, self._schedule_tts_runtime_bootstrap)
+
+    def _arm_boot_intro(self) -> None:
+        """Bind intro chrome and hide opacity before first paint (anti-flash)."""
         self._intro = StartupIntroAnimator(self)
         self._intro.bind(
             left=self._left_sidebar,
@@ -1149,14 +1164,10 @@ class MainWindow(QMainWindow):
             waveform=self._chat.waveform,
             chrome=[self._drag],
         )
-        self._intro.finished.connect(self._on_intro_finished)
         self._viz.particle_core().set_boot_reveal(0.0)
         self._viz.particle_core().set_boot_glitch(1.0)
         self._chat.waveform.set_reveal_progress(0.0)
-        # ponytail: prepare_hidden은 show/layout 이후(_begin_boot_sequence) —
-        # 게이트가 빨라지면 폭 0 상태에서 arm 되어 인트로가 안 보이는 회귀가 난다.
-        QTimer.singleShot(40, self._begin_boot_sequence)
-        QTimer.singleShot(900, self._schedule_tts_runtime_bootstrap)
+        self._intro.prepare_hidden()
 
     def _schedule_core_warm(self) -> None:
         """Ollama/Iris Agent 기동은 인트로와 병렬 — 게이트에서 기다리지 않음."""
@@ -1216,7 +1227,7 @@ class MainWindow(QMainWindow):
             hero_enter_pending=getattr(self, "_hero_enter_pending", False),
         )
         self._boot_ready_pending = bool(self._settings.agent_enabled) and not hide_ready
-        self._refresh_hermes_health()
+        self._refresh_agent_health()
         mark_control_ready(self)
         if not hide_ready:
             if self._boot_ready_pending:
@@ -1230,7 +1241,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(500, self._maybe_restore_mic_listen)
         if not self._test_mode:
             QTimer.singleShot(2500, self._begin_app_update_check)
-            QTimer.singleShot(2800, self._begin_hermes_update_check)
+            QTimer.singleShot(2800, self._begin_iris_agent_update_check)
 
     @staticmethod
     def _repair_taskbar_pins() -> None:
@@ -1269,10 +1280,10 @@ class MainWindow(QMainWindow):
             checked = self._iris_update_checked_cids
             begin = self._begin_app_update_check
         else:
-            recheck = self._hermes_update_recheck
-            self._hermes_update_recheck = False
-            checked = self._hermes_update_checked_cids
-            begin = self._begin_hermes_update_check
+            recheck = self._iris_agent_update_recheck
+            self._iris_agent_update_recheck = False
+            checked = self._iris_agent_update_checked_cids
+            begin = self._begin_iris_agent_update_check
         if (recheck or current != started_cid) and current not in checked:
             begin()
 
@@ -1420,41 +1431,41 @@ class MainWindow(QMainWindow):
             ollama_login_status_message(applied=applied),
         )
 
-    def _begin_hermes_update_check(self) -> None:
+    def _begin_iris_agent_update_check(self) -> None:
         if not self._settings.agent_enabled or not self._update_alerts_allowed("agent"):
             return
         cid = int(self._conversation_id or 0)
-        if cid in self._hermes_update_checked_cids:
+        if cid in self._iris_agent_update_checked_cids:
             return
         if (
-            self._hermes_update_check_worker is not None
-            and self._hermes_update_check_worker.isRunning()
+            self._iris_agent_update_check_worker is not None
+            and self._iris_agent_update_check_worker.isRunning()
         ):
-            self._hermes_update_recheck = True
+            self._iris_agent_update_recheck = True
             return
-        self._hermes_update_checked_cids.add(cid)
-        self._hermes_update_check_cid = cid
+        self._iris_agent_update_checked_cids.add(cid)
+        self._iris_agent_update_check_cid = cid
         from iris.ui.workers.iris_agent_update_worker import IrisAgentUpdateCheckWorker
 
         worker = IrisAgentUpdateCheckWorker(
             command=self._settings.agent_command,
             parent=self,
         )
-        self._hermes_update_check_worker = worker
-        worker.finished_ok.connect(self._on_hermes_update_status)
-        worker.failed.connect(self._on_hermes_update_check_failed)
+        self._iris_agent_update_check_worker = worker
+        worker.finished_ok.connect(self._on_iris_agent_update_status)
+        worker.failed.connect(self._on_iris_agent_update_check_failed)
         worker.start()
 
-    def _on_hermes_update_check_failed(self, _message: str) -> None:
-        started = self._hermes_update_check_cid
-        self._hermes_update_check_worker = None
+    def _on_iris_agent_update_check_failed(self, _message: str) -> None:
+        started = self._iris_agent_update_check_cid
+        self._iris_agent_update_check_worker = None
         self._finish_update_recheck("agent", started)
 
-    def _on_hermes_update_status(self, status: object) -> None:
+    def _on_iris_agent_update_status(self, status: object) -> None:
         from iris.storage.update_notify_prefs import should_show_update_prompt
 
-        started = self._hermes_update_check_cid
-        self._hermes_update_check_worker = None
+        started = self._iris_agent_update_check_cid
+        self._iris_agent_update_check_worker = None
         current = int(self._conversation_id or 0)
         if should_show_update_prompt(
             allowed=self._update_alerts_allowed("agent"),
@@ -1462,27 +1473,27 @@ class MainWindow(QMainWindow):
             available=bool(getattr(status, "available", False)),
         ):
             detail = str(getattr(status, "detail", "") or "").strip()
-            self._chat.append_hermes_update_prompt(detail=detail)
+            self._chat.append_iris_agent_update_prompt(detail=detail)
         self._finish_update_recheck("agent", started)
 
-    def _on_hermes_update_action(self, action: str) -> None:
+    def _on_iris_agent_update_action(self, action: str) -> None:
         kind = (action or "").strip().lower()
         if kind == "later":
-            self._chat.dismiss_hermes_update_prompt(
+            self._chat.dismiss_iris_agent_update_prompt(
                 "이 채팅에서는 Iris Agent 안내를 닫았습니다. 새 채팅을 열거나 Iris를 다시 시작하면 다시 안내합니다."
             )
             return
         if kind != "apply":
             return
         if (
-            self._hermes_update_apply_worker is not None
-            and self._hermes_update_apply_worker.isRunning()
+            self._iris_agent_update_apply_worker is not None
+            and self._iris_agent_update_apply_worker.isRunning()
         ):
             return
         from iris.ui.workers.iris_agent_update_worker import IrisAgentUpdateApplyWorker
 
-        self._chat.dismiss_hermes_update_prompt(
-            "Iris Agent 업데이트를 적용하는 중… 끝나면 gateway를 다시 시작합니다."
+        self._chat.dismiss_iris_agent_update_prompt(
+            "Iris Agent 업데이트를 적용하는 중… 끝나면 다음 채팅부터 sidecar가 반영합니다."
         )
         worker = IrisAgentUpdateApplyWorker(
             command=self._settings.agent_command,
@@ -1490,27 +1501,27 @@ class MainWindow(QMainWindow):
             api_key=self._settings.agent_api_key,
             parent=self,
         )
-        self._hermes_update_apply_worker = worker
-        worker.progress.connect(self._on_hermes_gateway_notice)
-        worker.finished_ok.connect(self._on_hermes_update_applied)
-        worker.failed.connect(self._on_hermes_update_apply_failed)
+        self._iris_agent_update_apply_worker = worker
+        worker.progress.connect(self._on_agent_gateway_notice)
+        worker.finished_ok.connect(self._on_iris_agent_update_applied)
+        worker.failed.connect(self._on_iris_agent_update_apply_failed)
         worker.start()
 
-    def _on_hermes_update_applied(self, message: str) -> None:
-        self._hermes_update_apply_worker = None
-        self._hermes_online = True
+    def _on_iris_agent_update_applied(self, message: str) -> None:
+        self._iris_agent_update_apply_worker = None
+        self._agent_online = True
         self._status_header.refresh_backend_status(
             self._settings,
-            hermes_online=True,
+            agent_online=True,
         )
         self._chat.append_message_instant(
             "Iris",
-            (message or "Iris Agent 업데이트가 끝났고 gateway를 재시작했습니다.").strip(),
+            (message or "Iris Agent 업데이트가 끝났습니다. 다음 채팅부터 sidecar가 반영합니다.").strip(),
         )
 
-    def _on_hermes_update_apply_failed(self, message: str) -> None:
-        self._hermes_update_apply_worker = None
-        self._refresh_hermes_health()
+    def _on_iris_agent_update_apply_failed(self, message: str) -> None:
+        self._iris_agent_update_apply_worker = None
+        self._refresh_agent_health()
         self._chat.append_message_instant(
             "Iris",
             f"Iris Agent 업데이트 실패: {(message or '알 수 없는 오류').strip()}",
@@ -1531,37 +1542,37 @@ class MainWindow(QMainWindow):
             f"업데이트 실패: {(message or '알 수 없는 오류').strip()}",
         )
 
-    def _refresh_hermes_health(self) -> None:
+    def _refresh_agent_health(self) -> None:
         if not self._settings.agent_enabled:
-            self._hermes_online = False
+            self._agent_online = False
             self._status_header.refresh_backend_status(
                 self._settings,
-                hermes_online=False,
+                agent_online=False,
             )
             return
-        if self._hermes_health_worker is not None and self._hermes_health_worker.isRunning():
+        if self._agent_health_worker is not None and self._agent_health_worker.isRunning():
             return
         # Credentials / home come from shared_engine().source (InternalSidecar).
         worker = IrisAgentHealthWorker(parent=self)
-        self._hermes_health_worker = worker
-        worker.notice.connect(self._on_hermes_gateway_notice)
-        worker.finished_ok.connect(self._on_hermes_health)
-        worker.failed.connect(self._on_hermes_health_failed)
+        self._agent_health_worker = worker
+        worker.notice.connect(self._on_agent_gateway_notice)
+        worker.finished_ok.connect(self._on_agent_health)
+        worker.failed.connect(self._on_agent_health_failed)
         worker.start()
 
-    def _on_hermes_gateway_notice(self, message: str) -> None:
+    def _on_agent_gateway_notice(self, message: str) -> None:
         text = (message or "").strip()
         panel = getattr(self, "_live_activity", None)
         if text and panel is not None:
             panel.append_instant_line(text)
 
-    def _on_hermes_health(self, online: object) -> None:
-        self._hermes_online = bool(online)
+    def _on_agent_health(self, online: object) -> None:
+        self._agent_online = bool(online)
         self._status_header.refresh_backend_status(
             self._settings,
-            hermes_online=self._hermes_online,
+            agent_online=self._agent_online,
         )
-        if self._hermes_online:
+        if self._agent_online:
             model = (
                 self._chat.current_model()
                 or self._saved_model
@@ -1569,7 +1580,7 @@ class MainWindow(QMainWindow):
             ).strip()
             if model:
                 try:
-                    self._sync_hermes_model(model)
+                    self._sync_agent_model(model)
                 except Exception as exc:  # noqa: BLE001
                     try:
                         self._live_activity.append_instant_line(
@@ -1577,10 +1588,10 @@ class MainWindow(QMainWindow):
                         )
                     except Exception:
                         pass
-        self._hermes_health_worker = None
+        self._agent_health_worker = None
         if getattr(self, "_boot_ready_pending", False):
             self._boot_ready_pending = False
-            if self._hermes_online:
+            if self._agent_online:
                 self._chat.append_message_instant("Iris", self._ready_status_message())
             else:
                 from iris.system.iris_agent_gateway import get_last_gateway_diagnosis
@@ -1591,18 +1602,18 @@ class MainWindow(QMainWindow):
                     diagnosis.detailed_message() if diagnosis else "Gateway 준비 확인에 실패했습니다.",
                 )
 
-    def _on_hermes_health_failed(self, _err: str) -> None:
-        self._hermes_online = False
+    def _on_agent_health_failed(self, _err: str) -> None:
+        self._agent_online = False
         self._status_header.refresh_backend_status(
             self._settings,
-            hermes_online=False,
+            agent_online=False,
         )
-        self._hermes_health_worker = None
+        self._agent_health_worker = None
         if getattr(self, "_boot_ready_pending", False):
             self._chat.append_error_message("Iris Agent 연결 준비를 확인하지 못했습니다.", _err)
         self._boot_ready_pending = False
 
-    def _sync_hermes_model(self, model: str) -> None:
+    def _sync_agent_model(self, model: str) -> None:
         if not self._settings.agent_enabled:
             return
         model = (model or "").strip()
@@ -1610,14 +1621,14 @@ class MainWindow(QMainWindow):
             return
         # Unit 2: sidecar-only product path; HTTP :8642 model sync is retired.
 
-    def _on_hermes_model_synced(self) -> None:
+    def _on_agent_model_synced(self) -> None:
         model = self._chat.current_model() or self._settings.ollama_model
         self._live_activity.append_instant_line(f"Iris Agent model synced: {model}")
-        self._hermes_model_worker = None
+        self._agent_model_worker = None
 
-    def _on_hermes_model_sync_failed(self, err: str) -> None:
+    def _on_agent_model_sync_failed(self, err: str) -> None:
         self._live_activity.append_instant_line(f"Iris Agent model sync failed: {err[:160]}")
-        self._hermes_model_worker = None
+        self._agent_model_worker = None
 
     def _refresh_models(self, *, probe_cloud: bool = True) -> None:
         if self._model_worker is not None and self._model_worker.isRunning():
@@ -1710,6 +1721,7 @@ class MainWindow(QMainWindow):
                 f"클라우드 미로그인 — 초기 모델을 로컬 '{resolved}'로 선택"
             )
         self._chat.set_models(visible, selected=resolved or preferred)
+        self._sync_chat_model_favorites()
         if visible:
             chosen = self._chat.current_model()
             persist = bool(boot and resolved and resolved != preferred)
@@ -1726,9 +1738,18 @@ class MainWindow(QMainWindow):
                     f"Models: {n_local} local + {n_cloud} cloud + {n_api} API"
                 )
             if self._settings.agent_enabled and chosen:
-                self._sync_hermes_model(chosen)
+                self._sync_agent_model(chosen)
         else:
             self._chat.set_model_status("(모델 없음)")
+        pending_hub = (getattr(self, "_hub_use_pending", "") or "").strip()
+        if pending_hub:
+            self._hub_use_pending = ""
+            if self._chat.select_model_silent(pending_hub):
+                self._apply_selected_model(pending_hub, persist=True)
+            else:
+                self._live_activity.append_instant_line(
+                    f"채팅 피커에 '{pending_hub}' 없음 (임베딩 전용 등)"
+                )
         if boot:
             if self._intro is not None:
                 self._intro.notify_models_ready()
@@ -1802,6 +1823,7 @@ class MainWindow(QMainWindow):
         if api_only:
             preferred = self._saved_model or ""
             self._chat.set_models(api_only, selected=preferred)
+            self._sync_chat_model_favorites()
             self._live_activity.append_instant_line(
                 f"Ollama 목록 실패 — API 모델 {len(api_only)}개만 표시: {err[:120]}"
             )
@@ -1874,6 +1896,15 @@ class MainWindow(QMainWindow):
     def _on_model_changed(self, model: str) -> None:
         self._apply_selected_model(model, persist=True)
 
+    def _sync_chat_model_favorites(self) -> None:
+        self._chat.set_model_favorites(load_model_favorites(self._db))
+
+    def _on_model_favorite_toggled(self, runtime: str) -> None:
+        if self._db is None:
+            return
+        toggle_model_favorite(self._db, runtime)
+        self._chat.set_model_favorites(load_model_favorites(self._db))
+
     def _first_local_picker_model(self) -> str:
         """피커에 있는 로컬 채팅 모델 하나 (임베딩·클라우드 제외)."""
         from iris.system.setup_protocol import prefer_chat_model
@@ -1937,7 +1968,7 @@ class MainWindow(QMainWindow):
             if desc:
                 self._live_activity.append_instant_line(f"모델: {desc}")
         if self._settings.agent_enabled and model:
-            self._sync_hermes_model(model)
+            self._sync_agent_model(model)
         if previous and previous != model:
             self._handoff_context_to(previous, model)
         if previous != model:
@@ -2233,7 +2264,7 @@ class MainWindow(QMainWindow):
 
         if parse_runtime_model_id(model) is not None:
             backend = "api"
-        elif self._use_hermes_backend():
+        elif self._use_agent_backend():
             backend = AGENT_BACKEND
         else:
             backend = "ollama"
@@ -2329,9 +2360,9 @@ class MainWindow(QMainWindow):
                 embed = ""
         return build_state(
             ollama_model=self._settings.ollama_model,
-            hermes_enabled=bool(self._settings.agent_enabled),
-            hermes_base_url=self._settings.agent_base_url,
-            hermes_api_key=self._settings.agent_api_key,
+            agent_enabled=bool(self._settings.agent_enabled),
+            agent_base_url=self._settings.agent_base_url,
+            agent_api_key=self._settings.agent_api_key,
             api_providers=providers,
             history=history,
             failover=self._model_switch.failover_settings,
@@ -2428,20 +2459,20 @@ class MainWindow(QMainWindow):
                 f"아이리스가 꺼져 있어도 루틴이 돕니다 ({status.detail})."
             )
 
-    def _sync_hermes_login_warm(self) -> None:
+    def _sync_agent_login_warm(self) -> None:
         """로그인 시 Hermes 미리 기동 작업을 prefs에 맞춘다. 원하는 값이 같을 때는 생략."""
-        from iris.storage.iris_agent_login_warm_prefs import load_hermes_login_warm
+        from iris.storage.iris_agent_login_warm_prefs import load_iris_agent_login_warm
         from iris.system.iris_agent_login_warm import is_supported, sync
 
         if not is_supported() or self._db is None:
             return
         try:
-            wanted = bool(load_hermes_login_warm(self._db).enabled)
+            wanted = bool(load_iris_agent_login_warm(self._db).enabled)
         except Exception:  # noqa: BLE001
             return
-        if getattr(self, "_hermes_login_warm_wanted", None) == wanted:
+        if getattr(self, "_agent_login_warm_wanted", None) == wanted:
             return
-        self._hermes_login_warm_wanted = wanted
+        self._agent_login_warm_wanted = wanted
         try:
             status = sync(wanted)
         except Exception as exc:  # noqa: BLE001
@@ -2666,7 +2697,7 @@ class MainWindow(QMainWindow):
                 api_key=provider.api_key,
                 auth_style=provider.auth_style,
             )
-        if self._use_hermes_backend():
+        if self._use_agent_backend():
             try:
                 from iris.infrastructure.iris_agent_client import resolve_iris_agent_inference
 
@@ -3054,7 +3085,7 @@ class MainWindow(QMainWindow):
             )
         return MainWindow._filter_cool_attempts(self, attempts)
 
-    def _hermes_fallback_attempts(
+    def _agent_fallback_attempts(
         self,
         primary_model: str,
         messages: list[dict[str, str]],
@@ -3361,7 +3392,7 @@ class MainWindow(QMainWindow):
             pass
         if not self._test_mode:
             self._begin_app_update_check()
-            self._begin_hermes_update_check()
+            self._begin_iris_agent_update_check()
 
     def _on_new_chat_requested(self) -> None:
         self._open_fresh_work_chat()
@@ -3784,11 +3815,11 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _use_hermes_backend(self) -> bool:
+    def _use_agent_backend(self) -> bool:
         return bool(self._settings.agent_enabled)
 
     def _backend_label(self) -> str:
-        return "Iris Agent" if self._use_hermes_backend() else "Ollama"
+        return "Iris Agent" if self._use_agent_backend() else "Ollama"
 
     def _on_composer_files(self, paths: object) -> None:
         items = [str(p) for p in (paths or []) if str(p).strip()]
@@ -3836,14 +3867,13 @@ class MainWindow(QMainWindow):
             _log("[ERROR] reason=chat panel missing or empty paths")
 
     def _begin_ide_companion_drag(self, paths: list[str]) -> None:
-        """Theia dragstart — 경로는 보관하고, OLE 드래그는 다음 틱에 넘긴다."""
+        """Theia dragstart — 경로를 pending에 두고 drag_end/release로 첨부한다."""
         clean = [str(p).strip() for p in paths if str(p).strip()]
         self._pending_ide_drag = clean
         # 탭 제스처: WebEngine 밖 pointerup이 유실되므로 앱 전역 release로 첨부.
         app = QApplication.instance()
         if app is not None and app != self:
             app.installEventFilter(self)
-        # chat.drag_start가 반환된 뒤에 DoDragDrop. 같은 스택에서 돌리면 HTTP가 막힌다.
         if app is not None:
             queued = list(clean)
             QTimer.singleShot(0, lambda p=queued: self._drag_companion_hdrop(p))
@@ -3854,15 +3884,10 @@ class MainWindow(QMainWindow):
     def _drag_companion_hdrop(self, paths: list[str]) -> None:
         if self._pending_ide_drag != paths:
             return
-        from iris.ui.window.win_ole_drop import drag_hdrop_while_button
+        # DoDragDrop on the UI thread hangs on PDF/ipynb shell preview.
+        from iris.ui.window.win_ole_drop import _log
 
-        effect = drag_hdrop_while_button(paths)
-        if effect == 0:
-            return
-        if self._pending_ide_drag != paths:
-            return
-        self._attach_os_drop_paths(paths)
-        self._pending_ide_drag = []
+        _log("skip DoDragDrop — companion pending attach only")
 
     def _expire_ide_companion_drag(self, expected: list[str]) -> None:
         if self._pending_ide_drag == expected:
@@ -4686,67 +4711,12 @@ class MainWindow(QMainWindow):
         return True
 
     def _try_local_lab_dump(self, turn: UserTurn, model: str = "") -> bool:
-        from iris.knowledge.lab_script_dump import is_lab_dump_intent, pdf_paths_from
-        from iris.knowledge.page_vision import transcribe_images
-        from iris.ui.workers.lab_dump_worker import LabDumpWorker
+        """Disabled auto-intercept — Hermes must call content.dump_lab_scripts.
 
-        pdfs = pdf_paths_from(turn.attachments)
-        if not is_lab_dump_intent(turn.text or "", pdfs):
-            return False
-        display = self._format_user_turn_content(turn)
-        self._chat.append_message_instant("You", display)
-        self._record_history("user", display)
-        root = self._current_project_root()
-        if not root:
-            msg = "프로젝트를 연 뒤 다시 요청해 주세요."
-            self._chat.append_message_instant("Iris", msg)
-            self._record_history("assistant", msg)
-            self._finish_current_turn(turn.id, open_followup=False)
-            return True
-        worker = getattr(self, "_lab_dump_worker", None)
-        if worker is not None and worker.isRunning():
-            msg = "이전 실습 스크립트 추출이 아직 진행 중입니다."
-            self._chat.append_message_instant("Iris", msg)
-            self._record_history("assistant", msg)
-            self._finish_current_turn(turn.id, open_followup=False)
-            return True
-        image_reader = None
-        if model:
-            spec = self._material_vision_spec(model)
-            ask = turn.text or ""
-
-            def _read_image(png: bytes, spec=spec, ask=ask) -> str:
-                return transcribe_images(
-                    [png],
-                    model=spec["model"],
-                    ollama_base_url=spec["ollama_base_url"],
-                    api_base_url=spec["api_base_url"],
-                    api_key=spec["api_key"],
-                    auth_style=spec["auth_style"],
-                    prompt=ask,
-                )
-
-            image_reader = _read_image
-        self._chat.append_message_instant("Iris", "실습 스크립트를 PDF에서 추출해 저장하는 중…")
-        self._chat.set_generating(True)
-        dump = LabDumpWorker(
-            pdfs[0],
-            root,
-            query=turn.text or "",
-            image_reader=image_reader,
-            parent=self,
-        )
-        dump.finished_ok.connect(
-            lambda reply, tid=turn.id: self._on_lab_dump_ok(tid, reply),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        dump.finished_err.connect(
-            lambda err, tid=turn.id: self._on_lab_dump_err(tid, err),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        self._lab_dump_worker = dump
-        dump.start()
-        return True
+        LabDumpWorker + _on_lab_dump_* remain for optional off-UI QThread use.
+        """
+        _ = (turn, model)
+        return False
 
     def _on_lab_dump_ok(self, turn_id: str, reply) -> None:
         msg = getattr(reply, "user_visible", None) or str(reply or "")
@@ -4937,7 +4907,7 @@ class MainWindow(QMainWindow):
 
         if not keep_wiki_batch(text):
             self._wiki_batch_follow = False
-        from iris.runtime.agent_local_gate import hermes_owns_local_intents
+        from iris.runtime.agent_local_gate import agent_owns_local_intents
 
         from iris.ui.wiki_turn import (
             local_document_wiki_save_enabled,
@@ -4956,11 +4926,11 @@ class MainWindow(QMainWindow):
         # 꺼져 있거나 죽어 있으면 여기서 이름으로 바로 고른다 (실제로 Hermes 가 죽어 실행 못 함)
         if self._try_local_pinned_status(turn):
             return
-        if not (self._use_hermes_backend() and self._hermes_online):
+        if not (self._use_agent_backend() and self._agent_online):
             if self._try_local_skill_run(turn):
                 return
-        # Hermes가 켜져 있으면 여섯 의도는 모델의 iris_invoke. 꺼져 있을 때만 로컬 정규식.
-        owns = hermes_owns_local_intents(self._use_hermes_backend())
+        # Hermes가 켜져 있으면 여섯 의도는 모델의 SpeakTools/control.invoke. 꺼져 있을 때만 로컬 정규식.
+        owns = agent_owns_local_intents(self._use_agent_backend())
         if owns:
             if self._try_local_extension_install(turn, allow_new=False):
                 return
@@ -5017,11 +4987,11 @@ class MainWindow(QMainWindow):
                 self._chat.append_ollama_cloud_login_prompt(CLOUD_AUTH_USER_MSG)
                 self._finish_current_turn(turn.id, open_followup=False)
                 return
-        if self._use_hermes_backend() and not self._hermes_online:
+        if self._use_agent_backend() and not self._agent_online:
             self._live_activity.append_instant_line(
                 "Iris Agent Offline — 기동 후 연결을 시도합니다…"
             )
-            self._refresh_hermes_health()
+            self._refresh_agent_health()
 
         if self._try_local_lab_dump(turn, model):
             return
@@ -5500,7 +5470,7 @@ class MainWindow(QMainWindow):
 
         # Hermes ON → 모든 모델(Ollama·NVIDIA API 등)을 Hermes 에이전트로
         # (IDE/메일 MCP 도구 유지). Hermes OFF일 때만 API 직접 호출.
-        if self._use_hermes_backend():
+        if self._use_agent_backend():
             try:
                 from iris.infrastructure.iris_agent_client import resolve_iris_agent_inference
 
@@ -5513,7 +5483,7 @@ class MainWindow(QMainWindow):
                 _fail(str(exc))
                 return
             self._slot_now().inference_provider = target.provider
-            attempts = self._hermes_fallback_attempts(model, messages, target)
+            attempts = self._agent_fallback_attempts(model, messages, target)
             if not attempts:
                 _fail("모든 모델이 할당량 제한 대기 중입니다. 잠시 후 다시 시도해 주세요.")
                 return
@@ -5604,19 +5574,19 @@ class MainWindow(QMainWindow):
         if hasattr(worker, "tool_progress"):
             worker.tool_progress.connect(
                 safe_agent_ui_slot(
-                    lambda message, tid=turn_id: self._on_hermes_tool_progress_for_turn(
+                    lambda message, tid=turn_id: self._on_agent_tool_progress_for_turn(
                         message, tid
                     )
                 )
             )
         if hasattr(worker, "app_ui"):
             worker.app_ui.connect(
-                lambda title, html_path, resource_uri="", tid=turn_id: self._on_hermes_app_ui_for_turn(
+                lambda title, html_path, resource_uri="", tid=turn_id: self._on_agent_app_ui_for_turn(
                     title, html_path, tid, resource_uri=resource_uri
                 )
             )
         if hasattr(worker, "reasoning"):
-            worker.reasoning.connect(lambda chunk, tid=turn_id: self._on_hermes_reasoning_for_turn(chunk, tid))
+            worker.reasoning.connect(lambda chunk, tid=turn_id: self._on_agent_reasoning_for_turn(chunk, tid))
         if hasattr(worker, "thinking_started"):
             worker.thinking_started.connect(lambda tid=turn_id: self._on_thinking_started_for_turn(tid))
         if hasattr(worker, "thinking_chunk"):
@@ -5923,14 +5893,14 @@ class MainWindow(QMainWindow):
     def _on_chat_connecting_for_turn(self, model: str, host: str, turn_id: str) -> None:
         self._relay_foreground_turn(turn_id, lambda: self._on_chat_connecting(model, host))
 
-    def _on_hermes_tool_progress_for_turn(self, message: str, turn_id: str) -> None:
+    def _on_agent_tool_progress_for_turn(self, message: str, turn_id: str) -> None:
         slot = self._runs.owning(turn_id)
         if slot is None:
             return
         self._bound_slot = slot
         try:
             if slot.conversation_id == int(self._conversation_id):
-                self._on_hermes_tool_progress(message)
+                self._on_agent_tool_progress(message)
             else:
                 text = (message or "").strip()
                 if text:
@@ -6111,7 +6081,7 @@ class MainWindow(QMainWindow):
             f"{prefix} turn_dropped reason={reason} text={turn.text[:80]}"
         )
 
-    def _on_hermes_tool_progress(self, message: str) -> None:
+    def _on_agent_tool_progress(self, message: str) -> None:
         if self._ignore_chat_result:
             return
         text = (message or "").strip()
@@ -6135,7 +6105,7 @@ class MainWindow(QMainWindow):
                 self._busy = True
             self._chat.set_generating(True)
 
-    def _on_hermes_app_ui_for_turn(
+    def _on_agent_app_ui_for_turn(
         self,
         title: str,
         html_path: str,
@@ -6145,10 +6115,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         self._relay_foreground_turn(
             turn_id,
-            lambda: self._on_hermes_app_ui(title, html_path, resource_uri=resource_uri),
+            lambda: self._on_agent_app_ui(title, html_path, resource_uri=resource_uri),
         )
 
-    def _on_hermes_app_ui(
+    def _on_agent_app_ui(
         self, title: str, html_path: str, *, resource_uri: str = ""
     ) -> None:
         if self._ignore_chat_result:
@@ -6159,6 +6129,14 @@ class MainWindow(QMainWindow):
         label = (title or "앱").strip() or "앱"
         path = (html_path or "").strip()
         if path:
+            present = getattr(chat, "present_chat_app_offer", None)
+            if callable(present):
+                try:
+                    offer = path_offer(label, path, resource_uri=resource_uri)
+                except ValueError:
+                    offer = None
+                if offer is not None and present(offer):
+                    return
             show = getattr(chat, "show_app_host", None)
             if callable(show):
                 show(path, title=label)
@@ -6170,10 +6148,10 @@ class MainWindow(QMainWindow):
         if callable(opener):
             opener(uri, title=label)
 
-    def _on_hermes_reasoning_for_turn(self, chunk: str, turn_id: str) -> None:
-        self._relay_foreground_turn(turn_id, lambda: self._on_hermes_reasoning(chunk))
+    def _on_agent_reasoning_for_turn(self, chunk: str, turn_id: str) -> None:
+        self._relay_foreground_turn(turn_id, lambda: self._on_agent_reasoning(chunk))
 
-    def _on_hermes_reasoning(self, chunk: str = "") -> None:
+    def _on_agent_reasoning(self, chunk: str = "") -> None:
         if self._ignore_chat_result:
             return
         self._live_activity.append_reasoning(chunk or "")
@@ -6346,8 +6324,21 @@ class MainWindow(QMainWindow):
             self._maybe_refresh_ollama_quota()
             self._finish_current_turn(open_followup=False)
             return
-        if self._use_hermes_backend() and not self._turn_tool_lines:
-            self._live_activity.append_instant_line("도구 호출 없음")
+        if self._use_agent_backend():
+            footer = agent_tool_activity_footer(
+                tool_line_count=len(self._turn_tool_lines),
+                attachment_count=len(self._turn_attachment_paths),
+            )
+            if footer is not None:
+                self._live_activity.append_instant_line(footer)
+            notice = turn_notice(
+                user=str(getattr(self, "_followthrough_goal", "") or ""),
+                tool_ok_count=int(getattr(self, "_tool_ok_count", 0) or 0),
+                tool_line_count=len(getattr(self, "_turn_tool_lines", []) or []),
+                supports_tools=bool(self._chat.current_supports_tools()),
+            )
+            if notice and self._showing_bound():
+                self._chat.append_note(notice)
         shown, ask_or_err, verify = self._run_file_create_verify_turn(text)
         if ask_or_err:
             shown = (shown.rstrip() + "\n\n" + ask_or_err) if shown else ask_or_err
@@ -6378,11 +6369,11 @@ class MainWindow(QMainWindow):
         if shown:
             self._try_reveal_local_vibe_code(text)
         self._refresh_context_gauge()
-        if self._use_hermes_backend() and not self._hermes_online:
-            self._hermes_online = True
+        if self._use_agent_backend() and not self._agent_online:
+            self._agent_online = True
             self._status_header.refresh_backend_status(
                 self._settings,
-                hermes_online=True,
+                agent_online=True,
             )
         self._busy = False
         self._chat.set_generating(False)
@@ -6602,10 +6593,10 @@ class MainWindow(QMainWindow):
             self._live_activity.append_instant_line("IDE control surface missing")
             return
         try:
-            from iris.runtime.agent_local_gate import hermes_owns_local_intents
+            from iris.runtime.agent_local_gate import agent_owns_local_intents
             from iris.system.project_ops import is_run_request
 
-            run_locally = (not hermes_owns_local_intents(self._use_hermes_backend())) and is_run_request(
+            run_locally = (not agent_owns_local_intents(self._use_agent_backend())) and is_run_request(
                 prompt
             )
             if state is not None and state.get("started"):
@@ -9085,7 +9076,7 @@ class MainWindow(QMainWindow):
                     "honestly; do not claim to have read omitted parts. Image attachments currently supply OCR text, "
                     "not visual understanding.")
         # ponytail: Hermes는 SOUL.md가 identity. Ollama만 여기 주입.
-        if not self._use_hermes_backend():
+        if not self._use_agent_backend():
             try:
                 from iris.system.iris_agent_soul_sync import load_iris_persona_text
 
@@ -9096,12 +9087,14 @@ class MainWindow(QMainWindow):
                 bits.append(persona)
         bits.append(
             "Iris Light UI control: for IDE / Companion / open project / 작업 시작, "
-            "use MCP tools iris_get_state / iris_get_catalog / iris_invoke "
-            "(e.g. iris_invoke action=ide.enter_companion). "
+            "use SpeakTools get_state / get_catalog / control.invoke "
+            "(e.g. control.invoke action=ide.enter_companion). "
+            "get_catalog.control_actions lists dotted Control names; prefer allowlisted SpeakTools "
+            "when the action is already a tool (project.run, wiki.*, chat.*). "
             "Do NOT use terminal cursor/code alone — that skips Companion tiling. "
-            "Do NOT use Iris Agent built-in terminal tool — it is disabled; ALWAYS iris_invoke project.run "
+            "Do NOT use Iris Agent built-in terminal tool — it is disabled; ALWAYS SpeakTools project.run "
             "so commands run in the bound IDE integrated terminal (IRIS IDE or Cursor). "
-            "Do NOT invent that Iris has no IDE — Iris controls the preferred IDE via MCP. "
+            "Do NOT invent that Iris has no IDE — Iris controls the preferred IDE via SpeakTools. "
             "Writing code: project.write_file with open=true and rel_path set to the filename the user asked for. "
             "If they did not name a file, ask before writing. Do not invent iris_generated.py. "
             "Rename: project.rename_file with path and new_path. Look up path first. If either path is unknown, ask. "
@@ -9165,7 +9158,8 @@ class MainWindow(QMainWindow):
             "ide.enter_companion, ide.exit_companion, workspace.open_assistant, "
             "workspace.open_email, workspace.open_calendar, workspace.open_obsidian, "
             "voice.mic_on, voice.mic_off. "
-            "메일/이메일 화면: iris_invoke workspace.open_email. "
+            "메일/이메일 화면: control.invoke action=workspace.open_email "
+            "(or SpeakTools when allowlisted). "
             "오늘 온 메일·받은편지 요약: email.list_messages (args.today=true 또는 since=YYYY-MM-DD). "
             "본문 읽기: email.read_message (uid). 일정: workspace.open_calendar + calendar.*. "
             "기본 화면/홈으로: workspace.open_assistant (Companion이면 ide.exit_companion 후). "
@@ -11097,6 +11091,17 @@ class MainWindow(QMainWindow):
         dlg = UserProfileDialog(self._db, self)
         dlg.exec()
 
+    def _on_hub_model_use(self, name: str) -> None:
+        """AI Hub 「사용」 → 채팅 피커와 같은 runtime으로 선택·적용."""
+        name = (name or "").strip()
+        if not name:
+            return
+        if self._chat.select_model_silent(name):
+            self._apply_selected_model(name, persist=True)
+            return
+        self._hub_use_pending = name
+        self._refresh_models(probe_cloud=False)
+
     def _open_ai_hub_dialog(self) -> None:
         # ponytail: frameless MainWindow + modal child → 0xC0000409.
         # AI Hub는 설정과 같이 독립 top-level(parent=None)로 연다.
@@ -11109,6 +11114,11 @@ class MainWindow(QMainWindow):
             )
         except Exception:
             pass
+        # Pull finished while hub is open → picker LOCAL MODEL updates without waiting for close.
+        dlg.ollama_models_changed.connect(
+            lambda: self._refresh_models(probe_cloud=False)
+        )
+        dlg.model_use_requested.connect(self._on_hub_model_use)
         dlg.exec()
         self._refresh_models(probe_cloud=False)
 
@@ -11219,9 +11229,9 @@ class MainWindow(QMainWindow):
             if self._saved_model:
                 save_selected_model(self._db, self._saved_model)
             self._status_header.set_model_name(self._settings.model_name or "(unset)")
-            self._refresh_hermes_health()
+            self._refresh_agent_health()
             if self._settings.agent_enabled and self._saved_model:
-                self._sync_hermes_model(self._saved_model)
+                self._sync_agent_model(self._saved_model)
             self._refresh_models()
             self._refresh_ide_session_state()
             if self._workspace_mode == "email":
@@ -11451,11 +11461,11 @@ class MainWindow(QMainWindow):
                 if not self._core_warm_worker.wait(2000):
                     self._core_warm_worker.terminate()
                     self._core_warm_worker.wait(1000)
-            if self._hermes_health_worker is not None and self._hermes_health_worker.isRunning():
+            if self._agent_health_worker is not None and self._agent_health_worker.isRunning():
                 # ponytail: gateway 재기동 체크는 최대 60s 걸릴 수 있어 종료를 막음 — 강제 종료
-                if not self._hermes_health_worker.wait(3000):
-                    self._hermes_health_worker.terminate()
-                    self._hermes_health_worker.wait(2000)
+                if not self._agent_health_worker.wait(3000):
+                    self._agent_health_worker.terminate()
+                    self._agent_health_worker.wait(2000)
             self._metrics_worker.request_stop()
             self._metrics_worker.wait(2000)
             self._api_quota_worker.request_stop()

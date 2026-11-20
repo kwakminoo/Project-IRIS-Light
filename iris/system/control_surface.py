@@ -30,6 +30,8 @@ _OFF_UI_ACTIONS = frozenset(
         "email.read_message",
         # 터미널 로그 폴링·브리지 왕복이 최대 90초 — UI 스레드면 Windows "응답 없음"
         "project.run",
+        # shell.run도 confirm HUD/카드 대기 — UI 15s 타임아웃에 죽지 않게 워커에서
+        "shell.run",
         "chat.exec_python",
         "note.export_pdf",
         "extension.install_github",
@@ -51,7 +53,11 @@ _OFF_UI_ACTIONS = frozenset(
         "attachment.move_to",
         "project.import_attachment",
         "local.read_file",
+        "local.write_file",
         "local.search_files",
+        # 검색·추출 HTTP. Qt 메인에서 돌리면 Windows "응답 없음"
+        "web.run_search",
+        "web.run_extract",
         # rmtree·IDE unlock. Qt 메인에서 돌리면 Windows "응답 없음"
         "project.delete",
         # 요약·문단 번역 모델 호출. Qt 메인에서 돌리면 창이 멈춘다.
@@ -67,6 +73,37 @@ _OFF_UI_ACTIONS = frozenset(
 def runs_off_ui_thread(action: str) -> bool:
     name = (action or "").strip()
     return name in _OFF_UI_ACTIONS or any(name.startswith(p) for p in _OFF_UI_PREFIXES)
+
+
+def invoke_http_timeout(
+    action: str,
+    args: dict[str, Any] | None = None,
+    *,
+    confirm_required: bool = False,
+) -> float | None:
+    """/v1/invoke UI-invoker 대기 초. None이면 끝날 때까지 (다이얼로그·confirm).
+
+    Off-UI 액션은 call_registered가 invoker를 안 쓰므로 이 값이 무시된다.
+    """
+    name = (action or "").strip()
+    payload = args if isinstance(args, dict) else {}
+    if name == "ide.marketplace_install":
+        return 180.0
+    if name in ("ide.debug", "ide.task", "ide.edit", "ide.save"):
+        return 45.0
+    if name in ("ide.pick_open_file", "ide.pick_open_folder"):
+        return None
+    # confirm이 Qt 메인에서 HUD를 띄우면 15s UiThreadTimeout에 죽는다.
+    if confirm_required and not runs_off_ui_thread(name):
+        return None
+    if name == "project.write_file":
+        if bool(payload.get("open", True)) and bool(
+            payload.get("typewriter", payload.get("stream", True))
+        ):
+            return 180.0
+        if bool(payload.get("stream")):
+            return 120.0
+    return 15.0
 
 
 def _is_client_gone(exc: BaseException) -> bool:
@@ -180,7 +217,9 @@ def parse_invoke_body(raw: bytes) -> tuple[dict[str, Any] | None, str | None]:
     return data, None
 
 
-def call_registered(surface: ControlSurface, action: str, args: dict[str, Any], *, timeout: float) -> dict[str, Any]:
+def call_registered(
+    surface: ControlSurface, action: str, args: dict[str, Any], *, timeout: float | None
+) -> dict[str, Any]:
     """레지스트리 호출.
 
     status=timeout은 UiThreadTimeout이다. 대기 포기일 뿐 큐를 취소하지 않는다.
@@ -329,12 +368,12 @@ class MainThreadInvoker:
     """
 
     def __init__(self) -> None:
-        self._fn: Callable[[Callable[[], Any], float], Any] | None = None
+        self._fn: Callable[[Callable[[], Any], float | None], Any] | None = None
 
-    def bind(self, runner: Callable[[Callable[[], Any], float], Any]) -> None:
+    def bind(self, runner: Callable[[Callable[[], Any], float | None], Any]) -> None:
         self._fn = runner
 
-    def run(self, fn: Callable[[], Any], timeout: float = 15.0) -> Any:
+    def run(self, fn: Callable[[], Any], timeout: float | None = 15.0) -> Any:
         if self._fn is None:
             raise RuntimeError("MainThreadInvoker not bound to Qt")
         return self._fn(fn, timeout)
@@ -474,21 +513,11 @@ class ControlSurface:
                     if not isinstance(args, dict):
                         args = {k: v for k, v in payload.items() if k not in ("action", "args")}
 
-                    # ponytail: live file stream 은 메인스레드에서 길어질 수 있음
-                    timeout = 15.0
-                    if action == "ide.marketplace_install":
-                        # VSIX 받기 + 켜진 Theia 재기동(health 대기 최대 120초)
-                        timeout = 180.0
-                    elif action in ("ide.debug", "ide.task", "ide.edit", "ide.save"):
-                        timeout = 45.0
-                    elif action == "project.write_file":
-                        # open+live stream 기본 — 작성 연출 대기
-                        if bool(args.get("open", True)) and bool(
-                            args.get("typewriter", args.get("stream", True))
-                        ):
-                            timeout = 180.0
-                        elif bool(args.get("stream")):
-                            timeout = 120.0
+                    spec = surface.registry.spec(action)
+                    confirm_required = bool(spec.confirm_required) if spec is not None else False
+                    timeout = invoke_http_timeout(
+                        action, args, confirm_required=confirm_required
+                    )
 
                     body = call_registered(surface, action, args, timeout=timeout)
                     self._json(200 if body.get("ok") else 400, body)
@@ -583,12 +612,17 @@ def _self_check() -> None:
     assert allowed["ok"] is True
     # 긴 액션이 UI 스레드로 돌아가면 Windows "응답 없음"
     assert runs_off_ui_thread("project.run")
+    assert runs_off_ui_thread("shell.run")
     assert runs_off_ui_thread("emulator.start")
     assert runs_off_ui_thread("note.export_pdf")
     assert runs_off_ui_thread("extension.install_github")
     assert runs_off_ui_thread("project.write_image_code")
     assert runs_off_ui_thread("project.write_file")
     assert runs_off_ui_thread("project.delete")
+    assert invoke_http_timeout("ide.pick_open_folder") is None
+    assert invoke_http_timeout("email.send", confirm_required=True) is None
+    assert invoke_http_timeout("ping", confirm_required=False) == 15.0
+    assert invoke_http_timeout("project.run", confirm_required=True) == 15.0
     empty, empty_err = parse_invoke_body(b"")
     assert empty == {} and empty_err is None
     bad, bad_err = parse_invoke_body(b"[1]")

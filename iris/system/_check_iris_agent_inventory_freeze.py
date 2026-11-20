@@ -4,10 +4,10 @@ Fails when new *logic* ``hermes_*`` product modules appear, or when
 ``ExternalGateway`` / legacy hermes-home product residue grows outside the
 grandfathered allowlist.
 
-Unit 7: thin ``hermes_*`` re-export shims that only forward to ``iris_agent_*``
-are **not** counted as product hermes modules (``is_thin_hermes_reexport_shim``).
-Logic lives under ``iris_agent_*`` names; the hermes_* allowlist must stay empty
-or shrink, never grow.
+Unit 7 deleted thin ``hermes_*`` re-export shims (``hermes_shims`` must stay 0).
+Any leftover ``hermes_*.py`` that only re-exports ``iris_agent_*`` still
+counts as a shim (not a logic module); do not reintroduce them.
+Logic lives under ``iris_agent_*``; the hermes_* logic allowlist must stay empty.
 
 Run:
   .venv\\Scripts\\python.exe -m iris.system._check_iris_agent_inventory_freeze
@@ -55,7 +55,7 @@ def _iter_product_py() -> list[Path]:
     return out
 
 
-def is_thin_hermes_reexport_shim(path: Path) -> bool:
+def is_thin_agent_reexport_shim(path: Path) -> bool:
     """True when hermes_*.py only re-exports an iris_agent_* module.
 
     Allowed: module docstring, ``from __future__``, comments, blank lines,
@@ -91,22 +91,22 @@ def is_thin_hermes_reexport_shim(path: Path) -> bool:
     return saw_iris_agent_import
 
 
-def discovered_hermes_product_modules() -> set[str]:
+def discovered_agent_product_modules() -> set[str]:
     """Logic hermes_* modules only; thin iris_agent_* re-export shims excluded."""
     found: set[str] = set()
     for path in _iter_product_py():
         if not (path.name.startswith("hermes_") and path.suffix == ".py"):
             continue
-        if is_thin_hermes_reexport_shim(path):
+        if is_thin_agent_reexport_shim(path):
             continue
         found.add(_posix(path.relative_to(ROOT)))
     return found
 
 
-def discovered_hermes_shim_modules() -> set[str]:
+def discovered_agent_shim_modules() -> set[str]:
     found: set[str] = set()
     for path in _iter_product_py():
-        if path.name.startswith("hermes_") and is_thin_hermes_reexport_shim(path):
+        if path.name.startswith("hermes_") and is_thin_agent_reexport_shim(path):
             found.add(_posix(path.relative_to(ROOT)))
     return found
 
@@ -120,7 +120,7 @@ def discovered_external_gateway_product_files() -> set[str]:
     return found
 
 
-def discovered_legacy_hermes_home_product_files() -> set[str]:
+def discovered_legacy_agent_home_product_files() -> set[str]:
     found: set[str] = set()
     for path in _iter_product_py():
         text = path.read_text(encoding="utf-8")
@@ -145,8 +145,8 @@ def _diff(label: str, found: set[str], allowed: frozenset[str]) -> list[str]:
 
 def main() -> None:
     hits: list[str] = []
-    logic = discovered_hermes_product_modules()
-    shims = discovered_hermes_shim_modules()
+    logic = discovered_agent_product_modules()
+    shims = discovered_agent_shim_modules()
     hits.extend(
         _diff(
             "public hermes_* product modules (logic; shims excluded)",
@@ -164,7 +164,7 @@ def main() -> None:
     hits.extend(
         _diff(
             "legacy hermes-home product files",
-            discovered_legacy_hermes_home_product_files(),
+            discovered_legacy_agent_home_product_files(),
             GRANDFATHERED_LEGACY_HERMES_HOME_PRODUCT_FILES,
         )
     )

@@ -55,9 +55,9 @@ def main() -> int:
         # Supervisor entry (Phase 4b). Lifetime: keep-background — warm may
         # leave gateway running without an Iris window.
         result = ensure_iris_agent_runtime(
-            settings.hermes_base_url,
-            api_key=settings.hermes_api_key,
-            command=settings.hermes_command,
+            settings.agent_base_url,
+            api_key=settings.agent_api_key,
+            command=settings.agent_command,
         )
         ok = result.ok
     except Exception as exc:  # noqa: BLE001

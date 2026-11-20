@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 from iris.engine.app_ui import app_ui_from_tool_meta, emit_app_ui_payload
 from iris.engine.types import IRIS_ENGINE_TOOLS, assert_iris_engine_tools_catalog
 from iris.infrastructure.agent_tool_registry import speak_invoke_agent_tool
-from iris.infrastructure.speak_capability import (
+from iris.infrastructure.tool_capability import (
     PHASE4_ALLOWLIST,
     ExecKind,
     assert_engine_tools_match_allowlist,

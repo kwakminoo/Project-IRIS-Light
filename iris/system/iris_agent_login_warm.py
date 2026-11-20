@@ -33,7 +33,7 @@ def is_supported() -> bool:
 
 
 def cli_script() -> Path:
-    return Path(__file__).resolve().parents[1] / "hermes_login_warm_cli.py"
+    return Path(__file__).resolve().parents[1] / "iris_agent_login_warm_cli.py"
 
 
 def build_task_command(runner: Path | None = None, script: Path | None = None) -> str:
@@ -132,7 +132,7 @@ def register() -> WarmStatus:
     if not script.is_file():
         return WarmStatus(registered=False, detail=f"실행 파일을 찾을 수 없습니다: {script}")
     runner = python_runner()
-    xml_path = Path(tempfile.gettempdir()) / "iris_hermes_login_warm.xml"
+    xml_path = Path(tempfile.gettempdir()) / "iris_agent_login_warm.xml"
     try:
         xml_path.write_text(_task_xml(runner, script), encoding="utf-16")
         code, text = _run(
@@ -146,7 +146,7 @@ def register() -> WarmStatus:
         except OSError:
             pass
     if code == 0:
-        return WarmStatus(registered=True, detail="로그인 시 Hermes 미리 기동")
+        return WarmStatus(registered=True, detail="로그인 시 Iris Agent 미리 기동")
     return WarmStatus(
         registered=False,
         detail=text[:300] or f"schtasks 종료 코드 {code}",
@@ -177,12 +177,12 @@ if __name__ == "__main__":
 
     cmd = build_task_command(
         Path(r"C:\py w\pythonw.exe"),
-        Path(r"C:\proj\hermes_login_warm_cli.py"),
+        Path(r"C:\proj\iris_agent_login_warm_cli.py"),
     )
-    assert cmd == '"C:\\py w\\pythonw.exe" "C:\\proj\\hermes_login_warm_cli.py"'
+    assert cmd == '"C:\\py w\\pythonw.exe" "C:\\proj\\iris_agent_login_warm_cli.py"'
     assert cmd.count('"') == 4
 
-    assert cli_script().name == "hermes_login_warm_cli.py"
+    assert cli_script().name == "iris_agent_login_warm_cli.py"
     runner = python_runner()
     assert runner.name in ("pythonw.exe", "python.exe", Path(sys.executable).name)
 

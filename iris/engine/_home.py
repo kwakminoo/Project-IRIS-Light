@@ -5,7 +5,7 @@ Agent-readable:
 - Does not: spawn a sidecar, bind :8642, or import run_agent.
 - Talks to: iris.engine.types, a short -c import in the engine interpreter.
 - Extend via: install_into(runner=...) when tests inject clone. Default calls
-  hermes_install with home=EngineHome (never HermesHome).
+  install_iris_agent_with_system_python with home=EngineHome (never HermesHome).
 """
 
 from __future__ import annotations
@@ -17,18 +17,25 @@ from collections.abc import Callable
 from pathlib import Path
 
 from iris.engine.types import EngineError, EngineErrorCode, EngineHome, EnginePython
+from iris.infrastructure.agent_runtime import (
+    agent_cli_probe_code,
+    iris_agent_checkout_dir,
+    iris_agent_checkout_write_dir,
+    load_pinned_sha,
+    migrate_legacy_checkout_dirname,
+)
 from iris.system.win_subprocess import no_window_kwargs
 
-def _engine_pin_sha() -> str:
-    from iris.infrastructure.agent_runtime import load_pinned_sha
 
+def _engine_pin_sha() -> str:
     return load_pinned_sha()
 
 
 # Prefer vendor/iris-agent-runtime/PIN. Legacy name kept for serin tests.
 ENGINE_HERMES_SHA = _engine_pin_sha()
 
-_PROBE_IMPORT = "import hermes_cli, aiohttp, mcp, ruamel.yaml, dotenv; print('ok')"
+# Probe Iris CLI packages only (F3); F2 forward shim covers rename soft-fail.
+_PROBE_IMPORT = agent_cli_probe_code("aiohttp", "mcp", "ruamel.yaml", "dotenv")
 
 _POLLUTION_ENV_KEYS = (
     "VIRTUAL_ENV",
@@ -48,7 +55,7 @@ _POLLUTION_ENV_KEYS = (
 
 
 def engine_python(home: EngineHome) -> EnginePython | None:
-    venv = Path(home) / "hermes-agent" / "venv"
+    venv = iris_agent_checkout_dir(Path(home)) / "venv"
     if sys.platform == "win32":
         scripts = venv / "Scripts"
         for name in ("python.exe", "python.cmd", "python"):
@@ -107,7 +114,7 @@ def _probe_imports(
     if "ok" not in (proc.stdout or ""):
         return EngineError(
             EngineErrorCode.WRONG_PYTHON,
-            f"hermes_cli import 응답 이상: {err[:240]}",
+            f"agent cli import 응답 이상: {err[:240]}",
         )
     return None
 
@@ -130,14 +137,16 @@ def install_into(
 ) -> None:
     if probe_engine_python(home) is None:
         return
-    dest = Path(home) / "hermes-agent"
+    base = Path(home)
+    migrate_legacy_checkout_dirname(base)
+    dest = iris_agent_checkout_write_dir(base)
     if runner is not None:
         runner(dest, sha=_engine_pin_sha(), clone=clone)
         return
-    from iris.system.iris_agent_install import install_hermes_with_system_python
+    from iris.system.iris_agent_install import install_iris_agent_with_system_python
 
-    result = install_hermes_with_system_python(
-        home=Path(home), sha=_engine_pin_sha()
+    result = install_iris_agent_with_system_python(
+        home=base, sha=_engine_pin_sha()
     )
     if result is not None and not getattr(result, "ok", True):
         return

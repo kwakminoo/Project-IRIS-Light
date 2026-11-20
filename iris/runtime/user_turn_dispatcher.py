@@ -13,7 +13,7 @@ class UserTurnDispatcher(QObject):
 
     추론과 HTTP는 하지 않는다. UI는 ``turn_ready``를 구독해 실행한다.
     같은 대화는 한 줄로 기다리고, 서로 다른 대화는 ``max_concurrent``까지 동시에 나간다.
-    새 에이전트 도구는 여기가 아니라 Hermes 스킬/MCP에 둔다.
+    새 에이전트 도구는 여기가 아니라 Iris Agent 스킬/MCP에 둔다.
     """
 
     turn_ready = pyqtSignal(object)  # UserTurn

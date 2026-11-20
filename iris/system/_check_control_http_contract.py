@@ -6,6 +6,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 os.environ["IRIS_CONTROL_TOKEN"] = "contract-check-token"
 os.environ.pop("IRIS_CONTROL_URL", None)
@@ -149,6 +150,13 @@ def main() -> None:
         assert down["isError"] is True
     finally:
         surface.stop()
+
+    src = Path(cs.__file__).read_text(encoding="utf-8")
+    assert "def invoke_http_timeout(" in src
+    assert 'if name in ("ide.pick_open_file", "ide.pick_open_folder")' in src
+    assert "confirm_required and not runs_off_ui_thread" in src
+    assert cs.invoke_http_timeout("ide.pick_open_folder") is None
+    assert cs.invoke_http_timeout("email.send", confirm_required=True) is None
     print("control http contract ok")
 
 

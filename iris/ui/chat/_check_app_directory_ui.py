@@ -92,8 +92,10 @@ def main() -> None:
             def _ask_app_consent_hook(self, **kwargs) -> bool:
                 return True
 
-            def show_app_host(self, html_path: str, title: str = "앱") -> bool:
-                opened.append((html_path, title))
+            def show_app_host(
+                self, html_path: str, title: str = "앱", *, offer_id: str = ""
+            ) -> bool:
+                opened.append((html_path, title, offer_id))
                 return True
 
             def show_attach_notice(self, message: str) -> None:
@@ -112,7 +114,7 @@ def main() -> None:
         weather = directory.get("weather")
         assert weather is not None
         assert ChatPanel._open_directory_app(panel, weather)
-        assert opened == [(str(html), "Weather")]
+        assert opened == [(str(html), "Weather", "weather")]
         external = AppDirectoryEntry("remote", "Remote", "", "ui://remote", SOURCE_INSTALLED)
         assert not ChatPanel._open_directory_app(panel, external)
         assert notices
