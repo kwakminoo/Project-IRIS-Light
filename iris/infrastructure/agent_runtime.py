@@ -615,6 +615,22 @@ def apply_iris_agent_baseline_overlays(agent_root: Path) -> list[str]:
     from iris.system.iris_agent_absorbed_toolsets import apply_absorbed_toolsets_overlay
 
     messages.extend(apply_absorbed_toolsets_overlay(root))
+    from iris.system.iris_agent_package_identity import (
+        apply_iris_agent_package_identity_overlay,
+    )
+
+    messages.extend(apply_iris_agent_package_identity_overlay(root))
+    from iris.system.iris_agent_cli_rename_overlay import (
+        apply_iris_agent_cli_rename_overlay,
+    )
+
+    messages.extend(apply_iris_agent_cli_rename_overlay(root))
+    from iris.system.iris_agent_cli_shim_overlay import (
+        apply_iris_agent_cli_shim_overlay,
+    )
+
+    # F2 no-op when F3 already materialized a real iris_agent_cli.
+    messages.extend(apply_iris_agent_cli_shim_overlay(root))
     stamp = root / ".iris-agent-baseline"
     try:
         stamp.write_text(f"{load_pinned_sha()}\n", encoding="utf-8")
