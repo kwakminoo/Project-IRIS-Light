@@ -758,6 +758,9 @@ def _finish_staged_install(
     should_abort: Callable[[], bool] | None,
     probe_gateway: bool = True,
 ) -> InstallResult:
+    # packages.find + CLI shims must exist before uv/pip builds editable metadata.
+    # Soft-fail: overlay miss must not abort a otherwise-good install.
+    _guard_installed_agent(staging)
     venv_dir = staging / "venv"
     emit("venv 생성…")
     venv_proc = _run([str(py), "-m", "venv", str(venv_dir)], timeout=180.0)
