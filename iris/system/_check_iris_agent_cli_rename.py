@@ -126,12 +126,55 @@ def _check_soft_fail_missing_agent() -> None:
         assert any("missing" in m.lower() or "skipped" in m.lower() for m in msgs)
 
 
+def _check_reverse_shim_forwards_submodules() -> None:
+    """hermes_cli.<sub> must resolve into iris_agent_cli via reverse-shim __path__."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _tiny_agent_tree(root)
+        apply_iris_agent_cli_rename_overlay(root)
+
+        hermes_pkg = root / "hermes_cli"
+        iris_pkg = root / "iris_agent_cli"
+        # Submodule lives only under iris_agent_cli — not as a hermes_cli file.
+        probe = iris_pkg / "_early_recovery.py"
+        probe.write_text(
+            '"""fake iris_agent_cli._early_recovery."""\nPROBE = "via-iris-path"\n',
+            encoding="utf-8",
+        )
+        assert not (hermes_pkg / "_early_recovery.py").exists()
+        hermes_names = {p.name for p in hermes_pkg.iterdir()}
+        assert hermes_names <= {"__init__.py", "main.py", "__pycache__"}
+
+        sys.path.insert(0, str(root))
+        drop = (
+            "iris_agent_cli",
+            "hermes_cli",
+            "iris_cli",
+            "iris_agent_cli._early_recovery",
+            "hermes_cli._early_recovery",
+        )
+        try:
+            for name in drop:
+                sys.modules.pop(name, None)
+            hermes = importlib.import_module("hermes_cli")
+            iris = importlib.import_module("iris_agent_cli")
+            assert list(hermes.__path__) == list(iris.__path__)
+            sub = importlib.import_module("hermes_cli._early_recovery")
+            assert getattr(sub, "PROBE", None) == "via-iris-path"
+            assert sub.__name__ == "hermes_cli._early_recovery"
+        finally:
+            sys.path.remove(str(root))
+            for name in drop:
+                sys.modules.pop(name, None)
+
+
 def main() -> None:
     _check_rename_makes_real_iris_agent_cli()
     _check_f2_skips_when_f3_real()
     _check_probe_drops_agent_cli()
     _check_baseline_wires_rename()
     _check_soft_fail_missing_agent()
+    _check_reverse_shim_forwards_submodules()
     print("iris_agent_cli_rename ok")
 
 
