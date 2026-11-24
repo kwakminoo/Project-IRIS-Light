@@ -374,6 +374,9 @@ class H1TranscriptHost(QWidget):
     code_run_landed = pyqtSignal(str, bool)  # msg_id, ok
     diagram_open_requested = pyqtSignal(str)  # html_path
     speaker_clicked = pyqtSignal(str)  # iris-tts:// msg_id
+    update_action_clicked = pyqtSignal(str)  # iris-update:// apply | later
+    iris_agent_update_action_clicked = pyqtSignal(str)  # iris-agent-update:// apply | later
+    ollama_login_clicked = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -720,6 +723,19 @@ class H1TranscriptHost(QWidget):
                     if token:
                         host.speaker_clicked.emit(token)
                     return False
+                if text.startswith("iris-agent-update://"):
+                    action = text.removeprefix("iris-agent-update://").strip().lower()
+                    if action in ("apply", "later"):
+                        host.iris_agent_update_action_clicked.emit(action)
+                    return False
+                if text.startswith("iris-update://"):
+                    action = text.removeprefix("iris-update://").strip().lower()
+                    if action in ("apply", "later"):
+                        host.update_action_clicked.emit(action)
+                    return False
+                if "iris-ollama-login" in text:
+                    host.ollama_login_clicked.emit()
+                    return False
                 return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
         view = QWebEngineView(self)
@@ -822,7 +838,13 @@ class H1TranscriptHost(QWidget):
             parts_html = '<p class="part-muted"></p>'
         tts = ""
         role_key = (turn.role or "").strip().lower()
-        if role_key in ("assistant", "iris") and turn.msg_id.strip():
+        mid_raw = turn.msg_id.strip()
+        # notice-* system rows are not chat answers — skip [재생]/TTS.
+        if (
+            role_key in ("assistant", "iris")
+            and mid_raw
+            and not mid_raw.startswith("notice-")
+        ):
             href = html.escape(f"iris-tts://{turn.msg_id}", quote=True)
             tts = (
                 f'<p class="tts-row"><a class="tts-link" href="{href}" '

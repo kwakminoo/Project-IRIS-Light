@@ -670,7 +670,7 @@ class _ChatTopFade(QGraphicsEffect):
 class ChatLogTextEdit(QTextEdit):
     speaker_clicked = pyqtSignal(str)
     update_action_clicked = pyqtSignal(str)  # apply | later
-    hermes_update_action_clicked = pyqtSignal(str)  # apply | later
+    iris_agent_update_action_clicked = pyqtSignal(str)  # apply | later
     ollama_login_clicked = pyqtSignal()
     files_attached = pyqtSignal(list)
     scrolled_by_user = pyqtSignal()
@@ -809,10 +809,10 @@ class ChatLogTextEdit(QTextEdit):
             self.speaker_clicked.emit(anchor.removeprefix("iris-tts://"))
             event.accept()
             return
-        if anchor.startswith("iris-hermes-update://"):
-            action = anchor.removeprefix("iris-hermes-update://").strip().lower()
+        if anchor.startswith("iris-agent-update://"):
+            action = anchor.removeprefix("iris-agent-update://").strip().lower()
             if action in ("apply", "later"):
-                self.hermes_update_action_clicked.emit(action)
+                self.iris_agent_update_action_clicked.emit(action)
             event.accept()
             return
         if anchor.startswith("iris-update://"):
@@ -1437,7 +1437,7 @@ class ChatPanel(QWidget):
     mic_clicked = pyqtSignal()
     speaker_clicked = pyqtSignal(str)
     update_action_clicked = pyqtSignal(str)
-    hermes_update_action_clicked = pyqtSignal(str)
+    iris_agent_update_action_clicked = pyqtSignal(str)
     ollama_login_clicked = pyqtSignal()
     # 입력창에 뭔가 쓰기 시작했다 — 보내기 전에 준비할 일(임베딩 모델 깨우기)용
     composing = pyqtSignal()
@@ -1524,6 +1524,8 @@ class ChatPanel(QWidget):
         self._typing_wait_for_tts_completion = False
         self._user_listening_active = False
         self._stt_pending = False
+        self._stt_pending_msg_id = ""
+        self._notice_seq = 0
         self._tts_texts: dict[str, str] = {}
         self._tts_seq = 0
         self._last_tts_id = ""
@@ -1573,7 +1575,9 @@ class ChatPanel(QWidget):
         bar.wiki_quote_pasted.connect(self._on_wiki_quote_pasted)
         self._log.speaker_clicked.connect(self.speaker_clicked.emit)
         self._log.update_action_clicked.connect(self.update_action_clicked.emit)
-        self._log.hermes_update_action_clicked.connect(self.hermes_update_action_clicked.emit)
+        self._log.iris_agent_update_action_clicked.connect(
+            self.iris_agent_update_action_clicked.emit
+        )
         self._log.ollama_login_clicked.connect(self.ollama_login_clicked.emit)
         self._log.files_attached.connect(self._on_composer_drop_paths)
         self._log.scrolled_by_user.connect(self._note_user_log_scroll)
@@ -1586,6 +1590,11 @@ class ChatPanel(QWidget):
         self._transcript_h1 = H1TranscriptHost(self)
         self._transcript_h1.diagram_open_requested.connect(self._on_h1_diagram_open)
         self._transcript_h1.speaker_clicked.connect(self.speaker_clicked.emit)
+        self._transcript_h1.update_action_clicked.connect(self.update_action_clicked.emit)
+        self._transcript_h1.iris_agent_update_action_clicked.connect(
+            self.iris_agent_update_action_clicked.emit
+        )
+        self._transcript_h1.ollama_login_clicked.connect(self.ollama_login_clicked.emit)
         self._transcript_h1.setMinimumHeight(80)
 
         self._height_handle = _ChatHeightHandle()
@@ -2119,40 +2128,92 @@ class ChatPanel(QWidget):
             f'style="color:#7dd3fc;text-decoration:none;">[재생]</a></p>'
         )
 
+    def _next_notice_id(self, kind: str) -> str:
+        self._notice_seq += 1
+        slug = (kind or "note").strip() or "note"
+        return f"notice-{slug}-{self._notice_seq}"
+
+    def _land_notice(self, notice) -> str:
+        """System notice → H1 TextPart (notice- msg_id skips TTS). Never ghost `_log`."""
+        from iris.ui.chat.chat_notices import notice_markdown, notice_role
+
+        mid = self._next_notice_id(getattr(notice, "kind", "note"))
+        md = notice_markdown(notice)
+        self.transcript().append_turn(
+            notice_role(getattr(notice, "kind", "")),
+            [TextPart(markdown=md)],
+            msg_id=mid,
+        )
+        return mid
+
+    def _strip_h1_action_links(self, href_prefix: str) -> None:
+        from dataclasses import replace as dc_replace
+
+        from iris.ui.chat.chat_notices import strip_action_links
+
+        host = self.transcript()
+        prefix = (href_prefix or "").strip()
+        if not prefix:
+            return
+        changed = False
+        new_turns = []
+        for turn in host._turns:
+            new_parts = []
+            part_changed = False
+            for part in turn.parts:
+                if isinstance(part, TextPart) and prefix in (part.markdown or ""):
+                    stripped = strip_action_links(part.markdown or "", prefix)
+                    if stripped != (part.markdown or ""):
+                        new_parts.append(TextPart(markdown=stripped))
+                        part_changed = True
+                    else:
+                        new_parts.append(part)
+                else:
+                    new_parts.append(part)
+            if part_changed:
+                new_turns.append(dc_replace(turn, parts=tuple(new_parts)))
+                changed = True
+            else:
+                new_turns.append(turn)
+        if changed:
+            host._turns = new_turns
+            host._render()
+
     def append_update_prompt(self, *, detail: str = "") -> None:
-        """GitHub 업데이트 안내 + Update / Late 링크."""
+        """GitHub 업데이트 안내 + Update / Late 링크 (H1 ChatNotice)."""
+        from iris.ui.chat.chat_notices import ChatNotice, ChatNoticeAction
+
         self.finish_typing()
         text = "업데이트가 가능합니다. 업데이트를 하시겠습니까?"
         extra = (detail or "").strip()
         if extra:
             text = f"{text} ({extra})"
-        link = 'style="color:#38bdf8;text-decoration:none;"'
-        buttons = (
-            f' <a href="iris-update://apply" {link}>[Update]</a>'
-            f' <a href="iris-update://later" {link}>[Late]</a>'
+        self._land_notice(
+            ChatNotice(
+                kind="update",
+                body=text,
+                actions=(
+                    ChatNoticeAction("iris-update://apply", "[Update]"),
+                    ChatNoticeAction("iris-update://later", "[Late]"),
+                ),
+            )
         )
-        cursor = self._begin_chat_message_cursor()
-        cursor.insertHtml(f"<b>Iris</b>: {html.escape(text)}{buttons}")
-        self._log.setTextCursor(cursor)
-        self._append_trailing_blank_line()
-        self._scroll_log_to_bottom()
 
     def append_ollama_cloud_login_prompt(self, text: str) -> None:
-        """클라우드 미로그인 안내 + [로그인] 링크 (푸른색)."""
+        """클라우드 미로그인 안내 + [로그인] 링크 (H1 ChatNotice)."""
+        from iris.ui.chat.chat_notices import ChatNotice, ChatNoticeAction
+
         self.finish_typing()
         body = (text or "").strip() or (
             "Ollama 클라우드 미로그인입니다. Ollama 앱에서 로그인하거나 로컬 모델로 바꾸세요."
         )
-        # [재생]과 동일 패턴 — QTextEdit이 복잡한 button style을 깨뜨리는 경우 대비
-        button = (
-            ' <a href="iris-ollama-login://open" '
-            'style="color:#38bdf8;text-decoration:none;">[로그인]</a>'
+        self._land_notice(
+            ChatNotice(
+                kind="ollama_login",
+                body=body,
+                actions=(ChatNoticeAction("iris-ollama-login://open", "[로그인]"),),
+            )
         )
-        cursor = self._begin_chat_message_cursor()
-        cursor.insertHtml(f"<b>Iris</b>: {html.escape(body)}{button}")
-        self._log.setTextCursor(cursor)
-        self._append_trailing_blank_line()
-        self._scroll_log_to_bottom()
 
     def select_model_silent(self, runtime: str) -> bool:
         """시그널 없이 콤보 선택 변경. 해당 runtime이 없으면 False."""
@@ -2172,60 +2233,35 @@ class ChatPanel(QWidget):
                 return True
         return False
 
-    def append_hermes_update_prompt(self, *, detail: str = "") -> None:
-        """Hermes 업데이트 안내 + 업데이트 / 나중에 링크."""
+    def append_iris_agent_update_prompt(self, *, detail: str = "") -> None:
+        """Iris Agent 업데이트 안내 + 업데이트 / 나중에 링크 (H1 ChatNotice)."""
+        from iris.ui.chat.chat_notices import ChatNotice, ChatNoticeAction
+
         self.finish_typing()
         text = "Iris Agent 업데이트가 가능합니다. 업데이트를 하시겠습니까?"
         extra = (detail or "").strip()
         if extra:
             text = f"{text} ({extra})"
-        link = 'style="color:#38bdf8;text-decoration:none;"'
-        buttons = (
-            f' <a href="iris-hermes-update://apply" {link}>[업데이트]</a>'
-            f' <a href="iris-hermes-update://later" {link}>[나중에]</a>'
-        )
-        cursor = self._begin_chat_message_cursor()
-        cursor.insertHtml(f"<b>Iris</b>: {html.escape(text)}{buttons}")
-        self._log.setTextCursor(cursor)
-        self._append_trailing_blank_line()
-        self._scroll_log_to_bottom()
-
-    def dismiss_hermes_update_prompt(self, note: str = "") -> None:
-        """Hermes 업데이트 버튼 제거."""
-        import re
-
-        html_doc = self._log.toHtml()
-        if "iris-hermes-update://" in html_doc:
-            updated = re.sub(
-                r'\s*<a[^>]*href="iris-hermes-update://(?:apply|later)"[^>]*>.*?</a>',
-                "",
-                html_doc,
-                flags=re.IGNORECASE | re.DOTALL,
+        self._land_notice(
+            ChatNotice(
+                kind="iris_agent_update",
+                body=text,
+                actions=(
+                    ChatNoticeAction("iris-agent-update://apply", "[업데이트]"),
+                    ChatNoticeAction("iris-agent-update://later", "[나중에]"),
+                ),
             )
-            bar = self._log.verticalScrollBar()
-            pos = bar.value()
-            self._log.setHtml(updated)
-            bar.setValue(pos)
+        )
+
+    def dismiss_iris_agent_update_prompt(self, note: str = "") -> None:
+        """Iris Agent 업데이트 버튼 제거 (H1)."""
+        self._strip_h1_action_links("iris-agent-update://")
         if (note or "").strip():
             self.append_message_instant("Iris", note.strip())
 
     def dismiss_update_prompt(self, note: str = "") -> None:
-        """Update/Late 클릭 후 버튼 제거."""
-        import re
-
-        html_doc = self._log.toHtml()
-        if "iris-update://" in html_doc:
-            # Qt가 <a> 안에 style span을 넣으므로 중첩 태그까지 허용
-            updated = re.sub(
-                r'\s*<a[^>]*href="iris-update://(?:apply|later)"[^>]*>.*?</a>',
-                "",
-                html_doc,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-            bar = self._log.verticalScrollBar()
-            pos = bar.value()
-            self._log.setHtml(updated)
-            bar.setValue(pos)
+        """Update/Late 클릭 후 버튼 제거 (H1)."""
+        self._strip_h1_action_links("iris-update://")
         if (note or "").strip():
             self.append_message_instant("Iris", note.strip())
 
@@ -2603,90 +2639,72 @@ class ChatPanel(QWidget):
         self._input.setPalette(pal)
 
     def begin_stt_pending(self) -> None:
-        """STT 대기 — 채팅에 You: ··· 플레이스홀더."""
+        """STT 대기 — H1에 You 턴 플레이스홀더."""
+        from iris.ui.chat.chat_notices import ChatNotice, ChatNoticeAction
+
         if self._stt_pending:
             return
         self.finish_typing()
-        cursor = self._begin_chat_message_cursor()
-        cursor.insertHtml(
-            f'<b>You</b>: <a href="iris-stt://pending" '
-            f'style="color:{TOKENS.text_muted};text-decoration:none;">···</a>'
+        mid = self._land_notice(
+            ChatNotice(
+                kind="stt_pending",
+                body="",
+                actions=(ChatNoticeAction("iris-stt://pending", "···"),),
+            )
         )
-        self._log.setTextCursor(cursor)
-        self._append_trailing_blank_line()
         self._stt_pending = True
-        self._scroll_log_to_bottom()
+        self._stt_pending_msg_id = mid
 
     def complete_stt_pending(self, text: str) -> bool:
         """플레이스홀더를 인식 텍스트로 교체. pending 없으면 False."""
+        from dataclasses import replace as dc_replace
+
         body = normalize_chat_body("You", prepare_chat_text(text))
         if not self._stt_pending:
             return False
         if not body:
             self.cancel_stt_pending()
             return True
-        import re
-
-        html_doc = self._log.toHtml()
-        needle = 'href="iris-stt://pending"'
-        if needle not in html_doc:
+        mid = (self._stt_pending_msg_id or "").strip()
+        host = self.transcript()
+        target_i = -1
+        if mid:
+            for i, turn in enumerate(host._turns):
+                if turn.msg_id == mid:
+                    target_i = i
+                    break
+        if target_i < 0:
             self._stt_pending = False
-            return False
-        body_html = render_user_message(body)
-        # QTextEdit가 <a> 안을 <span>으로 감싸므로 non-greedy DOTALL 필요
-        updated = re.sub(
-            r'<a href="iris-stt://pending"[^>]*>.*?</a>',
-            body_html,
-            html_doc,
-            count=1,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
-        if updated == html_doc:
-            self._stt_pending = False
+            self._stt_pending_msg_id = ""
             self.append_message_instant("You", body)
             return True
-        bar = self._log.verticalScrollBar()
-        pos = bar.value()
-        self._log.setHtml(updated)
-        bar.setValue(pos)
-        self._scroll_log_to_bottom()
+        visible = mask_unnecessary_chat_paths(body)
+        host._turns[target_i] = dc_replace(
+            host._turns[target_i],
+            parts=(TextPart(markdown=visible),),
+            msg_id="",
+        )
+        host._render()
         self._stt_pending = False
+        self._stt_pending_msg_id = ""
         self.cancel_user_listening()
         return True
 
     def cancel_stt_pending(self, *, notice: str = "") -> None:
-        """STT 실패/무시 — 플레이스홀더 제거."""
+        """STT 실패/무시 — H1 플레이스홀더 턴 제거."""
         if not self._stt_pending:
             if notice:
                 self.set_user_listening_status(notice)
             return
-        import re
-
-        html_doc = self._log.toHtml()
-        needle = 'href="iris-stt://pending"'
-        if needle in html_doc:
-            # ponytail: DOTALL로 <p>…pending…</p>를 잡으면 문서 첫 <p>부터
-            # pending까지 통째로 지워 채팅이 증발한다. 앵커만 제거.
-            updated = re.sub(
-                r'<a href="iris-stt://pending"[^>]*>.*?</a>',
-                "",
-                html_doc,
-                count=1,
-                flags=re.DOTALL | re.IGNORECASE,
-            )
-            if updated != html_doc:
-                updated = re.sub(
-                    r'<p[^>]*>\s*(?:<span[^>]*>)?(?:<[^>]+>)*You(?:</[^>]+>)*:\s*(?:</span>)?\s*</p>',
-                    "",
-                    updated,
-                    count=1,
-                    flags=re.IGNORECASE,
-                )
-                bar = self._log.verticalScrollBar()
-                pos = bar.value()
-                self._log.setHtml(updated)
-                bar.setValue(pos)
+        mid = (self._stt_pending_msg_id or "").strip()
+        host = self.transcript()
+        if mid:
+            host._turns = [t for t in host._turns if t.msg_id != mid]
+            host._render()
+        else:
+            self._strip_h1_action_links("iris-stt://")
         self._stt_pending = False
+        self._stt_pending_msg_id = ""
         if notice:
             self.set_user_listening_status(notice)
 
@@ -2801,19 +2819,21 @@ class ChatPanel(QWidget):
         self._land_turn_on_h1(who, text)
 
     def append_error_message(self, summary: str, detail: str) -> None:
-        """Separate operational diagnostics from ordinary assistant prose."""
+        """Separate operational diagnostics from ordinary assistant prose (H1)."""
         from iris.core.activity_privacy import redact_secrets
-        from iris.ui.chat.chat_renderer import render_error_inline
+        from iris.ui.chat.chat_notices import ChatNotice, ChatNoticeAction
 
         self.finish_typing()
         key = str(len(self._log._error_details) + 1)
         self._log._error_details[key] = redact_secrets(detail)
-        cursor = self._begin_chat_message_cursor()
-        cursor.insertHtml(render_error_inline(summary))
-        cursor.insertHtml(f'<a href="iris-error://{key}">자세히 보기</a>')
-        self._log.setTextCursor(cursor)
-        self._append_trailing_blank_line()
-        self._scroll_log_to_bottom()
+        body = (summary or "").strip() or "오류"
+        self._land_notice(
+            ChatNotice(
+                kind="error",
+                body=body,
+                actions=(ChatNoticeAction(f"iris-error://{key}", "자세히 보기"),),
+            )
+        )
 
     def show_diagram(self, html_path: str, title: str = "") -> bool:
         """로그와 입력창 사이 카드에 archify HTML을 연다. 파일이 없으면 False."""
@@ -3035,19 +3055,17 @@ class ChatPanel(QWidget):
 
     def append_app_note(self, offer: ChatAppOffer) -> None:
         """앱 한 줄. 다시 보기가 App Host를 다시 연다. TTS 본문으로 등록하지 않는다."""
+        from iris.ui.chat.chat_notices import ChatNotice, ChatNoticeAction
+
         label = (offer.title or "앱").strip() or "앱"
-        href = html.escape(app_href(offer.offer_id), quote=True)
         self.finish_typing()
-        cursor = self._begin_chat_message_cursor()
-        cursor.insertHtml(
-            f'<span style="color:{TOKENS.text_secondary};font-size:12px;">'
-            f"{html.escape(label)} · "
-            f'<a href="{href}" style="color:{TOKENS.neon_cyan};text-decoration:none;">다시 보기</a>'
-            f"</span>"
+        self._land_notice(
+            ChatNotice(
+                kind="app_note",
+                body=f"{label} ·",
+                actions=(ChatNoticeAction(app_href(offer.offer_id), "다시 보기"),),
+            )
         )
-        self._log.setTextCursor(cursor)
-        self._append_trailing_blank_line()
-        self._scroll_log_to_bottom()
 
     def reopen_chat_app_offer(self, offer_id: str) -> bool:
         oid = str(offer_id or "").strip()
@@ -3134,21 +3152,15 @@ class ChatPanel(QWidget):
     def append_note(self, text: str) -> None:
         """앱이 붙이는 작은 안내 줄(참고한 이전 대화, 모델 전환 등).
 
-        Iris 답변이 아니다 — 화자 이름·[재생] 링크를 달지 않고 TTS 본문으로도
-        등록하지 않는다(등록하면 '마지막 답변 읽기'가 이 줄을 읽는다).
+        Iris 답변이 아니다 — notice- msg_id로 H1에 착지해 [재생]/TTS를 건너뛴다.
         """
+        from iris.ui.chat.chat_notices import ChatNotice
+
         body = " ".join((text or "").split())
         if not body:
             return
         self.finish_typing()
-        cursor = self._begin_chat_message_cursor()
-        cursor.insertHtml(
-            f'<span style="color:{TOKENS.text_secondary};font-size:12px;">'
-            f"{html.escape(body)}</span>"
-        )
-        self._log.setTextCursor(cursor)
-        self._append_trailing_blank_line()
-        self._scroll_log_to_bottom()
+        self._land_notice(ChatNotice(kind="note", body=body))
 
     def insert_tool_block(
         self,
