@@ -1,4 +1,4 @@
-"""Hermes 채팅 오류 분류 — 게이트웨이 Bearer vs Ollama 클라우드 401."""
+"""Iris Agent 채팅 오류 분류 — 게이트웨이 Bearer vs Ollama 클라우드 401."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def looks_like_no_tools_error(err_msg: str) -> bool:
 
 
 def format_hermes_sse_error(err_msg: str, *, model: str = "") -> str:
-    """SSE error.message → 사용자용 RuntimeError 본문 (앞에 'Hermes: ' 붙이지 않음)."""
+    """SSE error.message → 사용자용 RuntimeError 본문 (중복 제품 접두어 없음)."""
     raw = (err_msg or "").strip()
     if looks_like_upstream_unauthorized(raw):
         if is_cloud_runtime_name(model) or ":cloud" in raw.lower() or "-cloud" in raw.lower():
@@ -125,6 +125,10 @@ def explain_chat_error(err: str) -> str:
         return "응답 대기 시간이 초과됐습니다. 잠시 후 다시 시도하세요."
     if looks_like_no_tools_error(raw):
         return "이 모델은 도구 호출을 지원하지 않습니다. 도구를 지원하는 모델을 선택하세요."
+    _billing_ui = (
+        "Ollama 클라우드 크레딧이 부족합니다. "
+        "요금을 충전하거나 다른 모델로 바꾸세요."
+    )
     if status == 429 or any(
         h in low for h in ("quota", "exceeded your current", "rate limit", "resource_exhausted")
     ):
@@ -134,14 +138,15 @@ def explain_chat_error(err: str) -> str:
                 "요금제와 할당량을 확인하거나, 다른 모델로 바꾼 뒤 다시 요청하세요."
             )
         if "ollama" in low:
-            return (
-                "Ollama 클라우드 사용 한도입니다. "
-                "잠시 기다리거나 로컬 모델로 바꾸세요."
-            )
+            return _billing_ui
         return (
             "모델 API 사용 한도를 초과했습니다. "
             "잠시 후 다시 시도하거나 다른 모델로 바꾸세요."
         )
+    if status == 402 or any(
+        h in low for h in ("credits", "billing", "entitlement", "크레딧")
+    ):
+        return _billing_ui
     if status == 413 or any(
         h in low
         for h in (
@@ -155,6 +160,11 @@ def explain_chat_error(err: str) -> str:
         return "대화가 모델이 한 번에 받을 수 있는 길이를 넘었습니다. 새 채팅을 시작하세요."
     if status == 404 or "model not found" in low or ("not found" in low and "model" in low):
         return "선택한 모델을 서버에서 찾지 못했습니다. 다른 모델을 고르세요."
+    if "error 1010" in low or "http 클라이언트 식별자가 차단" in low:
+        return (
+            "Cloudflare가 Iris HTTP 클라이언트 식별자 또는 현재 네트워크/IP를 차단했습니다. "
+            "API 키 오류가 아닙니다. Iris와 공식 curl 요청을 비교해 확인하세요."
+        )
     if status in (401, 403):
         return "인증에 실패했습니다. API 키 또는 로그인을 확인하세요."
     if status in (400, 422):
@@ -168,6 +178,11 @@ def explain_chat_error(err: str) -> str:
         return "모델 서버가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도하세요."
     if raw in ("모델 응답 실패", "(빈 응답)"):
         return "모델이 답을 만들지 못했습니다. 다시 시도하세요."
+
+    from iris.engine.types import engine_user_messages
+
+    if raw in engine_user_messages():
+        return raw
     return "요청을 처리하지 못했습니다. 잠시 후 다시 시도하세요."
 
 
@@ -229,29 +244,46 @@ if __name__ == "__main__":
         "registry.ollama.ai/library/exaone3.5:2.4b does not support tools"
     )
     quota = (
-        'Hermes: HTTP 429: [{"error":{"code":429,"message":'
+        'Iris Agent: HTTP 429: [{"error":{"code":429,"message":'
         '"You exceeded your current quota, please check your plan and billing details. '
         'https://ai.google.dev/gemini-api/docs/rate-limits"}}]'
     )
     assert "Gemini API 사용 한도" in explain_chat_error(quota)
     assert "options" in explain_chat_error(
-        "Hermes: HTTP 400 Unsupported parameter(s): options"
+        "Iris Agent: HTTP 400 Unsupported parameter(s): options"
     )
     assert explain_chat_error(CLOUD_AUTH_USER_MSG) == CLOUD_AUTH_USER_MSG
-    assert "연결하지 못했습니다" in explain_chat_error("Hermes 연결 실패: refused")
-    assert "Iris Agent" in explain_chat_error("Hermes 연결 실패: refused")
+    assert "연결하지 못했습니다" in explain_chat_error("Iris Agent 연결 실패: refused")
+    assert "Iris Agent" in explain_chat_error("Iris Agent 연결 실패: refused")
     assert "hermes doctor" not in explain_chat_error(
         "custom rejected; run `hermes doctor` for details"
     ).lower()
     assert "Iris" in scrub_upstream_hermes_cli_hints("run hermes doctor now")
-    assert "한도" in explain_chat_error("Ollama HTTP 429: rate limit")
+    _billing_ui = (
+        "Ollama 클라우드 크레딧이 부족합니다. "
+        "요금을 충전하거나 다른 모델로 바꾸세요."
+    )
+    assert explain_chat_error("Ollama HTTP 402: credits exhausted") == _billing_ui
+    assert explain_chat_error("billing entitlement denied") == _billing_ui
+    assert explain_chat_error(_billing_ui) == _billing_ui
+    assert explain_chat_error("Ollama HTTP 429: rate limit") == _billing_ui
     assert "답을 만들지 못했습니다" in explain_chat_error("모델 응답 실패")
     _timeout_ui = "응답 대기 시간이 초과됐습니다. 잠시 후 다시 시도하세요."
     assert explain_chat_error("엔진 응답을 읽지 못했습니다.") == _timeout_ui
     assert explain_chat_error(_timeout_ui) == _timeout_ui
-    from iris.engine.types import EngineError, EngineErrorCode
+    from iris.engine.types import EngineError, EngineErrorCode, engine_user_messages
 
     assert EngineError(EngineErrorCode.TURN_IDLE, "sidecar event timed out").user_message == _timeout_ui
+    _budget_ui = EngineError(EngineErrorCode.TOOL_ERROR_BUDGET, "Stopped after 10").user_message
+    assert _budget_ui in engine_user_messages()
+    assert explain_chat_error(_budget_ui) == _budget_ui
+    for code in EngineErrorCode:
+        ui = EngineError(code, "detail").user_message
+        shown = explain_chat_error(ui)
+        if code is EngineErrorCode.PROTOCOL:
+            assert shown == _timeout_ui, code
+        else:
+            assert shown == ui, code
     from unittest.mock import patch
 
     with patch(
