@@ -243,6 +243,7 @@ def _bind_companion_drag_inst(*, over_chat: bool = False):
     inst._cursor_over_chat_drop = MainWindow._cursor_over_chat_drop.__get__(inst, MainWindow)
     inst._begin_ide_companion_drag = MainWindow._begin_ide_companion_drag.__get__(inst, MainWindow)
     inst._finish_ide_companion_drag = MainWindow._finish_ide_companion_drag.__get__(inst, MainWindow)
+    inst._expire_ide_companion_drag = MainWindow._expire_ide_companion_drag.__get__(inst, MainWindow)
     return inst
 
 
@@ -275,6 +276,13 @@ def check_finish_keeps_pending_outside() -> None:
         assert inst._finish_ide_companion_drag() == []
     assert inst._pending_ide_drag == [], "밖+LMB 업이면 pending 폐기해야 함"
     inst._attach_os_drop_paths.assert_not_called()
+    inst._note_chat_file_drag.assert_called_with(False)
+
+    inst._note_chat_file_drag.reset_mock()
+    inst._pending_ide_drag = [r"C:\proj\abandoned.py"]
+    inst._expire_ide_companion_drag([r"C:\proj\abandoned.py"])
+    assert inst._pending_ide_drag == []
+    inst._note_chat_file_drag.assert_called_once_with(False)
 
 
 def check_finish_misses_iris_frame_not_chat() -> None:
@@ -317,6 +325,7 @@ def check_pending_over_chat_attaches() -> None:
     assert inst._finish_ide_companion_drag() == [r"C:\proj\chat.py"]
     assert inst._pending_ide_drag == []
     inst._attach_os_drop_paths.assert_called_with([r"C:\proj\chat.py"])
+    inst._note_chat_file_drag.assert_called_with(False)
 
     # MouseMove로 채팅 진입 시에도 첨부
     inst._attach_os_drop_paths.reset_mock()
@@ -328,7 +337,7 @@ def check_pending_over_chat_attaches() -> None:
         MainWindow.eventFilter(inst, inst, move)
     assert inst._pending_ide_drag == []
     inst._attach_os_drop_paths.assert_called_with([r"C:\proj\move.py"])
-    inst._note_chat_file_drag.assert_called_with(True)
+    assert [call.args for call in inst._note_chat_file_drag.call_args_list] == [(True,), (False,)]
 
 
 def check_companion_drag_race() -> None:

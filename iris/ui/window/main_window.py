@@ -3879,6 +3879,7 @@ class MainWindow(QMainWindow):
     def _expire_ide_companion_drag(self, expected: list[str]) -> None:
         if self._pending_ide_drag == expected:
             self._pending_ide_drag = []
+            self._note_chat_file_drag(False)
 
     def _cursor_over_chat_drop(self) -> bool:
         """Companion 첨부는 ChatPanel 위에서만. note_file_drag와 같은 hit."""
@@ -3899,6 +3900,7 @@ class MainWindow(QMainWindow):
         채팅 밖이면 LMB가 아직 눌린 경우만 pending 유지(조기 drag_end).
         버튼을 뗐으면 pending을 비운다.
         """
+        self._note_chat_file_drag(False)
         if paths:
             clean = [str(p).strip() for p in paths if str(p).strip()]
         else:
