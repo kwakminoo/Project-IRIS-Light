@@ -127,7 +127,7 @@ body {{
 }}
 .turn[data-role="user"] .turn-body {{
   max-width: 100%;
-  margin-left: 24px;
+  margin-left: 0;
   margin-right: 12px;
   padding: 0;
   border-radius: 0;

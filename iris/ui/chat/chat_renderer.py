@@ -149,7 +149,7 @@ def render_user_message(text: str) -> str:
     # QTextDocument does not support rounded CSS bubbles. A quiet inset card
     # uses native paragraph margins instead of a dark, rectangular table.
     return (
-        '<div style="margin-left:24px;margin-right:12px;">'
+        '<div style="margin-left:0;margin-right:12px;">'
         f"{rendered}</div>"
     )
 

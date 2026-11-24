@@ -1,0 +1,29 @@
+---
+description: H1/ChatLog 사용자 메시지 flush left (margin-left 0, ≤12; 24px ChatLog parity 금지)
+globs:
+  - iris/ui/chat/**
+alwaysApply: false
+---
+
+# Chat user flush left (H1 + ChatLog)
+
+증상: Iris H1 채팅에서 사용자 입력이 가운데로 밀려 보인다.
+
+## 계약 (깨면 회귀)
+
+1. H1 CSS `.turn[data-role="user"] .turn-body`의 `margin-left`는 **0** (허용 상한 ≤12px).
+2. `render_user_message` 래퍼도 `margin-left:0;margin-right:12px` — 오른쪽 12px는 유지 가능.
+3. `_check_transcript_h1`는 `user_ml <= 12.0`으로 잠근다 (`== 24.0` 금지).
+
+## 금지
+
+- ChatLog / GPT 패리티를 이유로 `margin-left: 24px`를 다시 넣기
+- 자검 assert를 `== 24.0`으로 되돌리기
+
+## 검증
+
+```powershell
+.venv\Scripts\python.exe -m iris.ui.chat._check_transcript_h1
+```
+
+측정: probe `userMarginLeft` ≤ 12 (prefer 0), `userMarginRight` == 12.
