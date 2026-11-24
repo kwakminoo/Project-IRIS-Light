@@ -114,6 +114,10 @@ class _SideSlideProxy(QObject):
 
     def arm(self) -> None:
         self._ensure_effect()
+        # Prior arm may have set maxWidth=0; lift design bounds before measuring
+        # so a re-arm (or late layout) cannot lock target_w at 1px forever.
+        self._widget.setMinimumWidth(self._min_w)
+        self._widget.setMaximumWidth(self._max_w)
         self._target_w = max(self._widget.width(), self._min_w, 1)
         self.setProgress(0.0)
         self.setOpacity(0.0)
@@ -121,6 +125,8 @@ class _SideSlideProxy(QObject):
     def arm_exit(self) -> None:
         """퇴장 연출용 — 현재 폭·불투명에서 시작."""
         self._ensure_effect()
+        self._widget.setMinimumWidth(self._min_w)
+        self._widget.setMaximumWidth(self._max_w)
         self._target_w = max(self._widget.width(), self._min_w, 1)
         self.setProgress(1.0)
         self.setOpacity(1.0)
@@ -155,8 +161,9 @@ class _SideSlideProxy(QObject):
     opacity = pyqtProperty(float, getOpacity, setOpacity)
 
     def finish(self) -> None:
+        # Always restore design bounds captured at bind — never the collapsed 0/0.
         self._widget.setMinimumWidth(self._min_w)
-        self._widget.setMaximumWidth(self._max_w)
+        self._widget.setMaximumWidth(self._max_w if self._max_w > 0 else 16777215)
         self.setOpacity(1.0)
         self._widget.setGraphicsEffect(None)
         self._effect = None  # type: ignore[assignment]

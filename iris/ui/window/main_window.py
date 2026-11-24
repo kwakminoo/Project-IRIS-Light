@@ -1153,17 +1153,22 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(900, self._schedule_tts_runtime_bootstrap)
 
     def _arm_boot_intro(self) -> None:
-        """Bind intro chrome and hide opacity before first paint (anti-flash)."""
-        self._intro = StartupIntroAnimator(self)
-        self._intro.bind(
-            left=self._left_sidebar,
-            right=self._assistant_page.right_column,
-            orb=self._viz.particle_core(),
-            live=self._live_activity,
-            chat=self._chat,
-            waveform=self._chat.waveform,
-            chrome=[self._drag],
-        )
+        """Bind intro chrome and hide opacity before first paint (anti-flash).
+
+        Bind once. A second bind after prepare_hidden would capture collapsed
+        min/maxWidth=0 as restore targets and leave left/right permanently gone.
+        """
+        if self._intro is None:
+            self._intro = StartupIntroAnimator(self)
+            self._intro.bind(
+                left=self._left_sidebar,
+                right=self._assistant_page.right_column,
+                orb=self._viz.particle_core(),
+                live=self._live_activity,
+                chat=self._chat,
+                waveform=self._chat.waveform,
+                chrome=[self._drag],
+            )
         self._viz.particle_core().set_boot_reveal(0.0)
         self._viz.particle_core().set_boot_glitch(1.0)
         self._chat.waveform.set_reveal_progress(0.0)
