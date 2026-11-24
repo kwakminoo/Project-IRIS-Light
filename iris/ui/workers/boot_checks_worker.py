@@ -16,8 +16,8 @@ from iris.knowledge.iris_wiki import IrisWiki
 from iris.storage.email_accounts import EmailAccount, account_password
 from iris.system.android_emulator import prepare_emulator
 
-# IMAP 무제한 대기로 에뮬 알림이 안 뜨던 회귀 방지
-_EMAIL_CHECK_TIMEOUT_S = 25.0
+# IMAP 무제한 대기로 에뮬 알림이 안 뜨던 회귀 방지 — 유한 타임아웃 유지, 느린 서버용으로 50s
+_EMAIL_CHECK_TIMEOUT_S = 50.0
 
 
 class BootChecksWorker(QThread):

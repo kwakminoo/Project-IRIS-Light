@@ -72,3 +72,13 @@ class BootChecksOrderTests(TestCase):
         self.assertIn("ThreadPoolExecutor", src)
         self.assertIn("timeout", src)
 
+    def test_email_check_timeout_is_fifty_seconds(self) -> None:
+        # Boot IMAP wait: finite (emulator notify ordering) but long enough for slow servers.
+        self.assertEqual(bc._EMAIL_CHECK_TIMEOUT_S, 50.0)
+        src = inspect.getsource(bc.BootChecksWorker._check_email)
+        self.assertIn("fut.result(timeout=_EMAIL_CHECK_TIMEOUT_S)", src)
+        self.assertIn(
+            'f"이메일 확인 실패: {_EMAIL_CHECK_TIMEOUT_S:.0f}초 초과 (IMAP 응답 없음)"',
+            src,
+        )
+
