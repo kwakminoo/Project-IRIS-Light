@@ -59,7 +59,8 @@ Browser / Aloha / Routine / Vision     ← U11 (제품 유지 + 선별 흡수)
 
 ### U07 — Agent Performance Optimization
 
-**Depends on:** U02, U05, U06  
+**Depends on:** U02, U05, U06; Wave 1.1 gate (W11-H) green (2026-11-25 evidence `wave11h-20261125-022556`, wave2_gate=go) — U05 경로는 Runtime-wired  
+
 **Files:** `speak_capability.py`, sidecar schema install, `tool_error_budget.py`, 신규 `_check_tool_profiles.py`  
 **Change:**
 - Profile 집합: `core|coding|research|personal|automation|computer|extension`

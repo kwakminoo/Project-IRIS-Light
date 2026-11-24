@@ -17,6 +17,9 @@ from iris.system.control_surface import ActionSpec
 TOOL_OUTPUT_BEGIN = "BEGIN TOOL OUTPUT (untrusted input data)"
 TOOL_OUTPUT_END = "END TOOL OUTPUT"
 
+# Soft wait ceiling for process.manage wait / unbounded polls (not a sandbox).
+WAIT_MAX_TIMEOUT_S = 300.0
+
 # Markers already used by attachment / browser packing.
 _UNTRUSTED_MARKERS = (
     TOOL_OUTPUT_BEGIN,
@@ -105,6 +108,71 @@ def check_action_approval(
     if not bool(human_confirm(spec, args)):
         return PolicyDecision(False, "cancelled")
     return PolicyDecision(True)
+
+
+def process_start_action_spec() -> ActionSpec:
+    """Risk class for process.manage start — same bar as shell.run (not a sandbox)."""
+    return ActionSpec(
+        name="process.manage",
+        summary=(
+            "Start a Local Subprocess via process.manage (not a sandbox). "
+            "Arbitrary command; requires human confirm."
+        ),
+        risk="high",
+        confirm_required=True,
+    )
+
+
+def check_process_start_cwd(
+    cwd: str | Path | None,
+    *,
+    workspace_root: str | Path | None = None,
+) -> PolicyDecision:
+    """Allow cwd under workspace_root when set, else under user home (shell.run mirror)."""
+    home = Path.home().resolve()
+    text = str(cwd or "").strip()
+    if workspace_root is not None and str(workspace_root).strip():
+        root = Path(str(workspace_root).strip()).expanduser().resolve()
+        target = Path(text).expanduser().resolve() if text else root
+        decision = check_path_allowed(root, target, write=False)
+        if not decision.allowed:
+            return PolicyDecision(False, decision.reason or "cwd outside workspace root")
+        return PolicyDecision(True)
+
+    # Mirror iris_shell.resolve_shell_cwd: empty → home; else absolute under home.
+    if not text:
+        return PolicyDecision(True)
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        return PolicyDecision(False, "cwd must be absolute under home")
+    try:
+        resolved = path.resolve()
+    except OSError as exc:
+        return PolicyDecision(False, f"cwd resolve failed: {exc}")
+    decision = check_path_allowed(home, resolved, write=False)
+    if not decision.allowed:
+        return PolicyDecision(False, decision.reason or "cwd outside home")
+    return PolicyDecision(True)
+
+
+def cap_wait_timeout(
+    timeout_s: float | None,
+    *,
+    max_s: float | None = None,
+) -> float:
+    """Hard-cap wait polls. None / non-positive / huge → WAIT_MAX_TIMEOUT_S."""
+    ceiling = float(WAIT_MAX_TIMEOUT_S if max_s is None else max_s)
+    if ceiling <= 0:
+        ceiling = 300.0
+    if timeout_s is None:
+        return ceiling
+    try:
+        value = float(timeout_s)
+    except (TypeError, ValueError):
+        return ceiling
+    if value <= 0:
+        return ceiling
+    return min(value, ceiling)
 
 
 def is_untrusted_tool_payload(text: str) -> bool:

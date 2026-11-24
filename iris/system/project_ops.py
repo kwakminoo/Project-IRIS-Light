@@ -765,7 +765,8 @@ def build_iris_terminal_shell(shell_command: str, *, shell: str = "") -> str:
 def upsert_iris_run_task(project_root: str | Path, command: str) -> str:
     """`.vscode/tasks.json`에 Iris: Run 태스크 upsert. command는 셸에 그대로.
 
-    Cursor/VS Code: 기본 Build Task → Ctrl+Shift+B 로 통합 터미널 실행.
+    Explicit Task / vibe helpers only — ordinary ``project.run`` must NOT call this
+    (W11-C: Runtime owns runs; tasks.json is not the run path).
     """
     import json
 
@@ -834,6 +835,119 @@ def upsert_iris_run_task(project_root: str | Path, command: str) -> str:
     return str(tasks_path)
 
 
+def start_managed_run(
+    *,
+    argv: list[str] | None = None,
+    shell: str | None = None,
+    cwd: str | Path,
+    timeout_s: float | None = None,
+    session_id: str = "",
+    workspace_id: str = "",
+    owner: str = "",
+) -> str:
+    """Start a Local Subprocess run on the shared Execution Runtime. Returns run_id.
+
+    Trusted internal path — bypasses process.manage human_confirm (caller already gated).
+    Bare python/py argv and leading .py files bind via WorkspaceEnvironmentResolver
+    (allow_create=False). Shell-string mode is left untouched (Cursor-style).
+    """
+    from iris.system.execution_runtime import default_runtime
+    from iris.system.workspace_env import bind_execution_argv
+
+    bound = argv
+    if bound:
+        bound = bind_execution_argv(
+            list(bound),
+            project_root=cwd,
+            allow_create=False,
+        )
+    return default_runtime().start(
+        argv=bound,
+        shell=shell,
+        cwd=cwd,
+        timeout_s=timeout_s,
+        session_id=str(session_id or ""),
+        workspace_id=str(workspace_id or ""),
+        owner=str(owner or ""),
+    )
+
+
+_RUNTIME_TERMINAL = frozenset(
+    {"completed", "failed", "cancelled", "timed_out", "interrupted"}
+)
+
+
+def wait_managed_run(
+    run_id: str,
+    *,
+    timeout_s: float | None = None,
+    pump: Callable[[], None] | None = None,
+    poll_s: float = 0.15,
+):
+    """Wait for Runtime completion. Optional Qt pump so IDE bridge stays alive."""
+    import time
+
+    from iris.system.execution_runtime import default_runtime
+
+    rt = default_runtime()
+    if pump is None:
+        return rt.wait(run_id, timeout_s=timeout_s)
+    # Soft-poll so UI can processEvents; completion authority stays Runtime status.
+    deadline = None
+    if timeout_s is not None and float(timeout_s) > 0:
+        deadline = time.monotonic() + float(timeout_s)
+    while True:
+        rec = rt.status(run_id)
+        status = rec.status.value if hasattr(rec.status, "value") else str(rec.status)
+        if status in _RUNTIME_TERMINAL:
+            return rec
+        if deadline is not None and time.monotonic() >= deadline:
+            return rt.wait(run_id, timeout_s=0.05)
+        try:
+            pump()
+        except Exception:
+            pass
+        time.sleep(max(0.05, float(poll_s)))
+
+
+def result_from_runtime_record(
+    rec,
+    *,
+    argv: list[str],
+    cwd: str,
+    elapsed_sec: float,
+    stdout: str = "",
+    stderr: str = "",
+    via: str = "execution_runtime",
+) -> dict:
+    """Build project.run-shaped result from a ProcessRecord (completion authority).
+
+    ``ok`` is task success (exit 0 + completed), not mere process termination.
+    Non-zero exit / failed / cancelled / timed_out → ok False.
+    """
+    status = rec.status.value if hasattr(rec.status, "value") else str(rec.status)
+    timed_out = status == "timed_out"
+    code = rec.exit_code
+    ok = status == "completed" and code == 0 and not timed_out
+    return {
+        "run_id": rec.run_id,
+        "status": status,
+        "exit_code": code,
+        "stdout_ref": rec.stdout_ref,
+        "stderr_ref": rec.stderr_ref,
+        "confirmed": code is not None or timed_out,
+        "ok": ok,
+        "stdout": stdout,
+        "stderr": stderr,
+        "elapsed_sec": round(float(elapsed_sec), 3),
+        "argv": list(argv),
+        "cwd": cwd,
+        "timed_out": timed_out,
+        "via": via,
+        "pid": rec.pid,
+    }
+
+
 def wait_for_run_log(
     log_path: Path,
     *,
@@ -841,7 +955,7 @@ def wait_for_run_log(
     stable_sec: float = 0.7,
     pump: Callable[[], None] | None = None,
 ) -> dict:
-    """터미널 tee 로그가 생기고 잠시 안정될 때까지 대기 후 내용 반환."""
+    """Compat helper — last_run.log size-stable wait. Not completion authority for project.run."""
     import time
 
     deadline = time.monotonic() + max(1.0, float(timeout_sec))
@@ -908,9 +1022,6 @@ def iris_run_log_path(project_root: str | Path) -> Path:
     return d / "last_run.log"
 
 
-_PYTHON_LAUNCHER_NAMES = frozenset({"python", "python.exe", "py", "py.exe"})
-
-
 def find_project_venv_python(root: str | Path) -> Path | None:
     """bound project_root/.venv 인터프리터. 없으면 None (Iris repo .venv 강제 금지)."""
     from iris.system.workspace_env import find_venv_python
@@ -921,26 +1032,30 @@ def find_project_venv_python(root: str | Path) -> Path | None:
 def ensure_project_python(root: str | Path, *, create: bool = False) -> Path | None:
     """프로젝트 .venv python. create=False면 없을 때 None; create=True면 venv 생성 후 Path.
 
-    Find-only by default — never auto-create for run paths. Approved create uses allow_create.
+    Find-only by default — never auto-create for run paths.
+    create=True always makes project .venv (does not substitute uv/poetry discovery).
     """
     from iris.system.workspace_env import WorkspaceEnvironmentResolver, find_venv_python
 
-    found = find_venv_python(root)
+    root_p = Path(root).expanduser().resolve()
+    found = find_venv_python(root_p)
     if found is not None:
         return found
     if not create:
         return None
-    hit = WorkspaceEnvironmentResolver().resolve(project_root=root, allow_create=True)
-    return hit.python
+    return WorkspaceEnvironmentResolver()._create_venv(root_p)
 
 
 def _is_python_launcher_token(token: str) -> bool:
-    return Path(str(token)).name.lower() in _PYTHON_LAUNCHER_NAMES
+    from iris.system.workspace_env import is_python_launcher_token
+
+    return is_python_launcher_token(token)
 
 
 def _is_py_version_selector(token: str) -> bool:
-    # Windows `py -3` / `py -3.11` — venv python으로 바꿀 때 제거
-    return bool(re.fullmatch(r"-\d+(\.\d+)?", str(token).strip()))
+    from iris.system.workspace_env import is_py_version_selector
+
+    return is_py_version_selector(token)
 
 
 def bind_python_argv(
@@ -954,6 +1069,8 @@ def bind_python_argv(
     """argv[0]이 python/py 런처면 project interpreter로 교체. node 등은 그대로.
 
     기본 allow_create=False (find-only). 문자열 셸 모드(RunPlan.shell_command)에는 적용하지 않는다.
+    Basename launchers (incl. path/.../python.exe) rewrite via Resolver for project.run;
+    Runtime hot path uses bind_execution_argv (bare tokens / leading .py only).
     """
     if not argv:
         return []

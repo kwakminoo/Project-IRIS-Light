@@ -135,11 +135,28 @@ def register_shell_actions(window: Any, reg: ActionRegistry) -> None:
 
         chat = getattr(window, "_chat", None)
         block_id = take_shell_confirm_block(chat)
+        session_id = str(
+            (args or {}).get("session_id")
+            or getattr(window, "_conversation_id", "")
+            or ""
+        )
+        workspace_id = str((args or {}).get("workspace_id") or "")
+
+        def _stream(job_: ShellJob, on_chunk: Any) -> ShellOutcome:
+            return stream_shell_job(
+                job_,
+                on_chunk,
+                session_id=session_id,
+                workspace_id=workspace_id,
+                owner="shell.run",
+            )
+
         outcome, _bid = run_shell_live(
             chat=chat,
             on_ui=lambda fn: _call_on_ui(window, fn),
             job=job,
             block_id=block_id,
+            stream_fn=_stream,
         )
         payload = outcome_as_result(outcome)
         if outcome.ok:

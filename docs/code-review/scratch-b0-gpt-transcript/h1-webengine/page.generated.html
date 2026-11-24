@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>H1 WebEngine transcript</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 16px 20px 40px;
+    font: 15px/1.5 system-ui, sans-serif;
+    background: #0b1220; color: #e5e7eb;
+  }
+  .role { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #94a3b8; margin-bottom: 12px; }
+  .part { margin: 0 0 18px; padding: 14px; border: 1px solid #1f2937; border-radius: 12px; background: #111827; }
+  .label { font-size: 11px; color: #64748b; margin-bottom: 8px; text-transform: uppercase; letter-spacing: .06em; }
+  .md strong { color: #f8fafc; }
+  .writing-card {
+    min-height: 120px; padding: 12px; border-radius: 10px;
+    background: #0f172a; border: 1px dashed #334155; outline: none;
+  }
+  .writing-card:focus { border-color: #38bdf8; }
+  .w-title { font-weight: 700; margin-bottom: 8px; }
+  .w-body { margin: 0; white-space: pre-wrap; font: inherit; color: #cbd5e1; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  .tab {
+    padding: 6px 12px; border-radius: 8px; border: 1px solid #334155;
+    background: #1e293b; color: #e2e8f0; cursor: pointer;
+  }
+  .tab.on { background: #2563eb; border-color: #2563eb; }
+  .codepane textarea, .codepane iframe {
+    width: 100%; height: 220px; border: 0; border-radius: 8px;
+    background: #020617; color: #e2e8f0; box-sizing: border-box;
+  }
+  .codepane textarea { padding: 10px; font: 13px/1.4 ui-monospace, Consolas, monospace; resize: vertical; }
+  .app-frame { width: 100%; height: 180px; border: 0; border-radius: 8px; background: #020617; }
+</style>
+</head>
+<body>
+  <div class="role">assistant · b0-sample-turn-1</div>
+  <section class="part text" data-part="0"><div class="md">아래는 <strong>동일 샘플</strong>입니다. writing 초안, HTML code/preview, 인라인 계산기를 한 턴에 넣었습니다.</div></section>
+<section class="part writing" data-part="1"><div class="label">writing</div><div class="writing-card" contenteditable="true" id="writing-1"><div class="w-title">주간 메모 초안</div><pre class="w-body"># 주간 메모
+
+- [ ] GPT식 전사 bakeoff
+- [ ] typed MessagePart
+- [x] PyQt6 유지 결정
+
+편집해서 저장하면 다음 턴 컨텍스트에 반영된다고 가정.</pre></div></section>
+<section class="part code" data-part="2"><div class="label">code · badge.html · html</div><div class="tabs"><button type="button" class="tab on" data-tab="code" data-target="codepane-2">Code</button><button type="button" class="tab" data-tab="preview" data-target="codepane-2">Preview</button></div><div class="codepane" id="codepane-2"><textarea class="code-src" spellcheck="false">&lt;!DOCTYPE html&gt;
+&lt;html&gt;&lt;head&gt;&lt;style&gt;
+body{font:16px system-ui;margin:12px;background:#0f172a;color:#e2e8f0}
+.badge{display:inline-block;padding:8px 14px;border-radius:999px;background:linear-gradient(90deg,#22d3ee,#818cf8)}
+&lt;/style&gt;&lt;/head&gt;&lt;body&gt;
+&lt;span class=&quot;badge&quot;&gt;IRIS Preview OK&lt;/span&gt;
+&lt;p&gt;Code 탭과 Preview 탭을 전환하세요.&lt;/p&gt;
+&lt;/body&gt;&lt;/html&gt;</textarea><iframe class="code-preview" sandbox="allow-scripts allow-same-origin" srcdoc="&lt;!DOCTYPE html&gt;
+&lt;html&gt;&lt;head&gt;&lt;style&gt;
+body{font:16px system-ui;margin:12px;background:#0f172a;color:#e2e8f0}
+.badge{display:inline-block;padding:8px 14px;border-radius:999px;background:linear-gradient(90deg,#22d3ee,#818cf8)}
+&lt;/style&gt;&lt;/head&gt;&lt;body&gt;
+&lt;span class=&quot;badge&quot;&gt;IRIS Preview OK&lt;/span&gt;
+&lt;p&gt;Code 탭과 Preview 탭을 전환하세요.&lt;/p&gt;
+&lt;/body&gt;&lt;/html&gt;" hidden></iframe></div></section>
+<section class="part app" data-part="3"><div class="label">app · 인라인 계산기</div><iframe class="app-frame" id="app-3" sandbox="allow-scripts allow-same-origin" srcdoc="&lt;!DOCTYPE html&gt;
+&lt;html&gt;&lt;head&gt;&lt;style&gt;
+body{font:14px system-ui;margin:8px;background:#111827;color:#f9fafb}
+.row{display:flex;gap:6px;margin-top:8px}
+input,button{padding:8px;border-radius:8px;border:1px solid #374151;background:#1f2937;color:#fff}
+button{cursor:pointer;background:#2563eb;border:none}
+#out{margin-top:10px;font-size:20px}
+&lt;/style&gt;&lt;/head&gt;&lt;body&gt;
+&lt;div&gt;a + b&lt;/div&gt;
+&lt;div class=&quot;row&quot;&gt;
+&lt;input id=&quot;a&quot; type=&quot;number&quot; value=&quot;12&quot; style=&quot;width:72px&quot;&gt;
+&lt;input id=&quot;b&quot; type=&quot;number&quot; value=&quot;30&quot; style=&quot;width:72px&quot;&gt;
+&lt;button id=&quot;go&quot;&gt;계산&lt;/button&gt;
+&lt;/div&gt;
+&lt;div id=&quot;out&quot;&gt;= 42&lt;/div&gt;
+&lt;script&gt;
+const a=document.getElementById(&#x27;a&#x27;),b=document.getElementById(&#x27;b&#x27;),out=document.getElementById(&#x27;out&#x27;);
+document.getElementById(&#x27;go&#x27;).onclick=()=&gt;{out.textContent=&#x27;= &#x27;+(Number(a.value)+Number(b.value));};
+&lt;/script&gt;&lt;/body&gt;&lt;/html&gt;"></iframe></section>
+<script>
+document.querySelectorAll('.tabs').forEach(group => {
+  group.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.tab');
+    if (!btn) return;
+    const pane = document.getElementById(btn.dataset.target);
+    if (!pane) return;
+    group.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b === btn));
+    const code = pane.querySelector('.code-src');
+    const prev = pane.querySelector('.code-preview');
+    const showPreview = btn.dataset.tab === 'preview';
+    if (code) code.hidden = showPreview;
+    if (prev) {
+      prev.hidden = !showPreview;
+      if (showPreview && code) prev.srcdoc = code.value;
+    }
+  });
+});
+window.__h1_probe = function() {
+  const out = { writing: false, codePreview: false, calculator: false, detail: {} };
+  const w = document.querySelector('.writing-card');
+  if (w) {
+    const before = w.innerText;
+    w.focus();
+    w.innerText = before + '\n[h1-edit-ok]';
+    out.writing = w.innerText.includes('[h1-edit-ok]');
+    out.detail.writing = out.writing ? 'contenteditable accepted edit' : 'edit missing';
+  } else {
+    out.detail.writing = 'no writing card';
+  }
+  const previewBtn = document.querySelector('.tab[data-tab="preview"]');
+  const codeBtn = document.querySelector('.tab[data-tab="code"]');
+  const pane = document.querySelector('.codepane');
+  if (previewBtn && codeBtn && pane) {
+    previewBtn.click();
+    const prev = pane.querySelector('.code-preview');
+    const code = pane.querySelector('.code-src');
+    const previewShown = !!(prev && !prev.hidden && code && code.hidden);
+    codeBtn.click();
+    const codeShown = !!(code && !code.hidden && prev && prev.hidden);
+    out.codePreview = previewShown && codeShown;
+    out.detail.codePreview = out.codePreview
+      ? 'Code/Preview toggle ok'
+      : ('toggle failed previewShown=' + previewShown + ' codeShown=' + codeShown);
+  } else {
+    out.detail.codePreview = 'missing tabs';
+  }
+  const frame = document.querySelector('.app-frame');
+  let doc = null;
+  try { doc = frame && frame.contentDocument; } catch (e) { out.detail.calculator = String(e); }
+  if (doc) {
+    const a = doc.getElementById('a');
+    const b = doc.getElementById('b');
+    const go = doc.getElementById('go');
+    const result = doc.getElementById('out');
+    if (a && b && go && result) {
+      a.value = '5';
+      b.value = '7';
+      go.click();
+      out.calculator = (result.textContent || '').trim() === '= 12';
+      out.detail.calculator = result.textContent;
+    } else {
+      out.detail.calculator = 'calc controls missing';
+    }
+  } else if (!out.detail.calculator) {
+    out.detail.calculator = 'iframe contentDocument unavailable';
+  }
+  return out;
+};
+</script>
+</body>
+</html>

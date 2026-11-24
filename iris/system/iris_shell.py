@@ -2,24 +2,34 @@
 
 No visible console window. Output is for chat ToolShellBlock, not a terminal UI.
 IDE-bound project commands stay on project.run.
+
+Runs register on the shared Execution Runtime so process.manage can list/status them.
 """
 
 from __future__ import annotations
 
 import os
 import shlex
-import subprocess
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from iris.system.win_subprocess import no_window_kwargs
+from iris.system.execution_runtime import ProcessStatus, default_runtime
 
 _MAX_CAPTURE = 32_768
 _DEFAULT_TIMEOUT_S = 60.0
 _MAX_TIMEOUT_S = 300.0
+_TERMINAL = frozenset(
+    {
+        ProcessStatus.COMPLETED,
+        ProcessStatus.FAILED,
+        ProcessStatus.CANCELLED,
+        ProcessStatus.TIMED_OUT,
+        ProcessStatus.INTERRUPTED,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +50,10 @@ class ShellOutcome:
     via: str = "iris_shell"
     summary: str = ""
     truncated: bool = False
+    run_id: str = ""
+    status: str = ""
+    stdout_ref: str = ""
+    stderr_ref: str = ""
 
 
 def default_shell_cwd() -> Path:
@@ -91,50 +105,83 @@ def _shell_argv(command: str) -> list[str]:
     return ["sh", "-c", command]
 
 
-def _terminate_proc(proc: subprocess.Popen[str]) -> None:
-    try:
-        proc.terminate()
-    except OSError:
-        return
-    try:
-        proc.wait(timeout=1.5)
-    except subprocess.TimeoutExpired:
-        try:
-            proc.kill()
-        except OSError:
-            pass
-        try:
-            proc.wait(timeout=1.5)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-
-def run_shell_job(job: ShellJob) -> ShellOutcome:
-    """Run one command with CREATE_NO_WINDOW. Never opens a console window."""
-    argv = _shell_argv(job.command)
-    try:
-        completed = subprocess.run(
-            argv,
-            cwd=str(job.cwd),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=job.timeout_s,
-            **no_window_kwargs(),
-        )
-    except subprocess.TimeoutExpired as exc:
-        out, t1 = _clip(str(exc.stdout or ""))
-        err, t2 = _clip(str(exc.stderr or "") or f"timeout after {job.timeout_s}s")
+def _outcome_from_record(
+    *,
+    job: ShellJob,
+    run_id: str,
+    rec,
+    stdout: str,
+    stderr: str,
+    truncated: bool,
+    summary_override: str = "",
+) -> ShellOutcome:
+    status = rec.status.value if hasattr(rec.status, "value") else str(rec.status)
+    code = int(rec.exit_code) if rec.exit_code is not None else -1
+    if status == ProcessStatus.TIMED_OUT.value:
         return ShellOutcome(
             ok=False,
             command=job.command,
             cwd=str(job.cwd),
             exit_code=-1,
-            stdout=out,
-            stderr=err,
-            summary=f"timeout · {job.timeout_s}s",
-            truncated=t1 or t2,
+            stdout=stdout,
+            stderr=stderr or f"timeout after {job.timeout_s}s",
+            summary=summary_override or f"timeout · {job.timeout_s}s",
+            truncated=truncated,
+            run_id=run_id,
+            status=status,
+            stdout_ref=str(rec.stdout_ref or ""),
+            stderr_ref=str(rec.stderr_ref or ""),
+        )
+    if status in (ProcessStatus.CANCELLED.value, ProcessStatus.INTERRUPTED.value):
+        return ShellOutcome(
+            ok=False,
+            command=job.command,
+            cwd=str(job.cwd),
+            exit_code=-1,
+            stdout=stdout,
+            stderr=stderr,
+            summary=summary_override or "cancelled",
+            truncated=truncated,
+            run_id=run_id,
+            status=status,
+            stdout_ref=str(rec.stdout_ref or ""),
+            stderr_ref=str(rec.stderr_ref or ""),
+        )
+    ok = code == 0 and status == ProcessStatus.COMPLETED.value
+    return ShellOutcome(
+        ok=ok,
+        command=job.command,
+        cwd=str(job.cwd),
+        exit_code=code,
+        stdout=stdout,
+        stderr=stderr,
+        summary=summary_override or f"exit {code} · {'ok' if ok else 'fail'}",
+        truncated=truncated,
+        run_id=run_id,
+        status=status,
+        stdout_ref=str(rec.stdout_ref or ""),
+        stderr_ref=str(rec.stderr_ref or ""),
+    )
+
+
+def run_shell_job(
+    job: ShellJob,
+    *,
+    session_id: str = "",
+    workspace_id: str = "",
+    owner: str = "shell.run",
+) -> ShellOutcome:
+    """Run one command via Execution Runtime. Never opens a console window."""
+    rt = default_runtime()
+    argv = _shell_argv(job.command)
+    try:
+        run_id = rt.start(
+            argv=argv,
+            cwd=str(job.cwd),
+            timeout_s=job.timeout_s,
+            session_id=str(session_id or ""),
+            workspace_id=str(workspace_id or ""),
+            owner=str(owner or "shell.run"),
         )
     except OSError as exc:
         return ShellOutcome(
@@ -146,18 +193,27 @@ def run_shell_job(job: ShellJob) -> ShellOutcome:
             stderr=str(exc),
             summary="spawn failed",
         )
-    stdout, t_out = _clip(completed.stdout or "")
-    stderr, t_err = _clip(completed.stderr or "")
-    code = int(completed.returncode)
-    ok = code == 0
-    return ShellOutcome(
-        ok=ok,
-        command=job.command,
-        cwd=str(job.cwd),
-        exit_code=code,
+    except ValueError as exc:
+        return ShellOutcome(
+            ok=False,
+            command=job.command,
+            cwd=str(job.cwd),
+            exit_code=-1,
+            stdout="",
+            stderr=str(exc),
+            summary="spawn failed",
+        )
+    rec = rt.wait(run_id, timeout_s=float(job.timeout_s) + 5.0)
+    out = rt.read_output(run_id, stream="stdout")
+    err = rt.read_output(run_id, stream="stderr")
+    stdout, t_out = _clip(str(out.get("text") or ""))
+    stderr, t_err = _clip(str(err.get("text") or ""))
+    return _outcome_from_record(
+        job=job,
+        run_id=run_id,
+        rec=rec,
         stdout=stdout,
         stderr=stderr,
-        summary=f"exit {code} · {'ok' if ok else 'fail'}",
         truncated=t_out or t_err,
     )
 
@@ -167,27 +223,26 @@ def stream_shell_job(
     on_chunk: Callable[[str], None],
     *,
     cancel_event: threading.Event | None = None,
+    session_id: str = "",
+    workspace_id: str = "",
+    owner: str = "shell.run",
 ) -> ShellOutcome:
-    """Stream one command; paint live output via on_chunk.
+    """Stream one Runtime-backed command; paint live output via on_chunk.
 
-    Chunks are merged plain text (stderr redirected to stdout) for chat.
-    ``on_chunk`` may be called from a reader thread — keep it thread-safe
-    and non-blocking. Windows uses CREATE_NO_WINDOW / no_window_kwargs.
+    Chunks are stdout text for chat. ``on_chunk`` may be called from this thread.
     """
+    rt = default_runtime()
     argv = _shell_argv(job.command)
     try:
-        proc = subprocess.Popen(
-            argv,
+        run_id = rt.start(
+            argv=argv,
             cwd=str(job.cwd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            **no_window_kwargs(),
+            timeout_s=job.timeout_s,
+            session_id=str(session_id or ""),
+            workspace_id=str(workspace_id or ""),
+            owner=str(owner or "shell.run"),
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return ShellOutcome(
             ok=False,
             command=job.command,
@@ -201,90 +256,85 @@ def stream_shell_job(
     parts: list[str] = []
     parts_len = 0
     hit_limit = False
-    lock = threading.Lock()
+    offset = 0
+    deadline = time.monotonic() + float(job.timeout_s) + 5.0
+    cancelled = False
 
-    def reader() -> None:
-        nonlocal parts_len, hit_limit
-        stream = proc.stdout
-        if stream is None:
-            return
-        while True:
-            chunk = stream.readline()
-            if chunk == "":
-                break
-            emit = chunk
-            with lock:
-                if parts_len >= _MAX_CAPTURE:
-                    hit_limit = True
-                    continue
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            try:
+                rt.cancel(run_id)
+            except Exception:
+                pass
+            break
+        chunk_info = rt.read_output(run_id, stream="stdout", offset=offset)
+        text = str(chunk_info.get("text") or "")
+        if text:
+            emit = text
+            if parts_len >= _MAX_CAPTURE:
+                hit_limit = True
+            else:
                 room = _MAX_CAPTURE - parts_len
-                if len(chunk) > room:
-                    emit = chunk[:room]
+                if len(text) > room:
+                    emit = text[:room]
                     hit_limit = True
                 parts.append(emit)
                 parts_len += len(emit)
-            on_chunk(emit)
-
-    thread = threading.Thread(target=reader, name="iris-shell-stream", daemon=True)
-    thread.start()
-
-    deadline = time.monotonic() + float(job.timeout_s)
-    timed_out = False
-    cancelled = False
-    while proc.poll() is None:
-        if cancel_event is not None and cancel_event.is_set():
-            cancelled = True
-            _terminate_proc(proc)
+                on_chunk(emit)
+            offset = int(chunk_info.get("offset") or 0) + len(text)
+        rec = rt.status(run_id)
+        if rec.status in _TERMINAL:
             break
         if time.monotonic() >= deadline:
-            timed_out = True
-            _terminate_proc(proc)
+            # Soft wait timeout — Runtime may still mark timed_out via start timeout_s.
+            snap = rt.wait(run_id, timeout_s=0.05)
+            if snap.status not in _TERMINAL:
+                try:
+                    rt.cancel(run_id)
+                except Exception:
+                    pass
             break
         time.sleep(0.05)
 
-    try:
-        proc.wait(timeout=2.0)
-    except subprocess.TimeoutExpired:
-        _terminate_proc(proc)
-    thread.join(timeout=5.0)
-
-    with lock:
-        raw = "".join(parts)
+    rec = rt.status(run_id)
+    if cancelled and rec.status not in _TERMINAL:
+        try:
+            rec = rt.cancel(run_id)
+        except Exception:
+            pass
+    # Final stdout flush
+    final = rt.read_output(run_id, stream="stdout", offset=offset)
+    more = str(final.get("text") or "")
+    if more and parts_len < _MAX_CAPTURE:
+        room = _MAX_CAPTURE - parts_len
+        emit = more[:room]
+        if len(more) > room:
+            hit_limit = True
+        parts.append(emit)
+        parts_len += len(emit)
+        on_chunk(emit)
+    err = rt.read_output(run_id, stream="stderr")
+    raw = "".join(parts)
     stdout, clipped = _clip(raw)
+    stderr, _ = _clip(str(err.get("text") or ""))
     truncated = hit_limit or clipped
-    code = int(proc.returncode if proc.returncode is not None else -1)
-
     if cancelled:
-        return ShellOutcome(
-            ok=False,
-            command=job.command,
-            cwd=str(job.cwd),
-            exit_code=-1,
+        return _outcome_from_record(
+            job=job,
+            run_id=run_id,
+            rec=rec,
             stdout=stdout,
-            stderr="",
-            summary="cancelled",
+            stderr=stderr,
             truncated=truncated,
+            summary_override="cancelled",
         )
-    if timed_out:
-        return ShellOutcome(
-            ok=False,
-            command=job.command,
-            cwd=str(job.cwd),
-            exit_code=-1,
-            stdout=stdout,
-            stderr=f"timeout after {job.timeout_s}s",
-            summary=f"timeout · {job.timeout_s}s",
-            truncated=truncated,
-        )
-    ok = code == 0
-    return ShellOutcome(
-        ok=ok,
-        command=job.command,
-        cwd=str(job.cwd),
-        exit_code=code,
+    return _outcome_from_record(
+        job=job,
+        run_id=run_id,
+        rec=rec,
         stdout=stdout,
-        stderr="",
-        summary=f"exit {code} · {'ok' if ok else 'fail'}",
+        stderr=stderr,
         truncated=truncated,
     )
 
@@ -299,6 +349,10 @@ def outcome_as_result(outcome: ShellOutcome) -> dict:
         "via": outcome.via,
         "summary": outcome.summary,
         "truncated": outcome.truncated,
+        "run_id": outcome.run_id,
+        "status": outcome.status,
+        "stdout_ref": outcome.stdout_ref,
+        "stderr_ref": outcome.stderr_ref,
         "argv": shlex.split(outcome.command, posix=os.name != "nt")
         if outcome.command
         else [],

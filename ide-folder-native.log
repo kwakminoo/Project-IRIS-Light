@@ -1,0 +1,105 @@
+QtMsgType.QtInfoMsg: Using Qt multimedia with FFmpeg version 7.1.3 LGPL version 2.1 or later
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Could not parse stylesheet of object QPushButton(0x198f9b6e380)
+QtMsgType.QtWarningMsg: Could not parse stylesheet of object QPushButton(0x198f9b6dac0)
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Unknown property text-shadow
+QtMsgType.QtWarningMsg: Could not parse stylesheet of object QPushButton(0x198f9b6e380)
+QtMsgType.QtWarningMsg: Could not parse stylesheet of object QPushButton(0x198f9b6dac0)
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: QPainter::begin: A paint device can only be painted by one painter at a time.
+QtMsgType.QtWarningMsg: QPainter::translate: Painter not active
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:42.523Z root WARN Linked preference "workbench.colorCustomizations" not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:42.523Z root WARN Linked preference "editor.experimental.preferTreeSitter" not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:42.708Z SkillService WARN Skill in 'physics-3d-collision': SKILL.md file has no valid YAML frontmatter
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:42.778Z SkillService WARN Skill in 'tilemap-ruletile-createfromsegment': SKILL.md file has no valid YAML frontmatter
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:42.797Z SkillService WARN Skill in 'ui': SKILL.md file has no valid YAML frontmatter
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:42.799Z SkillService WARN Skill in 'ui-imgui': SKILL.md file has no valid YAML frontmatter
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:42.849Z root WARN Frontend dYe.onStart took longer than the expected maximum 100 milliseconds: 495.8 ms [2.553 s since frontend page start]
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.267Z root WARN Trying to register default override for non-existent preference: workbench.editor.restoreViewState
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.267Z root WARN Trying to register default override for non-existent preference: workbench.editor.restoreViewState
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.311Z root WARN 'cpp' language is remapped from 'source.cpp.embedded.macro' to 'source.cpp' scope
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.311Z root WARN a registered grammar configuration for 'cpp' language is overridden
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.324Z plugin-ext:PluginContributionHandler WARN [9436cab7-064e-4aa6-9f0c-0622276de261][vscode.html]: Language for 'source.smarty' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.325Z plugin-ext:PluginContributionHandler WARN [9436cab7-064e-4aa6-9f0c-0622276de261][vscode.markdown]: Language for 'meta.embedded.block.vs_net' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.325Z plugin-ext:PluginContributionHandler WARN [9436cab7-064e-4aa6-9f0c-0622276de261][vscode.markdown]: Language for 'meta.embedded.block.dosbatch' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.326Z plugin-ext:PluginContributionHandler WARN [9436cab7-064e-4aa6-9f0c-0622276de261][vscode.markdown]: Language for 'meta.embedded.block.coffee' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.326Z plugin-ext:PluginContributionHandler WARN [9436cab7-064e-4aa6-9f0c-0622276de261][vscode.markdown]: Language for 'meta.embedded.block.objc' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.326Z plugin-ext:PluginContributionHandler WARN [9436cab7-064e-4aa6-9f0c-0622276de261][vscode.markdown]: Language for 'meta.embedded.block.perl6' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.326Z plugin-ext:PluginContributionHandler WARN [9436cab7-064e-4aa6-9f0c-0622276de261][vscode.markdown]: Language for 'meta.embedded.block.scala' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.326Z root WARN 'php' language is remapped from 'source.php' to 'text.html.php' scope
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.326Z root WARN a registered grammar configuration for 'php' language is overridden
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:43.833Z root WARN Linked preference "debug.node.autoAttach" not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:44.047Z root WARN Frontend gp.initializeLayout took longer than the expected maximum 100 milliseconds: 1152.1 ms [3.748 s since frontend page start]
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:45.672Z root WARN Linked preference "workbench.colorCustomizations" not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:45.672Z root WARN Linked preference "editor.experimental.preferTreeSitter" not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:45.869Z SkillService WARN Skill in 'physics-3d-collision': SKILL.md file has no valid YAML frontmatter
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:45.941Z SkillService WARN Skill in 'tilemap-ruletile-createfromsegment': SKILL.md file has no valid YAML frontmatter
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:45.946Z SkillService WARN Skill in 'ui': SKILL.md file has no valid YAML frontmatter
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:45.949Z SkillService WARN Skill in 'ui-imgui': SKILL.md file has no valid YAML frontmatter
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.006Z root WARN Frontend dYe.onStart took longer than the expected maximum 100 milliseconds: 567.6 ms [1.352 s since frontend page start]
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.415Z root WARN Trying to register default override for non-existent preference: workbench.editor.restoreViewState
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.415Z root WARN Trying to register default override for non-existent preference: workbench.editor.restoreViewState
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.454Z root WARN 'cpp' language is remapped from 'source.cpp.embedded.macro' to 'source.cpp' scope
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.454Z root WARN a registered grammar configuration for 'cpp' language is overridden
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.468Z plugin-ext:PluginContributionHandler WARN [71e287d4-91a8-4ee7-878b-4efe53eb712f][vscode.html]: Language for 'source.smarty' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.470Z plugin-ext:PluginContributionHandler WARN [71e287d4-91a8-4ee7-878b-4efe53eb712f][vscode.markdown]: Language for 'meta.embedded.block.vs_net' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.470Z plugin-ext:PluginContributionHandler WARN [71e287d4-91a8-4ee7-878b-4efe53eb712f][vscode.markdown]: Language for 'meta.embedded.block.dosbatch' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.470Z plugin-ext:PluginContributionHandler WARN [71e287d4-91a8-4ee7-878b-4efe53eb712f][vscode.markdown]: Language for 'meta.embedded.block.coffee' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.470Z plugin-ext:PluginContributionHandler WARN [71e287d4-91a8-4ee7-878b-4efe53eb712f][vscode.markdown]: Language for 'meta.embedded.block.objc' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.470Z plugin-ext:PluginContributionHandler WARN [71e287d4-91a8-4ee7-878b-4efe53eb712f][vscode.markdown]: Language for 'meta.embedded.block.perl6' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.470Z plugin-ext:PluginContributionHandler WARN [71e287d4-91a8-4ee7-878b-4efe53eb712f][vscode.markdown]: Language for 'meta.embedded.block.scala' not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.471Z root WARN 'php' language is remapped from 'source.php' to 'text.html.php' scope
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.471Z root WARN a registered grammar configuration for 'php' language is overridden
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:46.954Z root WARN Linked preference "debug.node.autoAttach" not found.
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:47.131Z root WARN Frontend gp.initializeLayout took longer than the expected maximum 100 milliseconds: 1089.6 ms [2.474 s since frontend page start]
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:47.711Z plugin-manager WARN Unsupported activation events: onProfile, onProfile:github, please open an issue: https://github.com/eclipse-theia/theia/issues/new
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:47.712Z plugin-manager WARN Unsupported activation events: onOpenExternalUri:http, onOpenExternalUri:https, please open an issue: https://github.com/eclipse-theia/theia/issues/new
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:47.712Z plugin-manager WARN Unsupported activation events: onWalkthrough:nodejsWelcome, please open an issue: https://github.com/eclipse-theia/theia/issues/new
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:47.712Z plugin-manager WARN Unsupported activation events: onEditSession:file, please open an issue: https://github.com/eclipse-theia/theia/issues/new
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:47.712Z plugin-manager WARN Unsupported activation events: onTerminalShellIntegration:*, please open an issue: https://github.com/eclipse-theia/theia/issues/new
+QtMsgType.QtWarningMsg: 2026-11-09T08:53:47.712Z plugin-manager WARN Unsupported activation events: onTunnel, please open an issue: https://github.com/eclipse-theia/theia/issues/new

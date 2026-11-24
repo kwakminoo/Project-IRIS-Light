@@ -7,6 +7,7 @@ No MCP stdio / Control HTTP on the product speak path.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Literal, Mapping, Protocol
@@ -24,6 +25,77 @@ EMPTY_OBJECT_SCHEMA: dict[str, Any] = {
     "properties": {},
     "additionalProperties": False,
 }
+
+
+def _params(
+    properties: Mapping[str, Any],
+    *,
+    required: list[str] | None = None,
+    additional: bool = False,
+    any_of: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """JSON-Schema object body for SpeakGrant.parameters."""
+    out: dict[str, Any] = {
+        "type": "object",
+        "properties": dict(properties),
+        "additionalProperties": additional,
+    }
+    if required:
+        out["required"] = list(required)
+    if any_of:
+        out["anyOf"] = list(any_of)
+    return out
+
+
+# True zero-arg tools only. Anything else with EMPTY/None fails _check_tool_contract.
+EMPTY_SCHEMA_ACTIONS: frozenset[str] = frozenset(
+    {
+        "ping",
+        "get_catalog",
+        "get_state",
+        "settings.get",
+        "wiki.list_notes",
+        "email.list_accounts",
+        "calendar.list_events",
+        "chat.new_session",
+        "app.demo_ping",
+        "ide.enter_companion",
+        "ide.exit_companion",
+        "ide.diagnostics",
+        "learning.list",
+        "learning.start",
+        "learning.stop",
+        "learning.status",
+        "voice.mic_off",
+        "voice.mic_on",
+        "voice.toggle_mic",
+        "voice.mic_status",
+        "workspace.open_assistant",
+        "workspace.open_calendar",
+        "workspace.open_email",
+        "workspace.open_obsidian",
+        "workspace.open_mobile",
+        "browser.back",
+        "browser.forward",
+        "browser.reload",
+        "browser.open",
+        "browser.snapshot",
+        "calendar.refresh_holidays",
+        "calendar.status",
+        "email.open_compose",
+        "emulator.kill",
+        "emulator.launch",
+        "emulator.screenshot",
+        "emulator.status",
+        "emulator.wait_ready",
+        "emulator.ui_texts",
+        "emulator.logcat_tail",
+        "routine.list",
+        "project.list_files",
+        "project.list_parents",
+        "wiki.reload",
+    }
+)
 
 
 class ExecKind(str, Enum):
@@ -114,8 +186,9 @@ class IrisToolContract:
     risk: str = "low"
     confirm_required: bool = False
     profiles: frozenset[str] = field(default_factory=frozenset)
-    parallel_safe: bool = True
-    headless_supported: bool = True
+    # Conservative defaults — optimistic only when explicitly known.
+    parallel_safe: bool = False
+    headless_supported: bool = False
     side_effects: bool = False
     aliases: frozenset[str] = field(default_factory=frozenset)
 
@@ -161,6 +234,22 @@ def validate_tool_arguments(
     for key in required:
         if key not in payload:
             raise ValueError(f"missing required argument: {key}")
+    any_of = schema.get("anyOf")
+    if any_of is not None:
+        if not isinstance(any_of, (list, tuple)) or not any_of:
+            raise TypeError("schema anyOf must be a non-empty list")
+        matched = False
+        for branch in any_of:
+            if not isinstance(branch, Mapping):
+                continue
+            branch_req = branch.get("required") or []
+            if not isinstance(branch_req, (list, tuple)):
+                continue
+            if all(k in payload for k in branch_req):
+                matched = True
+                break
+        if not matched:
+            raise ValueError("arguments do not satisfy anyOf")
     additional = schema.get("additionalProperties", True)
     for key, value in payload.items():
         if key in props_map:
@@ -248,6 +337,8 @@ def iris_tool_contract_from_grant(
         else dict(EMPTY_OBJECT_SCHEMA)
     )
     surface_kind = grant.kind is ExecKind.SURFACE
+    # Conservative: never assume parallel-safe; headless only for non-UI, non-confirm.
+    headless = (not surface_kind) and (not confirm)
     return IrisToolContract(
         canonical_name=grant.action,
         control_action=grant.action,
@@ -256,9 +347,9 @@ def iris_tool_contract_from_grant(
         risk=risk,
         confirm_required=confirm,
         profiles=frozenset(),
-        parallel_safe=True,
-        headless_supported=not surface_kind,
-        side_effects=surface_kind,
+        parallel_safe=False,
+        headless_supported=headless,
+        side_effects=surface_kind or confirm,
         aliases=aliases_for_action(grant.action),
     )
 
@@ -295,8 +386,37 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant("get_state", ExecKind.SURFACE, "Current Iris UI/session state"),
         SpeakGrant("settings.get", ExecKind.SURFACE, "Get Ollama and Iris Agent version"),
         SpeakGrant("wiki.list_notes", ExecKind.PURE, "List Iris Wiki note paths"),
-        SpeakGrant("wiki.search", ExecKind.PURE, "Search Iris Wiki notes"),
-        SpeakGrant("wiki.write_user_note", ExecKind.SURFACE, "Save markdown into Iris Wiki"),
+        SpeakGrant(
+            "wiki.search",
+            ExecKind.PURE,
+            "Search Iris Wiki notes",
+            _params(
+                {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                },
+                required=["query"],
+            ),
+        ),
+        SpeakGrant(
+            "wiki.write_user_note",
+            ExecKind.SURFACE,
+            "Save markdown into Iris Wiki; title and content required",
+            _params(
+                {
+                    "title": {"type": "string"},
+                    "content": {"type": "string"},
+                    "body": {"type": "string"},
+                    "source_url": {"type": "string"},
+                    "url": {"type": "string"},
+                    "rel_path": {"type": "string"},
+                    "path": {"type": "string"},
+                    "open": {"type": "boolean"},
+                },
+                required=["title"],
+                any_of=[{"required": ["content"]}, {"required": ["body"]}],
+            ),
+        ),
         SpeakGrant("email.list_accounts", ExecKind.PURE, "List email accounts"),
         SpeakGrant("calendar.list_events", ExecKind.PURE, "List calendar events"),
         SpeakGrant(
@@ -304,94 +424,127 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
             ExecKind.SURFACE,
             "Read one absolute local text file within the configured read scope "
             "(optional start_line/end_line 1-based inclusive; max_bytes truncation)",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "path": {"type": "string"},
                     "start_line": {"type": "integer", "minimum": 1},
                     "end_line": {"type": "integer", "minimum": 1},
                     "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
                 },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
+                required=["path"],
+            ),
         ),
         SpeakGrant(
             "local.search_files",
             ExecKind.SURFACE,
             "Search under one absolute root; mode=name matches paths, mode=content matches file text",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "root": {"type": "string"},
                     "query": {"type": "string"},
                     "mode": {"type": "string", "enum": ["name", "content"]},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 200},
                 },
-                "required": ["root", "query"],
-                "additionalProperties": False,
-            },
+                required=["root", "query"],
+            ),
         ),
-        SpeakGrant("ide.open_folder", ExecKind.SURFACE, "Open a folder in the IDE Companion"),
+        SpeakGrant(
+            "ide.open_folder",
+            ExecKind.SURFACE,
+            "Open a folder in the IDE Companion",
+            _params(
+                {
+                    "path": {"type": "string"},
+                    "folder": {"type": "string"},
+                    "new_window": {"type": "boolean"},
+                },
+            ),
+        ),
         SpeakGrant(
             "project.open_similar",
             ExecKind.SURFACE,
             "Find and open a similar project folder",
+            _params(
+                {
+                    "query": {"type": "string"},
+                    "name": {"type": "string"},
+                    "new_window": {"type": "boolean"},
+                },
+            ),
         ),
         SpeakGrant(
             "attachment.copy_to",
             ExecKind.SURFACE,
             "Copy an attached original to an absolute destination",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "attachment_id": {"type": "string"},
                     "destination": {"type": "string"},
                     "overwrite": {"type": "boolean", "default": False},
                 },
-                "required": ["attachment_id", "destination"],
-                "additionalProperties": False,
-            },
+                required=["attachment_id", "destination"],
+            ),
         ),
         SpeakGrant(
             "attachment.move_to",
             ExecKind.SURFACE,
             "Move an attached original after explicit human confirmation",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "attachment_id": {"type": "string"},
                     "destination": {"type": "string"},
                     "overwrite": {"type": "boolean", "default": False},
                 },
-                "required": ["attachment_id", "destination"],
-                "additionalProperties": False,
-            },
+                required=["attachment_id", "destination"],
+            ),
         ),
         SpeakGrant(
             "project.import_attachment",
             ExecKind.SURFACE,
             "Copy an attached original into the bound IDE workspace",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "attachment_id": {"type": "string"},
                     "rel_path": {"type": "string"},
                 },
-                "required": ["attachment_id", "rel_path"],
-                "additionalProperties": False,
-            },
+                required=["attachment_id", "rel_path"],
+            ),
         ),
-        SpeakGrant("project.run", ExecKind.SURFACE, "Run in the bound IDE terminal"),
+        SpeakGrant(
+            "project.run",
+            ExecKind.SURFACE,
+            "Run in the bound IDE terminal. Required: command and/or file (rel_path). "
+            "Optional timeout_sec, open_browser, reveal_terminal. Home surface uses shell.run.",
+            _params(
+                {
+                    "command": {"type": "string"},
+                    "file": {"type": "string"},
+                    "rel_path": {"type": "string"},
+                    "cwd": {"type": "string"},
+                    "project_root": {"type": "string"},
+                    "timeout_sec": {"type": "number", "minimum": 1},
+                    "timeout_s": {"type": "number", "minimum": 1},
+                    "open_browser": {"type": "boolean"},
+                    "reveal_terminal": {"type": "boolean"},
+                    "session_id": {"type": "string"},
+                    "workspace_id": {"type": "string"},
+                },
+                any_of=[
+                    {"required": ["command"]},
+                    {"required": ["file"]},
+                    {"required": ["rel_path"]},
+                ],
+            ),
+        ),
         SpeakGrant(
             "process.manage",
             ExecKind.SURFACE,
-            "Manage Iris Execution Runtime processes (headless). "
+            "Manage Iris Execution Runtime Local Subprocess runs (headless; not a sandbox). "
             "Required: action (list|status|read_output|wait|cancel; optional start|write_stdin). "
-            "run_id required for status|read_output|wait|cancel|write_stdin.",
-            {
-                "type": "object",
-                "properties": {
+            "run_id required for status|read_output|wait|cancel|write_stdin. "
+            "session_id scopes ACL/list; start needs human confirm + cwd under workspace/home.",
+            _params(
+                {
                     "action": {
                         "type": "string",
                         "enum": [
@@ -417,40 +570,39 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
                     "timeout_s": {"type": "number", "minimum": 0},
                     "data": {"type": "string"},
                     "text": {"type": "string"},
+                    "session_id": {"type": "string"},
+                    "workspace_id": {"type": "string"},
+                    "workspace_root": {"type": "string"},
+                    "owner": {"type": "string"},
                 },
-                "required": ["action"],
-                "additionalProperties": False,
-            },
+                required=["action"],
+            ),
         ),
         SpeakGrant(
             "shell.run",
             ExecKind.SURFACE,
             "Run a home-surface shell command (no console window; chat Iris Shell card). "
             "Required: command. Optional cwd under user home. Use project.run in IDE Companion.",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "command": {"type": "string"},
                     "cwd": {"type": "string"},
                     "timeout_s": {"type": "number", "minimum": 1, "maximum": 300},
                 },
-                "required": ["command"],
-                "additionalProperties": False,
-            },
+                required=["command"],
+            ),
         ),
         SpeakGrant(
             "chat.search_past",
             ExecKind.SURFACE,
             "Search prior chat conversations (not wiki notes)",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "query": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 3},
                 },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
+                required=["query"],
+            ),
         ),
         SpeakGrant("chat.new_session", ExecKind.SURFACE, "Start a new chat session"),
         SpeakGrant(
@@ -462,14 +614,14 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
             "app.directory_list",
             ExecKind.PURE,
             "List or search App Host directory apps",
+            _params({"query": {"type": "string"}}),
         ),
         SpeakGrant(
             "note.export_pdf",
             ExecKind.SURFACE,
             "Create a verified PDF from content and/or source files.",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "content": {"type": "string", "description": "Text to write into the PDF."},
                     "sources": {
                         "type": "array",
@@ -481,9 +633,8 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
                         "description": "Optional output .pdf path.",
                     },
                 },
-                "anyOf": [{"required": ["content"]}, {"required": ["sources"]}],
-                "additionalProperties": False,
-            },
+                any_of=[{"required": ["content"]}, {"required": ["sources"]}],
+            ),
         ),
         SpeakGrant(
             "diagram.render",
@@ -491,9 +642,8 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
             "Render typed JSON IR to an interactive diagram in the Iris chat column "
             "(kind=architecture|workflow|sequence|dataflow|lifecycle). "
             "Do not write standalone HTML diagram files.",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "kind": {
                         "type": "string",
                         "enum": [
@@ -509,105 +659,522 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
                     },
                     "title": {"type": "string"},
                 },
-                "required": ["kind", "ir"],
-                "additionalProperties": False,
-            },
+                required=["kind", "ir"],
+            ),
         ),
-        SpeakGrant("email.list_messages", ExecKind.SURFACE, "Fetch inbox summaries; optional since, today, limit, cached, refresh"),
-        SpeakGrant("email.read_message", ExecKind.SURFACE, "Read and open an email message; uid required"),
-        SpeakGrant("extension.install_github", ExecKind.SURFACE, "Install a GitHub MCP or skill; url required, optional kind and scope"),
-        SpeakGrant("ide.debug", ExecKind.SURFACE, "Start an IDE debug session"),
-        SpeakGrant("ide.definition", ExecKind.SURFACE, "Find definition at the IDE cursor or path, line and column"),
-        SpeakGrant("ide.diagnostics", ExecKind.SURFACE, "Get IDE diagnostics; check reported before claiming clean"),
-        SpeakGrant("ide.edit", ExecKind.SURFACE, "Edit the open IDE buffer; op and text required"),
+        SpeakGrant(
+            "email.list_messages",
+            ExecKind.SURFACE,
+            "Fetch inbox summaries; optional since, today, limit, cached, refresh",
+            _params(
+                {
+                    "since": {"type": "string"},
+                    "today": {"type": "boolean"},
+                    "limit": {"type": "integer", "minimum": 1},
+                    "cached": {"type": "boolean"},
+                    "refresh": {"type": "boolean"},
+                    "account": {"type": "string"},
+                },
+            ),
+        ),
+        SpeakGrant(
+            "email.read_message",
+            ExecKind.SURFACE,
+            "Read and open an email message; uid required",
+            _params(
+                {
+                    "uid": {"type": "string"},
+                    "id": {"type": "string"},
+                    "account": {"type": "string"},
+                },
+                any_of=[{"required": ["uid"]}, {"required": ["id"]}],
+            ),
+        ),
+        SpeakGrant(
+            "extension.install_github",
+            ExecKind.SURFACE,
+            "Install a GitHub MCP or skill; url required, optional kind and scope",
+            _params(
+                {
+                    "url": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "scope": {"type": "string"},
+                },
+                required=["url"],
+            ),
+        ),
+        SpeakGrant(
+            "ide.debug",
+            ExecKind.SURFACE,
+            "Start an IDE debug session",
+            _params(
+                {
+                    "config": {"type": "string"},
+                    "name": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+            ),
+        ),
+        SpeakGrant(
+            "ide.definition",
+            ExecKind.SURFACE,
+            "Find definition at the IDE cursor or path, line and column",
+            _params(
+                {
+                    "path": {"type": "string"},
+                    "line": {"type": "integer", "minimum": 1},
+                    "column": {"type": "integer", "minimum": 1},
+                    "symbol": {"type": "string"},
+                },
+            ),
+        ),
+        SpeakGrant(
+            "ide.diagnostics",
+            ExecKind.SURFACE,
+            "Get IDE diagnostics; check reported before claiming clean",
+        ),
+        SpeakGrant(
+            "ide.edit",
+            ExecKind.SURFACE,
+            "Edit the open IDE buffer; op and text required",
+            _params(
+                {
+                    "op": {"type": "string"},
+                    "text": {"type": "string"},
+                    "path": {"type": "string"},
+                    "range": {"type": "object"},
+                },
+                required=["op", "text"],
+            ),
+        ),
         SpeakGrant("ide.enter_companion", ExecKind.SURFACE, "Enter IDE Companion"),
         SpeakGrant("ide.exit_companion", ExecKind.SURFACE, "Exit IDE Companion"),
-        SpeakGrant("ide.marketplace_install", ExecKind.SURFACE, "Install an Open VSX extension; publisher.name id required"),
-        SpeakGrant("ide.marketplace_search", ExecKind.SURFACE, "Search Open VSX extensions; query required"),
-        SpeakGrant("ide.project_log", ExecKind.SURFACE, "Record an IDE project plan, decision, issue or progress"),
-        SpeakGrant("ide.references", ExecKind.SURFACE, "Find references at the IDE cursor or path, line and column"),
-        SpeakGrant("ide.save", ExecKind.SURFACE, "Save the open IDE buffer; optional path or all=true"),
-        SpeakGrant("ide.symbols", ExecKind.SURFACE, "Get IDE document symbols; optional symbol filter and path"),
-        SpeakGrant("ide.task", ExecKind.SURFACE, "Run an IDE tasks.json task by name"),
+        SpeakGrant(
+            "ide.marketplace_install",
+            ExecKind.SURFACE,
+            "Install an Open VSX extension; publisher.name id required",
+            _params(
+                {"id": {"type": "string"}, "extension": {"type": "string"}},
+                any_of=[{"required": ["id"]}, {"required": ["extension"]}],
+            ),
+        ),
+        SpeakGrant(
+            "ide.marketplace_search",
+            ExecKind.SURFACE,
+            "Search Open VSX extensions; query required",
+            _params(
+                {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1},
+                },
+                required=["query"],
+            ),
+        ),
+        SpeakGrant(
+            "ide.project_log",
+            ExecKind.SURFACE,
+            "Record an IDE project plan, decision, issue or progress",
+            _params(
+                {
+                    "kind": {"type": "string"},
+                    "text": {"type": "string"},
+                    "message": {"type": "string"},
+                },
+            ),
+        ),
+        SpeakGrant(
+            "ide.references",
+            ExecKind.SURFACE,
+            "Find references at the IDE cursor or path, line and column",
+            _params(
+                {
+                    "path": {"type": "string"},
+                    "line": {"type": "integer", "minimum": 1},
+                    "column": {"type": "integer", "minimum": 1},
+                    "symbol": {"type": "string"},
+                },
+            ),
+        ),
+        SpeakGrant(
+            "ide.save",
+            ExecKind.SURFACE,
+            "Save the open IDE buffer; optional path or all=true",
+            _params(
+                {
+                    "path": {"type": "string"},
+                    "all": {"type": "boolean"},
+                },
+            ),
+        ),
+        SpeakGrant(
+            "ide.symbols",
+            ExecKind.SURFACE,
+            "Get IDE document symbols; optional symbol filter and path",
+            _params(
+                {
+                    "path": {"type": "string"},
+                    "query": {"type": "string"},
+                    "symbol": {"type": "string"},
+                },
+            ),
+        ),
+        SpeakGrant(
+            "ide.task",
+            ExecKind.SURFACE,
+            "Run an IDE tasks.json task by name",
+            _params(
+                {"name": {"type": "string"}, "task": {"type": "string"}},
+                any_of=[{"required": ["name"]}, {"required": ["task"]}],
+            ),
+        ),
         SpeakGrant("learning.list", ExecKind.SURFACE, "List learned computer-use workflows"),
-        SpeakGrant("learning.run", ExecKind.SURFACE, "Run a learned workflow; id and params from learning.list required"),
+        SpeakGrant(
+            "learning.run",
+            ExecKind.SURFACE,
+            "Run a learned workflow; id and params from learning.list required",
+            _params(
+                {
+                    "id": {"type": "string"},
+                    "params": {"type": "object"},
+                },
+                required=["id"],
+            ),
+        ),
         SpeakGrant("learning.start", ExecKind.SURFACE, "Start demonstration recording"),
         SpeakGrant("learning.stop", ExecKind.SURFACE, "Stop demonstration recording"),
-        SpeakGrant("project.rename_file", ExecKind.SURFACE, "Rename a bound-project file; path and new_path required"),
-        SpeakGrant("project.write_file", ExecKind.SURFACE, "Write a requested file in the bound IDE project; rel_path and content required"),
-        SpeakGrant("project.write_image_code", ExecKind.SURFACE, "Write code from an image; image path and rel_path required"),
-        SpeakGrant("routine.create", ExecKind.SURFACE, "Create a routine; task must be the user's exact request, kind and schedule required"),
-        SpeakGrant("routine.delete", ExecKind.SURFACE, "Delete a routine by id or name"),
+        SpeakGrant(
+            "project.rename_file",
+            ExecKind.SURFACE,
+            "Rename a bound-project file; path and new_path required",
+            _params(
+                {
+                    "path": {"type": "string"},
+                    "rel_path": {"type": "string"},
+                    "new_path": {"type": "string"},
+                    "project_root": {"type": "string"},
+                },
+                required=["new_path"],
+                any_of=[{"required": ["path"]}, {"required": ["rel_path"]}],
+            ),
+        ),
+        SpeakGrant(
+            "project.write_file",
+            ExecKind.SURFACE,
+            "Write a requested file in the bound IDE project; rel_path and content required",
+            _params(
+                {
+                    "rel_path": {"type": "string"},
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "project_root": {"type": "string"},
+                    "open": {"type": "boolean"},
+                },
+                required=["content"],
+                any_of=[{"required": ["rel_path"]}, {"required": ["path"]}],
+            ),
+        ),
+        SpeakGrant(
+            "project.write_image_code",
+            ExecKind.SURFACE,
+            "Write code from an image; image path and rel_path required",
+            _params(
+                {
+                    "image": {"type": "string"},
+                    "path": {"type": "string"},
+                    "rel_path": {"type": "string"},
+                    "project_root": {"type": "string"},
+                },
+                required=["rel_path"],
+                any_of=[{"required": ["image"]}, {"required": ["path"]}],
+            ),
+        ),
+        SpeakGrant(
+            "routine.create",
+            ExecKind.SURFACE,
+            "Create a routine; task must be the user's exact request, kind and schedule required",
+            _params(
+                {
+                    "task": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "schedule": {"type": "string"},
+                    "name": {"type": "string"},
+                },
+                required=["task", "kind", "schedule"],
+            ),
+        ),
+        SpeakGrant(
+            "routine.delete",
+            ExecKind.SURFACE,
+            "Delete a routine by id or name",
+            _params(
+                {"id": {"type": "string"}, "name": {"type": "string"}},
+                any_of=[{"required": ["id"]}, {"required": ["name"]}],
+            ),
+        ),
         SpeakGrant("routine.list", ExecKind.SURFACE, "List registered routines"),
-        SpeakGrant("routine.run", ExecKind.SURFACE, "Run a registered routine once"),
-        SpeakGrant("routine.update", ExecKind.SURFACE, "Update a routine by id or name; enabled=false pauses it"),
+        SpeakGrant(
+            "routine.run",
+            ExecKind.SURFACE,
+            "Run a registered routine once",
+            _params(
+                {"id": {"type": "string"}, "name": {"type": "string"}},
+                any_of=[{"required": ["id"]}, {"required": ["name"]}],
+            ),
+        ),
+        SpeakGrant(
+            "routine.update",
+            ExecKind.SURFACE,
+            "Update a routine by id or name; enabled=false pauses it",
+            _params(
+                {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "enabled": {"type": "boolean"},
+                    "task": {"type": "string"},
+                    "schedule": {"type": "string"},
+                },
+                any_of=[{"required": ["id"]}, {"required": ["name"]}],
+            ),
+        ),
         SpeakGrant("voice.mic_off", ExecKind.SURFACE, "Turn microphone listening off"),
         SpeakGrant("voice.mic_on", ExecKind.SURFACE, "Turn microphone listening on"),
         SpeakGrant("voice.toggle_mic", ExecKind.SURFACE, "Toggle microphone listening"),
-        SpeakGrant("wiki.import_content", ExecKind.SURFACE, "Import and summarize one PDF, URL or file into Iris Wiki; source required"),
-        SpeakGrant("wiki.import_pages", ExecKind.SURFACE, "Import and summarize multiple pages into Iris Wiki; sources required"),
+        SpeakGrant(
+            "wiki.import_content",
+            ExecKind.SURFACE,
+            "Import and summarize one PDF, URL or file into Iris Wiki; source required",
+            _params(
+                {
+                    "source": {"type": "string"},
+                    "path": {"type": "string"},
+                    "url": {"type": "string"},
+                    "attachment_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "rel_path": {"type": "string"},
+                    "open": {"type": "boolean"},
+                    "mode": {"type": "string"},
+                },
+                any_of=[
+                    {"required": ["source"]},
+                    {"required": ["path"]},
+                    {"required": ["url"]},
+                    {"required": ["attachment_id"]},
+                ],
+            ),
+        ),
+        SpeakGrant(
+            "wiki.import_pages",
+            ExecKind.SURFACE,
+            "Import and summarize multiple pages into Iris Wiki; sources required",
+            _params(
+                {
+                    "sources": {"type": "array", "items": {"type": "string"}},
+                    "mode": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1},
+                },
+                required=["sources"],
+            ),
+        ),
         SpeakGrant("workspace.open_assistant", ExecKind.SURFACE, "Open the assistant home workspace"),
         SpeakGrant("workspace.open_calendar", ExecKind.SURFACE, "Open the calendar workspace"),
         SpeakGrant("workspace.open_email", ExecKind.SURFACE, "Open the email inbox workspace"),
         SpeakGrant("workspace.open_obsidian", ExecKind.SURFACE, "Open the Iris Wiki workspace"),
         SpeakGrant("browser.back", ExecKind.SURFACE, "Go back in the visible Iris browser"),
-        SpeakGrant("browser.click", ExecKind.SURFACE, "Click a browser element by snapshot ref"),
-        SpeakGrant("browser.extract", ExecKind.SURFACE, "Extract visible page article or document text"),
+        SpeakGrant(
+            "browser.click",
+            ExecKind.SURFACE,
+            "Click a browser element by snapshot ref",
+            _params(
+                {
+                    "ref": {"type": "string"},
+                    "target": {"type": "object"},
+                    "source": {"type": "string"},
+                },
+                any_of=[{"required": ["ref"]}, {"required": ["target"]}],
+            ),
+        ),
+        SpeakGrant(
+            "browser.extract",
+            ExecKind.SURFACE,
+            "Extract visible page article or document text",
+            _params(
+                {
+                    "scope": {"type": "string", "enum": ["article", "document"]},
+                    "ref": {"type": "string"},
+                    "max_chars": {"type": "integer", "minimum": 1},
+                    "source": {"type": "string"},
+                },
+            ),
+        ),
         SpeakGrant("browser.forward", ExecKind.SURFACE, "Go forward in the visible Iris browser"),
-        SpeakGrant("browser.media", ExecKind.SURFACE, "Play, pause or resume visible browser media"),
-        SpeakGrant("browser.mini_player", ExecKind.SURFACE, "Toggle the visible browser mini player"),
-        SpeakGrant("browser.navigate", ExecKind.SURFACE, "Navigate the visible Iris browser; url required"),
+        SpeakGrant(
+            "browser.media",
+            ExecKind.SURFACE,
+            "Play, pause or resume visible browser media",
+            _params(
+                {
+                    "media": {"type": "string", "enum": ["play", "pause", "resume"]},
+                    "op": {"type": "string", "enum": ["play", "pause", "resume"]},
+                    "action": {"type": "string"},
+                    "source": {"type": "string"},
+                },
+                any_of=[{"required": ["media"]}, {"required": ["op"]}],
+            ),
+        ),
+        SpeakGrant(
+            "browser.mini_player",
+            ExecKind.SURFACE,
+            "Toggle the visible browser mini player",
+            _params(
+                {"on": {"type": "boolean"}, "source": {"type": "string"}},
+                required=["on"],
+            ),
+        ),
+        SpeakGrant(
+            "browser.navigate",
+            ExecKind.SURFACE,
+            "Navigate the visible Iris browser; url required",
+            _params(
+                {"url": {"type": "string"}, "source": {"type": "string"}},
+                required=["url"],
+            ),
+        ),
         SpeakGrant("browser.open", ExecKind.SURFACE, "Open the Iris browser workspace"),
         SpeakGrant("browser.reload", ExecKind.SURFACE, "Reload the visible Iris browser page"),
-        SpeakGrant("browser.scroll", ExecKind.SURFACE, "Scroll the visible Iris browser page or a ref"),
-        SpeakGrant("browser.search", ExecKind.SURFACE, "Search the web or YouTube in the visible Iris browser; query required"),
-        SpeakGrant("browser.snapshot", ExecKind.SURFACE, "Read the visible Iris browser controls and refs"),
-        SpeakGrant("browser.type", ExecKind.SURFACE, "Type into a browser element by ref; text required"),
+        SpeakGrant(
+            "browser.scroll",
+            ExecKind.SURFACE,
+            "Scroll the visible Iris browser page or a ref",
+            _params(
+                {
+                    "page": {"type": "string", "enum": ["up", "down"]},
+                    "dx": {"type": "integer"},
+                    "dy": {"type": "integer"},
+                    "delta_x": {"type": "integer"},
+                    "delta_y": {"type": "integer"},
+                    "ref": {"type": "string"},
+                    "source": {"type": "string"},
+                },
+            ),
+        ),
+        SpeakGrant(
+            "browser.search",
+            ExecKind.SURFACE,
+            "Search the web or YouTube in the visible Iris browser; query required",
+            _params(
+                {
+                    "query": {"type": "string"},
+                    "q": {"type": "string"},
+                    "engine": {"type": "string"},
+                    "play": {"type": "boolean"},
+                    "autoplay": {"type": "boolean"},
+                    "source": {"type": "string"},
+                },
+                any_of=[{"required": ["query"]}, {"required": ["q"]}],
+            ),
+        ),
+        SpeakGrant(
+            "browser.snapshot",
+            ExecKind.SURFACE,
+            "Read the visible Iris browser controls and refs",
+        ),
+        SpeakGrant(
+            "browser.type",
+            ExecKind.SURFACE,
+            "Type into a browser element by ref; text required",
+            _params(
+                {
+                    "ref": {"type": "string"},
+                    "text": {"type": "string"},
+                    "clear": {"type": "boolean"},
+                    "target": {"type": "object"},
+                    "source": {"type": "string"},
+                },
+                required=["ref", "text"],
+            ),
+        ),
         SpeakGrant(
             "web.run_search",
             ExecKind.SURFACE,
             "Search the web (Iris Control; model name web_search).",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "query": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 20},
                 },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
+                required=["query"],
+            ),
         ),
         SpeakGrant(
             "web.run_extract",
             ExecKind.SURFACE,
             "Extract page text from URLs (Iris Control; model name web_extract).",
-            {
-                "type": "object",
-                "properties": {
-                    "urls": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                    },
+            _params(
+                {
+                    "urls": {"type": "array", "items": {"type": "string"}},
                     "format": {"type": "string"},
                     "char_limit": {"type": "integer", "minimum": 1},
                 },
-                "required": ["urls"],
-                "additionalProperties": False,
-            },
+                required=["urls"],
+            ),
         ),
-        SpeakGrant("calendar.add_event", ExecKind.SURFACE, "Add a calendar event; title and start_at required"),
-        SpeakGrant("calendar.delete_event", ExecKind.SURFACE, "Delete a calendar event by id"),
-        SpeakGrant("calendar.refresh_holidays", ExecKind.SURFACE, "Refresh Korean public holidays"),
-        SpeakGrant("calendar.select_day", ExecKind.SURFACE, "Select calendar day by date"),
-        SpeakGrant("calendar.set_month", ExecKind.SURFACE, "Set calendar year and month"),
+        SpeakGrant(
+            "calendar.add_event",
+            ExecKind.SURFACE,
+            "Add a calendar event; title and start_at required",
+            _params(
+                {
+                    "title": {"type": "string"},
+                    "start_at": {"type": "string"},
+                    "end_at": {"type": "string"},
+                    "all_day": {"type": "boolean"},
+                    "remind_minutes": {"type": "integer"},
+                },
+                required=["title", "start_at"],
+            ),
+        ),
+        SpeakGrant(
+            "calendar.delete_event",
+            ExecKind.SURFACE,
+            "Delete a calendar event by id",
+            _params({"id": {"type": "string"}}, required=["id"]),
+        ),
+        SpeakGrant(
+            "calendar.refresh_holidays",
+            ExecKind.SURFACE,
+            "Refresh Korean public holidays",
+        ),
+        SpeakGrant(
+            "calendar.select_day",
+            ExecKind.SURFACE,
+            "Select calendar day by date",
+            _params(
+                {
+                    "date": {"type": "string"},
+                    "day": {"type": "string"},
+                },
+                any_of=[{"required": ["date"]}, {"required": ["day"]}],
+            ),
+        ),
+        SpeakGrant(
+            "calendar.set_month",
+            ExecKind.SURFACE,
+            "Set calendar year and month",
+            _params(
+                {
+                    "year": {"type": "integer", "minimum": 1970},
+                    "month": {"type": "integer", "minimum": 1, "maximum": 12},
+                },
+                required=["year", "month"],
+            ),
+        ),
         SpeakGrant("calendar.status", ExecKind.SURFACE, "Get selected calendar day and events"),
         SpeakGrant(
             "content.extract",
             ExecKind.SURFACE,
             "Extract text from a PDF, URL, file, or chat attachment_id; optional page_from/page_to",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "source": {"type": "string"},
                     "path": {"type": "string"},
                     "url": {"type": "string"},
@@ -615,46 +1182,152 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
                     "page_from": {"type": "integer", "minimum": 1},
                     "page_to": {"type": "integer", "minimum": 1},
                 },
-                "additionalProperties": True,
-            },
+                additional=True,
+            ),
         ),
         SpeakGrant("email.open_compose", ExecKind.SURFACE, "Open the email compose screen"),
-        SpeakGrant("email.send", ExecKind.SURFACE, "Send email; to, subject and body required; human confirmation required"),
-        SpeakGrant("emulator.input_text", ExecKind.SURFACE, "Type ASCII text into the Iris Android emulator"),
-        SpeakGrant("emulator.install", ExecKind.SURFACE, "Install an APK by absolute apk path"),
-        SpeakGrant("emulator.key", ExecKind.SURFACE, "Press an Android emulator key"),
+        SpeakGrant(
+            "email.send",
+            ExecKind.SURFACE,
+            "Send email; to, subject and body required; human confirmation required",
+            _params(
+                {
+                    "to": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "body": {"type": "string"},
+                    "cc": {"type": "string"},
+                    "bcc": {"type": "string"},
+                    "account": {"type": "string"},
+                },
+                required=["to", "subject", "body"],
+            ),
+        ),
+        SpeakGrant(
+            "emulator.input_text",
+            ExecKind.SURFACE,
+            "Type ASCII text into the Iris Android emulator",
+            _params({"text": {"type": "string"}}, required=["text"]),
+        ),
+        SpeakGrant(
+            "emulator.install",
+            ExecKind.SURFACE,
+            "Install an APK by absolute apk path",
+            _params(
+                {"apk": {"type": "string"}, "path": {"type": "string"}},
+                any_of=[{"required": ["apk"]}, {"required": ["path"]}],
+            ),
+        ),
+        SpeakGrant(
+            "emulator.key",
+            ExecKind.SURFACE,
+            "Press an Android emulator key",
+            _params(
+                {"key": {"type": "string"}, "keycode": {"type": "string"}},
+                any_of=[{"required": ["key"]}, {"required": ["keycode"]}],
+            ),
+        ),
         SpeakGrant("emulator.kill", ExecKind.SURFACE, "Stop the Iris Android emulator"),
         SpeakGrant("emulator.launch", ExecKind.SURFACE, "Start the Iris Android emulator"),
-        SpeakGrant("emulator.logcat_tail", ExecKind.SURFACE, "Read the Android emulator logcat tail"),
-        SpeakGrant("emulator.play_install", ExecKind.SURFACE, "Install an Android app through Play Store UI"),
-        SpeakGrant("emulator.screenshot", ExecKind.SURFACE, "Capture the Iris Android emulator screenshot"),
-        SpeakGrant("emulator.start_app", ExecKind.SURFACE, "Start an installed Android app by package"),
+        SpeakGrant(
+            "emulator.logcat_tail",
+            ExecKind.SURFACE,
+            "Read the Android emulator logcat tail",
+        ),
+        SpeakGrant(
+            "emulator.play_install",
+            ExecKind.SURFACE,
+            "Install an Android app through Play Store UI",
+            _params(
+                {
+                    "query": {"type": "string"},
+                    "package": {"type": "string"},
+                    "name": {"type": "string"},
+                },
+            ),
+        ),
+        SpeakGrant(
+            "emulator.screenshot",
+            ExecKind.SURFACE,
+            "Capture the Iris Android emulator screenshot",
+        ),
+        SpeakGrant(
+            "emulator.start_app",
+            ExecKind.SURFACE,
+            "Start an installed Android app by package",
+            _params({"package": {"type": "string"}}, required=["package"]),
+        ),
         SpeakGrant("emulator.status", ExecKind.SURFACE, "Get Iris Android emulator status"),
-        SpeakGrant("emulator.swipe", ExecKind.SURFACE, "Swipe the Android emulator between coordinates"),
-        SpeakGrant("emulator.tap", ExecKind.SURFACE, "Tap Android emulator coordinates"),
-        SpeakGrant("emulator.tap_text", ExecKind.SURFACE, "Tap visible text in the Android emulator"),
+        SpeakGrant(
+            "emulator.swipe",
+            ExecKind.SURFACE,
+            "Swipe the Android emulator between coordinates",
+            _params(
+                {
+                    "x1": {"type": "number"},
+                    "y1": {"type": "number"},
+                    "x2": {"type": "number"},
+                    "y2": {"type": "number"},
+                },
+                required=["x1", "y1", "x2", "y2"],
+            ),
+        ),
+        SpeakGrant(
+            "emulator.tap",
+            ExecKind.SURFACE,
+            "Tap Android emulator coordinates",
+            _params(
+                {"x": {"type": "number"}, "y": {"type": "number"}},
+                required=["x", "y"],
+            ),
+        ),
+        SpeakGrant(
+            "emulator.tap_text",
+            ExecKind.SURFACE,
+            "Tap visible text in the Android emulator",
+            _params({"text": {"type": "string"}}, required=["text"]),
+        ),
         SpeakGrant("emulator.ui_texts", ExecKind.SURFACE, "List visible Android emulator text"),
-        SpeakGrant("emulator.wait_ready", ExecKind.SURFACE, "Wait for the Android emulator to finish booting"),
+        SpeakGrant(
+            "emulator.wait_ready",
+            ExecKind.SURFACE,
+            "Wait for the Android emulator to finish booting",
+        ),
         SpeakGrant("learning.status", ExecKind.SURFACE, "Get demonstration recording status"),
-        SpeakGrant("project.create_scaffold", ExecKind.SURFACE, "Create and open a project folder; name and parent required"),
+        SpeakGrant(
+            "project.create_scaffold",
+            ExecKind.SURFACE,
+            "Create and open a project folder; name and parent required",
+            _params(
+                {
+                    "name": {"type": "string"},
+                    "parent": {"type": "string"},
+                    "template": {"type": "string"},
+                    "new_window": {"type": "boolean"},
+                },
+                required=["name", "parent"],
+            ),
+        ),
         SpeakGrant("project.list_files", ExecKind.SURFACE, "List files in the bound IDE project"),
-        SpeakGrant("project.list_parents", ExecKind.SURFACE, "List permitted parent folders for new projects"),
+        SpeakGrant(
+            "project.list_parents",
+            ExecKind.SURFACE,
+            "List permitted parent folders for new projects",
+        ),
         SpeakGrant(
             "project.read_file",
             ExecKind.SURFACE,
             "Read a UTF-8 file in the bound IDE project (rel_path or path; "
             "optional start_line/end_line/max_bytes)",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "rel_path": {"type": "string"},
                     "path": {"type": "string"},
                     "start_line": {"type": "integer", "minimum": 1},
                     "end_line": {"type": "integer", "minimum": 1},
                     "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
                 },
-                "additionalProperties": False,
-            },
+                any_of=[{"required": ["rel_path"]}, {"required": ["path"]}],
+            ),
         ),
         SpeakGrant(
             "project.apply_patch",
@@ -662,30 +1335,102 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
             "Apply a Hermes-style or unified-diff patch under the bound IDE project. "
             "Required: patch_text. Conflicts when expected context or disk fingerprint missing. "
             "Model name apply_patch (Hermes patch is an internal alias — not dual-exposed).",
-            {
-                "type": "object",
-                "properties": {
+            _params(
+                {
                     "patch_text": {"type": "string"},
                     "patch": {"type": "string"},
                     "project_root": {"type": "string"},
                     "expected_sha256": {"type": "object"},
                     "expected_mtime_ns": {"type": "object"},
                 },
-                "additionalProperties": False,
-            },
+                any_of=[{"required": ["patch_text"]}, {"required": ["patch"]}],
+            ),
         ),
-        SpeakGrant("wiki.move_notes", ExecKind.SURFACE, "Move Wiki notes by sources and dest_folder"),
-        SpeakGrant("wiki.open_note", ExecKind.SURFACE, "Open a Wiki note by rel_path"),
+        SpeakGrant(
+            "wiki.move_notes",
+            ExecKind.SURFACE,
+            "Move Wiki notes by sources and dest_folder",
+            _params(
+                {
+                    "sources": {"type": "array", "items": {"type": "string"}},
+                    "dest_folder": {"type": "string"},
+                    "from": {"type": "string"},
+                    "rel_path": {"type": "string"},
+                },
+                required=["dest_folder"],
+            ),
+        ),
+        SpeakGrant(
+            "wiki.open_note",
+            ExecKind.SURFACE,
+            "Open a Wiki note by rel_path",
+            _params(
+                {
+                    "rel_path": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+                any_of=[{"required": ["rel_path"]}, {"required": ["path"]}],
+            ),
+        ),
         SpeakGrant("wiki.reload", ExecKind.SURFACE, "Reload the Iris Wiki workspace"),
-        SpeakGrant("workspace.open_mobile", ExecKind.SURFACE, "Open the Iris Android emulator workspace"),
-        SpeakGrant("chat.exec_python", ExecKind.SURFACE, "Run Python for a chat plot and return chat_markdown"),
-        SpeakGrant("content.dump_lab_scripts", ExecKind.SURFACE, "Create lab scripts from an attached lecture PDF"),
-        SpeakGrant("ide.open_file", ExecKind.SURFACE, "Open an existing file in the bound IDE workspace"),
-        SpeakGrant("project.delete", ExecKind.SURFACE, "Delete a project folder or relative path after confirmation"),
+        SpeakGrant(
+            "workspace.open_mobile",
+            ExecKind.SURFACE,
+            "Open the Iris Android emulator workspace",
+        ),
+        SpeakGrant(
+            "chat.exec_python",
+            ExecKind.SURFACE,
+            "Run Python for a chat plot and return chat_markdown",
+            _params(
+                {
+                    "code": {"type": "string"},
+                    "source": {"type": "string"},
+                },
+                any_of=[{"required": ["code"]}, {"required": ["source"]}],
+            ),
+        ),
+        SpeakGrant(
+            "content.dump_lab_scripts",
+            ExecKind.SURFACE,
+            "Create lab scripts from an attached lecture PDF",
+            _params(
+                {
+                    "source": {"type": "string"},
+                    "path": {"type": "string"},
+                    "attachment_id": {"type": "string"},
+                    "project_root": {"type": "string"},
+                    "out_dir": {"type": "string"},
+                },
+            ),
+        ),
+        SpeakGrant(
+            "ide.open_file",
+            ExecKind.SURFACE,
+            "Open an existing file in the bound IDE workspace",
+            _params(
+                {
+                    "path": {"type": "string"},
+                    "rel_path": {"type": "string"},
+                },
+                any_of=[{"required": ["path"]}, {"required": ["rel_path"]}],
+            ),
+        ),
+        SpeakGrant(
+            "project.delete",
+            ExecKind.SURFACE,
+            "Delete a project folder or relative path after confirmation",
+            _params(
+                {
+                    "path": {"type": "string"},
+                    "rel_path": {"type": "string"},
+                    "project_root": {"type": "string"},
+                },
+            ),
+        ),
         SpeakGrant("voice.mic_status", ExecKind.SURFACE, "Read microphone listening status"),
     )
 )
-
 
 _BOUND_SURFACE: Any | None = None
 _ENGINE_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -847,18 +1592,53 @@ class _LiveActionCatalog:
         return list(reg.catalog())
 
 
-def _from_control(action: str, control_out: dict[str, Any]) -> ToolResult:
+def _from_control(
+    action: str,
+    control_out: dict[str, Any],
+    *,
+    duration_ms: int | None = None,
+) -> ToolResult:
     result = control_out.get("result")
     data = dict(result) if isinstance(result, dict) else {}
     data.setdefault("bridge", "none")
+    call_id = control_out.get("call_id")
+    call_id_s = str(call_id) if call_id is not None else None
+    status_raw = control_out.get("status")
+    status = str(status_raw) if status_raw is not None else None
+    tool_name = engine_tool_name(action)
     if control_out.get("ok"):
-        return ToolResult(ok=True, action=action, data=data, bridge="none")
+        return ToolResult(
+            ok=True,
+            action=action,
+            data=data,
+            bridge="none",
+            call_id=call_id_s,
+            tool_name=tool_name,
+            status=status or "success",
+            duration_ms=duration_ms,
+        )
+    err = str(control_out.get("error") or "control invoke failed")
+    error_code = control_out.get("error_code")
+    if error_code is None:
+        if status == "timeout":
+            error_code = "timeout"
+        elif status == "invalid":
+            error_code = "invalid"
+        else:
+            error_code = "failed"
     return ToolResult(
         ok=False,
         action=action,
         data=data,
-        error=str(control_out.get("error") or "control invoke failed"),
+        error=err,
         bridge="none",
+        call_id=call_id_s,
+        tool_name=tool_name,
+        status=status or "error",
+        error_code=str(error_code),
+        error_message=err,
+        retryable=status == "timeout",
+        duration_ms=duration_ms,
     )
 
 
@@ -973,8 +1753,13 @@ class SpeakTools:
                 error=f"not_allowed: {key}",
             )
         try:
-            # Declared grant.parameters only. Bare grants stay permissive until schemas land.
-            validate_tool_arguments(grant.parameters, payload)
+            # Bare parameters=None → EMPTY (zero-arg). Arg tools must declare schemas.
+            schema = (
+                grant.parameters
+                if grant.parameters is not None
+                else EMPTY_OBJECT_SCHEMA
+            )
+            validate_tool_arguments(schema, payload)
         except (TypeError, ValueError) as exc:
             return ToolResult(
                 ok=False,
@@ -1026,7 +1811,9 @@ class SpeakTools:
                     error=str(exc) or type(exc).__name__,
                 )
 
+        t0 = time.monotonic()
         control_out = self._surface.invoke(key, payload)
+        duration_ms = int((time.monotonic() - t0) * 1000)
         if control_out is None:
             return _requires_iris_ui(key)
         if not isinstance(control_out, dict):
@@ -1035,8 +1822,13 @@ class SpeakTools:
                 action=key,
                 data={},
                 error="invalid control result",
+                tool_name=engine_tool_name(key),
+                status="error",
+                error_code="invalid",
+                error_message="invalid control result",
+                duration_ms=duration_ms,
             )
-        return _from_control(key, control_out)
+        return _from_control(key, control_out, duration_ms=duration_ms)
 
 
 def default_speak_tools(*, registry: Any | None = None) -> SpeakTools:

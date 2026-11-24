@@ -17,10 +17,14 @@ from pathlib import Path
 from iris.system.control_surface import ActionRegistry, ActionSpec
 from iris.system.execution_policy import (
     TOOL_OUTPUT_BEGIN,
+    WAIT_MAX_TIMEOUT_S,
+    cap_wait_timeout,
     check_action_approval,
     check_path_allowed,
+    check_process_start_cwd,
     format_tool_payload_for_model,
     is_untrusted_tool_payload,
+    process_start_action_spec,
 )
 from iris.system.project_ops import resolve_under_root
 
@@ -132,10 +136,33 @@ def _check_untrusted_tool_payload() -> None:
     )
 
 
+def _check_process_start_policy() -> None:
+    spec = process_start_action_spec()
+    assert spec.confirm_required is True
+    assert spec.risk == "high"
+    denied = check_action_approval(spec, {"action": "start", "confirm": True}, None)
+    assert denied.allowed is False, denied
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        (root / "sub").mkdir()
+        ok = check_process_start_cwd(str(root / "sub"), workspace_root=root)
+        assert ok.allowed is True, ok
+        home_ok = check_process_start_cwd(str(Path.home()), workspace_root=None)
+        assert home_ok.allowed is True, home_ok
+        outside = check_process_start_cwd(str(root.parent), workspace_root=root)
+        assert outside.allowed is False, outside
+
+    assert cap_wait_timeout(None) == WAIT_MAX_TIMEOUT_S
+    assert cap_wait_timeout(9999) == WAIT_MAX_TIMEOUT_S
+    assert 1.0 <= cap_wait_timeout(1.5) <= WAIT_MAX_TIMEOUT_S
+
+
 def main() -> None:
     _check_confirm_blocks_self_approval()
     _check_path_denied_outside_root()
     _check_untrusted_tool_payload()
+    _check_process_start_policy()
     print("execution_policy ok")
 
 

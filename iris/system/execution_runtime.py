@@ -22,12 +22,30 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
+from iris.system.execution_policy import (
+    WAIT_MAX_TIMEOUT_S,
+    cap_wait_timeout,
+    check_action_approval,
+    check_process_start_cwd,
+    process_start_action_spec,
+)
+from iris.system.run_env import build_child_env
 from iris.system.win_subprocess import no_window_kwargs
 
 MANAGE_ACTIONS = frozenset(
     {
         "start",
         "list",
+        "status",
+        "read_output",
+        "wait",
+        "cancel",
+        "write_stdin",
+    }
+)
+
+_SESSION_SCOPED_ACTIONS = frozenset(
+    {
         "status",
         "read_output",
         "wait",
@@ -74,6 +92,9 @@ class ProcessRecord:
     error: str = ""
     started_at: float = 0.0
     finished_at: float | None = None
+    session_id: str = ""
+    workspace_id: str = ""
+    owner: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -126,6 +147,13 @@ def _pid_still_alive(pid: int) -> bool:
 
 
 def _kill_process_tree(proc: subprocess.Popen[Any]) -> None:
+    """Kill the started process and its descendants when possible.
+
+    Windows: ``taskkill /T /F`` walks the process tree (verified by cancel child test).
+    Unix: children are started in a new session (``start_new_session=True``); we
+    ``killpg`` the group, then fall back to terminate/kill on the Popen handle.
+    Not a sandbox — best-effort tree cleanup only.
+    """
     if proc.poll() is not None:
         return
     pid = int(proc.pid or 0)
@@ -155,6 +183,36 @@ def _kill_process_tree(proc: subprocess.Popen[Any]) -> None:
             except Exception:
                 pass
         return
+    # Unix: prefer process-group kill (paired with start_new_session on Popen).
+    if pid > 0:
+        try:
+            import signal
+
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError, AttributeError):
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=2)
+            return
+        except Exception:
+            pass
+        try:
+            import signal
+
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError, AttributeError):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+        return
     try:
         proc.terminate()
         proc.wait(timeout=2)
@@ -175,6 +233,12 @@ class _RunSlot:
         self._pump: threading.Thread | None = None
 
 
+# Retention defaults — not a sandbox quota; keeps runs_root from growing forever.
+DEFAULT_MAX_RUNS = 200
+DEFAULT_MAX_AGE_S = 7 * 24 * 3600.0
+DEFAULT_MAX_BYTES = 512 * 1024 * 1024
+
+
 class ProcessRegistry:
     """In-process registry of Local Subprocess runs."""
 
@@ -184,13 +248,25 @@ class ProcessRegistry:
         runs_root: Path | None = None,
         project_root: str | Path | None = None,
         backend: BackendKind = BackendKind.LOCAL_SUBPROCESS,
+        max_runs: int = DEFAULT_MAX_RUNS,
+        max_age_s: float = DEFAULT_MAX_AGE_S,
+        max_bytes: int = DEFAULT_MAX_BYTES,
     ) -> None:
         self.backend = backend
         self.runs_root = Path(runs_root) if runs_root else default_runs_root(project_root=project_root)
         self.runs_root.mkdir(parents=True, exist_ok=True)
+        self.max_runs = max(1, int(max_runs))
+        self.max_age_s = max(1.0, float(max_age_s))
+        self.max_bytes = max(1024, int(max_bytes))
         self._slots: dict[str, _RunSlot] = {}
         self._lock = threading.RLock()
         self._latest_run_id: str | None = None
+        self._human_confirm: Any = None
+        self._prune_runs_root()
+
+    def set_human_confirm(self, fn: Any) -> None:
+        """Wire Control Surface human_confirm into manage start approval."""
+        self._human_confirm = fn
 
     def start(
         self,
@@ -201,6 +277,9 @@ class ProcessRegistry:
         env_id: str = "",
         env: Mapping[str, str] | None = None,
         timeout_s: float | None = None,
+        session_id: str = "",
+        workspace_id: str = "",
+        owner: str = "",
     ) -> str:
         if self.backend != BackendKind.LOCAL_SUBPROCESS:
             raise NotImplementedError(f"backend {self.backend.value} unsupported")
@@ -212,6 +291,7 @@ class ProcessRegistry:
         if not work.is_dir():
             raise ValueError(f"cwd is not a directory: {work}")
 
+        self._prune_runs_root()
         run_id = uuid.uuid4().hex
         run_dir = self.runs_root / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -241,17 +321,21 @@ class ProcessRegistry:
             argv=list(cmd_argv),
             shell=shell_cmd,
             started_at=time.time(),
+            session_id=str(session_id or ""),
+            workspace_id=str(workspace_id or ""),
+            owner=str(owner or ""),
         )
         slot = _RunSlot(rec, run_dir)
         with self._lock:
             self._slots[run_id] = slot
             self._latest_run_id = run_id
 
-        popen_env = os.environ.copy()
+        extra: dict[str, str] = {}
         if env:
-            popen_env.update({str(k): str(v) for k, v in env.items()})
+            extra.update({str(k): str(v) for k, v in env.items()})
         if env_id:
-            popen_env["IRIS_ENVIRONMENT_ID"] = str(env_id)
+            extra["IRIS_ENVIRONMENT_ID"] = str(env_id)
+        popen_env = build_child_env(None, extra or None)
 
         kw: dict[str, Any] = {
             "cwd": str(work),
@@ -265,6 +349,9 @@ class ProcessRegistry:
             "bufsize": 1,
         }
         kw.update(no_window_kwargs())
+        # Unix: new session so cancel can killpg the whole tree (see _kill_process_tree).
+        if sys.platform != "win32":
+            kw["start_new_session"] = True
 
         try:
             if use_argv:
@@ -332,12 +419,11 @@ class ProcessRegistry:
                 if slot.record.status == ProcessStatus.RUNNING:
                     slot.record.exit_code = int(code) if code is not None else None
                     slot.record.finished_at = time.time()
+                    # Process exited ≠ task success: non-zero → FAILED for callers.
                     if code == 0:
                         slot.record.status = ProcessStatus.COMPLETED
                     else:
-                        # Non-zero still "completed" for wait semantics (real exit_code).
-                        # failed reserved for spawn/OS errors; keep completed + exit_code.
-                        slot.record.status = ProcessStatus.COMPLETED
+                        slot.record.status = ProcessStatus.FAILED
                 elif slot.record.status in (
                     ProcessStatus.CANCELLED,
                     ProcessStatus.INTERRUPTED,
@@ -362,10 +448,14 @@ class ProcessRegistry:
         with slot.lock:
             return ProcessRecord(**{**slot.record.as_dict(), "status": ProcessStatus(slot.record.status)})
 
-    def list_runs(self) -> list[ProcessRecord]:
+    def list_runs(self, *, session_id: str | None = None) -> list[ProcessRecord]:
         with self._lock:
             ids = list(self._slots.keys())
-        return [self.status(i) for i in ids]
+        runs = [self.status(i) for i in ids]
+        sid = str(session_id or "").strip()
+        if sid:
+            runs = [r for r in runs if str(r.session_id or "") == sid]
+        return runs
 
     def read_output(
         self,
@@ -395,7 +485,9 @@ class ProcessRegistry:
 
     def wait(self, run_id: str, *, timeout_s: float | None = None) -> ProcessRecord:
         slot = self._require(run_id)
-        ok = slot.done.wait(timeout=None if timeout_s is None else float(timeout_s))
+        # Hard cap — None / unbounded no longer waits forever (cancel still available).
+        capped = cap_wait_timeout(timeout_s)
+        ok = slot.done.wait(timeout=capped)
         if not ok:
             with slot.lock:
                 if slot.record.status == ProcessStatus.RUNNING:
@@ -445,6 +537,20 @@ class ProcessRegistry:
             "error": "write_stdin not supported on local_subprocess (stdin closed)",
         }
 
+    def _session_acl_allows(self, record: ProcessRecord, raw: Mapping[str, Any]) -> bool:
+        """Matching session_id, or explicit owner token; legacy unscoped runs allowed."""
+        rec_sid = str(record.session_id or "").strip()
+        rec_owner = str(record.owner or "").strip()
+        if not rec_sid and not rec_owner:
+            return True
+        caller_sid = str(raw.get("session_id") or "").strip()
+        caller_owner = str(raw.get("owner") or raw.get("owner_token") or "").strip()
+        if rec_sid and caller_sid == rec_sid:
+            return True
+        if rec_owner and caller_owner and caller_owner == rec_owner:
+            return True
+        return False
+
     def manage(self, args: Mapping[str, Any] | None) -> dict[str, Any]:
         """process.manage / process_manage dispatcher."""
         raw = dict(args or {})
@@ -458,17 +564,62 @@ class ProcessRegistry:
             }
         try:
             if action == "list":
-                runs = [r.as_dict() for r in self.list_runs()]
+                sid = str(raw.get("session_id") or "").strip() or None
+                runs = [r.as_dict() for r in self.list_runs(session_id=sid)]
                 return {"ok": True, "action": "process.manage", "data": {"runs": runs}}
             if action == "start":
+                approval = check_action_approval(
+                    process_start_action_spec(),
+                    dict(raw),
+                    self._human_confirm,
+                )
+                if not approval.allowed:
+                    return {
+                        "ok": False,
+                        "action": "process.manage",
+                        "error": approval.reason or "human confirm required",
+                        "data": {"confirm_required": True, "risk": "high"},
+                    }
+                ws_root = raw.get("workspace_root")
+                cwd_decision = check_process_start_cwd(
+                    raw.get("cwd"),
+                    workspace_root=ws_root if ws_root not in (None, "") else None,
+                )
+                if not cwd_decision.allowed:
+                    return {
+                        "ok": False,
+                        "action": "process.manage",
+                        "error": cwd_decision.reason or "cwd denied",
+                        "data": {},
+                    }
+                cwd_raw = raw.get("cwd")
+                if not str(cwd_raw or "").strip():
+                    if ws_root not in (None, ""):
+                        cwd_raw = str(Path(str(ws_root)).expanduser().resolve())
+                    else:
+                        cwd_raw = str(Path.home().resolve())
                 argv = raw.get("argv")
                 shell = raw.get("shell") or raw.get("command")
+                bound_argv: list[str] | None = list(argv) if isinstance(argv, list) else None
+                # Bare python/py or leading .py → WorkspaceEnvironmentResolver (no create).
+                # Shell strings stay as-is; ACL / env scrub below unchanged.
+                if bound_argv:
+                    from iris.system.workspace_env import bind_execution_argv
+
+                    bound_argv = bind_execution_argv(
+                        bound_argv,
+                        project_root=cwd_raw,
+                        allow_create=False,
+                    )
                 run_id = self.start(
-                    argv=list(argv) if isinstance(argv, list) else None,
+                    argv=bound_argv,
                     shell=str(shell) if shell and not argv else None,
-                    cwd=raw.get("cwd"),
+                    cwd=cwd_raw,
                     env_id=str(raw.get("environment_id") or raw.get("env_id") or ""),
                     timeout_s=float(raw["timeout_s"]) if raw.get("timeout_s") is not None else None,
+                    session_id=str(raw.get("session_id") or ""),
+                    workspace_id=str(raw.get("workspace_id") or ""),
+                    owner=str(raw.get("owner") or ""),
                 )
                 return {
                     "ok": True,
@@ -483,6 +634,22 @@ class ProcessRegistry:
                     "error": "run_id required",
                     "data": {},
                 }
+            if action in _SESSION_SCOPED_ACTIONS:
+                slot = self._require(run_id)
+                with slot.lock:
+                    rec_snap = ProcessRecord(
+                        **{
+                            **slot.record.as_dict(),
+                            "status": ProcessStatus(slot.record.status),
+                        }
+                    )
+                if not self._session_acl_allows(rec_snap, raw):
+                    return {
+                        "ok": False,
+                        "action": "process.manage",
+                        "error": "session denied",
+                        "data": {"run_id": run_id},
+                    }
             if action == "status":
                 return {
                     "ok": True,
@@ -552,13 +719,95 @@ class ProcessRegistry:
         except OSError:
             pass
 
+    def _dir_bytes(self, path: Path) -> int:
+        total = 0
+        try:
+            for root, _dirs, files in os.walk(path):
+                for name in files:
+                    try:
+                        total += (Path(root) / name).stat().st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return total
+
+    def _prune_runs_root(self) -> None:
+        """Drop oldest run dirs under max_runs / max_age_s / max_bytes.
+
+        Skips still-active (non-terminal) slots so a live pump is not deleted mid-run.
+        Terminal slots may lose their on-disk dir; in-memory status remains.
+        """
+        root = self.runs_root
+        if not root.is_dir():
+            return
+        with self._lock:
+            active = {
+                rid
+                for rid, slot in self._slots.items()
+                if str(slot.record.status.value if hasattr(slot.record.status, "value") else slot.record.status)
+                not in _TERMINAL
+            }
+        now = time.time()
+        entries: list[tuple[float, Path, int]] = []
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            return
+        for path in children:
+            if not path.is_dir():
+                continue
+            name = path.name
+            if name in active:
+                continue
+            # Prefer meta-bearing run dirs; still allow oversized pads without meta.
+            has_meta = (path / "meta.json").is_file()
+            if not has_meta and len(name) < 8:
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            age = now - mtime
+            size = self._dir_bytes(path)
+            if age > self.max_age_s:
+                try:
+                    shutil.rmtree(path, ignore_errors=True)
+                except OSError:
+                    pass
+                continue
+            entries.append((mtime, path, size))
+        entries.sort(key=lambda t: t[0])  # oldest first
+        # Leave room for a soon-to-be-created run dir (start calls prune first).
+        while len(entries) >= self.max_runs:
+            _mtime, path, _sz = entries.pop(0)
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+            except OSError:
+                pass
+        total = sum(sz for _m, _p, sz in entries)
+        while entries and total > self.max_bytes:
+            _mtime, path, sz = entries.pop(0)
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+            except OSError:
+                pass
+            total -= sz
+
     def _refresh_last_run_compat(self, slot: _RunSlot) -> None:
-        """Compat view of latest run only — not completion authority for new API."""
+        """Compat view of *latest* run only — not completion authority for new API.
+
+        Always writes ``run_id=…`` header. Late finish of an older run must not
+        overwrite a newer run's compat content.
+        """
         try:
             with slot.lock:
                 rec = ProcessRecord(
                     **{**slot.record.as_dict(), "status": ProcessStatus(slot.record.status)}
                 )
+            with self._lock:
+                if self._latest_run_id is not None and rec.run_id != self._latest_run_id:
+                    return
             compat = self.runs_root / "last_run.log"
             parts: list[str] = [f"run_id={rec.run_id} status={rec.status.value}\n"]
             for path in (Path(rec.stdout_ref), Path(rec.stderr_ref)):
@@ -566,7 +815,12 @@ class ProcessRegistry:
                     parts.append(path.read_text(encoding="utf-8", errors="replace"))
             if rec.exit_code is not None:
                 parts.append(f"\nIRIS_EXIT:{rec.exit_code}\n")
-            compat.write_text("".join(parts), encoding="utf-8", errors="replace")
+            text = "".join(parts)
+            with self._lock:
+                # Re-check: a newer start may have won between read and write.
+                if self._latest_run_id is not None and rec.run_id != self._latest_run_id:
+                    return
+                compat.write_text(text, encoding="utf-8", errors="replace")
             # Also mirror under project .iris/last_run.log when cwd looks like a project
             if rec.cwd:
                 proj = Path(rec.cwd) / ".iris" / "last_run.log"

@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from iris.runtime.attachment_context import EXCLUDED, _is_link
 from iris.system.execution_policy import check_path_allowed
+from iris.system.patch_buffer_sync import notify_files_patched
 
 SearchMode = Literal["content", "name"]
 
@@ -25,6 +27,7 @@ _END = "*** End Patch"
 _UPDATE_FILE = "*** Update File:"
 _ADD_FILE = "*** Add File:"
 _DELETE_FILE = "*** Delete File:"
+_TMP_SUFFIX = ".iris-patch-tmp"
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,16 @@ class _FileOp:
     path: str
     kind: Literal["update", "add", "delete"]
     hunks: list[_Hunk]
+
+
+@dataclass(frozen=True)
+class _Prepared:
+    op: _FileOp
+    abs_path: Path
+    new_bytes: bytes | None  # None => delete
+    snapshot: bytes | None  # None => file did not exist (add)
+    snapshot_sha: str
+    snapshot_mtime_ns: int
 
 
 def read_text_range(
@@ -161,6 +174,86 @@ def search_files(
 def _fingerprint(path: Path) -> tuple[str, int]:
     data = path.read_bytes() if path.is_file() else b""
     return hashlib.sha256(data).hexdigest(), (path.stat().st_mtime_ns if path.is_file() else 0)
+
+
+def _detect_newline(raw: bytes) -> bytes:
+    if b"\r\n" in raw:
+        return b"\r\n"
+    if b"\r" in raw and b"\n" not in raw:
+        return b"\r"
+    return b"\n"
+
+
+def _detect_encoding(raw: bytes) -> str:
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    try:
+        raw.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        return "latin-1"
+
+
+def _decode_text(raw: bytes) -> tuple[str, str, bytes]:
+    """Return (text_with_lf, encoding, newline_bytes)."""
+    encoding = _detect_encoding(raw)
+    newline = _detect_newline(raw)
+    text = raw.decode(encoding)
+    # Hunk matching always uses \\n line endings.
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized, encoding, newline
+
+
+def _encode_preserving(text: str, encoding: str, newline: bytes) -> bytes:
+    body = text.replace("\r\n", "\n").replace("\r", "\n")
+    if newline == b"\r\n":
+        body = body.replace("\n", "\r\n")
+    elif newline == b"\r":
+        body = body.replace("\n", "\r")
+    return body.encode(encoding)
+
+
+def _tmp_path_for(target: Path) -> Path:
+    return target.with_name(target.name + _TMP_SUFFIX)
+
+
+def _cleanup_tmp(path: Path) -> None:
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _restore_snapshot(abs_path: Path, snapshot: bytes | None) -> None:
+    if snapshot is None:
+        _cleanup_tmp(abs_path)
+        if abs_path.is_file():
+            try:
+                abs_path.unlink()
+            except OSError:
+                pass
+        return
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=abs_path.name + ".",
+        suffix=_TMP_SUFFIX,
+        dir=str(abs_path.parent),
+    )
+    tmp = Path(raw_tmp)
+    try:
+        os.write(fd, snapshot)
+        os.close(fd)
+        fd = -1
+        os.replace(str(tmp), str(abs_path))
+    except Exception:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        _cleanup_tmp(tmp)
+        raise
 
 
 def _parse_hermes_ops(text: str) -> list[_FileOp]:
@@ -312,6 +405,22 @@ def _apply_hunks(original: str, hunks: list[_Hunk]) -> tuple[str | None, str | N
     return text, None
 
 
+def _fingerprint_conflict(
+    op_path: str,
+    sha: str,
+    mtime_ns: int,
+    expected_sha256: dict[str, str] | None,
+    expected_mtime_ns: dict[str, int] | None,
+) -> str | None:
+    exp_sha = (expected_sha256 or {}).get(op_path)
+    if exp_sha is not None and exp_sha != sha:
+        return "disk sha256 mismatch (unsaved/concurrent)"
+    exp_mtime = (expected_mtime_ns or {}).get(op_path)
+    if exp_mtime is not None and int(exp_mtime) != int(mtime_ns):
+        return "disk mtime mismatch (unsaved/concurrent)"
+    return None
+
+
 def apply_patch(
     root: str | Path,
     patch_text: str,
@@ -319,27 +428,35 @@ def apply_patch(
     expected_sha256: dict[str, str] | None = None,
     expected_mtime_ns: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Apply patch under root. Conflicts leave the tree unchanged for that file.
+    """Apply patch under root as one transaction.
 
-    Writes go through ``check_path_allowed(..., write=True)``. Optional expected
-    sha256/mtime maps refuse overwrite when the disk fingerprint drifted
-    (unsaved / concurrent edit protection hook).
+    Snapshot fingerprints → plan → write temps → re-verify → atomic replace.
+    On any commit failure, restore snapshots for already-replaced files.
+    Optional expected sha256/mtime refuse dirty/concurrent overwrite (including delete).
+    Newline style and encoding of existing files are preserved.
     """
     base = Path(root).expanduser().resolve()
     if not base.is_dir():
         raise NotADirectoryError(str(base))
     ops = parse_patch(patch_text)
+    stub_note = (
+        "disk updated; IDE buffer hook notified when registered — "
+        "Theia sync is stub (no in-repo notify API)"
+    )
+    conflict_note = (
+        "IDE buffer sync is stub; disk not updated on conflict"
+    )
     if not ops:
         return {
             "ok": False,
             "conflicts": [{"path": "", "reason": "empty or unparseable patch"}],
             "files_changed": [],
-            "ide_refresh": "follow-up",
-            "note": "IDE buffer sync is follow-up; disk updated only when ok",
+            "ide_refresh": "stub",
+            "note": conflict_note,
         }
 
     conflicts: list[dict[str, Any]] = []
-    planned: list[tuple[_FileOp, Path, str | None]] = []  # op, abs, new_text|None for delete
+    prepared: list[_Prepared] = []
 
     for op in ops:
         decision = check_path_allowed(base, op.path, write=True)
@@ -354,7 +471,27 @@ def apply_patch(
             continue
 
         if op.kind == "delete":
-            planned.append((op, abs_path, None))
+            if abs_path.is_file():
+                sha, mtime_ns = _fingerprint(abs_path)
+                reason = _fingerprint_conflict(
+                    op.path, sha, mtime_ns, expected_sha256, expected_mtime_ns
+                )
+                if reason:
+                    conflicts.append({"path": op.path, "reason": reason})
+                    continue
+                snapshot = abs_path.read_bytes()
+            else:
+                sha, mtime_ns, snapshot = "", 0, None
+            prepared.append(
+                _Prepared(
+                    op=op,
+                    abs_path=abs_path,
+                    new_bytes=None,
+                    snapshot=snapshot,
+                    snapshot_sha=sha,
+                    snapshot_mtime_ns=mtime_ns,
+                )
+            )
             continue
 
         if op.kind == "add":
@@ -365,7 +502,17 @@ def apply_patch(
             if reason:
                 conflicts.append({"path": op.path, "reason": reason})
                 continue
-            planned.append((op, abs_path, new_text or ""))
+            new_bytes = _encode_preserving(new_text or "", "utf-8", b"\n")
+            prepared.append(
+                _Prepared(
+                    op=op,
+                    abs_path=abs_path,
+                    new_bytes=new_bytes,
+                    snapshot=None,
+                    snapshot_sha="",
+                    snapshot_mtime_ns=0,
+                )
+            )
             continue
 
         if not abs_path.is_file():
@@ -373,53 +520,109 @@ def apply_patch(
             continue
 
         sha, mtime_ns = _fingerprint(abs_path)
-        exp_sha = (expected_sha256 or {}).get(op.path)
-        if exp_sha is not None and exp_sha != sha:
-            conflicts.append({"path": op.path, "reason": "disk sha256 mismatch (unsaved/concurrent)"})
-            continue
-        exp_mtime = (expected_mtime_ns or {}).get(op.path)
-        if exp_mtime is not None and int(exp_mtime) != int(mtime_ns):
-            conflicts.append({"path": op.path, "reason": "disk mtime mismatch (unsaved/concurrent)"})
+        reason = _fingerprint_conflict(
+            op.path, sha, mtime_ns, expected_sha256, expected_mtime_ns
+        )
+        if reason:
+            conflicts.append({"path": op.path, "reason": reason})
             continue
 
-        original = abs_path.read_text(encoding="utf-8")
+        raw = abs_path.read_bytes()
+        original, encoding, newline = _decode_text(raw)
         new_text, reason = _apply_hunks(original, op.hunks)
         if reason:
             conflicts.append({"path": op.path, "reason": reason})
             continue
-        # TOCTOU: re-check fingerprint immediately before commit list.
         sha2, mtime2 = _fingerprint(abs_path)
         if sha2 != sha or mtime2 != mtime_ns:
             conflicts.append({"path": op.path, "reason": "disk changed during patch plan"})
             continue
-        planned.append((op, abs_path, new_text if new_text is not None else original))
+        new_bytes = _encode_preserving(
+            new_text if new_text is not None else original, encoding, newline
+        )
+        prepared.append(
+            _Prepared(
+                op=op,
+                abs_path=abs_path,
+                new_bytes=new_bytes,
+                snapshot=raw,
+                snapshot_sha=sha,
+                snapshot_mtime_ns=mtime_ns,
+            )
+        )
 
     if conflicts:
         return {
             "ok": False,
             "conflicts": conflicts,
             "files_changed": [],
-            "ide_refresh": "follow-up",
-            "note": "IDE buffer sync is follow-up; disk not updated on conflict",
+            "ide_refresh": "stub",
+            "note": conflict_note,
         }
 
-    changed: list[str] = []
-    for op, abs_path, new_text in planned:
-        if op.kind == "delete":
-            if abs_path.is_file():
-                abs_path.unlink()
-            changed.append(op.path)
-            continue
-        abs_path.parent.mkdir(parents=True, exist_ok=True)
-        # newline="\n": Windows text mode must not translate LF→CRLF (breaks patches).
-        with abs_path.open("w", encoding="utf-8", newline="\n") as fh:
-            fh.write(new_text or "")
-        changed.append(op.path)
+    # Stage temps for non-delete ops.
+    temps: list[Path] = []
+    try:
+        for item in prepared:
+            if item.new_bytes is None:
+                continue
+            item.abs_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _tmp_path_for(item.abs_path)
+            tmp.write_bytes(item.new_bytes)
+            temps.append(tmp)
 
+        committed: list[_Prepared] = []
+        try:
+            for item in prepared:
+                if item.op.kind != "add" and item.snapshot is not None:
+                    sha_now, mtime_now = _fingerprint(item.abs_path)
+                    if sha_now != item.snapshot_sha or mtime_now != item.snapshot_mtime_ns:
+                        raise OSError("disk changed before atomic replace")
+                if item.new_bytes is None:
+                    if item.abs_path.is_file():
+                        item.abs_path.unlink()
+                    committed.append(item)
+                    continue
+                tmp = _tmp_path_for(item.abs_path)
+                os.replace(str(tmp), str(item.abs_path))
+                if tmp in temps:
+                    temps.remove(tmp)
+                committed.append(item)
+        except OSError as exc:
+            for done in reversed(committed):
+                try:
+                    _restore_snapshot(done.abs_path, done.snapshot)
+                except OSError:
+                    pass
+            for tmp in temps:
+                _cleanup_tmp(tmp)
+            return {
+                "ok": False,
+                "conflicts": [{"path": "", "reason": f"apply failed: {exc}"}],
+                "files_changed": [],
+                "ide_refresh": "stub",
+                "note": conflict_note,
+            }
+    except OSError as exc:
+        for tmp in temps:
+            _cleanup_tmp(tmp)
+        return {
+            "ok": False,
+            "conflicts": [{"path": "", "reason": f"stage failed: {exc}"}],
+            "files_changed": [],
+            "ide_refresh": "stub",
+            "note": conflict_note,
+        }
+
+    for tmp in temps:
+        _cleanup_tmp(tmp)
+
+    changed = [item.op.path for item in prepared]
+    notify_files_patched(str(base), changed)
     return {
         "ok": True,
         "conflicts": [],
         "files_changed": changed,
-        "ide_refresh": "follow-up",
-        "note": "disk updated; IDE buffer refresh is follow-up (no Theia notify hook wired)",
+        "ide_refresh": "stub",
+        "note": stub_note,
     }

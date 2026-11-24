@@ -1,10 +1,14 @@
-"""U05 — Unified Execution Runtime (process-centric runs).
+"""U05 / W11-G — Unified Execution Runtime (process-centric runs).
 
 Fails when:
-- start/wait does not yield completed + real exit_code
-- cancel leaves the process alive or wrong terminal status
+- start/wait does not yield real exit_code; non-zero reported as success
+- cancel leaves the process (tree) alive or wrong terminal status
 - concurrent runs share one last_run.log as sole authority
+- late finish of an older run poisons newer last_run compat
+- retention does not prune under runs_root limits
 - process.manage SpeakGrant action enum lacks list|status|read_output|wait|cancel
+- process.manage start bypasses approval / cwd policy / session ACL
+- wait ignores hard timeout cap
 
 Run:
   .venv\\Scripts\\python.exe -m iris.system._check_execution_runtime
@@ -13,16 +17,19 @@ Run:
 from __future__ import annotations
 
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 from iris.infrastructure.speak_capability import PHASE4_ALLOWLIST
 from iris.system.execution_runtime import (
     MANAGE_ACTIONS,
+    WAIT_MAX_TIMEOUT_S,
     ExecutionRuntime,
     ProcessStatus,
     default_runtime,
 )
+from iris.system.project_ops import result_from_runtime_record
 
 
 def _pid_alive(pid: int) -> bool:
@@ -32,52 +39,228 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _check_start_wait_exit() -> None:
-    rt = ExecutionRuntime(runs_root=Path.home() / ".iris-light" / "runs")
-    run_id = rt.start(argv=[sys.executable, "-c", "import sys; sys.exit(42)"])
-    assert run_id, run_id
-    rec = rt.wait(run_id, timeout_s=15.0)
-    assert rec.status == ProcessStatus.COMPLETED, rec
-    assert rec.exit_code == 42, rec
-    assert rec.stdout_ref and Path(rec.stdout_ref).is_file(), rec
-    assert rec.stderr_ref and Path(rec.stderr_ref).is_file(), rec
+    with tempfile.TemporaryDirectory() as td:
+        rt = _fresh_rt(Path(td))
+        run_id = rt.start(argv=[sys.executable, "-c", "import sys; sys.exit(42)"])
+        assert run_id, run_id
+        rec = rt.wait(run_id, timeout_s=15.0)
+        # W11-G: process exited, but non-zero ≠ task success.
+        assert rec.status == ProcessStatus.FAILED, rec
+        assert rec.exit_code == 42, rec
+        assert rec.stdout_ref and Path(rec.stdout_ref).is_file(), rec
+        assert rec.stderr_ref and Path(rec.stderr_ref).is_file(), rec
+        helper = result_from_runtime_record(
+            rec, argv=[sys.executable, "-c", "x"], cwd=str(td), elapsed_sec=0.1
+        )
+        assert helper.get("ok") is False, helper
+        assert helper.get("exit_code") == 42, helper
+        waited = rt.manage({"action": "wait", "run_id": run_id, "timeout_s": 1})
+        data = waited.get("data") or {}
+        assert data.get("status") == ProcessStatus.FAILED.value, waited
+        assert data.get("exit_code") == 42, waited
+        # Transport may be ok; payload must not look like success to helpers.
+        assert result_from_runtime_record(
+            rt.status(run_id),
+            argv=["x"],
+            cwd=str(td),
+            elapsed_sec=0.0,
+        ).get("ok") is False
+
+
+def _check_zero_exit_completed_ok() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        rt = _fresh_rt(Path(td))
+        run_id = rt.start(argv=[sys.executable, "-c", "import sys; sys.exit(0)"])
+        rec = rt.wait(run_id, timeout_s=15.0)
+        assert rec.status == ProcessStatus.COMPLETED, rec
+        assert rec.exit_code == 0, rec
+        helper = result_from_runtime_record(
+            rec, argv=[sys.executable], cwd=str(td), elapsed_sec=0.1
+        )
+        assert helper.get("ok") is True, helper
 
 
 def _check_cancel_sleep() -> None:
-    rt = ExecutionRuntime(runs_root=Path.home() / ".iris-light" / "runs")
-    run_id = rt.start(argv=[sys.executable, "-c", "import time; time.sleep(60)"])
-    time.sleep(0.3)
-    st = rt.status(run_id)
-    assert st.status == ProcessStatus.RUNNING, st
-    pid = int(st.pid or 0)
-    assert pid > 0, st
-    cancelled = rt.cancel(run_id)
-    assert cancelled.status in (
-        ProcessStatus.CANCELLED,
-        ProcessStatus.INTERRUPTED,
-    ), cancelled
-    deadline = time.time() + 5.0
-    while time.time() < deadline and _pid_alive(pid):
-        time.sleep(0.1)
-    assert not _pid_alive(pid), f"pid {pid} still alive after cancel"
+    with tempfile.TemporaryDirectory() as td:
+        rt = _fresh_rt(Path(td))
+        run_id = rt.start(argv=[sys.executable, "-c", "import time; time.sleep(60)"])
+        time.sleep(0.3)
+        st = rt.status(run_id)
+        assert st.status == ProcessStatus.RUNNING, st
+        pid = int(st.pid or 0)
+        assert pid > 0, st
+        cancelled = rt.cancel(run_id)
+        assert cancelled.status in (
+            ProcessStatus.CANCELLED,
+            ProcessStatus.INTERRUPTED,
+        ), cancelled
+        deadline = time.time() + 5.0
+        while time.time() < deadline and _pid_alive(pid):
+            time.sleep(0.1)
+        assert not _pid_alive(pid), f"pid {pid} still alive after cancel"
+
+
+def _check_cancel_kills_child_tree() -> None:
+    """Windows: taskkill /T; parent that spawns a sleeper child must both die."""
+    if sys.platform != "win32":
+        return
+    child_marker = Path(tempfile.gettempdir()) / f"iris-w11g-child-{time.time_ns()}.pid"
+    try:
+        if child_marker.exists():
+            child_marker.unlink()
+    except OSError:
+        pass
+    # Parent writes child pid then sleeps; cancel must kill both.
+    code = (
+        "import subprocess, sys, time, pathlib\n"
+        f"marker = pathlib.Path({str(child_marker)!r})\n"
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        "marker.write_text(str(c.pid), encoding='utf-8')\n"
+        "time.sleep(120)\n"
+    )
+    with tempfile.TemporaryDirectory() as td:
+        rt = _fresh_rt(Path(td))
+        run_id = rt.start(argv=[sys.executable, "-c", code])
+        deadline = time.time() + 8.0
+        child_pid = 0
+        while time.time() < deadline:
+            if child_marker.is_file():
+                try:
+                    child_pid = int(child_marker.read_text(encoding="utf-8").strip())
+                except (OSError, ValueError):
+                    child_pid = 0
+                if child_pid > 0:
+                    break
+            time.sleep(0.05)
+        assert child_pid > 0, "child pid marker not written"
+        parent = int(rt.status(run_id).pid or 0)
+        assert parent > 0 and _pid_alive(parent), parent
+        assert _pid_alive(child_pid), child_pid
+        cancelled = rt.cancel(run_id)
+        assert cancelled.status in (
+            ProcessStatus.CANCELLED,
+            ProcessStatus.INTERRUPTED,
+        ), cancelled
+        end = time.time() + 8.0
+        while time.time() < end and (_pid_alive(parent) or _pid_alive(child_pid)):
+            time.sleep(0.1)
+        assert not _pid_alive(parent), f"parent {parent} still alive"
+        assert not _pid_alive(child_pid), f"child {child_pid} still alive after tree kill"
+    try:
+        child_marker.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _check_concurrent_log_isolation() -> None:
-    rt = ExecutionRuntime(runs_root=Path.home() / ".iris-light" / "runs")
-    a = rt.start(argv=[sys.executable, "-c", "print('AAA'); import sys; sys.exit(0)"])
-    b = rt.start(argv=[sys.executable, "-c", "print('BBB'); import sys; sys.exit(0)"])
-    ra = rt.wait(a, timeout_s=15.0)
-    rb = rt.wait(b, timeout_s=15.0)
-    assert ra.stdout_ref != rb.stdout_ref, (ra.stdout_ref, rb.stdout_ref)
-    assert ra.stderr_ref != rb.stderr_ref, (ra.stderr_ref, rb.stderr_ref)
-    text_a = Path(ra.stdout_ref).read_text(encoding="utf-8", errors="replace")
-    text_b = Path(rb.stdout_ref).read_text(encoding="utf-8", errors="replace")
-    assert "AAA" in text_a and "BBB" not in text_a, text_a
-    assert "BBB" in text_b and "AAA" not in text_b, text_b
-    # last_run.log may exist as latest-compat view, never sole completion signal
-    assert ra.status == ProcessStatus.COMPLETED
-    assert rb.status == ProcessStatus.COMPLETED
-    assert not (ra.stdout_ref.endswith("last_run.log")), ra.stdout_ref
-    assert not (rb.stdout_ref.endswith("last_run.log")), rb.stdout_ref
+    with tempfile.TemporaryDirectory() as td:
+        rt = _fresh_rt(Path(td))
+        a = rt.start(argv=[sys.executable, "-c", "print('AAA'); import sys; sys.exit(0)"])
+        b = rt.start(argv=[sys.executable, "-c", "print('BBB'); import sys; sys.exit(0)"])
+        ra = rt.wait(a, timeout_s=15.0)
+        rb = rt.wait(b, timeout_s=15.0)
+        assert ra.stdout_ref != rb.stdout_ref, (ra.stdout_ref, rb.stdout_ref)
+        assert ra.stderr_ref != rb.stderr_ref, (ra.stderr_ref, rb.stderr_ref)
+        text_a = Path(ra.stdout_ref).read_text(encoding="utf-8", errors="replace")
+        text_b = Path(rb.stdout_ref).read_text(encoding="utf-8", errors="replace")
+        assert "AAA" in text_a and "BBB" not in text_a, text_a
+        assert "BBB" in text_b and "AAA" not in text_b, text_b
+        # last_run.log may exist as latest-compat view, never sole completion signal
+        assert ra.status == ProcessStatus.COMPLETED
+        assert rb.status == ProcessStatus.COMPLETED
+        assert not (ra.stdout_ref.endswith("last_run.log")), ra.stdout_ref
+        assert not (rb.stdout_ref.endswith("last_run.log")), rb.stdout_ref
+
+
+def _check_last_run_compat_not_poisoned() -> None:
+    """Older run finishing after a newer one must not overwrite last_run for newer."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        rt = _fresh_rt(root)
+        # Slow older run
+        older = rt.start(
+            argv=[
+                sys.executable,
+                "-c",
+                "import time; time.sleep(1.2); print('OLDER'); import sys; sys.exit(0)",
+            ]
+        )
+        time.sleep(0.15)
+        newer = rt.start(
+            argv=[sys.executable, "-c", "print('NEWER'); import sys; sys.exit(0)"]
+        )
+        rn = rt.wait(newer, timeout_s=15.0)
+        assert rn.status == ProcessStatus.COMPLETED, rn
+        compat = root / "runs" / "last_run.log"
+        assert compat.is_file(), compat
+        mid = compat.read_text(encoding="utf-8", errors="replace")
+        assert f"run_id={newer}" in mid, mid
+        assert "NEWER" in mid, mid
+        ro = rt.wait(older, timeout_s=15.0)
+        assert ro.status == ProcessStatus.COMPLETED, ro
+        # Give late pump a beat to attempt poison write
+        time.sleep(0.3)
+        final = compat.read_text(encoding="utf-8", errors="replace")
+        assert f"run_id={newer}" in final, final
+        assert f"run_id={older}" not in final.splitlines()[0], final
+        assert "NEWER" in final, final
+
+
+def _check_retention_prunes() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        rt = ExecutionRuntime(
+            runs_root=root / "runs",
+            max_runs=5,
+            max_age_s=3600.0,
+            max_bytes=50_000,
+        )
+        ids: list[str] = []
+        for i in range(8):
+            rid = rt.start(
+                argv=[sys.executable, "-c", f"print({i}); import sys; sys.exit(0)"]
+            )
+            ids.append(rid)
+            rt.wait(rid, timeout_s=15.0)
+        run_dirs = [
+            p
+            for p in (root / "runs").iterdir()
+            if p.is_dir() and (p / "meta.json").is_file()
+        ]
+        assert len(run_dirs) <= 5, (len(run_dirs), [p.name for p in run_dirs])
+        # Newest ids should remain
+        remaining = {p.name for p in run_dirs}
+        for rid in ids[-5:]:
+            assert rid in remaining, (rid, remaining)
+        for rid in ids[:-5]:
+            assert rid not in remaining, (rid, remaining)
+
+        # Oversize: one fat run dir forces prune of older siblings.
+        rt2 = ExecutionRuntime(
+            runs_root=root / "runs2",
+            max_runs=20,
+            max_age_s=3600.0,
+            max_bytes=8_000,
+        )
+        small = rt2.start(argv=[sys.executable, "-c", "print('s'); import sys; sys.exit(0)"])
+        rt2.wait(small, timeout_s=15.0)
+        fat_dir = root / "runs2" / "fatpad"
+        fat_dir.mkdir(parents=True, exist_ok=True)
+        (fat_dir / "meta.json").write_text(
+            '{"run_id":"fatpad","status":"completed","started_at":0}', encoding="utf-8"
+        )
+        (fat_dir / "blob.bin").write_bytes(b"x" * 20_000)
+        # Trigger retention via another start
+        keep = rt2.start(argv=[sys.executable, "-c", "print('k'); import sys; sys.exit(0)"])
+        rt2.wait(keep, timeout_s=15.0)
+        left = [
+            p.name
+            for p in (root / "runs2").iterdir()
+            if p.is_dir() and (p / "meta.json").is_file()
+        ]
+        # Fat pad and/or oldest pruned so total bytes stay in budget; newest keep remains.
+        assert keep in left, left
+        assert "fatpad" not in left or small not in left, left
 
 
 def _check_process_manage_schema() -> None:
@@ -91,6 +274,8 @@ def _check_process_manage_schema() -> None:
     assert required <= enum, (enum, required)
     assert "action" in (grant.parameters.get("required") or [])
     assert MANAGE_ACTIONS >= required
+    for key in ("session_id", "workspace_id", "owner"):
+        assert key in props, f"SpeakGrant process.manage missing {key}"
     # Control-facing manage via default runtime + action dispatch shape
     rt = default_runtime()
     listed = rt.manage({"action": "list"})
@@ -98,11 +283,202 @@ def _check_process_manage_schema() -> None:
     assert "runs" in listed.get("data", listed)
 
 
+def _fresh_rt(tmp: Path) -> ExecutionRuntime:
+    return ExecutionRuntime(runs_root=tmp / "runs")
+
+
+def _check_start_requires_approval() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        rt = _fresh_rt(Path(td))
+        denied = rt.manage(
+            {
+                "action": "start",
+                "argv": [sys.executable, "-c", "pass"],
+                "cwd": str(Path.home()),
+                "session_id": "sess-a",
+            }
+        )
+        assert denied.get("ok") is False, denied
+        err = str(denied.get("error") or "").lower()
+        assert "confirm" in err or "human" in err, denied
+
+        rt.set_human_confirm(lambda _s, _a: True)
+        ok = rt.manage(
+            {
+                "action": "start",
+                "argv": [sys.executable, "-c", "import sys; sys.exit(0)"],
+                "cwd": str(Path.home()),
+                "session_id": "sess-a",
+            }
+        )
+        assert ok.get("ok") is True, ok
+        run_id = (ok.get("data") or {}).get("run_id")
+        assert run_id
+        rt.wait(str(run_id), timeout_s=15.0)
+
+
+def _check_start_cwd_outside_denied() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        outside = root.parent / "iris-proc-cwd-outside"
+        outside.mkdir(exist_ok=True)
+        try:
+            rt = _fresh_rt(root)
+            rt.set_human_confirm(lambda _s, _a: True)
+            denied = rt.manage(
+                {
+                    "action": "start",
+                    "argv": [sys.executable, "-c", "pass"],
+                    "cwd": str(outside),
+                    "workspace_root": str(root / "ws"),
+                    "session_id": "sess-a",
+                }
+            )
+            assert denied.get("ok") is False, denied
+            assert "cwd" in str(denied.get("error") or "").lower() or "path" in str(
+                denied.get("error") or ""
+            ).lower() or "root" in str(denied.get("error") or "").lower(), denied
+        finally:
+            try:
+                outside.rmdir()
+            except OSError:
+                pass
+
+
+def _check_cross_session_acl() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        rt = _fresh_rt(Path(td))
+        rt.set_human_confirm(lambda _s, _a: True)
+        started = rt.manage(
+            {
+                "action": "start",
+                "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
+                "cwd": str(Path.home()),
+                "session_id": "session_a",
+                "workspace_id": "ws1",
+                "owner": "alice",
+            }
+        )
+        assert started.get("ok") is True, started
+        run_id = (started.get("data") or {}).get("run_id")
+        assert run_id
+        for action in ("status", "cancel", "read_output"):
+            denied = rt.manage(
+                {"action": action, "run_id": run_id, "session_id": "session_b"}
+            )
+            assert denied.get("ok") is False, (action, denied)
+            assert "session" in str(denied.get("error") or "").lower() or "denied" in str(
+                denied.get("error") or ""
+            ).lower(), (action, denied)
+        # Matching session may cancel (cleanup).
+        cancelled = rt.manage(
+            {"action": "cancel", "run_id": run_id, "session_id": "session_a"}
+        )
+        assert cancelled.get("ok") is True, cancelled
+
+
+def _check_list_filters_own_session() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        rt = _fresh_rt(Path(td))
+        rt.set_human_confirm(lambda _s, _a: True)
+        for sid, tag in (("session_a", "A"), ("session_b", "B")):
+            out = rt.manage(
+                {
+                    "action": "start",
+                    "argv": [sys.executable, "-c", f"print({tag!r})"],
+                    "cwd": str(Path.home()),
+                    "session_id": sid,
+                }
+            )
+            assert out.get("ok") is True, out
+            rid = (out.get("data") or {}).get("run_id")
+            rt.wait(str(rid), timeout_s=15.0)
+        listed = rt.manage({"action": "list", "session_id": "session_a"})
+        assert listed.get("ok") is True, listed
+        runs = (listed.get("data") or {}).get("runs") or []
+        assert runs, listed
+        assert all(r.get("session_id") == "session_a" for r in runs), runs
+        assert not any(r.get("session_id") == "session_b" for r in runs), runs
+
+
+def _check_wait_timeout_capped() -> None:
+    from iris.system import execution_policy as pol
+    from iris.system import execution_runtime as rtmod
+    from iris.system.execution_policy import cap_wait_timeout
+
+    assert cap_wait_timeout(None) == WAIT_MAX_TIMEOUT_S
+    assert cap_wait_timeout(10_000) == WAIT_MAX_TIMEOUT_S
+    assert cap_wait_timeout(12) == 12.0
+
+    old_p, old_r = pol.WAIT_MAX_TIMEOUT_S, rtmod.WAIT_MAX_TIMEOUT_S
+    try:
+        pol.WAIT_MAX_TIMEOUT_S = 0.5
+        rtmod.WAIT_MAX_TIMEOUT_S = 0.5
+        with tempfile.TemporaryDirectory() as td:
+            rt = _fresh_rt(Path(td))
+            run_id = rt.start(
+                argv=[sys.executable, "-c", "import time; time.sleep(60)"],
+                session_id="sess-wait",
+            )
+            t0 = time.time()
+            snap = rt.wait(run_id, timeout_s=None)
+            elapsed = time.time() - t0
+            assert elapsed < 3.0, elapsed
+            assert snap.status == ProcessStatus.RUNNING or "wait timed out" in (
+                snap.error or ""
+            ), snap
+            cancelled = rt.cancel(run_id)
+            assert cancelled.status in (
+                ProcessStatus.CANCELLED,
+                ProcessStatus.INTERRUPTED,
+            ), cancelled
+
+            rt2 = _fresh_rt(Path(td) / "w2")
+            rt2.set_human_confirm(lambda _s, _a: True)
+            started = rt2.manage(
+                {
+                    "action": "start",
+                    "argv": [sys.executable, "-c", "import time; time.sleep(60)"],
+                    "cwd": str(Path.home()),
+                    "session_id": "sess-wait2",
+                }
+            )
+            assert started.get("ok") is True, started
+            rid2 = (started.get("data") or {}).get("run_id")
+            waited = rt2.manage(
+                {
+                    "action": "wait",
+                    "run_id": rid2,
+                    "session_id": "sess-wait2",
+                    "timeout_s": 9999,
+                }
+            )
+            assert waited.get("ok") is True, waited
+            # Capped soft-wait returns while still running; cancel must work.
+            assert (waited.get("data") or {}).get("status") == ProcessStatus.RUNNING.value
+            out = rt2.manage(
+                {"action": "cancel", "run_id": rid2, "session_id": "sess-wait2"}
+            )
+            assert out.get("ok") is True, out
+    finally:
+        pol.WAIT_MAX_TIMEOUT_S = old_p
+        rtmod.WAIT_MAX_TIMEOUT_S = old_r
+
+
 def main() -> None:
     _check_start_wait_exit()
+    _check_zero_exit_completed_ok()
     _check_cancel_sleep()
+    _check_cancel_kills_child_tree()
     _check_concurrent_log_isolation()
+    _check_last_run_compat_not_poisoned()
+    _check_retention_prunes()
     _check_process_manage_schema()
+    _check_start_requires_approval()
+    _check_start_cwd_outside_denied()
+    _check_cross_session_acl()
+    _check_list_filters_own_session()
+    _check_wait_timeout_capped()
     print("execution_runtime ok")
 
 

@@ -1,0 +1,27 @@
+{
+  "id": "b0-sample-turn-1",
+  "role": "assistant",
+  "parts": [
+    {
+      "type": "text",
+      "markdown": "아래는 **동일 샘플**입니다. writing 초안, HTML code/preview, 인라인 계산기를 한 턴에 넣었습니다."
+    },
+    {
+      "type": "writing",
+      "title": "주간 메모 초안",
+      "body": "# 주간 메모\n\n- [ ] GPT식 전사 bakeoff\n- [ ] typed MessagePart\n- [x] PyQt6 유지 결정\n\n편집해서 저장하면 다음 턴 컨텍스트에 반영된다고 가정."
+    },
+    {
+      "type": "code",
+      "language": "html",
+      "filename": "badge.html",
+      "source": "<!DOCTYPE html>\n<html><head><style>\nbody{font:16px system-ui;margin:12px;background:#0f172a;color:#e2e8f0}\n.badge{display:inline-block;padding:8px 14px;border-radius:999px;background:linear-gradient(90deg,#22d3ee,#818cf8)}\n</style></head><body>\n<span class=\"badge\">IRIS Preview OK</span>\n<p>Code 탭과 Preview 탭을 전환하세요.</p>\n</body></html>"
+    },
+    {
+      "type": "app",
+      "title": "인라인 계산기",
+      "displayMode": "inline",
+      "html": "<!DOCTYPE html>\n<html><head><style>\nbody{font:14px system-ui;margin:8px;background:#111827;color:#f9fafb}\n.row{display:flex;gap:6px;margin-top:8px}\ninput,button{padding:8px;border-radius:8px;border:1px solid #374151;background:#1f2937;color:#fff}\nbutton{cursor:pointer;background:#2563eb;border:none}\n#out{margin-top:10px;font-size:20px}\n</style></head><body>\n<div>a + b</div>\n<div class=\"row\">\n<input id=\"a\" type=\"number\" value=\"12\" style=\"width:72px\">\n<input id=\"b\" type=\"number\" value=\"30\" style=\"width:72px\">\n<button id=\"go\">계산</button>\n</div>\n<div id=\"out\">= 42</div>\n<script>\nconst a=document.getElementById('a'),b=document.getElementById('b'),out=document.getElementById('out');\ndocument.getElementById('go').onclick=()=>{out.textContent='= '+(Number(a.value)+Number(b.value));};\n</script></body></html>"
+    }
+  ]
+}

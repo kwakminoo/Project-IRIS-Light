@@ -346,21 +346,20 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
     )
     import time
 
-    from iris.automation.ide_input import run_command_in_ide_terminal, trigger_default_build_task
+    from iris.automation.ide_input import run_command_in_ide_terminal
+    from iris.system.execution_runtime import default_runtime
     from iris.system.project_ops import (
         bind_python_argv,
-        build_iris_terminal_command,
-        build_iris_terminal_shell,
         infer_dev_server_url,
         iris_run_log_path,
         is_static_web_file,
         open_preview_in_browser,
         plan_run,
-        result_from_terminal_log,
+        result_from_runtime_record,
+        start_managed_run,
         static_web_file_uri,
         summarize_run,
-        upsert_iris_run_task,
-        wait_for_run_log,
+        wait_managed_run,
     )
 
     root, root_err = resolve_bound_work_root(window, args)
@@ -419,10 +418,8 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
         )
         if plan.shell_command is not None:
             # Cursor-style: 문자열 명령을 셸에 그대로 (shlex/bind_python 금지).
-            # Bridge argv must stay empty — poller prefers wrapRun(argv) over Tee/IRIS_EXIT.
             argv = [plan.shell_command]
-            bridge_argv: list[str] | None = None
-            shell_cmd = build_iris_terminal_shell(plan.shell_command)
+            start_kwargs: dict[str, Any] = {"shell": plan.shell_command}
         else:
             argv = bind_python_argv(
                 list(plan.argv or []),
@@ -430,184 +427,109 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
                 allow_create=False,
                 file=file_arg or None,
             )
-            bridge_argv = argv
-            shell_cmd = build_iris_terminal_command(argv)
+            start_kwargs = {"argv": argv}
     except Exception as exc:  # noqa: BLE001
         return err_result("project.run", str(exc))
 
-    log_p = iris_run_log_path(root_s)
-    try:
-        if log_p.is_file():
-            log_p.unlink()
-    except OSError:
-        pass
-    tasks_path = ""
-    try:
-        tasks_path = upsert_iris_run_task(root_s, shell_cmd)
-    except Exception as exc:  # noqa: BLE001
-        tasks_path = ""
+    session_id = str(
+        args.get("session_id")
+        or getattr(window, "_conversation_id", "")
+        or ""
+    )
+    workspace_id = str(
+        args.get("workspace_id")
+        or getattr(session, "workspace_root", "")
+        or root_s
+    )
 
-    ide_terminal = "failed"
-    result: dict[str, Any]
     t0 = time.monotonic()
-    if session.ide_id == "iris_ide":
+    try:
+        run_id = start_managed_run(
+            cwd=root_s,
+            timeout_s=timeout_sec,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            owner="project.run",
+            **start_kwargs,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return err_result("project.run", str(exc))
+
+    # IDE visualization only — Runtime owns the real process / completion.
+    ide_terminal = "skipped"
+    via = "execution_runtime"
+    revealed = False
+    shell_used = ""
+    viz_cmd = f"echo IRIS_RUN_ID={run_id}"
+    if reveal and session is not None and session.ide_id == "iris_ide":
         try:
             client = window._iris_ide_bridge_client()
-            # 브리지는 Theia 통합 터미널 완료를 15s까지 기다린다 — UI 스레드를 막으면
-            # 프런트엔드 폴러가 그 사이 fetch를 못 해 반드시 타임아웃(400)으로 끝난다.
             term = _bridge_call_pumping(
-                lambda: client.run_terminal_command(shell_cmd, cwd=root_s, argv=bridge_argv),
+                lambda: client.run_terminal_command(viz_cmd, cwd=root_s),
                 timeout=18.0,
             )
             via = str(term.get("via") or "iris_ide_bridge")
-            queued = bool(term.get("queued"))
             if via == "bridge_fallback":
-                return err_result(
-                    "project.run",
-                    "IDE integrated terminal unavailable (bridge ran command outside IRIS IDE — blocked)",
-                    {"via": via, "command": shell_cmd},
+                ide_terminal = "failed"
+            elif term.get("revealed") is False:
+                ide_terminal = "failed"
+            elif bool(term.get("queued")) or via == "theia_terminal":
+                ide_terminal = "ok"
+                revealed = bool(term.get("revealed", True))
+                shell_used = str(term.get("shell") or "")
+            else:
+                ide_terminal = "failed"
+        except Exception:  # noqa: BLE001
+            ide_terminal = "failed"
+    elif reveal and session is not None:
+        hwnd = int(session.hwnd) if session.hwnd else None
+        pid = session.pid
+        if hwnd:
+            try:
+                ok_viz = run_command_in_ide_terminal(
+                    hwnd, viz_cmd, pump=_qt_pump, pid=pid
                 )
-            if not queued and via != "theia_terminal":
-                return err_result(
-                    "project.run",
-                    "IDE integrated terminal did not accept command",
-                    {"via": via, "delivered": False, "executed": False, "command": shell_cmd},
-                )
-            if term.get("revealed") is False:
-                return err_result(
-                    "project.run",
-                    "IDE integrated terminal panel was not revealed",
-                    {"via": via, "delivered": True, "revealed": False, "command": shell_cmd},
-                )
-            shell_used = str(term.get("shell") or "")
-            revealed = bool(term.get("revealed", True))
-            waited = wait_for_run_log(
-                log_p,
-                timeout_sec=min(timeout_sec, 12.0),
-                stable_sec=0.8,
-                pump=_qt_pump,
-            )
-            elapsed = time.monotonic() - t0
-            if not waited.get("found"):
-                return err_result(
-                    "project.run",
-                    "command was delivered but no run log or exit code was confirmed",
-                    {
-                        "delivered": True,
-                        "executed": False,
-                        "exit_code": None,
-                        "via": via,
-                        "shell": shell_used,
-                        "log_path": str(log_p),
-                        "command": shell_cmd,
-                    },
-                )
-            result = result_from_terminal_log(
-                str(waited.get("text") or ""),
-                argv=argv,
-                cwd=root_s,
-                elapsed_sec=elapsed,
-            )
-            if not result.get("confirmed"):
-                return err_result(
-                    "project.run",
-                    "command was delivered but the program exit code was not in the run log",
-                    {
-                        "delivered": True,
-                        "executed": False,
-                        "exit_code": None,
-                        "via": via,
-                        "shell": shell_used,
-                        "log_path": str(log_p),
-                        "stdout": result.get("stdout") or "",
-                    },
-                )
-            payload = {
-                **result,
-                **summarize_run(result),
-                "delivered": True,
-                "executed": True,
-                "via": via,
-                "shell": shell_used,
-                "revealed": revealed,
-                "ide_terminal": "ok",
-                "log_path": str(log_p),
-                "stdout_len": len(result.get("stdout") or ""),
-            }
-            payload.pop("stdout", None)
-            payload.pop("stderr", None)
-            ok = result.get("exit_code") == 0 and not result.get("timed_out")
-            _log(window, "project.run", ok)
-            if ok:
-                return ok_result("project.run", payload)
-            return err_result(
-                "project.run",
-                payload.get("summary") or f"exit {result.get('exit_code')}",
-                payload,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return err_result("project.run", str(exc))
-    hwnd = int(session.hwnd) if session and session.hwnd else None
-    pid = session.pid if session else None
+                ide_terminal = "ok" if ok_viz else "failed"
+                revealed = bool(ok_viz)
+                via = "ide_terminal_echo"
+            except Exception:  # noqa: BLE001
+                ide_terminal = "failed"
 
-    if not reveal:
-        return err_result("project.run", "project.run requires IDE integrated terminal")
-    if not hwnd or not tasks_path:
-        return err_result(
-            "project.run",
-            "bound IDE session missing or Iris run task could not be prepared",
-            {"tasks_path": tasks_path or None, "hwnd": hwnd},
-        )
-    time.sleep(0.35)
-    triggered = trigger_default_build_task(hwnd, pid=pid)
-    if not triggered:
-        return err_result("project.run", "failed to trigger IDE integrated terminal run task")
-    waited = wait_for_run_log(
-        log_p,
-        timeout_sec=timeout_sec,
-        stable_sec=0.8,
-        pump=_qt_pump,
+    rec = wait_managed_run(
+        run_id, timeout_s=timeout_sec, pump=_qt_pump
     )
     elapsed = time.monotonic() - t0
-    if not waited.get("found"):
-        rerun_ok = run_command_in_ide_terminal(hwnd, shell_cmd, pump=_qt_pump, pid=pid)
-        if not rerun_ok:
-            return err_result(
-                "project.run",
-                "IDE integrated terminal run started but no Iris log was captured",
-                {"tasks_path": tasks_path or None, "log_path": str(log_p)},
-            )
-        waited = wait_for_run_log(
-            log_p,
-            timeout_sec=timeout_sec,
-            stable_sec=0.8,
-            pump=_qt_pump,
-        )
-        elapsed = time.monotonic() - t0
-        if not waited.get("found"):
-            return err_result(
-                "project.run",
-                "IDE integrated terminal run started but no Iris log was captured",
-                {"tasks_path": tasks_path or None, "log_path": str(log_p)},
-            )
-    result = result_from_terminal_log(
-        str(waited.get("text") or ""),
+    rt = default_runtime()
+    stdout_text = str(
+        (rt.read_output(run_id, stream="stdout").get("text") or "")
+    )
+    stderr_text = str(
+        (rt.read_output(run_id, stream="stderr").get("text") or "")
+    )
+    result = result_from_runtime_record(
+        rec,
         argv=argv,
         cwd=root_s,
         elapsed_sec=elapsed,
+        stdout=stdout_text,
+        stderr=stderr_text,
+        via=via,
     )
-    if not result.get("confirmed"):
+    if not result.get("confirmed") and not result.get("timed_out"):
         return err_result(
             "project.run",
-            "command was delivered but the program exit code was not in the run log",
+            "run started but Runtime did not confirm an exit code",
             {
                 "delivered": True,
                 "executed": False,
+                "run_id": run_id,
+                "status": result.get("status"),
                 "exit_code": None,
-                "log_path": str(log_p),
+                "via": via,
+                "stdout_ref": result.get("stdout_ref"),
+                "stderr_ref": result.get("stderr_ref"),
             },
         )
-    ide_terminal = "ok"
 
     preview_url = ""
     browser_status = "skipped"
@@ -616,7 +538,6 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
             infer_dev_server_url(argv) or ""
         )
         if preview_url:
-            # 서버 기동 직후 짧게 대기 후 브라우저
             time.sleep(1.2)
             browser_status = "ok" if open_preview_in_browser(preview_url) else "failed"
             if browser_status == "ok":
@@ -624,27 +545,36 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
 
     summary_bits = summarize_run(result)
     if ide_terminal == "ok":
-        summary_bits["summary"] += " · output in IDE terminal"
+        summary_bits["summary"] += " · IDE terminal revealed"
     if browser_status == "ok" and preview_url:
         summary_bits["summary"] += f" · browser {preview_url}"
 
+    log_p = iris_run_log_path(root_s)
     payload = {
         **result,
         **summary_bits,
+        "delivered": True,
+        "executed": True,
+        "run_id": run_id,
         "ide_terminal": ide_terminal,
+        "revealed": revealed,
+        "shell": shell_used or None,
         "log_path": str(log_p) if log_p.is_file() else None,
         "preview_url": preview_url or None,
         "browser": browser_status,
-        "tasks_path": tasks_path or None,
-        "opened_log": False,
-        "stdout_len": len(result.get("stdout") or ""),
-        "stderr_len": len(result.get("stderr") or ""),
+        "stdout_len": len(stdout_text),
+        "stderr_len": len(stderr_text),
     }
     payload.pop("stdout", None)
     payload.pop("stderr", None)
-    ok = result.get("exit_code") == 0 and not result.get("timed_out")
+    # Process status ≠ task success (W11-G): prefer helper ok.
+    ok = bool(result.get("ok")) if "ok" in result else (
+        result.get("exit_code") == 0 and not result.get("timed_out")
+    )
     _log(window, "project.run", ok)
-    return ok_result("project.run", payload) if ok else err_result(
+    if ok:
+        return ok_result("project.run", payload)
+    return err_result(
         "project.run",
         summary_bits.get("summary") or f"exit {result.get('exit_code')}",
         payload,
@@ -1235,7 +1165,10 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
     reg.register(
         "project.run",
         _with_run_visibility(window, "project.run", lambda args: project_run(window, args)),
-        summary="Run only in the bound IDE integrated terminal via Iris: Run task",
+        summary=(
+            "Run a command via the shared Execution Runtime (run_id + status). "
+            "When reveal_terminal, also echo the run_id in the bound IDE integrated terminal."
+        ),
         risk="medium",
         confirm_required=True,
     )
