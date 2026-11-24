@@ -481,7 +481,7 @@ _CHAT_TAG = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)\b([^>]*)>", re.DOTALL)
 _ALLOWED_URL_PREFIXES = (
     "http://", "https://",
     "iris-file://", "iris-wiki://", "iris-copy://", "iris-collapse://",
-    "iris-tts://", "iris-error://", "iris-update://", "iris-hermes-update://",
+    "iris-tts://", "iris-error://", "iris-update://", "iris-agent-update://",
     "iris-stt://", "iris-diagram://", "iris-app://", "iris-ollama-login://",
     "iris-image:",
 )

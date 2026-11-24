@@ -17,7 +17,7 @@ class ChatNoticeAction:
 
 @dataclass(frozen=True)
 class ChatNotice:
-    kind: str  # update | hermes_update | ollama_login | error | note | app_note | stt_pending
+    kind: str  # update | iris_agent_update | ollama_login | error | note | app_note | stt_pending
     body: str
     actions: tuple[ChatNoticeAction, ...] = ()
     meta: Mapping[str, Any] = field(default_factory=dict)
