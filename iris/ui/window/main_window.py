@@ -10115,6 +10115,9 @@ class MainWindow(QMainWindow):
 
     def _restore_assistant_sizes(self, sizes: list[int] | None) -> None:
         normalized = self._normalize_assistant_sizes(sizes)
+        # Hero / from_hero open-folder hide left; companion exit used to
+        # show right only and leave chat-history sidebar gone.
+        self._left_sidebar.show()
         self._assistant_page.right_column.show()
         self._assistant_page.splitter.setSizes(normalized)
 
