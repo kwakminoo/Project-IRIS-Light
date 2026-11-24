@@ -276,9 +276,10 @@ def _check_legacy_look(app: QApplication) -> None:
         f"html/body must scroll (overflow-y): {probe}"
     )
 
-    # Match render_user_message inset: margin-left 24px, margin-right 12px.
-    assert float(probe.get("userMarginLeft") or 0) == 24.0, (
-        f"user turn-body margin-left must be 24px: {probe}"
+    # Flush left: no GPT/ChatLog 24px push. Contract: user_ml <= 12 (prefer 0).
+    user_ml = float(probe.get("userMarginLeft") or 0)
+    assert user_ml <= 12.0, (
+        f"user turn-body margin-left must be <=12px (flush left): {probe}"
     )
     assert float(probe.get("userMarginRight") or 0) == 12.0, (
         f"user turn-body margin-right must be 12px: {probe}"
