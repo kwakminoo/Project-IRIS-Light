@@ -358,6 +358,38 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant("browser.search", ExecKind.SURFACE, "Search the web or YouTube in the visible Iris browser; query required"),
         SpeakGrant("browser.snapshot", ExecKind.SURFACE, "Read the visible Iris browser controls and refs"),
         SpeakGrant("browser.type", ExecKind.SURFACE, "Type into a browser element by ref; text required"),
+        SpeakGrant(
+            "web.run_search",
+            ExecKind.SURFACE,
+            "Search the web (Iris Control; model name web_search).",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        ),
+        SpeakGrant(
+            "web.run_extract",
+            ExecKind.SURFACE,
+            "Extract page text from URLs (Iris Control; model name web_extract).",
+            {
+                "type": "object",
+                "properties": {
+                    "urls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "format": {"type": "string"},
+                    "char_limit": {"type": "integer", "minimum": 1},
+                },
+                "required": ["urls"],
+                "additionalProperties": False,
+            },
+        ),
         SpeakGrant("calendar.add_event", ExecKind.SURFACE, "Add a calendar event; title and start_at required"),
         SpeakGrant("calendar.delete_event", ExecKind.SURFACE, "Delete a calendar event by id"),
         SpeakGrant("calendar.refresh_holidays", ExecKind.SURFACE, "Refresh Korean public holidays"),

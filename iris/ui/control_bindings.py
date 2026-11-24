@@ -698,6 +698,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     from iris.ui.control_actions.routine import register_routine_actions
     from iris.ui.control_actions.settings import register_settings_actions
     from iris.ui.control_actions.shell import register_shell_actions
+    from iris.ui.control_actions.web import register_web_actions
     from iris.ui.control_actions.wiki import register_wiki_actions
     from iris.ui.control_actions.workspace import register_workspace_actions
 
@@ -706,6 +707,7 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     register_attachment_actions(window, reg)
     register_local_file_actions(window, reg)
     register_shell_actions(window, reg)
+    register_web_actions(window, reg)
     register_ide_actions(window, reg)
     register_project_actions(window, reg)
     register_profile_actions(window, reg)

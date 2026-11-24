@@ -61,6 +61,9 @@ _OFF_UI_ACTIONS = frozenset(
         "wiki.import_content",
         "wiki.import_pages",
         "wiki.write_user_note",
+        # Iris-owned urllib search/extract — network I/O, keep off Qt main
+        "web.run_search",
+        "web.run_extract",
     }
 )
 
