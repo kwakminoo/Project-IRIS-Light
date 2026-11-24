@@ -9,7 +9,7 @@ interpreter 만 받는다. OneDrive/필터 등으로 minor-version junction 생�
 pip 는 uv.lock pin 을 재현하지 않으며 requirements.txt 는 쓰지 않는다.
 
 Python: 처음엔 3.11 → 3.12 → 3.13 을 고르고, clone 한 뒤 그 저장소의 uv.lock·pyproject 가
-요구하는 범위(hermes_python_range)를 벗어나면 다시 고른다. 2026-10-02 upstream 은
+요구하는 범위(iris_agent_python_range)를 벗어나면 다시 고른다. 2026-10-02 upstream 은
 requires-python 이 >=3.11,<3.15 인데 의존성이 전부 `python_version >= '3.14'` 로 묶여
 3.11 로는 핵심 패키지가 하나도 깔리지 않았다 (ruamel 없음, 실제 사례).
 """
@@ -127,7 +127,7 @@ def _ver(text: str) -> tuple[int, int]:
     return int(major), int(minor)
 
 
-def hermes_python_range(repo: Path) -> PyRange:
+def iris_agent_python_range(repo: Path) -> PyRange:
     """그 checkout 이 실제로 설치되는 Python 범위.
 
     pyproject 의 requires-python 과 uv.lock 의 supported-markers 중 좁은 쪽."""
@@ -505,7 +505,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 @contextmanager
-def hermes_install_lock(home: Path) -> Iterator[Path]:
+def iris_agent_install_lock(home: Path) -> Iterator[Path]:
     home.mkdir(parents=True, exist_ok=True)
     path = home / "iris-hermes-install.lock"
     if path.is_file():
@@ -672,7 +672,7 @@ def _activate_staged(
     live = home / "hermes-agent"
     _retarget_moved_tree(live, old, live)
     if probe_gateway:
-        ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
+        ok, detail = gw.probe_iris_agent_runtime(command=command, timeout_sec=30.0)
     else:
         venv_py = live / ("venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python")
         ok, detail = _probe_venv(venv_py)
@@ -1090,7 +1090,7 @@ def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | No
     return None
 
 
-def install_hermes_with_system_python(
+def install_iris_agent_with_system_python(
     *,
     command: str = "hermes",
     on_stream: StreamFn | None = None,
@@ -1125,11 +1125,11 @@ def install_hermes_with_system_python(
         return InstallResult(False, "사용자가 중단함", "cancel")
 
     try:
-        with hermes_install_lock(home):
-            # probe_hermes_runtime reads the default gateway home. Explicit
+        with iris_agent_install_lock(home):
+            # probe_iris_agent_runtime reads the default gateway home. Explicit
             # EngineHome is a different tree; caller already probed that one.
             if not explicit_home:
-                already, already_detail = gw.probe_hermes_runtime(
+                already, already_detail = gw.probe_iris_agent_runtime(
                     command=command, timeout_sec=30.0
                 )
                 if already:
@@ -1175,7 +1175,7 @@ def install_hermes_with_system_python(
                     "pin SHA 불일치",
                     f"want={pin} got={got}\n" + "\n".join(log),
                 )
-            want = hermes_python_range(staging)
+            want = iris_agent_python_range(staging)
             have = python_version(py)
             log.append(f"repo python range={want} chosen={have}")
             if have is None or not (want[0] <= have < want[1]):
