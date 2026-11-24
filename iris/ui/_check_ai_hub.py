@@ -39,6 +39,12 @@ def _check_ai_hub_dialog_toplevel_open() -> None:
     assert hasattr(mw.MainWindow, "_open_ai_hub_dialog")
     src = inspect.getsource(mw.MainWindow._open_ai_hub_dialog)
     assert "None" in src and ("0xC0000409" in src or "독립" in src or "top-level" in src or "parent" in src)
+    assert "model_use_requested.connect" in src
+    assert "_on_hub_model_use" in src
+    assert hasattr(mw.MainWindow, "_on_hub_model_use")
+    use_src = inspect.getsource(mw.MainWindow._on_hub_model_use)
+    assert "select_model_silent" in use_src
+    assert "_apply_selected_model" in use_src
 
 
 def _check_ai_hub_has_models_and_analytics() -> None:
@@ -48,6 +54,19 @@ def _check_ai_hub_has_models_and_analytics() -> None:
     assert "Analytics" in text or "분석" in text
     assert "LLM" in text or "모델" in text or "Models" in text or "AI" in text
     assert "configure_hud_dialog" in text
+
+
+def _check_ai_hub_includes_ollama_panel() -> None:
+    """로컬 Ollama 설치·삭제·사용 패널이 AI Hub에 붙어 있는지."""
+    import iris.ui.ai_hub.ai_hub_dialog as hub
+
+    text = Path(hub.__file__).read_text(encoding="utf-8")
+    assert "AiOllamaPanel" in text
+    assert "ollama_panel" in text
+    assert "ollama_models_changed" in text
+    assert "model_use_requested" in text
+    assert "self._ollama" in text
+    assert "shutdown" in text
 
 
 def _check_failover_lives_in_ai_hub_not_settings() -> None:
@@ -246,6 +265,7 @@ def main() -> None:
     _check_settings_api_box_has_no_llm_providers()
     _check_ai_hub_dialog_toplevel_open()
     _check_ai_hub_has_models_and_analytics()
+    _check_ai_hub_includes_ollama_panel()
     _check_failover_lives_in_ai_hub_not_settings()
     _check_route_cooldown_book()
     _check_ai_catalog_fitness()

@@ -497,6 +497,7 @@ class MainWindow(QMainWindow):
         self._saved_model = load_selected_model(self._db) or self._settings.ollama_model.strip()
         self._models_list_ready = False
         self._ollama_login_watch = None
+        self._hub_use_pending = ""
         self._cloud_model_pending_login = ""
         # 미로그인 클라우드를 초기 선택으로 두지 않음 — 목록 로드 후 로컬로 확정.
         # 로그인 확인 시 이 이름으로 되돌린다.
@@ -1746,6 +1747,15 @@ class MainWindow(QMainWindow):
                 self._sync_hermes_model(chosen)
         else:
             self._chat.set_model_status("(모델 없음)")
+        pending_hub = (getattr(self, "_hub_use_pending", "") or "").strip()
+        if pending_hub:
+            self._hub_use_pending = ""
+            if self._chat.select_model_silent(pending_hub):
+                self._apply_selected_model(pending_hub, persist=True)
+            else:
+                self._live_activity.append_instant_line(
+                    f"채팅 피커에 '{pending_hub}' 없음 (임베딩 전용 등)"
+                )
         if boot:
             if self._intro is not None:
                 self._intro.notify_models_ready()
@@ -11158,6 +11168,17 @@ class MainWindow(QMainWindow):
         dlg = UserProfileDialog(self._db, self)
         dlg.exec()
 
+    def _on_hub_model_use(self, name: str) -> None:
+        """AI Hub 「사용」 → 채팅 피커와 같은 runtime으로 선택·적용."""
+        name = (name or "").strip()
+        if not name:
+            return
+        if self._chat.select_model_silent(name):
+            self._apply_selected_model(name, persist=True)
+            return
+        self._hub_use_pending = name
+        self._refresh_models(probe_cloud=False)
+
     def _open_ai_hub_dialog(self) -> None:
         # ponytail: frameless MainWindow + modal child → 0xC0000409.
         # AI Hub는 설정과 같이 독립 top-level(parent=None)로 연다.
@@ -11170,6 +11191,11 @@ class MainWindow(QMainWindow):
             )
         except Exception:
             pass
+        # Pull finished while hub is open → picker LOCAL MODEL updates without waiting for close.
+        dlg.ollama_models_changed.connect(
+            lambda: self._refresh_models(probe_cloud=False)
+        )
+        dlg.model_use_requested.connect(self._on_hub_model_use)
         dlg.exec()
         self._refresh_models(probe_cloud=False)
 

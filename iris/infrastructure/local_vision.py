@@ -141,6 +141,38 @@ def pull_model(
     return None
 
 
+def delete_model(
+    base_url: str,
+    model: str,
+    on_progress: Callable[[str, Optional[int]], None] | None = None,
+    should_abort: Callable[[], bool] | None = None,
+) -> Optional[str]:
+    """Ollama /api/delete. 성공이면 None, 실패면 사유."""
+    if should_abort and should_abort():
+        return "중단했어요"
+    if on_progress:
+        on_progress("삭제 중…", None)
+    url = f"{_native_base(base_url)}/api/delete"
+    body = json.dumps({"name": model}).encode("utf-8")
+    req = Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urlopen(req, timeout=120) as resp:
+            if should_abort and should_abort():
+                return "중단했어요"
+            raw = resp.read()
+            if raw:
+                try:
+                    ev = json.loads(raw.decode("utf-8", "replace"))
+                except json.JSONDecodeError:
+                    ev = None
+                if isinstance(ev, dict) and ev.get("error"):
+                    return str(ev["error"])[:200]
+    except (URLError, TimeoutError, OSError) as e:
+        return str(e)[:200]
+    forget_cache()
+    return None
+
+
 _KEEP_ALIVE = "30m"  # 다시 올리는 데 80~100초 걸린다 (이 PC 실측) — 한 번 올리면 붙잡아 둔다
 
 
