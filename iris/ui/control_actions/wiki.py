@@ -36,6 +36,31 @@ def _page_limit(raw: object) -> int:
     return min(n, _PAGE_CAP)
 
 
+def resolve_attachment_source(store: Any, attachment_id: str) -> str:
+    """AttachmentStore roots/list_attached_files → absolute path. Missing → ValueError."""
+    aid = str(attachment_id or "").strip()
+    if not aid:
+        raise ValueError("attachment_id required")
+    if store is None:
+        raise ValueError(f"attachment_id not found: {aid}")
+    root = getattr(store, "roots", {}).get(aid)
+    if root is not None:
+        if getattr(root, "directory", False):
+            raise ValueError(
+                "attachment_id points to a folder; pass a file attachment_id"
+            )
+        return str(root.path)
+    list_fn = getattr(store, "list_attached_files", None)
+    if callable(list_fn):
+        for meta in list_fn() or []:
+            if str(meta.get("attachment_id") or "") != aid:
+                continue
+            full = str(meta.get("full_path") or "").strip()
+            if full:
+                return full
+    raise ValueError(f"attachment_id not found: {aid}")
+
+
 def _truthy(raw: object) -> bool:
     if isinstance(raw, bool):
         return raw
@@ -335,11 +360,44 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             extract_from_source,
         )
 
+        attachment_id = str(args.get("attachment_id") or "").strip()
         source = str(args.get("source") or args.get("path") or args.get("url") or "").strip()
+        if attachment_id:
+            store = getattr(getattr(window, "_chat_session", None), "attachments", None)
+            try:
+                source = resolve_attachment_source(store, attachment_id)
+            except ValueError as exc:
+                return err_result("content.extract", str(exc))
         if not source:
-            return err_result("content.extract", "source required (file path or http(s) URL)")
+            return err_result(
+                "content.extract",
+                "source required (file path, http(s) URL, or attachment_id)",
+            )
+
+        def _optional_int(key: str) -> int | None:
+            raw = args.get(key)
+            if raw is None or raw == "":
+                return None
+            try:
+                return int(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{key} must be an integer") from exc
+
         try:
-            data = extract_from_source(source)
+            page_from = _optional_int("page_from")
+            page_to = _optional_int("page_to")
+        except ValueError as exc:
+            return err_result("content.extract", str(exc))
+
+        _sum, vision = _summary_and_vision(args)
+        _ = _sum
+        try:
+            data = extract_from_source(
+                source,
+                page_from=page_from,
+                page_to=page_to,
+                vision_reader=vision,
+            )
         except UnsupportedAttachmentTypeError as exc:
             return err_result(
                 "content.extract",
@@ -350,20 +408,26 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
                     "scope": "attachment_extract",
                 },
             )
-        except (ValueError, OSError, RuntimeError) as exc:
+        except (ValueError, OSError, RuntimeError, FileNotFoundError) as exc:
             return err_result("content.extract", str(exc))
         _log(window, "content.extract", True)
-        return ok_result(
-            "content.extract",
-            {
-                "kind": data["kind"],
-                "title": data["title"],
-                "text": data["text"],
-                "source": data["source"],
-                "truncated": data["truncated"],
-                "chars": len(str(data["text"])),
-            },
-        )
+        payload: dict[str, Any] = {
+            "kind": data["kind"],
+            "title": data["title"],
+            "text": data["text"],
+            "source": data["source"],
+            "truncated": bool(data.get("truncated")),
+            "incomplete": bool(data.get("incomplete")),
+            "ocr_used": bool(data.get("ocr_used")),
+            "vision_used": bool(data.get("vision_used")),
+            "chars": len(str(data["text"])),
+        }
+        if attachment_id:
+            payload["attachment_id"] = attachment_id
+        if data.get("kind") == "pdf" or data.get("total_pages") is not None:
+            payload["total_pages"] = int(data.get("total_pages") or 0)
+            payload["page_status"] = list(data.get("page_status") or [])
+        return ok_result("content.extract", payload)
 
     def content_dump_lab_scripts(args: dict[str, Any]) -> dict[str, Any]:
         from iris.knowledge.lab_script_dump import dump_lab_scripts, to_hermes_summary
@@ -741,7 +805,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
     reg.register(
         "content.extract",
         content_extract,
-        summary="Extract text from PDF (scanned image pages included), Office, text, image, or http(s) URL. Chat already attaches [자료 본문] before the answer.",
+        summary="Extract text from PDF/Office/text/image/URL. Args: source|path|url or attachment_id; optional page_from/page_to (1-based). Returns total_pages, page_status, incomplete when truncated or unread pages remain.",
         risk="low",
     )
 

@@ -8,15 +8,10 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from iris.knowledge.content_extract import read_pdf_pages
-from iris.runtime.attachment_context import MAX_FILE_BYTES, MAX_PDF_PAGES
+from iris.runtime.attachment_context import MAX_FILE_BYTES, MAX_PDF_PAGES, collapse_ocr_gaps
 from iris.system.project_ops import write_project_file
 
 VisionReader = Callable[[bytes], str]
-
-
-def collapse_ocr_gaps(text: str) -> str:
-    """Drop OCR letter-spacing between Hangul so '실 습' ranks as '실습'."""
-    return re.sub(r"(?<=[가-힣])\s+(?=[가-힣])", "", text or "")
 
 _LABEL_RE = re.compile(
     r"(?m)^[ \t]*(?:프로그램[ \t]+)?(\d+)\s*[-–]\s*(\d+)(?:\.py)?[ \t]*$"

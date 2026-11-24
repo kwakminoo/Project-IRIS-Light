@@ -291,15 +291,60 @@ def _ocr_png_bytes(png: bytes) -> tuple[str, str]:
     return text, ""
 
 
+def _page_window(
+    total: int,
+    *,
+    page_from: int | None,
+    page_to: int | None,
+    page_limit: int | None,
+) -> tuple[int, int]:
+    """1-based inclusive deep-read window."""
+    if page_from is not None or page_to is not None:
+        start = max(1, int(page_from if page_from is not None else 1))
+        end = min(total, int(page_to if page_to is not None else total))
+        if start > end:
+            start, end = end, start
+        return start, min(end, total)
+    end = total if not page_limit else min(total, max(0, int(page_limit)))
+    return (1, end) if end >= 1 else (1, 0)
+
+
+def _page_status(
+    page: int,
+    *,
+    kind: str,
+    chars: int = 0,
+    has_images: bool = False,
+    error: str = "",
+) -> dict[str, object]:
+    return {
+        "page": int(page),
+        "kind": str(kind),
+        "chars": int(chars),
+        "has_images": bool(has_images),
+        "error": str(error or ""),
+    }
+
+
+def _incomplete_from_status(page_status: list[dict[str, object]], *, truncated: bool = False) -> bool:
+    if truncated:
+        return True
+    bad = {"empty", "failed", "unread"}
+    return any(str(row.get("kind") or "") in bad for row in page_status)
+
+
 def read_pdf_pages(
     path: Path,
     *,
     page_limit: int | None = None,
+    page_from: int | None = None,
+    page_to: int | None = None,
     vision_reader=None,
     vision_all: bool = False,
-) -> dict[str, str | bool]:
+) -> dict[str, object]:
     """쪽마다 글자 층 → OCR → (있으면) 비전. 본문이 없으면 ValueError.
 
+    page_from/page_to 는 1-based inclusive. 범위 밖 쪽은 kind=unread.
     vision_all 이면 글자 층·OCR이 비는 쪽을 세고, 한 장씩 순서대로 읽는다.
     끄면 채팅 발췌처럼 최대 VISION_PAGE_CAP 장을 한 번에 보낸다.
     """
@@ -322,35 +367,87 @@ def read_pdf_pages(
     doc = pymupdf.open(str(path))
     try:
         total = int(doc.page_count)
-        limit = total if not page_limit else min(total, int(page_limit))
+        start, end = _page_window(
+            total, page_from=page_from, page_to=page_to, page_limit=page_limit
+        )
+        page_status: list[dict[str, object]] = [
+            _page_status(number, kind="unread") for number in range(1, total + 1)
+        ]
         parts: list[str] = []
         vision: list[bytes] = []
         vision_indexes: list[int] = []
         ocr_used = False
         ocr_error = ""
         vision_needed = 0
-        short_layers: list[tuple[int, str]] = []
-        for index in range(limit):
+        short_layers: list[tuple[int, str, bool]] = []
+        for index in range(max(0, start - 1), end):
+            number = index + 1
             raw = page_texts[index] if index < len(page_texts) else ""
             layer = raw.strip()
-            if _letters(layer) >= _LAYER_MIN:
-                parts.append(f"[쪽 {index + 1}]\n{layer}")
+            page = doc[index]
+            try:
+                has_images = bool(page.get_images())
+            except Exception:
+                has_images = False
+            rich_layer = _letters(layer) >= _LAYER_MIN
+            # Hybrid: text layer alone is not enough when the page embeds images.
+            if rich_layer and not has_images:
+                parts.append(f"[쪽 {number}]\n{layer}")
+                page_status[index] = _page_status(
+                    number, kind="text", chars=len(layer), has_images=False
+                )
                 continue
-            png = _page_png(doc[index])
+            try:
+                png = _page_png(page)
+            except Exception as exc:  # noqa: BLE001
+                page_status[index] = _page_status(
+                    number,
+                    kind="failed",
+                    chars=len(layer),
+                    has_images=has_images,
+                    error=str(exc),
+                )
+                if layer:
+                    parts.append(f"[쪽 {number}]\n{layer}")
+                continue
             ocr_text, err = _ocr_png_bytes(png)
             if err:
                 ocr_error = ocr_error or err
-            if _letters(ocr_text) >= _OCR_KEEP:
+            ocr_body = ocr_text.strip() if _letters(ocr_text) >= _OCR_KEEP else ""
+            if ocr_body:
                 ocr_used = True
-                parts.append(f"[쪽 {index + 1}]\n{ocr_text.strip()}")
+                if rich_layer and has_images:
+                    body = f"{layer}\n\n{ocr_body}"
+                    parts.append(f"[쪽 {number}]\n{body}")
+                    page_status[index] = _page_status(
+                        number, kind="hybrid", chars=len(body), has_images=True
+                    )
+                else:
+                    parts.append(f"[쪽 {number}]\n{ocr_body}")
+                    page_status[index] = _page_status(
+                        number, kind="ocr", chars=len(ocr_body), has_images=has_images
+                    )
                 continue
             if layer:
-                short_layers.append((index + 1, layer))
+                short_layers.append((number, layer, has_images))
             if vision_reader is None:
                 if layer:
-                    parts.append(f"[쪽 {index + 1}]\n{layer}")
+                    parts.append(f"[쪽 {number}]\n{layer}")
+                    page_status[index] = _page_status(
+                        number,
+                        kind="text",
+                        chars=len(layer),
+                        has_images=has_images,
+                        error=err,
+                    )
                 else:
                     vision_needed += 1
+                    page_status[index] = _page_status(
+                        number,
+                        kind="empty",
+                        has_images=has_images,
+                        error=err or ocr_error,
+                    )
                 continue
             vision_needed += 1
             if vision_all:
@@ -359,15 +456,54 @@ def read_pdf_pages(
                     one = str(vision_reader([png]) or "").strip()
                 except Exception as exc:  # noqa: BLE001
                     ocr_error = ocr_error or str(exc)
+                    page_status[index] = _page_status(
+                        number,
+                        kind="failed",
+                        chars=len(layer),
+                        has_images=has_images,
+                        error=str(exc),
+                    )
+                    if layer:
+                        parts.append(f"[쪽 {number}]\n{layer}")
+                    continue
                 if one:
-                    parts.append(f"[쪽 {index + 1} 이미지]\n{one}")
+                    if rich_layer and has_images:
+                        body = f"{layer}\n\n[이미지]\n{one}"
+                        parts.append(f"[쪽 {number}]\n{body}")
+                    else:
+                        body = one
+                        parts.append(f"[쪽 {number} 이미지]\n{one}")
+                    page_status[index] = _page_status(
+                        number, kind="vision", chars=len(body), has_images=has_images
+                    )
                 elif layer:
-                    parts.append(f"[쪽 {index + 1}]\n{layer}")
+                    parts.append(f"[쪽 {number}]\n{layer}")
+                    page_status[index] = _page_status(
+                        number, kind="text", chars=len(layer), has_images=has_images
+                    )
+                else:
+                    page_status[index] = _page_status(
+                        number, kind="empty", has_images=has_images, error=err
+                    )
                 continue
             if len(vision) < VISION_PAGE_CAP:
                 vision.append(png)
-                vision_indexes.append(index + 1)
-        vision_used = any(part.startswith("[쪽 ") and " 이미지]" in part.split("\n", 1)[0] for part in parts)
+                vision_indexes.append(number)
+                page_status[index] = _page_status(
+                    number, kind="unread", has_images=has_images, error="vision_pending"
+                )
+            elif layer:
+                parts.append(f"[쪽 {number}]\n{layer}")
+                page_status[index] = _page_status(
+                    number, kind="text", chars=len(layer), has_images=has_images
+                )
+            else:
+                page_status[index] = _page_status(
+                    number, kind="empty", has_images=has_images, error=err
+                )
+        vision_used = any(
+            part.startswith("[쪽 ") and " 이미지]" in part.split("\n", 1)[0] for part in parts
+        )
         if vision and vision_reader is not None:
             try:
                 transcribed = str(vision_reader(vision) or "").strip()
@@ -378,17 +514,41 @@ def read_pdf_pages(
                 vision_used = True
                 label = ", ".join(str(number) for number in vision_indexes)
                 parts.append(f"[쪽 {label} 이미지]\n{transcribed}")
+                share = max(1, len(transcribed) // max(1, len(vision_indexes)))
+                for number in vision_indexes:
+                    page_status[number - 1] = _page_status(
+                        number,
+                        kind="vision",
+                        chars=share,
+                        has_images=True,
+                    )
             else:
-                for number, layer in short_layers:
+                for number, layer, has_images in short_layers:
+                    if number not in vision_indexes:
+                        continue
                     parts.append(f"[쪽 {number}]\n{layer}")
+                    page_status[number - 1] = _page_status(
+                        number, kind="text", chars=len(layer), has_images=has_images
+                    )
+                for number in vision_indexes:
+                    if str(page_status[number - 1].get("kind")) == "unread":
+                        page_status[number - 1] = _page_status(
+                            number,
+                            kind="empty",
+                            has_images=True,
+                            error=ocr_error,
+                        )
         text = "\n\n".join(part for part in parts if part.strip()).strip()
         notes: list[str] = []
-        if page_limit and total > limit:
-            notes.append(f"앞 {limit}쪽만 읽었습니다. 전체 {total}쪽.")
+        if end < total and (page_from is None and page_to is None and page_limit):
+            notes.append(f"앞 {end}쪽만 읽었습니다. 전체 {total}쪽.")
+        elif page_from is not None or page_to is not None:
+            notes.append(f"{start}–{end}쪽만 읽었습니다. 전체 {total}쪽.")
         if vision_needed and not vision_used and vision_reader is None:
             notes.append(
                 f"글자가 없는 이미지 쪽 {vision_needed}장은 OCR이 비어 있고, 비전 읽기가 없습니다."
             )
+        incomplete = _incomplete_from_status(page_status)
         if not text:
             reason = ocr_error or "이미지로만 된 PDF에서 글자를 읽지 못했습니다."
             if notes:
@@ -399,6 +559,9 @@ def read_pdf_pages(
             "ocr_used": ocr_used,
             "vision_used": vision_used,
             "note": " ".join(notes),
+            "total_pages": total,
+            "page_status": page_status,
+            "incomplete": incomplete,
         }
     finally:
         doc.close()
@@ -620,11 +783,14 @@ def extract_from_source(
     *,
     char_limit: int | None = _MAX_CHARS,
     page_limit: int | None = None,
+    page_from: int | None = None,
+    page_to: int | None = None,
     vision_reader=None,
     vision_all: bool = False,
-) -> dict[str, str | bool]:
-    """파일 경로 또는 http(s) URL → {kind, title, text, source, truncated}.
+) -> dict[str, object]:
+    """파일 경로 또는 http(s) URL → {kind, title, text, source, truncated, …}.
 
+    PDF는 total_pages / page_status / incomplete 를 함께 반환한다.
     char_limit 가 None 이면 위키 저장용으로 글자를 자르지 않는다.
     """
     src = (source or "").strip().strip('"').strip("'")
@@ -640,6 +806,7 @@ def extract_from_source(
             "text": text,
             "source": src,
             "truncated": truncated,
+            "incomplete": truncated,
         }
 
     path = Path(src).expanduser()
@@ -654,6 +821,8 @@ def extract_from_source(
         data = read_pdf_pages(
             path,
             page_limit=page_limit,
+            page_from=page_from,
+            page_to=page_to,
             vision_reader=vision_reader,
             vision_all=vision_all,
         )
@@ -661,6 +830,8 @@ def extract_from_source(
         note = str(data.get("note") or "").strip()
         if note:
             text = f"{note}\n\n{text}"
+        page_status = list(data.get("page_status") or [])
+        incomplete = _incomplete_from_status(page_status, truncated=truncated)
         return {
             "kind": "pdf",
             "title": source_display_title(path, meta=_pdf_metadata_title(path), text=text),
@@ -670,6 +841,9 @@ def extract_from_source(
             "ocr_used": bool(data.get("ocr_used")),
             "vision_used": bool(data.get("vision_used")),
             "note": note,
+            "total_pages": int(data.get("total_pages") or 0),
+            "page_status": page_status,
+            "incomplete": incomplete,
         }
 
     if suffix in _OFFICE_SUFFIXES:
@@ -680,6 +854,7 @@ def extract_from_source(
             "text": text,
             "source": str(path.resolve()),
             "truncated": truncated,
+            "incomplete": truncated,
         }
 
     if suffix in _IMAGE_SUFFIXES:
@@ -700,6 +875,7 @@ def extract_from_source(
             "source": str(path.resolve()),
             "truncated": truncated,
             "vision_used": True,
+            "incomplete": truncated,
         }
 
     if suffix in _TEXT_SUFFIXES or suffix in _CODE_SUFFIXES or suffix == "":
@@ -711,6 +887,7 @@ def extract_from_source(
             "text": text,
             "source": str(path.resolve()),
             "truncated": truncated,
+            "incomplete": truncated,
         }
 
     # F5: Setup 다운로드 「허용되지 않는 파일 형식」과 혼동 금지 — 첨부/위키 추출 전용 코드.

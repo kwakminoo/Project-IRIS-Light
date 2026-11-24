@@ -73,7 +73,7 @@ class DispatchHarness(QObject):
         self._live_activity = Mock()
         self.payloads = []
         self.failures = []
-        for method in ["_try_open_at_path_refs", "_try_local_pinned_status", "_try_local_lab_dump", "_try_local_ide_control", "_try_local_wiki_save", "_try_local_pdf_save", "_try_local_extension_install", "_try_local_workspace_control", "_route_to_workspace_chat", "_handle_image_code_pipe"]:
+        for method in ["_try_open_at_path_refs", "_try_local_pinned_status", "_try_local_ide_control", "_try_local_wiki_save", "_try_local_pdf_save", "_try_local_extension_install", "_try_local_workspace_control", "_route_to_workspace_chat", "_handle_image_code_pipe"]:
             setattr(self, method, Mock(return_value=False))
         for method in ["_refresh_context_gauge", "_stop_tts_playback", "_begin_auto_tts_response", "_sync_voice_conversation_state"]:
             setattr(self, method, Mock())

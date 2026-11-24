@@ -87,6 +87,16 @@ def main() -> None:
         assert junk not in str(payload)
         assert payload["count"] == 2
 
+    # App local intercept removed: PDF lab dump is tool-only (content.dump_lab_scripts).
+    main_window = Path(__file__).resolve().parent / "window" / "main_window.py"
+    mw_src = main_window.read_text(encoding="utf-8")
+    assert "_try_local_lab_dump" not in mw_src, (
+        "main_window must not call/define _try_local_lab_dump (tool path only)"
+    )
+    assert "_on_lab_dump_ok" not in mw_src
+    assert "_on_lab_dump_err" not in mw_src
+    assert "_lab_dump_worker" not in mw_src
+
     print("lab_script_dump self-check ok")
 
 

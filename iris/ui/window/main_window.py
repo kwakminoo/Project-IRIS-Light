@@ -498,8 +498,8 @@ class MainWindow(QMainWindow):
         self._saved_model = load_selected_model(self._db) or self._settings.ollama_model.strip()
         self._models_list_ready = False
         self._ollama_login_watch = None
-        self._hub_use_pending = ""
         self._cloud_model_pending_login = ""
+        self._hub_use_pending = ""
         # 미로그인 클라우드를 초기 선택으로 두지 않음 — 목록 로드 후 로컬로 확정.
         # 로그인 확인 시 이 이름으로 되돌린다.
         try:
@@ -528,7 +528,6 @@ class MainWindow(QMainWindow):
         self._turn_attachment_paths: tuple[str, ...] = ()
         self._wiki_session_worker = None
         self._pdf_export_worker = None
-        self._lab_dump_worker = None
         self._ext_install_worker: ExtensionInstallWorker | None = None
         self._pending_ext: dict | None = None
         self._recent_voice_turns: deque[tuple[float, int | None, str]] = deque()
@@ -4730,105 +4729,6 @@ class MainWindow(QMainWindow):
         self._finish_current_turn(turn.id)
         return True
 
-    def _try_local_lab_dump(self, turn: UserTurn, model: str = "") -> bool:
-        from iris.knowledge.lab_script_dump import is_lab_dump_intent, pdf_paths_from
-        from iris.knowledge.page_vision import transcribe_images
-        from iris.ui.workers.lab_dump_worker import LabDumpWorker
-
-        pdfs = pdf_paths_from(turn.attachments)
-        if not is_lab_dump_intent(turn.text or "", pdfs):
-            return False
-        display = self._format_user_turn_content(turn)
-        self._chat.append_message_instant("You", display)
-        self._record_history("user", display)
-        root = self._current_project_root()
-        if not root:
-            msg = "프로젝트를 연 뒤 다시 요청해 주세요."
-            self._chat.append_message_instant("Iris", msg)
-            self._record_history("assistant", msg)
-            self._finish_current_turn(turn.id, open_followup=False)
-            return True
-        worker = getattr(self, "_lab_dump_worker", None)
-        if worker is not None and worker.isRunning():
-            msg = "이전 실습 스크립트 추출이 아직 진행 중입니다."
-            self._chat.append_message_instant("Iris", msg)
-            self._record_history("assistant", msg)
-            self._finish_current_turn(turn.id, open_followup=False)
-            return True
-        image_reader = None
-        if model:
-            spec = self._material_vision_spec(model)
-            ask = turn.text or ""
-
-            def _read_image(png: bytes, spec=spec, ask=ask) -> str:
-                return transcribe_images(
-                    [png],
-                    model=spec["model"],
-                    ollama_base_url=spec["ollama_base_url"],
-                    api_base_url=spec["api_base_url"],
-                    api_key=spec["api_key"],
-                    auth_style=spec["auth_style"],
-                    prompt=ask,
-                )
-
-            image_reader = _read_image
-        self._chat.append_message_instant("Iris", "실습 스크립트를 PDF에서 추출해 저장하는 중…")
-        self._chat.set_generating(True)
-        dump = LabDumpWorker(
-            pdfs[0],
-            root,
-            query=turn.text or "",
-            image_reader=image_reader,
-            parent=self,
-        )
-        dump.finished_ok.connect(
-            lambda reply, tid=turn.id: self._on_lab_dump_ok(tid, reply),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        dump.finished_err.connect(
-            lambda err, tid=turn.id: self._on_lab_dump_err(tid, err),
-            Qt.ConnectionType.QueuedConnection,
-        )
-        self._lab_dump_worker = dump
-        dump.start()
-        return True
-
-    def _on_lab_dump_ok(self, turn_id: str, reply) -> None:
-        msg = getattr(reply, "user_visible", None) or str(reply or "")
-        try:
-            self._chat.set_generating(False)
-            self._chat.append_message_instant("Iris", msg)
-            self._record_history("assistant", msg)
-            self._refresh_context_gauge()
-            self._finish_current_turn(turn_id, open_followup=False)
-        except Exception:  # noqa: BLE001 — 슬롯 예외는 PyQt가 qFatal로 프로세스를 죽인다
-            try:
-                self._chat.set_generating(False)
-            except Exception:
-                pass
-            try:
-                self._finish_current_turn(turn_id, open_followup=False)
-            except Exception:
-                pass
-
-    def _on_lab_dump_err(self, turn_id: str, err: str) -> None:
-        msg = err or "실습 스크립트 추출에 실패했습니다."
-        try:
-            self._chat.set_generating(False)
-            self._chat.append_message_instant("Iris", msg)
-            self._record_history("assistant", msg)
-            self._refresh_context_gauge()
-            self._finish_current_turn(turn_id, open_followup=False)
-        except Exception:  # noqa: BLE001
-            try:
-                self._chat.set_generating(False)
-            except Exception:
-                pass
-            try:
-                self._finish_current_turn(turn_id, open_followup=False)
-            except Exception:
-                pass
-
     def _try_local_pdf_save(self, turn: UserTurn) -> bool:
         from iris.knowledge.pdf_export import is_pdf_save_intent, output_path_for, trace
         from iris.ui.workers.pdf_export_worker import PdfExportWorker
@@ -5068,8 +4968,6 @@ class MainWindow(QMainWindow):
             )
             self._refresh_hermes_health()
 
-        if self._try_local_lab_dump(turn, model):
-            return
         attached_store = self._chat_session.attachments
         if turn.attachments or attached_store.roots:
             from iris.knowledge.page_vision import transcribe_images

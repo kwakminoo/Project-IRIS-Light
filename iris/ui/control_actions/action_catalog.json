@@ -235,7 +235,7 @@
   },
   {
     "name": "content.extract",
-    "summary": "Extract text from PDF (scanned image pages included), Office, text, image, or http(s) URL. Chat already attaches [자료 본문] before the answer.",
+    "summary": "Extract text from PDF/Office/text/image/URL. Args: source|path|url or attachment_id; optional page_from/page_to (1-based). Returns total_pages, page_status, incomplete when truncated or unread pages remain.",
     "risk": "low",
     "confirm_required": false
   },
@@ -825,6 +825,18 @@
     "name": "voice.toggle_mic",
     "summary": "Toggle mic listen (same as titlebar mic icon)",
     "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "web.run_extract",
+    "summary": "Extract readable text from public http(s) URLs (Iris urllib lane). Required: urls (list, max 5). Optional: char_limit.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "web.run_search",
+    "summary": "Search the web via Iris (Brave/Tavily/Exa/SerpAPI keys from settings). Required: query. Optional: limit (1..100).",
+    "risk": "low",
     "confirm_required": false
   },
   {
