@@ -81,7 +81,10 @@ def picker_sort_key(m: PickerModel, *, favorites: set[str] | None = None) -> tup
         tool = m.tool_support or ("no" if not m.supports_tools else "")
         rank, _ = model_list_tier(m.runtime, state=m.availability, tool=tool)
         key = (0, 0, rank, m.label.lower())
-    return ((0 if m.runtime in favorites else 1), *key) if favorites is not None else key
+    # Empty favorites set must match None so roster checks and UI agree.
+    if favorites:
+        return ((0 if m.runtime in favorites else 1), *key)
+    return key
 
 
 def _favorite_button(runtime: str, favorites: set[str], toggle) -> QToolButton:
