@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 from pathlib import Path
 from unittest import mock
@@ -17,7 +18,6 @@ def _src() -> str:
 def main() -> None:
     src = _src()
     assert "/api/delete" in src
-    assert '"name"' in src or "'name'" in src
     assert "forget_cache" in inspect.getsource(delete_model)
 
     # Mirror pull_model: Optional[str] — None ok, str on failure/cancel
@@ -34,10 +34,8 @@ def main() -> None:
         bad = delete_model("http://127.0.0.1:11434", "unit-test-missing:tag")
     assert bad == "refused"
 
-    # Success path → forget_cache (cache cleared observable)
-    from iris.infrastructure import local_vision as lv
-
-    lv._cache["k"] = (0.0, "m", "ok")
+    # Request must be DELETE with JSON body key "model" (Ollama docs + pull_model)
+    captured: list = []
 
     class _Resp:
         def read(self) -> bytes:
@@ -49,8 +47,20 @@ def main() -> None:
         def __exit__(self, *a):
             return False
 
-    with mock.patch("iris.infrastructure.local_vision.urlopen", return_value=_Resp()):
+    def _capture(req, timeout=None):
+        captured.append(req)
+        return _Resp()
+
+    from iris.infrastructure import local_vision as lv
+
+    lv._cache["k"] = (0.0, "m", "ok")
+    with mock.patch("iris.infrastructure.local_vision.urlopen", side_effect=_capture):
         assert delete_model("http://127.0.0.1:11434", "stub:tag") is None
+    assert len(captured) == 1, captured
+    req = captured[0]
+    assert req.get_method() == "DELETE", req.get_method()
+    payload = json.loads(req.data.decode("utf-8"))
+    assert payload == {"model": "stub:tag"}, payload
     assert lv._cache == {}
 
     if os.environ.get("IRIS_LIVE_OLLAMA") == "1":
