@@ -1430,6 +1430,7 @@ class ChatPanel(QWidget):
     # 타이핑 효과가 끝났을 때 — 정지 버튼(presenting) 해제용
     typing_finished = pyqtSignal()
     model_changed = pyqtSignal(str)
+    model_favorite_toggled = pyqtSignal(str)
     files_attached = pyqtSignal(list)
     skill_inserted = pyqtSignal(str)
     mcp_inserted = pyqtSignal(str)
@@ -1472,9 +1473,9 @@ class ChatPanel(QWidget):
                 min-height: 0; max-height: 16777215px;
             }
             QScrollBar::handle:vertical {
-                background: rgba(148, 163, 184, 100); min-height: 28px; border-radius: 4px;
+                background: transparent; min-height: 28px; border-radius: 4px;
             }
-            QScrollBar::handle:vertical:hover { background: rgba(148, 163, 184, 170); }
+            QScrollBar::handle:vertical:hover { background: transparent; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
         """)
@@ -1502,6 +1503,8 @@ class ChatPanel(QWidget):
         self._typing_timer.timeout.connect(self._type_next_chunk)
         self._typing_text = ""
         self._typing_index = 0
+        # Raw chars of `_typing_text` already pushed to H1 PartStream (drip cursor).
+        self._typing_h1_pushed = 0
         self._typing_speech_sync = False
         self._typing_speech_duration_ms: float | None = None
         self._typing_speech_start: float | None = None
@@ -1549,6 +1552,7 @@ class ChatPanel(QWidget):
         self._model_guard_prev_index = 0
         self._model_guard_silent = False
         self._picker_models: list[PickerModel] = []
+        self._model_favorites: set[str] = set()
         self._model_picker_menu: ModelPickerMenu | None = None
         self._input.submit_requested.connect(self._on_submit_or_stop)
         self._input.textChanged.connect(self._on_input_changed)
@@ -2228,20 +2232,14 @@ class ChatPanel(QWidget):
     def set_mic_recording(self, recording: bool) -> None:
         self._waveform.set_listening(recording)
 
-    def set_model_favorites(self, runtimes: Iterable[str]) -> None:
-        """DB(또는 테스트)에서 읽은 즐겨찾기 runtime 집합으로 피커 정렬·별 표시를 맞춘다."""
-        cleaned: set[str] = set()
-        for raw in runtimes:
-            key = (raw or "").strip()
-            if key:
-                cleaned.add(key)
-        self._model_favorites = cleaned
+    def set_model_favorites(self, runtimes) -> None:
+        self._model_favorites = {
+            value.strip() for value in runtimes if isinstance(value, str) and value.strip()
+        }
 
     def _on_model_favorite_toggled(self, runtime: str) -> None:
-        key = (runtime or "").strip()
-        if not key:
-            return
-        self.model_favorite_toggled.emit(key)
+        if runtime.strip():
+            self.model_favorite_toggled.emit(runtime.strip())
 
     def set_models(
         self,
@@ -2424,9 +2422,8 @@ class ChatPanel(QWidget):
             self._model_picker_menu.hide()
             self._model_picker_menu.deleteLater()
             self._model_picker_menu = None
-        favs = self._model_favorites
         local, ollama, brands, singles = split_picker_groups(
-            self._picker_models, favorites=favs
+            self._picker_models, favorites=self._model_favorites
         )
         brand_rows = [
             (pid, brand_label(items, pid), len(items)) for pid, items in brands.items()
@@ -2436,7 +2433,7 @@ class ChatPanel(QWidget):
             has_ollama=bool(ollama),
             brands=brand_rows,
             singles=singles,
-            favorites=favs,
+            favorites=self._model_favorites,
             parent=self,
         )
         menu.open_local.connect(
@@ -2719,6 +2716,7 @@ class ChatPanel(QWidget):
         self._typing_body_start = None
         self._typing_text = ""
         self._typing_index = 0
+        self._typing_h1_pushed = 0
         self._typing_wait_for_tts_completion = False
         self._scroll_user_hold = False
         self._scroll_follow_tail = True
@@ -3160,6 +3158,8 @@ class ChatPanel(QWidget):
         output: str = "",
         status: str = "ok",
         block_id: str | None = None,
+        phase: str | None = None,
+        **_kwargs,
     ) -> str:
         """Cursor식 도구/셸 실행 카드를 채팅 로그에 인라인 삽입."""
         self.finish_typing()
@@ -3172,6 +3172,7 @@ class ChatPanel(QWidget):
             status=status or "ok",
             block_id=bid,
             collapsed=False,
+            phase=(phase or "done").strip() or "done",
         )
         self._log._tool_blocks[bid] = block
         cursor = self._log.textCursor()
@@ -3183,6 +3184,7 @@ class ChatPanel(QWidget):
                 block.output,
                 block.status,
                 block.block_id,
+                phase=block.phase,
             )
         )
         self._log.setTextCursor(cursor)
@@ -3208,6 +3210,7 @@ class ChatPanel(QWidget):
         self._typing_render_markdown = who.strip().lower() == "iris"
         self._typing_text = ""
         self._typing_index = 0
+        self._typing_h1_pushed = 0
         self._typing_speech_sync = speech_sync
         self._typing_speech_duration_ms = None
         self._typing_speech_start = None
@@ -3220,19 +3223,21 @@ class ChatPanel(QWidget):
         )
 
     def append_stream_chunk(self, text: str) -> None:
-        """스트리밍 청크 — H1 PartStream + TTS 버퍼."""
+        """스트리밍 청크 — 버퍼 후 plain typing이 H1로 한 글자씩 밀어 넣음."""
         if not text:
             return
         if not self._stream_active:
             self.begin_stream_message("Iris", speech_sync=self._typing_speech_sync)
         self._append_typing_buffer(text)
-        self.push_transcript_chunk(text)
         self._block_buffer.feed(text)
-        if not self._typing_speech_sync:
-            self._start_plain_typing_timer()
+        if self._typing_speech_sync:
+            # TTS 경로: 즉시 덤프하지 않고 sync_typing_to_speech 틱이 H1에 드립.
+            return
+        # speech_sync=False: mid-stream에도 plain typing 타이머로 H1 drip.
+        self._start_plain_typing_timer()
 
     def _flush_stream_ui(self) -> None:
-        """Legacy `_log` paint no-op — H1 stream updates live via PartStream."""
+        """Legacy `_log` paint no-op — H1 stream updates via typing drip / PartStream."""
         return
 
     def end_stream_message(self, final_text: str | None = None) -> None:
@@ -3248,6 +3253,9 @@ class ChatPanel(QWidget):
             who, final_text if final_text is not None else self._typing_text
         )
         self._block_buffer.set_final(self._typing_text)
+        # Catch up any unpushed drip once, then land (stop-button clear after land).
+        if not self._typing_speech_sync:
+            self._flush_typing_h1_remainder()
         self.finish_transcript_stream()
         mid = self._pending_iris_msg_id or ""
         host = self.transcript()
@@ -3260,12 +3268,12 @@ class ChatPanel(QWidget):
             self._land_turn_on_h1(who, self._typing_text, msg_id=mid)
         self._stream_active = False
         self._stream_block_start = None
-        self._ensure_buffered_typing_fallback()
+        # Plain stream: full body landed — clear leftover buffer (sticky stop / scroll yank).
+        # speech_sync keeps TTS wait / buffered typing fallback.
         if not self._typing_speech_sync:
-            if self._typing_index >= prose_char_count(self._typing_text):
-                self.finish_typing()
-            else:
-                self._start_plain_typing_timer()
+            self.finish_typing()
+        else:
+            self._ensure_buffered_typing_fallback()
 
     def append_message_typed(
         self,
@@ -3283,6 +3291,8 @@ class ChatPanel(QWidget):
         self._typing_render_markdown = who.strip().lower() == "iris"
         self._typing_text = body
         self._typing_index = prose_char_count(body) if not speech_sync else 0
+        # Instant land already painted full body on H1.
+        self._typing_h1_pushed = len(body) if not speech_sync else 0
         self._typing_speech_sync = speech_sync
         self._typing_speech_duration_ms = None
         self._typing_speech_start = None
@@ -3292,6 +3302,7 @@ class ChatPanel(QWidget):
             # Already landed on H1 — no per-char paint; clear typing state.
             self._typing_text = ""
             self._typing_index = 0
+            self._typing_h1_pushed = 0
             self._pending_iris_msg_id = ""
             self.typing_finished.emit()
 
@@ -3372,8 +3383,8 @@ class ChatPanel(QWidget):
             return True
         if self._typing_timer.isActive():
             return True
-        prose = prose_char_count(self._typing_text)
-        if prose > 0 and self._typing_index < prose:
+        limit = self._typing_reveal_limit()
+        if limit > 0 and self._typing_index < limit:
             return True
         return bool(self._typing_text) and self._typing_body_start is not None
 
@@ -3384,12 +3395,15 @@ class ChatPanel(QWidget):
         self._typing_timer.stop()
         if self._typing_render_markdown and self._typing_body_start is not None:
             self._render_markdown_body()
-        elif self._typing_index < prose_char_count(self._typing_text):
-            self._typing_index = prose_char_count(self._typing_text)
+        elif self._typing_index < self._typing_reveal_limit():
+            self._typing_index = self._typing_reveal_limit()
+            self._push_typing_h1_delta()
             self._replace_typing_body()
         had_body = bool(self._typing_text) or self._typing_body_start is not None
+        legacy_log = self._typing_body_start is not None
         self._typing_text = ""
         self._typing_index = 0
+        self._typing_h1_pushed = 0
         self._typing_speech_sync = False
         self._typing_wait_for_tts_completion = False
         self._typing_speech_duration_ms = None
@@ -3398,9 +3412,9 @@ class ChatPanel(QWidget):
         self._typing_render_markdown = False
         self._pending_iris_msg_id = ""
         self._block_buffer.reset()
-        if had_body:
+        if legacy_log:
             self._append_trailing_blank_line()
-        self._scroll_log_to_bottom()
+            self._scroll_log_to_bottom()
         if had_body:
             self.typing_finished.emit()
 
@@ -3449,11 +3463,54 @@ class ChatPanel(QWidget):
 
     def _start_plain_typing_timer(self) -> None:
         """TTS 속도가 없을 때 한 글자씩 연다. 이미 따라잡았으면 그대로 둔다."""
-        if self._typing_index >= prose_char_count(self._typing_text):
+        if self._typing_index >= self._typing_reveal_limit():
             return
         if not self._typing_timer.isActive():
             self._typing_timer.setInterval(plain_typing_step()[0])
             self._typing_timer.start()
+
+    def _typing_reveal_limit(self) -> int:
+        """How far `_typing_index` may advance.
+
+        Plain H1 drip uses raw code units of `_typing_text`. Speech sync keeps
+        prose-based pacing (code fences excluded from the clock).
+        """
+        if self._typing_speech_sync:
+            return prose_char_count(self._typing_text)
+        return len(self._typing_text or "")
+
+    def _typing_h1_reveal_end(self) -> int:
+        """Raw end index in `_typing_text` that H1 should show for `_typing_index`."""
+        raw = self._typing_text or ""
+        raw_len = len(raw)
+        idx = max(0, int(self._typing_index))
+        if not self._typing_speech_sync:
+            return min(idx, raw_len)
+        prose_len = prose_char_count(raw)
+        if idx <= 0:
+            return 0
+        if prose_len <= 0 or idx >= prose_len:
+            return raw_len
+        return min(raw_len, (idx * raw_len) // prose_len)
+
+    def _push_typing_h1_delta(self) -> None:
+        """Push newly revealed raw slice to H1 PartStream."""
+        end = self._typing_h1_reveal_end()
+        start = max(0, int(self._typing_h1_pushed))
+        if end <= start:
+            return
+        delta = (self._typing_text or "")[start:end]
+        if delta:
+            self.push_transcript_chunk(delta)
+        self._typing_h1_pushed = end
+
+    def _flush_typing_h1_remainder(self) -> None:
+        """Push any still-buffered chars to H1 once (stream end catch-up)."""
+        raw_len = len(self._typing_text or "")
+        if self._typing_h1_pushed >= raw_len:
+            return
+        self._typing_index = self._typing_reveal_limit()
+        self._push_typing_h1_delta()
 
     def fallback_typing_if_waiting_for_tts(self) -> None:
         """TTS 시작/합성이 실패한 경우만 타이핑 대기를 해제하고 폴백 시작."""
@@ -3486,7 +3543,7 @@ class ChatPanel(QWidget):
         return render_iris_message(visible) if visible.strip() else ""
 
     def _replace_typing_body(self) -> None:
-        """타이핑 본문 — Iris 는 요약 정책, 그 외는 기존 세그먼트 표시."""
+        """타이핑 본문 — H1 drip가 보이는 경로이면 `_log`는 건드리지 않는다."""
         if self._typing_body_start is None:
             return
         start = self._stream_block_start or self._typing_body_start
@@ -3524,23 +3581,26 @@ class ChatPanel(QWidget):
         self._insert_iris_body(cursor, body, self._take_pending_iris_id())
 
     def _type_next_chunk(self) -> None:
-        prose_len = prose_char_count(self._typing_text)
-        if self._typing_index >= prose_len:
+        limit = self._typing_reveal_limit()
+        if self._typing_index >= limit:
             self._typing_timer.stop()
             if self._stream_active:
                 return
             if self._typing_render_markdown and self._typing_body_start is not None:
                 self._render_markdown_body()
             had_body = bool(self._typing_text) or self._typing_body_start is not None
+            legacy_log = self._typing_body_start is not None
             self._typing_text = ""
             self._typing_index = 0
+            self._typing_h1_pushed = 0
             self._typing_speech_sync = False
             self._typing_speech_duration_ms = None
             self._typing_speech_start = None
             self._typing_body_start = None
             self._typing_render_markdown = False
-            self._append_trailing_blank_line()
-            self._scroll_log_to_bottom()
+            if legacy_log:
+                self._append_trailing_blank_line()
+                self._scroll_log_to_bottom()
             if had_body:
                 self.typing_finished.emit()
             return
@@ -3550,7 +3610,7 @@ class ChatPanel(QWidget):
                 self._typing_speech_start = time.monotonic()
             elapsed_ms = (time.monotonic() - self._typing_speech_start) * 1000.0
             target_index = typing_target_index(
-                prose_len,
+                limit,
                 elapsed_ms,
                 self._typing_speech_duration_ms,
             )
@@ -3566,12 +3626,14 @@ class ChatPanel(QWidget):
             if self._typing_timer.interval() != interval:
                 self._typing_timer.setInterval(interval)
             self._typing_index = min(
-                prose_len,
+                limit,
                 self._typing_index + chars,
             )
 
-        self._replace_typing_body()
-        self._scroll_log_to_bottom()
+        self._push_typing_h1_delta()
+        if self._typing_body_start is not None:
+            self._replace_typing_body()
+            self._scroll_log_to_bottom()
 
     def _on_wiki_quote_pasted(self, quote: object) -> None:
         from iris.knowledge.wiki_quote import WikiQuote
