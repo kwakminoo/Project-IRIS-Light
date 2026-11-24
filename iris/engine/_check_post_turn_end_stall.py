@@ -108,6 +108,12 @@ def _with_emit_capture(events: list[dict], body: object, emit=None) -> None:
 
 
 def main() -> None:
+    # Sidecar install imports Hermes tools.registry; this check only covers
+    # post-Turn-ended emit, so stub the hook (product path still installs).
+    sidecar._install_iris_engine_tools = (  # type: ignore[method-assign]
+        lambda _agent, surface=None: ()
+    )
+
     hung_events: list[dict] = []
     started = time.monotonic()
 

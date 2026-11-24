@@ -26,20 +26,30 @@ from iris.system.ide_launcher import (  # noqa: E402
 
 
 def _check_control_bindings_new_window_default() -> None:
-    """회귀: control surface 기본 new_window 는 True (bac8f75 False 회귀 금지)."""
-    src = (ROOT / "iris" / "ui" / "control_bindings.py").read_text(encoding="utf-8")
-    assert src.count('args.get("new_window", True)') >= 3
+    """회귀: control_actions 기본 new_window 는 True (bac8f75 False 회귀 금지)."""
+    ide_src = (ROOT / "iris" / "ui" / "control_actions" / "ide.py").read_text(
+        encoding="utf-8"
+    )
+    project_src = (ROOT / "iris" / "ui" / "control_actions" / "project.py").read_text(
+        encoding="utf-8"
+    )
+    combined = ide_src + "\n" + project_src
+    assert combined.count('args.get("new_window", True)') >= 3
     bad = 'args.get("new_window", False)'
-    open_region = src[src.find("def ide_open_folder") : src.find("def project_list_parents")]
-    similar_region = src[
-        src.find("def project_open_similar") : src.find("def project_create_scaffold")
+    open_region = ide_src[
+        ide_src.find("def ide_open_folder") : ide_src.find("def ide_open_file")
     ]
-    scaffold_start = src.find("def project_create_scaffold")
-    scaffold_region = src[scaffold_start : scaffold_start + 2500]
+    similar_region = project_src[
+        project_src.find("def project_open_similar") : project_src.find(
+            "def project_create_scaffold"
+        )
+    ]
+    scaffold_start = project_src.find("def project_create_scaffold")
+    scaffold_region = project_src[scaffold_start : scaffold_start + 2500]
     assert bad not in open_region, "ide.open_folder must default new_window=True"
     assert bad not in similar_region, "project.open_similar must default new_window=True"
     assert bad not in scaffold_region, "project.create_scaffold must default new_window=True"
-    print("control_bindings new_window default ok")
+    print("control_actions new_window default ok")
 
 
 def _check_title_helpers() -> None:

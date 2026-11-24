@@ -152,9 +152,14 @@ def main() -> None:
         surface.stop()
 
     src = Path(cs.__file__).read_text(encoding="utf-8")
-    pick = src[src.index("elif action in (\"ide.pick_open_file\"") : src.index("elif action == \"project.write_file\"")]
-    assert "ide.pick_open_folder" in pick
-    assert "timeout = None" in pick
+    fn_start = src.index("def invoke_http_timeout")
+    next_def = src.index("\ndef ", fn_start + 1)
+    pick = src[fn_start:next_def]
+    assert 'name in ("ide.pick_open_file", "ide.pick_open_folder")' in pick
+    pick_arm = pick[
+        pick.index('name in ("ide.pick_open_file", "ide.pick_open_folder")') :
+    ]
+    assert "return None" in pick_arm.split("if ", 1)[0]
     print("control http contract ok")
 
 
