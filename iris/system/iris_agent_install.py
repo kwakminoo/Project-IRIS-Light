@@ -304,7 +304,7 @@ def _kill_hermes_tree_holders(agent: Path) -> None:
     time.sleep(0.4)
 
 
-def force_retire_hermes_agent(
+def force_retire_iris_agent(
     *,
     command: str = "hermes",
     keep_staging: str | None = None,

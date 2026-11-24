@@ -12,8 +12,6 @@ from typing import Mapping
 # Hermes tool names with no Iris Control replacement (strip from schemas only).
 STRIP_ONLY_NAMES: frozenset[str] = frozenset(
     {
-        "process_manage",
-        "patch",
         "vision_analyze",
         "image_generate",
         "skills_list",
@@ -32,6 +30,12 @@ STRIP_ONLY_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# Hermes names that resolve to an absorbed model name but are NOT schema-emitted.
+# ``patch`` → ``apply_patch`` (one schema; no dual write_file/apply_patch style exposure).
+INTERNAL_ALIASES: Mapping[str, str] = {
+    "patch": "apply_patch",
+}
+
 
 @dataclass(frozen=True)
 class AbsorbedTool:
@@ -45,9 +49,11 @@ ABSORBED_TOOLS: tuple[AbsorbedTool, ...] = (
         "terminal",
         by_surface={"home": "shell.run", "ide_companion": "project.run"},
     ),
+    AbsorbedTool("process_manage", action="process.manage"),
     AbsorbedTool("write_file", action="project.write_file"),
     AbsorbedTool("read_file", action="project.read_file"),
     AbsorbedTool("search_files", action="local.search_files"),
+    AbsorbedTool("apply_patch", action="project.apply_patch"),
     AbsorbedTool("web_search", action="web.run_search"),
     AbsorbedTool("web_extract", action="web.run_extract"),
 )
@@ -63,6 +69,7 @@ def strip_only_names() -> frozenset[str]:
 
 def resolve_action(model_name: str, surface: str) -> str | None:
     name = (model_name or "").strip()
+    name = INTERNAL_ALIASES.get(name, name)
     if not name or name in STRIP_ONLY_NAMES:
         return None
     for tool in ABSORBED_TOOLS:

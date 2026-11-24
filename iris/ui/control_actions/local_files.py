@@ -2,24 +2,19 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
-from iris.runtime.attachment_context import EXCLUDED, _is_link
 from iris.storage.local_access_prefs import SYSTEM, load_local_read_scope
 from iris.system.control_surface import ActionRegistry, err_result, ok_result
 
 _MAX_READ_BYTES = 1_048_576
-_MAX_SEARCH_ENTRIES = 20_000
 
 
 def _inside(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except (OSError, ValueError):
-        return False
+    from iris.system.execution_policy import check_path_allowed
+
+    return check_path_allowed(root, path, write=False).allowed
 
 
 def _allowed(window: Any, path: Path) -> bool:
@@ -54,6 +49,8 @@ def _absolute(raw: object, *, directory: bool = False) -> Path:
 
 def register_local_file_actions(window: Any, reg: ActionRegistry) -> None:
     def local_read_file(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.file_patch import read_text_range
+
         path = _absolute(args.get("path"))
         if not _allowed(window, path):
             return err_result(
@@ -61,68 +58,63 @@ def register_local_file_actions(window: Any, reg: ActionRegistry) -> None:
                 "설정된 읽기 범위 밖입니다. 설정에서 로컬 읽기 범위를 System으로 바꾸거나 파일을 첨부하세요.",
             )
         limit = max(1, min(int(args.get("max_bytes") or _MAX_READ_BYTES), _MAX_READ_BYTES))
-        size = path.stat().st_size
-        if size > limit:
+        start = args.get("start_line")
+        end = args.get("end_line")
+        # Full-file path without range keeps hard size fail (compat with prior contract).
+        if start is None and end is None and path.stat().st_size > limit:
             return err_result("local.read_file", f"파일이 읽기 한도({limit} bytes)를 넘습니다.")
-        data = path.read_bytes()
-        if b"\x00" in data:
-            return err_result("local.read_file", "바이너리 파일은 읽을 수 없습니다.")
-        return ok_result(
-            "local.read_file",
-            {"path": str(path), "content": data.decode("utf-8-sig", errors="replace"), "bytes": size},
-        )
+        try:
+            payload = read_text_range(
+                path,
+                start_line=int(start) if start is not None else None,
+                end_line=int(end) if end is not None else None,
+                max_bytes=limit,
+            )
+        except (OSError, ValueError) as exc:
+            return err_result("local.read_file", str(exc))
+        return ok_result("local.read_file", payload)
 
     def local_search_files(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.file_patch import search_files
+
         root = _absolute(args.get("root"), directory=True)
         if not _allowed(window, root):
             return err_result(
                 "local.search_files",
                 "설정된 읽기 범위 밖입니다. 검색 루트를 명시하고 로컬 읽기 범위를 확인하세요.",
             )
-        query = str(args.get("query") or "").strip().casefold()
+        query = str(args.get("query") or "").strip()
         if not query:
             return err_result("local.search_files", "query가 필요합니다.")
-        limit = max(1, min(int(args.get("limit") or 50), 200))
-        matches: list[str] = []
-        visited = 0
-        truncated = False
-        # ponytail: external search is filename-only; use attachments/project search for content.
-        for directory, dirs, files in os.walk(root, followlinks=False):
-            dirs[:] = sorted(
-                d
-                for d in dirs
-                if d.casefold() not in EXCLUDED and not _is_link(Path(directory) / d)
+        mode = str(args.get("mode") or "name").strip().lower() or "name"
+        if mode not in ("name", "content"):
+            return err_result("local.search_files", "mode must be name or content")
+        try:
+            payload = search_files(
+                root,
+                query,
+                mode=mode,  # type: ignore[arg-type]
+                limit=int(args.get("limit") or 50),
             )
-            for name in sorted(files):
-                visited += 1
-                if visited > _MAX_SEARCH_ENTRIES:
-                    truncated = True
-                    break
-                candidate = Path(directory) / name
-                if _is_link(candidate):
-                    continue
-                relative = candidate.relative_to(root).as_posix()
-                if query in relative.casefold():
-                    matches.append(relative)
-                    if len(matches) >= limit:
-                        truncated = True
-                        break
-            if truncated:
-                break
-        return ok_result(
-            "local.search_files",
-            {"root": str(root), "matches": matches, "count": len(matches), "truncated": truncated},
-        )
+        except (OSError, ValueError) as exc:
+            return err_result("local.search_files", str(exc))
+        return ok_result("local.search_files", payload)
 
     reg.register(
         "local.read_file",
         local_read_file,
-        summary="Read one absolute local text path within the configured System or Workspace + Attachments scope.",
+        summary=(
+            "Read one absolute local text path within the configured System or Workspace + "
+            "Attachments scope (optional start_line/end_line; max_bytes)."
+        ),
         risk="low",
     )
     reg.register(
         "local.search_files",
         local_search_files,
-        summary="Search filenames under one explicit absolute root within the configured local read scope.",
+        summary=(
+            "Search under one absolute root within the local read scope. "
+            "mode=name (default) matches paths; mode=content matches file text."
+        ),
         risk="low",
     )

@@ -258,13 +258,16 @@ def workspace_rel_for_open(workspace_root: str | Path, path: str) -> str:
 
 
 def resolve_under_root(project_root: str | Path, rel_path: str) -> tuple[Path, Path, str]:
-    """(root, abs_path, rel). path escape 검증."""
+    """(root, abs_path, rel). path escape 검증 — U03 execution_policy."""
+    from iris.system.execution_policy import check_path_allowed
+
     root = Path(project_root).expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(str(root))
     rel = (rel_path or "").replace("\\", "/").lstrip("/")
-    if not rel or ".." in rel.split("/"):
-        raise ValueError("invalid rel_path")
+    decision = check_path_allowed(root, rel, write=False)
+    if not decision.allowed:
+        raise ValueError(decision.reason or "invalid rel_path")
     path = (root / rel).resolve()
     if root not in path.parents and path != root:
         raise ValueError("path escapes project_root")
@@ -296,31 +299,32 @@ def write_project_file(project_root: str | Path, rel_path: str, content: str) ->
 
 
 def read_project_file(
-    project_root: str | Path, rel_path: str, *, max_bytes: int = 1_048_576
+    project_root: str | Path,
+    rel_path: str,
+    *,
+    max_bytes: int = 1_048_576,
+    start_line: int | None = None,
+    end_line: int | None = None,
 ) -> dict:
     """Disk UTF-8 dual of write_project_file. Guards fail before inventing content."""
+    from iris.system.file_patch import read_text_range
+
     _root, path, rel = resolve_under_root(project_root, rel_path)
     if path.is_dir():
         raise IsADirectoryError(f"{path} is a directory")
     if not path.is_file():
         raise FileNotFoundError(str(path))
-    size = path.stat().st_size
-    if size > max_bytes:
+    # Full-file (no range) keeps hard size fail for prior contract callers.
+    if start_line is None and end_line is None and path.stat().st_size > max_bytes:
         raise ValueError(f"file too large (max {max_bytes} bytes)")
-    raw = path.read_bytes()
-    if b"\x00" in raw:
-        raise ValueError("not UTF-8 text")
-    try:
-        content = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("not UTF-8 text") from exc
-    return {
-        "path": str(path),
-        "rel_path": rel,
-        "bytes": len(raw),
-        "encoding": "utf-8",
-        "content": content,
-    }
+    payload = read_text_range(
+        path,
+        start_line=start_line,
+        end_line=end_line,
+        max_bytes=max_bytes,
+    )
+    payload["rel_path"] = rel
+    return payload
 
 
 def is_run_request(text: str) -> bool:
@@ -909,37 +913,25 @@ _PYTHON_LAUNCHER_NAMES = frozenset({"python", "python.exe", "py", "py.exe"})
 
 def find_project_venv_python(root: str | Path) -> Path | None:
     """bound project_root/.venv 인터프리터. 없으면 None (Iris repo .venv 강제 금지)."""
-    root_p = Path(root).expanduser().resolve()
-    if sys.platform == "win32":
-        cand = root_p / ".venv" / "Scripts" / "python.exe"
-    else:
-        cand = root_p / ".venv" / "bin" / "python"
-    return cand if cand.is_file() else None
+    from iris.system.workspace_env import find_venv_python
+
+    return find_venv_python(root)
 
 
 def ensure_project_python(root: str | Path, *, create: bool = False) -> Path | None:
-    """프로젝트 .venv python. create=False면 없을 때 None; create=True면 venv 생성 후 Path."""
-    found = find_project_venv_python(root)
+    """프로젝트 .venv python. create=False면 없을 때 None; create=True면 venv 생성 후 Path.
+
+    Find-only by default — never auto-create for run paths. Approved create uses allow_create.
+    """
+    from iris.system.workspace_env import WorkspaceEnvironmentResolver, find_venv_python
+
+    found = find_venv_python(root)
     if found is not None:
         return found
     if not create:
         return None
-    root_p = Path(root).expanduser().resolve()
-    venv_dir = root_p / ".venv"
-    import subprocess
-
-    from iris.system.win_subprocess import no_window_kwargs
-
-    subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "venv", str(venv_dir)],
-        check=True,
-        cwd=str(root_p),
-        **no_window_kwargs(),
-    )
-    found = find_project_venv_python(root)
-    if found is None:
-        raise FileNotFoundError(f"venv created but python missing under {venv_dir}")
-    return found
+    hit = WorkspaceEnvironmentResolver().resolve(project_root=root, allow_create=True)
+    return hit.python
 
 
 def _is_python_launcher_token(token: str) -> bool:
@@ -951,24 +943,38 @@ def _is_py_version_selector(token: str) -> bool:
     return bool(re.fullmatch(r"-\d+(\.\d+)?", str(token).strip()))
 
 
-def bind_python_argv(argv: list[str], root: str | Path) -> list[str]:
-    """argv[0]이 python/py 런처면 project .venv 절대경로로 교체. node 등은 그대로.
+def bind_python_argv(
+    argv: list[str],
+    root: str | Path,
+    *,
+    allow_create: bool = False,
+    file: str | Path | None = None,
+    user_python: str | Path | None = None,
+) -> list[str]:
+    """argv[0]이 python/py 런처면 project interpreter로 교체. node 등은 그대로.
 
-    문자열 셸 모드(RunPlan.shell_command)에는 적용하지 않는다.
+    기본 allow_create=False (find-only). 문자열 셸 모드(RunPlan.shell_command)에는 적용하지 않는다.
     """
     if not argv:
         return []
     out = [str(x) for x in argv]
     if not _is_python_launcher_token(out[0]):
         return out
-    py = ensure_project_python(root, create=True)
-    if py is None:
-        raise FileNotFoundError(f"project python unavailable under {root}")
+    from iris.system.workspace_env import WorkspaceEnvironmentResolver
+
+    hit = WorkspaceEnvironmentResolver().resolve(
+        project_root=root,
+        file=file,
+        user_python=user_python,
+        allow_create=allow_create,
+    )
     rest = out[1:]
     name = Path(out[0]).name.lower()
     if name in ("py", "py.exe") and rest and _is_py_version_selector(rest[0]):
         rest = rest[1:]
-    return [str(py.resolve()), *rest]
+    if hit.python is None:
+        return [out[0], *rest]
+    return [str(hit.python.resolve()), *rest]
 
 
 @dataclass(frozen=True)
@@ -1023,10 +1029,15 @@ def build_run_command(
     suffix = Path(rel).suffix.lower()
     if suffix == ".py":
         if project_root is not None:
-            py = ensure_project_python(project_root, create=True)
-            if py is None:
-                raise FileNotFoundError(f"project python unavailable under {project_root}")
-            return [str(py.resolve()), rel]
+            from iris.system.workspace_env import WorkspaceEnvironmentResolver
+
+            hit = WorkspaceEnvironmentResolver().resolve(
+                project_root=project_root,
+                file=rel,
+                allow_create=False,
+            )
+            if hit.python is not None:
+                return [str(hit.python.resolve()), rel]
         return ["python", rel]
     if suffix in (".ps1",):
         return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", rel]

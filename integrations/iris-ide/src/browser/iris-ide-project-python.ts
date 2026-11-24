@@ -1,5 +1,12 @@
 /**
- * IDE ▶ 와 project.run 이 같은 워크스페이스 .venv 를 고르게 한다.
+ * IDE ▶ 와 project.run 이 같은 워크스페이스 인터프리터를 고르게 한다.
+ * Python 권위: iris.system.workspace_env.WorkspaceEnvironmentResolver
+ *
+ * 규칙 (find-only — 절대 auto-create 금지):
+ *  1. 워크스페이스 루트에 파일이 속하면 그 루트 .venv 우선
+ *  2. 파일 조상 디렉터리를 올라가며 기존 .venv 탐색
+ *  3. 없으면 PATH `python` (생성하지 않음)
+ *
  * exists 는 Theia FileService / 테스트 스텁이 주입한다.
  */
 
@@ -32,12 +39,21 @@ function underRoot(fileAbs: string, root: string): boolean {
     return file === base || file.startsWith(base + '/');
 }
 
-/** 워크스페이스 루트 우선, 그다음 파일 조상 디렉터리를 올라가며 .venv python 을 찾는다. */
+/**
+ * 기존 .venv 만 찾는다. 없으면 undefined (생성·Iris product venv 강제 금지).
+ * 우선순위는 WorkspaceEnvironmentResolver 와 동일하다.
+ */
 export async function findProjectPython(
     fileAbs: string,
     workspaceRoots: string[],
     exists: PathExists,
+    userPython?: string,
 ): Promise<{ python: string; root: string } | undefined> {
+    if (userPython && (await exists(userPython))) {
+        const root = workspaceRoots.find(r => underRoot(fileAbs, r)) ?? parentDir(fileAbs);
+        return { python: userPython, root };
+    }
+
     const ordered: string[] = [];
     const seen = new Set<string>();
     const push = (p: string): void => {
@@ -77,14 +93,16 @@ export async function argvForRunnableFile(
     absPath: string,
     workspaceRoots: string[],
     exists: PathExists,
+    userPython?: string,
 ): Promise<{ argv: string[]; cwd: string }> {
     const ext = absPath.replace(/\\/g, '/').split('.').pop()?.toLowerCase() ?? '';
     const fileDir = parentDir(absPath);
     if (PYTHON_EXTS.has(ext)) {
-        const hit = await findProjectPython(absPath, workspaceRoots, exists);
+        const hit = await findProjectPython(absPath, workspaceRoots, exists, userPython);
         if (hit) {
             return { argv: [hit.python, absPath], cwd: hit.root };
         }
+        // Find-only: PATH python — never create .venv here.
         return { argv: ['python', absPath], cwd: fileDir };
     }
     if (ext === 'js' || ext === 'mjs' || ext === 'cjs') {

@@ -526,7 +526,7 @@ def ensure_iris_agent_runtime(
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[str], None] | None = None,
     provider: bool = True,
-    start_gateway: bool = True,
+    start_gateway: bool = False,
 ) -> IrisAgentRuntimeEnsureResult:
     """Iris Agent 수명 supervisor — home → provider → gateway (멱등).
 
@@ -535,15 +535,15 @@ def ensure_iris_agent_runtime(
     """
     home = ensure_iris_agent_home()
     messages: list[str] = [f"home={home}"]
-    # circular: hermes_gateway imports ensure_iris_agent_home from this module.
+    # circular: iris_agent_gateway imports ensure_iris_agent_home from this module.
     from iris.system.iris_agent_gateway import (
-        ensure_hermes_gateway_running,
-        ensure_hermes_provider_config,
+        ensure_iris_agent_gateway_running,
+        ensure_iris_agent_provider_config,
     )
 
     if provider:
         try:
-            ensure_hermes_provider_config()
+            ensure_iris_agent_provider_config()
             messages.append("provider ok")
         except Exception as exc:  # noqa: BLE001
             messages.append(f"provider skip: {exc}")
@@ -554,7 +554,7 @@ def ensure_iris_agent_runtime(
         messages.append("gateway skipped")
     else:
         gateway_ok = bool(
-            ensure_hermes_gateway_running(
+            ensure_iris_agent_gateway_running(
                 base_url,
                 api_key=api_key,
                 command=command,
@@ -604,14 +604,14 @@ def apply_iris_agent_baseline_overlays(agent_root: Path) -> list[str]:
         log.warning("iris agent baseline: ollama options guard not applied at %s", root)
 
     # circular: sync imports credentials → agent_runtime; mutate only at install.
-    from iris.system.iris_agent_control_sync import ensure_hermes_stdio_dead_check_patch
+    from iris.system.iris_agent_control_sync import ensure_iris_agent_stdio_dead_check_patch
 
     messages.append(
-        ensure_hermes_stdio_dead_check_patch(agent_root=root, mutate=True)
+        ensure_iris_agent_stdio_dead_check_patch(agent_root=root, mutate=True)
     )
-    from iris.system.iris_agent_tool_choice import apply_hermes_tool_choice_overlay
+    from iris.system.iris_agent_tool_choice import apply_iris_agent_tool_choice_overlay
 
-    messages.extend(apply_hermes_tool_choice_overlay(root))
+    messages.extend(apply_iris_agent_tool_choice_overlay(root))
     from iris.system.iris_agent_package_identity import (
         apply_iris_agent_package_identity_overlay,
     )

@@ -418,11 +418,19 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
             project_root=root_p,
         )
         if plan.shell_command is not None:
-            # Cursor-style: 문자열 명령을 셸에 그대로 (shlex/bind_python 금지)
+            # Cursor-style: 문자열 명령을 셸에 그대로 (shlex/bind_python 금지).
+            # Bridge argv must stay empty — poller prefers wrapRun(argv) over Tee/IRIS_EXIT.
             argv = [plan.shell_command]
+            bridge_argv: list[str] | None = None
             shell_cmd = build_iris_terminal_shell(plan.shell_command)
         else:
-            argv = bind_python_argv(list(plan.argv or []), root_p)
+            argv = bind_python_argv(
+                list(plan.argv or []),
+                root_p,
+                allow_create=False,
+                file=file_arg or None,
+            )
+            bridge_argv = argv
             shell_cmd = build_iris_terminal_command(argv)
     except Exception as exc:  # noqa: BLE001
         return err_result("project.run", str(exc))
@@ -448,7 +456,7 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
             # 브리지는 Theia 통합 터미널 완료를 15s까지 기다린다 — UI 스레드를 막으면
             # 프런트엔드 폴러가 그 사이 fetch를 못 해 반드시 타임아웃(400)으로 끝난다.
             term = _bridge_call_pumping(
-                lambda: client.run_terminal_command(shell_cmd, cwd=root_s, argv=argv),
+                lambda: client.run_terminal_command(shell_cmd, cwd=root_s, argv=bridge_argv),
                 timeout=18.0,
             )
             via = str(term.get("via") or "iris_ide_bridge")
@@ -1016,11 +1024,15 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
         rel = str(args.get("rel_path") or args.get("path") or "").strip()
         if not rel:
             return err_result("project.read_file", "rel_path required")
+        start = args.get("start_line")
+        end = args.get("end_line")
         try:
             payload = read_project_file(
                 root,
                 rel,
                 max_bytes=int(args.get("max_bytes") or 1_048_576),
+                start_line=int(start) if start is not None else None,
+                end_line=int(end) if end is not None else None,
             )
         except (
             FileNotFoundError,
@@ -1032,6 +1044,43 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
             return err_result("project.read_file", str(exc))
         _log(window, "project.read_file", True)
         return ok_result("project.read_file", payload)
+
+    def project_apply_patch(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.system.file_patch import apply_patch
+        from iris.ui.control_bindings import resolve_bound_work_root
+
+        root, root_err = resolve_bound_work_root(window, args)
+        if root_err or not root:
+            return err_result(
+                "project.apply_patch",
+                root_err or "project_root required (no bound IDE workspace)",
+            )
+        patch_text = str(args.get("patch_text") or args.get("patch") or "")
+        if not patch_text.strip():
+            return err_result("project.apply_patch", "patch_text required")
+        expected_sha = args.get("expected_sha256")
+        expected_mtime = args.get("expected_mtime_ns")
+        try:
+            payload = apply_patch(
+                root,
+                patch_text,
+                expected_sha256=expected_sha if isinstance(expected_sha, dict) else None,
+                expected_mtime_ns=(
+                    {str(k): int(v) for k, v in expected_mtime.items()}
+                    if isinstance(expected_mtime, dict)
+                    else None
+                ),
+            )
+        except (OSError, ValueError) as exc:
+            return err_result("project.apply_patch", str(exc))
+        _log(window, "project.apply_patch", bool(payload.get("ok")))
+        if payload.get("ok"):
+            return ok_result("project.apply_patch", payload)
+        return err_result(
+            "project.apply_patch",
+            "patch conflict",
+            payload if isinstance(payload, dict) else {},
+        )
 
     def diagram_render(args: dict[str, Any]) -> dict[str, Any]:
         import json
@@ -1116,11 +1165,23 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
         project_read_file,
         summary=(
             "Read a UTF-8 file body from the bound IDE workspace disk "
-            "(rel_path or path; optional max_bytes). "
+            "(rel_path or path; optional start_line/end_line/max_bytes). "
             "Missing, escape, directory, binary/NUL, or too-large fail — never invent content. "
             "Disk bytes only; dirty Monaco buffers need ide.save / ide.edit first."
         ),
         risk="low",
+    )
+
+    reg.register(
+        "project.apply_patch",
+        project_apply_patch,
+        summary=(
+            "Apply a Hermes-style or unified-diff patch under the bound IDE workspace. "
+            "Required: patch_text (or patch). Conflicts when expected context or disk "
+            "fingerprint is missing. Disk-updated only; IDE buffer refresh is follow-up."
+        ),
+        risk="medium",
+        confirm_required=True,
     )
 
     reg.register(

@@ -7,7 +7,7 @@ No MCP stdio / Control HTTP on the product speak path.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Literal, Mapping, Protocol
 
@@ -17,6 +17,13 @@ from iris.infrastructure.absorbed_tool_aliases import (
     model_names,
     resolve_action,
 )
+
+# Model-facing default when SpeakGrant.parameters is unset (no free-form open object).
+EMPTY_OBJECT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": False,
+}
 
 
 class ExecKind(str, Enum):
@@ -58,6 +65,15 @@ class ToolResult:
     error: str = ""
     call_path: str = "native"
     bridge: str = "none"
+    call_id: str | None = None
+    tool_name: str | None = None
+    status: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    retryable: bool | None = None
+    duration_ms: int | None = None
+    truncated: bool | None = None
+    artifact_ref: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -70,7 +86,38 @@ class ToolResult:
         }
         if not self.ok:
             out["error"] = self.error
+        for key in (
+            "call_id",
+            "tool_name",
+            "status",
+            "error_code",
+            "error_message",
+            "retryable",
+            "duration_ms",
+            "truncated",
+            "artifact_ref",
+        ):
+            value = getattr(self, key)
+            if value is not None:
+                out[key] = value
         return out
+
+
+@dataclass(frozen=True)
+class IrisToolContract:
+    """Unified tool contract projection over SpeakGrant (+ optional ActionSpec)."""
+
+    canonical_name: str
+    control_action: str
+    description: str
+    input_schema: Mapping[str, Any]
+    risk: str = "low"
+    confirm_required: bool = False
+    profiles: frozenset[str] = field(default_factory=frozenset)
+    parallel_safe: bool = True
+    headless_supported: bool = True
+    side_effects: bool = False
+    aliases: frozenset[str] = field(default_factory=frozenset)
 
 
 class ActionCatalogView(Protocol):
@@ -84,6 +131,71 @@ class SurfaceInvoker(Protocol):
 
 
 PureHandler = Callable[[dict[str, Any]], ToolResult]
+
+
+def validate_tool_arguments(
+    schema: Mapping[str, Any] | None, args: Mapping[str, Any] | None
+) -> None:
+    """Validate ``args`` against a JSON-Schema-like object. Raises TypeError/ValueError.
+
+    ``schema is None`` means the grant has not declared parameters yet — only require a
+    mapping. Declared schemas (including EMPTY_OBJECT_SCHEMA) are enforced.
+    """
+    if args is not None and not isinstance(args, Mapping):
+        raise TypeError("tool arguments must be an object")
+    payload = dict(args or {})
+    if schema is None:
+        return
+    if not isinstance(schema, Mapping):
+        raise TypeError("tool schema must be an object")
+    schema_type = schema.get("type", "object")
+    if schema_type != "object":
+        raise ValueError(f"unsupported tool schema type: {schema_type!r}")
+    props = schema.get("properties") or {}
+    if props is not None and not isinstance(props, Mapping):
+        raise TypeError("schema properties must be an object")
+    props_map: Mapping[str, Any] = props if isinstance(props, Mapping) else {}
+    required = schema.get("required") or []
+    if not isinstance(required, (list, tuple)):
+        raise TypeError("schema required must be a list")
+    for key in required:
+        if key not in payload:
+            raise ValueError(f"missing required argument: {key}")
+    additional = schema.get("additionalProperties", True)
+    for key, value in payload.items():
+        if key in props_map:
+            _validate_schema_value(key, value, props_map[key])
+        elif additional is False:
+            raise ValueError(f"unexpected argument: {key}")
+        elif isinstance(additional, Mapping):
+            _validate_schema_value(key, value, additional)
+
+
+def _validate_schema_value(key: str, value: Any, node: Mapping[str, Any] | Any) -> None:
+    if not isinstance(node, Mapping):
+        return
+    expected = node.get("type")
+    if expected is None:
+        return
+    ok = True
+    if expected == "string":
+        ok = isinstance(value, str)
+    elif expected == "integer":
+        ok = isinstance(value, int) and not isinstance(value, bool)
+    elif expected == "number":
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+    elif expected == "boolean":
+        ok = isinstance(value, bool)
+    elif expected == "object":
+        ok = isinstance(value, Mapping)
+    elif expected == "array":
+        ok = isinstance(value, list)
+    if not ok:
+        raise TypeError(f"argument {key!r} must be {expected}")
+    if expected == "integer" and "minimum" in node and value < node["minimum"]:
+        raise ValueError(f"argument {key!r} below minimum")
+    if expected == "integer" and "maximum" in node and value > node["maximum"]:
+        raise ValueError(f"argument {key!r} above maximum")
 
 
 # One-release shim: product iris.* seed ids → Control action ids.
@@ -104,6 +216,51 @@ def resolve_legacy_name(name: str) -> str:
     """Map deprecated iris.* seed ids to Control action names."""
     key = (name or "").strip()
     return _LEGACY_TO_ACTION.get(key, key)
+
+
+def aliases_for_action(action: str) -> frozenset[str]:
+    """Legacy iris.* seed ids + absorbed model name for one Control action."""
+    key = (action or "").strip()
+    found = {legacy for legacy, target in _LEGACY_TO_ACTION.items() if target == key}
+    model = action_to_model_name(key)
+    if model and model != key:
+        found.add(model)
+    return frozenset(found)
+
+
+def iris_tool_contract_from_grant(
+    grant: SpeakGrant,
+    actions: ActionCatalogView | None = None,
+) -> IrisToolContract:
+    """Build IrisToolContract from SpeakGrant and optional ActionCatalogView."""
+    risk = "low"
+    confirm = False
+    description = grant.summary or grant.action
+    if actions is not None:
+        spec = actions.spec(grant.action)
+        if spec is not None:
+            description = description or str(getattr(spec, "summary", "") or "")
+            confirm = bool(getattr(spec, "confirm_required", False))
+            risk = str(getattr(spec, "risk", None) or "low")
+    schema = (
+        dict(grant.parameters)
+        if grant.parameters is not None
+        else dict(EMPTY_OBJECT_SCHEMA)
+    )
+    surface_kind = grant.kind is ExecKind.SURFACE
+    return IrisToolContract(
+        canonical_name=grant.action,
+        control_action=grant.action,
+        description=description,
+        input_schema=schema,
+        risk=risk,
+        confirm_required=confirm,
+        profiles=frozenset(),
+        parallel_safe=True,
+        headless_supported=not surface_kind,
+        side_effects=surface_kind,
+        aliases=aliases_for_action(grant.action),
+    )
 
 
 def _domain_of(action: str) -> str:
@@ -145,11 +302,14 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant(
             "local.read_file",
             ExecKind.SURFACE,
-            "Read one absolute local text file within the configured read scope",
+            "Read one absolute local text file within the configured read scope "
+            "(optional start_line/end_line 1-based inclusive; max_bytes truncation)",
             {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
+                    "start_line": {"type": "integer", "minimum": 1},
+                    "end_line": {"type": "integer", "minimum": 1},
                     "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
                 },
                 "required": ["path"],
@@ -159,12 +319,13 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant(
             "local.search_files",
             ExecKind.SURFACE,
-            "Search filenames under one explicit absolute root within the configured read scope",
+            "Search under one absolute root; mode=name matches paths, mode=content matches file text",
             {
                 "type": "object",
                 "properties": {
                     "root": {"type": "string"},
                     "query": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["name", "content"]},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 200},
                 },
                 "required": ["root", "query"],
@@ -222,6 +383,45 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
             },
         ),
         SpeakGrant("project.run", ExecKind.SURFACE, "Run in the bound IDE terminal"),
+        SpeakGrant(
+            "process.manage",
+            ExecKind.SURFACE,
+            "Manage Iris Execution Runtime processes (headless). "
+            "Required: action (list|status|read_output|wait|cancel; optional start|write_stdin). "
+            "run_id required for status|read_output|wait|cancel|write_stdin.",
+            {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "list",
+                            "status",
+                            "read_output",
+                            "wait",
+                            "cancel",
+                            "start",
+                            "write_stdin",
+                        ],
+                    },
+                    "run_id": {"type": "string"},
+                    "argv": {"type": "array", "items": {"type": "string"}},
+                    "shell": {"type": "string"},
+                    "command": {"type": "string"},
+                    "cwd": {"type": "string"},
+                    "environment_id": {"type": "string"},
+                    "env_id": {"type": "string"},
+                    "stream": {"type": "string", "enum": ["stdout", "stderr"]},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 0},
+                    "timeout_s": {"type": "number", "minimum": 0},
+                    "data": {"type": "string"},
+                    "text": {"type": "string"},
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        ),
         SpeakGrant(
             "shell.run",
             ExecKind.SURFACE,
@@ -439,7 +639,41 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant("project.create_scaffold", ExecKind.SURFACE, "Create and open a project folder; name and parent required"),
         SpeakGrant("project.list_files", ExecKind.SURFACE, "List files in the bound IDE project"),
         SpeakGrant("project.list_parents", ExecKind.SURFACE, "List permitted parent folders for new projects"),
-        SpeakGrant("project.read_file", ExecKind.SURFACE, "Read a file in the bound IDE project by rel_path"),
+        SpeakGrant(
+            "project.read_file",
+            ExecKind.SURFACE,
+            "Read a UTF-8 file in the bound IDE project (rel_path or path; "
+            "optional start_line/end_line/max_bytes)",
+            {
+                "type": "object",
+                "properties": {
+                    "rel_path": {"type": "string"},
+                    "path": {"type": "string"},
+                    "start_line": {"type": "integer", "minimum": 1},
+                    "end_line": {"type": "integer", "minimum": 1},
+                    "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+                },
+                "additionalProperties": False,
+            },
+        ),
+        SpeakGrant(
+            "project.apply_patch",
+            ExecKind.SURFACE,
+            "Apply a Hermes-style or unified-diff patch under the bound IDE project. "
+            "Required: patch_text. Conflicts when expected context or disk fingerprint missing. "
+            "Model name apply_patch (Hermes patch is an internal alias — not dual-exposed).",
+            {
+                "type": "object",
+                "properties": {
+                    "patch_text": {"type": "string"},
+                    "patch": {"type": "string"},
+                    "project_root": {"type": "string"},
+                    "expected_sha256": {"type": "object"},
+                    "expected_mtime_ns": {"type": "object"},
+                },
+                "additionalProperties": False,
+            },
+        ),
         SpeakGrant("wiki.move_notes", ExecKind.SURFACE, "Move Wiki notes by sources and dest_folder"),
         SpeakGrant("wiki.open_note", ExecKind.SURFACE, "Open a Wiki note by rel_path"),
         SpeakGrant("wiki.reload", ExecKind.SURFACE, "Reload the Iris Wiki workspace"),
@@ -501,9 +735,12 @@ def engine_tool_action(name: str) -> str:
 
     Surface-routed absorbed names (``terminal``) use ``current_speak_surface()``.
     Sidecar install prefers ``resolve_action(name, surface)`` with the known surface.
+    Internal aliases (``patch`` → ``apply_patch``) resolve without a second schema.
     """
+    from iris.infrastructure.absorbed_tool_aliases import INTERNAL_ALIASES
+
     key = (name or "").strip()
-    if key in model_names():
+    if key in model_names() or key in INTERNAL_ALIASES:
         resolved = resolve_action(key, current_speak_surface())
         if resolved:
             return resolved
@@ -536,7 +773,7 @@ def engine_tool_schemas(
         if surface is None
         else normalize_speak_surface(surface)
     )
-    default_parameters = {"type": "object", "additionalProperties": True}
+    default_parameters = dict(EMPTY_OBJECT_SCHEMA)
     terminal_action = resolve_action("terminal", surf)
     ordered: dict[str, dict[str, Any]] = {}
     for grant in grants_for_surface(PHASE4_ALLOWLIST, surf):
@@ -734,6 +971,21 @@ class SpeakTools:
                 action=key,
                 data={},
                 error=f"not_allowed: {key}",
+            )
+        try:
+            # Declared grant.parameters only. Bare grants stay permissive until schemas land.
+            validate_tool_arguments(grant.parameters, payload)
+        except (TypeError, ValueError) as exc:
+            return ToolResult(
+                ok=False,
+                action=key,
+                data={},
+                error=str(exc) or "invalid_arguments",
+                tool_name=engine_tool_name(key),
+                status="error",
+                error_code="invalid_arguments",
+                error_message=str(exc) or "invalid_arguments",
+                retryable=False,
             )
         if grant.kind is ExecKind.PURE:
             if key == "get_catalog":

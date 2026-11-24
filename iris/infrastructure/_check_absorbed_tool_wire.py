@@ -12,7 +12,8 @@ from iris.infrastructure.speak_capability import engine_tool_schemas, set_speak_
 # Hermes CORE leftovers after Unit1 strip — must not survive Iris-only install.
 _HERMES_CORE_LEFTOVERS = frozenset(
     {
-        "process_manage",
+        # process_manage absorbed → process.manage (U05); not a leftover
+        # patch absorbed → apply_patch / project.apply_patch (U06); leftover name must not survive
         "patch",
         "vision_analyze",
         "image_generate",
@@ -96,7 +97,9 @@ def main() -> None:
     assert "search_files" in home
     assert "web_search" in home
     assert "web_extract" in home
-    assert "process_manage" not in home
+    assert "process_manage" in home
+    assert "apply_patch" in home
+    assert "patch" not in home  # alias only — no dual schema
     assert "settings_get" in home
 
     set_speak_surface("ide_companion")
@@ -106,17 +109,24 @@ def main() -> None:
     assert "shell_run" not in ide
     assert "write_file" in ide
     assert "project_write_file" not in ide
-    assert "process_manage" not in ide
+    assert "process_manage" in ide
+    assert "apply_patch" in ide
+    assert "patch" not in ide
 
-    preload = sorted(_HERMES_CORE_LEFTOVERS | {"terminal", "write_file", "skills_list"})
+    preload = sorted(
+        _HERMES_CORE_LEFTOVERS
+        | {"terminal", "write_file", "process_manage", "apply_patch", "skills_list"}
+    )
     for surface in ("home", "ide_companion"):
         visible = _simulate_install(surface, preload)
         leftover = visible & _HERMES_CORE_LEFTOVERS
         assert not leftover, (surface, leftover)
         assert "terminal" in visible
         assert "write_file" in visible
+        assert "process_manage" in visible
+        assert "apply_patch" in visible
+        assert "patch" not in visible
         assert "skills_list" not in visible
-        assert "process_manage" not in visible
 
     print(
         "absorbed_tool_wire ok",

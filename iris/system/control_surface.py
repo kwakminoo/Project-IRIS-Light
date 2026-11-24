@@ -31,6 +31,7 @@ _OFF_UI_ACTIONS = frozenset(
         # 터미널 로그 폴링·브리지 왕복이 최대 90초 — UI 스레드면 Windows "응답 없음"
         "project.run",
         "shell.run",
+        "process.manage",
         "chat.exec_python",
         "note.export_pdf",
         "extension.install_github",
@@ -48,6 +49,7 @@ _OFF_UI_ACTIONS = frozenset(
         "project.write_image_code",
         # 디스크 쓰기·브리지 왕복. Qt 메인에서 스트림하면 Windows "응답 없음"
         "project.write_file",
+        "project.apply_patch",
         "attachment.copy_to",
         "attachment.move_to",
         "project.import_attachment",
@@ -336,17 +338,13 @@ class ActionRegistry:
         if spec is None:
             return err_result(name, f"unknown action: {name}")
         if spec.confirm_required:
-            args.pop("confirm", None)
-            if self._human_confirm is None:
+            from iris.system.execution_policy import check_action_approval
+
+            decision = check_action_approval(spec, args, self._human_confirm)
+            if not decision.allowed:
                 return err_result(
                     name,
-                    "human confirm required",
-                    {"confirm_required": True, "risk": spec.risk},
-                )
-            if not self.ask_human(spec, args):
-                return err_result(
-                    name,
-                    "cancelled",
+                    decision.reason or "human confirm required",
                     {"confirm_required": True, "risk": spec.risk},
                 )
         handler = self._handlers[name]

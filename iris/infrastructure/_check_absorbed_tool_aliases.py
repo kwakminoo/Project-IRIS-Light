@@ -49,9 +49,17 @@ def main() -> None:
     assert action_to_model_name("no.such") is None
 
     strip = strip_only_names()
-    assert "process_manage" in strip
-    assert "process_manage" not in model_names()
-    assert resolve_action("process_manage", "home") is None
+    assert "process_manage" not in strip
+    assert "process_manage" in model_names()
+    assert resolve_action("process_manage", "home") == "process.manage"
+    assert resolve_action("process_manage", "ide_companion") == "process.manage"
+    assert action_to_model_name("process.manage") == "process_manage"
+    assert "patch" not in strip
+    assert "apply_patch" in model_names()
+    assert "patch" not in model_names()
+    assert resolve_action("apply_patch", "home") == "project.apply_patch"
+    assert resolve_action("patch", "home") == "project.apply_patch"
+    assert action_to_model_name("project.apply_patch") == "apply_patch"
     assert resolve_action("unknown_tool", "home") is None
 
     print("absorbed_tool_aliases ok")
