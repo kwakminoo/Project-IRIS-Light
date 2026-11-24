@@ -447,6 +447,41 @@ class H1TranscriptHost(QWidget):
         )
         self._render()
 
+    def replace_turn(
+        self,
+        msg_id: str,
+        role: str,
+        parts: Sequence[MessagePart],
+    ) -> bool:
+        """Replace the turn with msg_id (STT complete / notice dismiss)."""
+        mid = str(msg_id or "").strip()
+        if not mid:
+            return False
+        for i, turn in enumerate(self._turns):
+            if turn.msg_id != mid:
+                continue
+            self._turns[i] = _Turn(
+                role=str(role or turn.role),
+                parts=tuple(parts),
+                msg_id=mid,
+            )
+            self._render()
+            return True
+        return False
+
+    def remove_turn(self, msg_id: str) -> bool:
+        """Drop the turn with msg_id (STT cancel)."""
+        mid = str(msg_id or "").strip()
+        if not mid:
+            return False
+        for i, turn in enumerate(self._turns):
+            if turn.msg_id != mid:
+                continue
+            del self._turns[i]
+            self._render()
+            return True
+        return False
+
     def begin_part_stream(self, role: str = "assistant", msg_id: str = "") -> None:
         """Start one assistant/user turn shell for card-stable part streaming.
 
@@ -848,7 +883,12 @@ class H1TranscriptHost(QWidget):
             parts_html = '<p class="part-muted"></p>'
         tts = ""
         role_key = (turn.role or "").strip().lower()
-        if role_key in ("assistant", "iris") and turn.msg_id.strip():
+        # notice-* are not spoken answers — never [재생] / TTS.
+        if (
+            role_key in ("assistant", "iris")
+            and turn.msg_id.strip()
+            and not turn.msg_id.startswith("notice-")
+        ):
             href = html.escape(f"iris-tts://{turn.msg_id}", quote=True)
             tts = (
                 f'<p class="tts-row"><a class="tts-link" href="{href}" '

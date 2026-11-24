@@ -135,6 +135,7 @@ from iris.system.ide_tiler import (
 from iris.system.iris_ide_runtime import shared_iris_ide_runtime
 from iris.system.metrics_worker import MetricsWorker
 from iris.ui.chat.chat_panel import ChatPanel
+from iris.ui.chat.no_toolcalls_gate import turn_notice
 from iris.ui.widgets.context_ring import estimate_messages_tokens
 from iris.ui.window.cyberspace_background import CyberspaceBackground
 from iris.ui.shared.cyberspace_theme import apply_cyberspace_theme
@@ -6390,8 +6391,17 @@ class MainWindow(QMainWindow):
             self._maybe_refresh_ollama_quota()
             self._finish_current_turn(open_followup=False)
             return
-        if self._use_hermes_backend() and not self._turn_tool_lines:
-            self._live_activity.append_instant_line("도구 호출 없음")
+        if self._use_hermes_backend():
+            if not self._turn_tool_lines:
+                self._live_activity.append_instant_line("도구 호출 없음")
+            notice = turn_notice(
+                user=str(getattr(self, "_followthrough_goal", "") or ""),
+                tool_ok_count=int(getattr(self, "_tool_ok_count", 0) or 0),
+                tool_line_count=len(getattr(self, "_turn_tool_lines", []) or []),
+                supports_tools=bool(self._chat.current_supports_tools()),
+            )
+            if notice and self._showing_bound():
+                self._chat.append_note(notice)
         shown, ask_or_err, verify = self._run_file_create_verify_turn(text)
         if ask_or_err:
             shown = (shown.rstrip() + "\n\n" + ask_or_err) if shown else ask_or_err
