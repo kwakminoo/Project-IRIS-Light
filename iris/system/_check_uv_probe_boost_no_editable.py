@@ -23,6 +23,12 @@ def _fail(kind: str, msg: str, body: str = "") -> InstallResult:
     return InstallResult(False, msg, kind)
 
 
+def _track_editable(cmd, editable: list[list[str]]) -> None:
+    argv = [str(c) for c in cmd]
+    if "-m" in argv and "pip" in argv and "install" in argv and "-e" in argv:
+        editable.append(argv)
+
+
 def _drive_finish(
     *,
     staging: Path,
@@ -32,6 +38,7 @@ def _drive_finish(
     probe_n: dict[str, int],
     boost_n: dict[str, int],
     editable: list[list[str]],
+    probe_ok_after: int = 1,
 ) -> InstallResult:
     def fake_run(cmd, **kw):
         argv = [str(c) for c in cmd]
@@ -42,14 +49,17 @@ def _drive_finish(
             venv_py.parent.mkdir(parents=True, exist_ok=True)
             venv_py.write_bytes(b"x" * 2048)
             return _ok(cmd)
-        if "-m" in argv and "pip" in argv and "install" in argv and "-e" in argv:
-            editable.append(argv)
-            return _ok(cmd)
+        _track_editable(cmd, editable)
         return _ok(cmd, stdout="ok")
+
+    def fake_run_dep(cmd, **kw):
+        _track_editable(cmd, editable)
+        return _ok(cmd)
 
     def fake_probe(_venv_py):
         probe_n["n"] += 1
-        if probe_n["n"] == 1:
+        # First miss forces boost; later calls succeed only after probe_ok_after misses.
+        if probe_n["n"] <= probe_ok_after:
             return False, "ModuleNotFoundError: No module named 'aiohttp'"
         return True, "venv import ok"
 
@@ -60,7 +70,7 @@ def _drive_finish(
     log: list[str] = []
     with (
         mock.patch.object(m, "_run", side_effect=fake_run),
-        mock.patch.object(m, "_run_dep", side_effect=lambda *a, **k: _ok()),
+        mock.patch.object(m, "_run_dep", side_effect=fake_run_dep),
         mock.patch.object(m, "_probe_venv", side_effect=fake_probe),
         mock.patch.object(m, "_boost_probe_deps", side_effect=fake_boost),
         mock.patch.object(m, "_activate_staged", return_value=(True, "activated")),
@@ -105,10 +115,42 @@ def _check_uv_installed_probe_miss_boosts_not_editable() -> None:
             probe_n=probe_n,
             boost_n=boost_n,
             editable=editable,
+            probe_ok_after=1,
         )
         assert result.ok, result
         assert boost_n["n"] == 1, boost_n
         assert probe_n["n"] == 2, probe_n
+        assert editable == [], editable
+
+
+def _check_uv_installed_boost_still_miss_skips_editable() -> None:
+    """installed=True + boost 후에도 probe miss → editable 금지, probe fail."""
+    with tempfile.TemporaryDirectory(prefix="iris-uv-probe-sticky-") as tmp:
+        root = Path(tmp)
+        home = root / "home"
+        staging = root / "staging"
+        home.mkdir()
+        staging.mkdir()
+        (staging / "uv.lock").write_text("# lock\n", encoding="utf-8")
+        py = root / "python.exe"
+        py.write_bytes(b"x" * 2048)
+
+        probe_n = {"n": 0}
+        boost_n = {"n": 0}
+        editable: list[list[str]] = []
+        result = _drive_finish(
+            staging=staging,
+            home=home,
+            py=py,
+            uv="uv",
+            probe_n=probe_n,
+            boost_n=boost_n,
+            editable=editable,
+            probe_ok_after=99,
+        )
+        assert not result.ok, result
+        assert result.kind == "probe", result
+        assert boost_n["n"] == 1, boost_n
         assert editable == [], editable
 
 
@@ -133,6 +175,7 @@ def _check_pip_path_probe_miss_still_editable() -> None:
             probe_n=probe_n,
             boost_n=boost_n,
             editable=editable,
+            probe_ok_after=1,
         )
         assert result.ok, result
         assert boost_n["n"] == 1, boost_n
@@ -141,6 +184,7 @@ def _check_pip_path_probe_miss_still_editable() -> None:
 
 def _main() -> None:
     _check_uv_installed_probe_miss_boosts_not_editable()
+    _check_uv_installed_boost_still_miss_skips_editable()
     _check_pip_path_probe_miss_still_editable()
     print("ok")
 

@@ -900,10 +900,10 @@ def _finish_staged_install(
         if boost.returncode != 0:
             _discard_tree(staging)
             return fail("exit", "gateway/mcp 의존성 보강 실패", "\n".join(log))
-        # uv sync 성공 뒤에는 pip editable 금지 — Pillow override 를 pip 가 깨뜨림.
-        # editable 은 아래 probe 실패 시에만.
+        # uv sync 성공(installed=True) 뒤에는 pip editable 금지 —
+        # Pillow override 를 pip 가 깨뜨림. editable 복구는 pip 경로만.
         ok, detail = _probe_venv(venv_py)
-        if not ok:
+        if not ok and not installed:
             emit("probe pin 후 editable 재설치…")
             edit = _run(
                 [str(venv_py), "-m", "pip", "install", "-e", "."],
