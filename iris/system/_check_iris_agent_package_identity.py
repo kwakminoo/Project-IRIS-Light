@@ -17,6 +17,7 @@ from textwrap import dedent
 from iris.infrastructure import agent_runtime as runtime
 from iris.system.iris_agent_package_identity import (
     apply_iris_agent_package_identity_overlay,
+    ensure_iris_agent_windows_console_shim,
 )
 
 
@@ -102,6 +103,28 @@ def _check_baseline_wires_package_identity() -> None:
     assert "apply_iris_agent_package_identity_overlay" in src
 
 
+def _check_windows_console_shim_copies_legacy_exe() -> None:
+    """hermes.exe only → iris-agent.exe shim; already present → no overwrite."""
+    import sys
+
+    if sys.platform != "win32":
+        return
+    with tempfile.TemporaryDirectory() as td:
+        scripts = Path(td) / "venv" / "Scripts"
+        scripts.mkdir(parents=True)
+        legacy = scripts / "hermes.exe"
+        legacy.write_bytes(b"MZ-fake-hermes")
+        msgs = ensure_iris_agent_windows_console_shim(Path(td))
+        target = scripts / "iris-agent.exe"
+        assert target.is_file(), msgs
+        assert target.read_bytes() == b"MZ-fake-hermes"
+        assert any("copied" in m for m in msgs)
+        target.write_bytes(b"MZ-iris-keep")
+        again = ensure_iris_agent_windows_console_shim(Path(td))
+        assert target.read_bytes() == b"MZ-iris-keep"
+        assert any("present" in m for m in again)
+
+
 def _check_soft_fail_missing_pyproject() -> None:
     with tempfile.TemporaryDirectory() as td:
         msgs = apply_iris_agent_package_identity_overlay(Path(td))
@@ -114,6 +137,7 @@ def main() -> None:
     _check_packages_find_includes_iris_cli()
     _check_probe_iris_cli_only()
     _check_baseline_wires_package_identity()
+    _check_windows_console_shim_copies_legacy_exe()
     _check_soft_fail_missing_pyproject()
     print("iris_agent_package_identity ok")
 

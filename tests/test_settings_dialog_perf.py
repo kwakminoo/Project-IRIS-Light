@@ -30,16 +30,17 @@ class SettingsDialogPerfTests(TestCase):
                 "iris.system.setup_protocol.is_ollama_running",
                 side_effect=AssertionError("network"),
             ),
-            patch(
-                "iris.system.setup_protocol.is_hermes_gateway_running",
-                side_effect=AssertionError("network"),
+            patch.object(
+                SetupProtocol,
+                "_engine_agent_present",
+                side_effect=AssertionError("engine probe"),
             ),
         ):
             snap = proto.detect_local()
         self.assertIsNone(snap.get("ollama_running"))
-        self.assertIsNone(snap.get("hermes_running"))
+        self.assertIsNone(snap.get("agent_running"))
 
-    def test_enrich_detect_network_calls_health_only_timeout(self) -> None:
+    def test_enrich_detect_network_uses_engine_not_gateway(self) -> None:
         proto = SetupProtocol()
         snap = proto.detect_local()
         with (
@@ -47,15 +48,15 @@ class SettingsDialogPerfTests(TestCase):
                 "iris.system.setup_protocol.is_ollama_running",
                 return_value=True,
             ) as ollama,
-            patch(
-                "iris.system.setup_protocol.is_hermes_gateway_running",
+            patch.object(
+                SetupProtocol,
+                "_engine_agent_present",
                 return_value=False,
-            ) as hermes,
+            ) as engine,
         ):
             out = proto.enrich_detect_network(snap, timeout_sec=0.5)
         ollama.assert_called_once()
         self.assertEqual(ollama.call_args.kwargs.get("timeout_sec"), 0.5)
-        hermes.assert_called_once()
-        self.assertEqual(hermes.call_args.kwargs.get("timeout_sec"), 0.5)
+        engine.assert_called_once()
         self.assertTrue(out["ollama_running"])
-        self.assertFalse(out["hermes_running"])
+        self.assertFalse(out["agent_running"])

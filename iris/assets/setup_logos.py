@@ -16,11 +16,11 @@ STEP_BRAND: dict[str, str] = {
     "ollama_install": "ollama",
     "ollama_model": "ollama",
     "ollama_cloud": "ollama",
-    "hermes_install": "hermes",
-    "hermes_env": "hermes",
-    "hermes_provider": "hermes",
-    "iris_control_sync": "hermes",
-    "hermes_gateway": "hermes",
+    "iris_agent_install": "iris_agent",
+    "iris_agent_env": "iris_agent",
+    "iris_agent_provider": "iris_agent",
+    "iris_control_sync": "iris_agent",
+    "iris_agent_engine": "iris_agent",
     "core_smoke": "iris",
     "emulator": "iris",
     "voice": "iris",
@@ -32,13 +32,13 @@ STEP_BRAND: dict[str, str] = {
 
 _BRAND_LABEL = {
     "ollama": "Ollama",
-    "hermes": "Iris Agent",
+    "iris_agent": "Iris Agent",
     "iris": "IRIS",
 }
 
 _BRAND_COLOR = {
     "ollama": "#1a1a1a",
-    "hermes": "#5b4dff",
+    "iris_agent": "#5b4dff",
     "iris": "#00e5ff",
 }
 
@@ -85,7 +85,7 @@ def _monogram_pixmap(brand: str, size: int) -> QPixmap:
         rad = max(4, size // 5)
         p.drawRoundedRect(0, 0, size, size, rad, rad)
         p.setPen(QColor("#ffffff"))
-    letter = {"ollama": "O", "hermes": "H", "iris": "I"}.get(brand, "?")
+    letter = {"ollama": "O", "iris_agent": "IA", "iris": "I"}.get(brand, "?")
     font = QFont("Segoe UI", max(8, int(size * 0.42)))
     font.setBold(True)
     p.setFont(font)
@@ -95,9 +95,18 @@ def _monogram_pixmap(brand: str, size: int) -> QPixmap:
 
 
 if __name__ == "__main__":
-    assert brand_for_step("hermes_gateway") == "hermes"
+    import sys
+
+    from PyQt6.QtWidgets import QApplication
+
+    assert brand_for_step("iris_agent_install") == "iris_agent"
+    assert brand_for_step("iris_agent_env") == "iris_agent"
+    assert brand_for_step("iris_agent_provider") == "iris_agent"
+    assert brand_for_step("iris_agent_engine") == "iris_agent"
     assert brand_for_step("core_smoke") == "iris"
     assert brand_for_step("ollama_install") == "ollama"
-    pm = setup_brand_pixmap("hermes", size=32)
+    app = QApplication.instance() or QApplication(sys.argv)
+    pm = setup_brand_pixmap("iris_agent", size=32)
     assert not pm.isNull() and pm.width() == 32
-    print("setup_logos ok", brand_label("hermes"), pm.width())
+    print("setup_logos ok", brand_label("iris_agent"), pm.width())
+    app.quit()

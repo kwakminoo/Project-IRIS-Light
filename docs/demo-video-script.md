@@ -18,7 +18,7 @@ README 상단에 연결할 **YouTube 데모 영상** 제작용 대본입니다.
 | **정리** | 바탕화면 아이콘·알림·개인정보(계정명, 메일 등) 정리. 브라우저 탭 정리 |
 | **비우기** | `.venv`, `.venv-voice`, `.env` 삭제 후 시작 (`git clean -xdn` 으로 먼저 확인) |
 | **미리 준비** | 다운로드가 느린 구간은 **미리 한 번 돌려서 캐시**해 두면 대기 시간이 줄어듭니다 |
-| **가리기** | `.env`·API 키·Hermes 키가 화면에 노출되지 않도록 주의. 노출되면 편집에서 블러 |
+| **가리기** | `.env`·API 키·Iris Agent 키가 화면에 노출되지 않도록 주의. 노출되면 편집에서 블러 |
 
 ---
 
@@ -76,11 +76,11 @@ README 상단에 연결할 **YouTube 데모 영상** 제작용 대본입니다.
 **화면**
 1. `run.bat` 더블클릭 → IRIS HUD 기동
 2. **시작 위저드** 등장
-3. Core 단계가 진행되는 모습: Ollama 설치 → 모델 pull → Hermes 설치 → provider 연결 → gateway 기동
+3. Core 단계가 진행되는 모습: Ollama 설치 → 모델 pull → Iris Agent 설치 → provider 연결 → gateway 기동
 4. Optional 단계에서 「나중에」를 눌러 넘어가는 모습
 
 **내레이션**
-> "실행하면 시작 위저드가 뜹니다. Ollama와 Hermes 같은 백엔드를
+> "실행하면 시작 위저드가 뜹니다. Ollama와 Iris Agent 같은 백엔드를
 > 하나씩 안내하면서 자동으로 깔아 줍니다.
 > 음성이나 에뮬레이터 같은 선택 기능은 나중에 켜도 됩니다."
 
@@ -146,7 +146,7 @@ README 상단에 연결할 **YouTube 데모 영상** 제작용 대본입니다.
 
 ```
 IRIS는 유료 AI 구독이나 복잡한 설치 없이 내 PC에서 바로 쓰는
-오픈소스 데스크톱 AI 에이전트입니다. (Python · PyQt6 · Ollama · Hermes Agent)
+오픈소스 데스크톱 AI 에이전트입니다. (Python · PyQt6 · Ollama · Iris Agent)
 
 ▶ 저장소: https://github.com/kwakminoo/Project-IRIS-Light
 ▶ 설치: 저장소를 받아 setup.bat 을 더블클릭하면 끝납니다.

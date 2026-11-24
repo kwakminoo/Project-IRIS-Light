@@ -27,7 +27,7 @@ def main() -> None:
         "IRIS_AGENT_COMMAND": "iris-agent",
     }
     with mock.patch.dict(os.environ, env, clear=False), mock.patch(
-        "iris.infrastructure.iris_agent_credentials.resolve_hermes_api_key",
+        "iris.infrastructure.iris_agent_credentials.resolve_iris_agent_api_key",
         side_effect=lambda api_key="": (api_key or "").strip(),
     ):
         settings = load_settings(env_path=_NO_DOTENV)

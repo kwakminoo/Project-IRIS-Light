@@ -5,7 +5,7 @@ Agent-readable:
 - Does not: spawn a sidecar, bind :8642, or import run_agent.
 - Talks to: iris.engine.types, a short -c import in the engine interpreter.
 - Extend via: install_into(runner=...) when tests inject clone. Default calls
-  hermes_install with home=EngineHome (never HermesHome).
+  iris_agent_install with home=EngineHome (EngineHome only).
 """
 
 from __future__ import annotations
@@ -28,7 +28,20 @@ def _engine_pin_sha() -> str:
 # Prefer vendor/iris-agent-runtime/PIN. Legacy name kept for serin tests.
 ENGINE_HERMES_SHA = _engine_pin_sha()
 
-_PROBE_IMPORT = "import hermes_cli, aiohttp, mcp, ruamel.yaml, dotenv; print('ok')"
+# Dual-accept: F3 rename exposes iris_agent_cli; reverse shim keeps hermes_cli.
+_PROBE_IMPORT = (
+    "import importlib\n"
+    "cli = None\n"
+    "for _n in ('iris_agent_cli', 'hermes_cli'):\n"
+    "    try:\n"
+    "        cli = importlib.import_module(_n)\n"
+    "        break\n"
+    "    except ImportError:\n"
+    "        pass\n"
+    "assert cli is not None, 'neither iris_agent_cli nor hermes_cli'\n"
+    "import aiohttp, mcp, ruamel.yaml, dotenv\n"
+    "print('ok')\n"
+)
 
 _POLLUTION_ENV_KEYS = (
     "VIRTUAL_ENV",
@@ -109,7 +122,7 @@ def _probe_imports(
     if "ok" not in (proc.stdout or ""):
         return EngineError(
             EngineErrorCode.WRONG_PYTHON,
-            f"hermes_cli import 응답 이상: {err[:240]}",
+            f"agent CLI import 응답 이상: {err[:240]}",
         )
     return None
 
@@ -139,9 +152,9 @@ def install_into(
     if runner is not None:
         runner(dest, sha=_engine_pin_sha(), clone=clone)
         return
-    from iris.system.iris_agent_install import install_hermes_with_system_python
+    from iris.system.iris_agent_install import install_iris_agent_with_system_python
 
-    result = install_hermes_with_system_python(
+    result = install_iris_agent_with_system_python(
         home=Path(home), sha=_engine_pin_sha()
     )
     if result is not None and not getattr(result, "ok", True):

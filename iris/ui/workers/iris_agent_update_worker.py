@@ -19,9 +19,9 @@ class IrisAgentUpdateCheckWorker(QThread):
 
     def run(self) -> None:
         try:
-            from iris.system.iris_agent_update import check_hermes_update
+            from iris.system.iris_agent_update import check_iris_agent_update
 
-            self.finished_ok.emit(check_hermes_update(command=self._command))
+            self.finished_ok.emit(check_iris_agent_update(command=self._command))
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc)[:240])
 
@@ -48,9 +48,9 @@ class IrisAgentUpdateApplyWorker(QThread):
 
     def run(self) -> None:
         try:
-            from iris.system.iris_agent_update import apply_hermes_update
+            from iris.system.iris_agent_update import apply_iris_agent_update
 
-            msg = apply_hermes_update(
+            msg = apply_iris_agent_update(
                 command=self._command,
                 base_url=self._base_url,
                 api_key=self._api_key,
@@ -64,12 +64,12 @@ class IrisAgentUpdateApplyWorker(QThread):
 if __name__ == "__main__":
     from PyQt6.QtCore import QCoreApplication
 
-    from iris.system.iris_agent_update import IrisAgentUpdateStatus, hermes_update_argv
+    from iris.system.iris_agent_update import IrisAgentUpdateStatus, iris_agent_update_argv
 
     app = QCoreApplication([])
     w = IrisAgentUpdateCheckWorker()
     assert hasattr(w, "finished_ok")
-    assert hermes_update_argv("hermes") == ["hermes", "update", "--yes"]
+    assert iris_agent_update_argv("hermes") == ["hermes", "update", "--yes"]
     st = IrisAgentUpdateStatus(available=True, detail="abc → def")
     assert st.available
     assert Path(".").exists()

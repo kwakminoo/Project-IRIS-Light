@@ -1,4 +1,4 @@
-"""TDD: IDE Companion hard-hides shell.run from SpeakTools / engine schemas."""
+"""TDD: IDE Companion hard-hides shell.run; model sees terminal not shell_run."""
 
 from __future__ import annotations
 
@@ -25,14 +25,17 @@ def main() -> None:
     assert current_speak_surface() == "home"
     assert PHASE4_ALLOWLIST.grant("shell.run") is not None
     assert "shell.run" in PHASE4_ALLOWLIST.names()
-    assert engine_tool_name("shell.run") in _schema_names()
+    assert engine_tool_name("shell.run") == "terminal"
+    assert "terminal" in _schema_names()
+    assert "shell_run" not in _schema_names()
     assert "shell.run" in _catalog_names()
 
     set_speak_surface("ide_companion")
     assert current_speak_surface() == "ide_companion"
     names = _schema_names()
-    assert engine_tool_name("shell.run") not in names, names
+    assert "terminal" in names, names
     assert "shell_run" not in names
+    assert "project_run" not in names
     catalog = _catalog_names()
     assert "shell.run" not in catalog, catalog
     assert "project.run" in catalog
@@ -42,7 +45,8 @@ def main() -> None:
 
     set_speak_surface("home")
     assert current_speak_surface() == "home"
-    assert engine_tool_name("shell.run") in _schema_names()
+    assert "terminal" in _schema_names()
+    assert engine_tool_name("shell.run") == "terminal"
     assert "shell.run" in _catalog_names()
     print("speak_surface_shell ok")
 

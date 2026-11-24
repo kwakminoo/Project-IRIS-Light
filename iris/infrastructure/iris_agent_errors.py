@@ -1,4 +1,4 @@
-"""Hermes 채팅 오류 분류 — 게이트웨이 Bearer vs Ollama 클라우드 401."""
+"""Iris Agent 채팅 오류 분류 — 게이트웨이 Bearer vs Ollama 클라우드 401."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def looks_like_no_tools_error(err_msg: str) -> bool:
 
 
 def format_hermes_sse_error(err_msg: str, *, model: str = "") -> str:
-    """SSE error.message → 사용자용 RuntimeError 본문 (앞에 'Hermes: ' 붙이지 않음)."""
+    """SSE error.message → 사용자용 RuntimeError 본문 (중복 제품 접두어 없음)."""
     raw = (err_msg or "").strip()
     if looks_like_upstream_unauthorized(raw):
         if is_cloud_runtime_name(model) or ":cloud" in raw.lower() or "-cloud" in raw.lower():
@@ -244,17 +244,17 @@ if __name__ == "__main__":
         "registry.ollama.ai/library/exaone3.5:2.4b does not support tools"
     )
     quota = (
-        'Hermes: HTTP 429: [{"error":{"code":429,"message":'
+        'Iris Agent: HTTP 429: [{"error":{"code":429,"message":'
         '"You exceeded your current quota, please check your plan and billing details. '
         'https://ai.google.dev/gemini-api/docs/rate-limits"}}]'
     )
     assert "Gemini API 사용 한도" in explain_chat_error(quota)
     assert "options" in explain_chat_error(
-        "Hermes: HTTP 400 Unsupported parameter(s): options"
+        "Iris Agent: HTTP 400 Unsupported parameter(s): options"
     )
     assert explain_chat_error(CLOUD_AUTH_USER_MSG) == CLOUD_AUTH_USER_MSG
-    assert "연결하지 못했습니다" in explain_chat_error("Hermes 연결 실패: refused")
-    assert "Iris Agent" in explain_chat_error("Hermes 연결 실패: refused")
+    assert "연결하지 못했습니다" in explain_chat_error("Iris Agent 연결 실패: refused")
+    assert "Iris Agent" in explain_chat_error("Iris Agent 연결 실패: refused")
     assert "hermes doctor" not in explain_chat_error(
         "custom rejected; run `hermes doctor` for details"
     ).lower()

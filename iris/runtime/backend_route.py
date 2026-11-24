@@ -13,16 +13,15 @@ from typing import Any
 from iris.ui.workers.backend_call import BackendRoute
 
 AGENT_BACKEND = "agent"
-LEGACY_HERMES_BACKEND = "hermes"
 
 
 def is_agent_backend(route_or_backend: Any) -> bool:
-    """True for canonical ``agent`` and legacy ``hermes`` chat-route ids."""
+    """True for the canonical ``agent`` chat-route id."""
     if hasattr(route_or_backend, "backend"):
         raw = getattr(route_or_backend, "backend", "")
     else:
         raw = route_or_backend
-    return str(raw or "").strip().lower() in (AGENT_BACKEND, LEGACY_HERMES_BACKEND)
+    return str(raw or "").strip().lower() == AGENT_BACKEND
 
 
 def resolve_backend_route(
@@ -55,7 +54,7 @@ def resolve_backend_route(
             model=name,
             base_url=getattr(settings, "agent_base_url", ""),
             api_key=getattr(settings, "agent_api_key", ""),
-            command=getattr(settings, "agent_command", "hermes"),
+            command=getattr(settings, "agent_command", "iris-agent"),
             target=target,
         )
 
@@ -246,7 +245,7 @@ if __name__ == "__main__":
         agent_enabled=True,
         agent_base_url="http://127.0.0.1:8642/v1",
         agent_api_key="k",
-        agent_command="hermes",
+        agent_command="iris-agent",
         ollama_base_url="http://127.0.0.1:11434/v1",
     )
 
@@ -258,7 +257,7 @@ if __name__ == "__main__":
         route = resolve_backend_route(hermes_on, None, "qwen3:8b")
         assert route.backend == AGENT_BACKEND and route.target.model == "up/qwen3:8b"
         assert is_agent_backend(route)
-        assert is_agent_backend(LEGACY_HERMES_BACKEND)
+        assert not is_agent_backend("hermes")
         assert route.api_key == "k"
 
         # 해석이 실패하면 None

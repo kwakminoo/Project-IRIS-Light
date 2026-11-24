@@ -77,7 +77,7 @@ class IrisStateSecretTests(TestCase):
         self.state = build_state(
             ollama_model="qwen3:8b",
             hermes_enabled=True,
-            hermes_base_url="http://127.0.0.1:8642/v1",
+            agent_base_url="http://127.0.0.1:8642/v1",
             hermes_api_key="sk-hermes-must-never-appear",
             api_providers=[_Provider()],
             history=_History(),

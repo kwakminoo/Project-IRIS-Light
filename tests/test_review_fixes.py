@@ -165,7 +165,7 @@ class HermesRangeTests(TestCase):
                 f"supported-markers = [\n  \"python_full_version >= '{floor}'\",\n]\n",
                 encoding="utf-8",
             )
-        return hi.hermes_python_range(d)
+        return hi.iris_agent_python_range(d)
 
     def test_lock_floor_above_default_ceiling_is_not_empty(self) -> None:
         self.assertEqual(self._range(">=3.11", "3.14"), ((3, 14), (3, 15)))

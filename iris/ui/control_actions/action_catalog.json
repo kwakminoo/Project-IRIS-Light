@@ -409,7 +409,7 @@
   },
   {
     "name": "extension.install_github",
-    "summary": "Install a GitHub repo as MCP and/or skill. Required: url. kind=auto|mcp|skill. scope=project only in IRIS IDE (writes the open project). scope=iris only on the main Iris screen (Hermes). needs_input: ask and do not invent secrets. Do not claim installed without ok. Do not treat an IDE extension and a Hermes MCP as one install.",
+    "summary": "Install a GitHub repo as MCP and/or skill. Required: url. kind=auto|mcp|skill. scope=project only in IRIS IDE (writes the open project). scope=iris only on the main Iris screen (Iris Agent). needs_input: ask and do not invent secrets. Do not claim installed without ok. Do not treat an IDE extension and an Iris Agent MCP as one install.",
     "risk": "medium",
     "confirm_required": false
   },

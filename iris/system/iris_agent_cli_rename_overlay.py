@@ -75,7 +75,7 @@ def iris_agent_cli_is_real_package(agent_root: Path) -> bool:
     return True
 
 
-def hermes_cli_is_reverse_shim(agent_root: Path) -> bool:
+def iris_agent_cli_is_reverse_shim(agent_root: Path) -> bool:
     init = Path(agent_root) / "hermes_cli" / "__init__.py"
     if not init.is_file():
         return False
@@ -94,7 +94,7 @@ def iris_agent_cli_rename_applied(agent_root: Path) -> bool:
     hermes = root / "hermes_cli"
     if not hermes.exists():
         return True
-    return hermes_cli_is_reverse_shim(root)
+    return iris_agent_cli_is_reverse_shim(root)
 
 
 def apply_iris_agent_cli_rename_overlay(agent_root: Path) -> list[str]:
@@ -185,7 +185,7 @@ def _rewrite_tree_agent_to_iris(pkg_dir: Path) -> int:
 
 def _replace_agent_with_reverse_shim(root: Path) -> tuple[bool, str]:
     hermes = root / "hermes_cli"
-    if hermes_cli_is_reverse_shim(root):
+    if iris_agent_cli_is_reverse_shim(root):
         return True, "cli rename: hermes_cli already reverse shim"
 
     bak = root / "hermes_cli._f3_upstream"

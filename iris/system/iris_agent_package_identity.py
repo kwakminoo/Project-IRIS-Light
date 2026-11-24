@@ -7,6 +7,8 @@ Legacy hermes script may keep hermes_cli.main (reverse shim after F3).
 from __future__ import annotations
 
 import re
+import shutil
+import sys
 from pathlib import Path
 
 _NAME_RE = re.compile(
@@ -22,6 +24,32 @@ _PACKAGES_FIND_IRIS = (
     '"iris_cli"',
     '"iris_cli.*"',
 )
+
+
+def ensure_iris_agent_windows_console_shim(agent_root: Path) -> list[str]:
+    """If Scripts has hermes.exe but no iris-agent.exe, copy a Windows shim.
+
+    Overlay already adds pyproject console scripts; old trees may still only
+    have hermes.exe until the next uv sync. Soft-fail; never raise.
+    """
+    if sys.platform != "win32":
+        return []
+    scripts = Path(agent_root) / "venv" / "Scripts"
+    if not scripts.is_dir():
+        return []
+    target = scripts / "iris-agent.exe"
+    if target.is_file():
+        return ["console shim: iris-agent.exe present"]
+    for src_name in ("hermes.exe", "hermes-agent.exe", "iris.exe"):
+        src = scripts / src_name
+        if not src.is_file():
+            continue
+        try:
+            shutil.copy2(src, target)
+        except OSError as exc:
+            return [f"console shim: copy fail: {exc}"]
+        return [f"console shim: copied {src_name} → iris-agent.exe"]
+    return ["console shim: no legacy exe to copy"]
 
 
 def apply_iris_agent_package_identity_overlay(agent_root: Path) -> list[str]:
@@ -42,27 +70,32 @@ def apply_iris_agent_package_identity_overlay(agent_root: Path) -> list[str]:
     text = _ensure_script_entries(text)
     text = _ensure_packages_find_iris(text)
 
+    msgs: list[str] = []
     if text == original:
         if 'name = "iris-agent"' in text and "iris-agent =" in text:
-            return ["package identity: already iris-agent"]
-        return ["package identity: no hermes-agent markers — skipped"]
+            msgs.append("package identity: already iris-agent")
+        else:
+            msgs.append("package identity: no hermes-agent markers — skipped")
+    else:
+        try:
+            path.write_text(text, encoding="utf-8", newline="\n")
+        except OSError as exc:
+            return [f"package identity: write fail: {exc}"]
 
-    try:
-        path.write_text(text, encoding="utf-8", newline="\n")
-    except OSError as exc:
-        return [f"package identity: write fail: {exc}"]
+        bits = []
+        if n_name:
+            bits.append("name→iris-agent")
+        if '"iris-agent[' in text and '"hermes-agent[' not in text:
+            bits.append("extras self-refs")
+        if _SCRIPT_IRIS_AGENT in text:
+            bits.append("scripts iris-agent")
+        if all(e in text for e in _PACKAGES_FIND_IRIS):
+            bits.append("packages.find iris")
+        detail = ", ".join(bits) if bits else "patched"
+        msgs.append(f"package identity: {detail}")
 
-    bits = []
-    if n_name:
-        bits.append("name→iris-agent")
-    if '"iris-agent[' in text and '"hermes-agent[' not in text:
-        bits.append("extras self-refs")
-    if _SCRIPT_IRIS_AGENT in text:
-        bits.append("scripts iris-agent")
-    if all(e in text for e in _PACKAGES_FIND_IRIS):
-        bits.append("packages.find iris")
-    detail = ", ".join(bits) if bits else "patched"
-    return [f"package identity: {detail}"]
+    msgs.extend(ensure_iris_agent_windows_console_shim(root))
+    return msgs
 
 
 def _ensure_script_entries(text: str) -> str:

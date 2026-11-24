@@ -28,6 +28,7 @@ from iris.engine import (  # noqa: E402
 from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget  # noqa: E402
 from iris.ui.workers.iris_agent_workers import (  # noqa: E402
     IrisAgentChatWorker,
+    IrisAgentControlSyncWorker,
     IrisAgentHealthWorker,
     IrisAgentModelSyncWorker,
 )
@@ -97,13 +98,11 @@ class InternalHealthWorkerTests(TestCase):
                 "iris.ui.workers.iris_agent_workers.sync_iris_control",
                 return_value=SimpleNamespace(summary_line=lambda: "skip"),
             ),
-            patch("iris.ui.workers.iris_agent_workers.restart_hermes_gateway") as restart,
         ):
             worker.run()
         self.assertEqual(out.ok, [True])
         self.assertEqual(out.failed, [])
         self.assertEqual(engine.ensure_calls, 1)
-        restart.assert_not_called()
 
     def test_engine_ready_syncs_engine_home_without_reconnecting_gateway(self) -> None:
         engine = _StubEngine()
@@ -116,7 +115,6 @@ class InternalHealthWorkerTests(TestCase):
                 "iris.ui.workers.iris_agent_workers.sync_iris_control",
                 return_value=report,
             ) as sync,
-            patch("iris.ui.workers.iris_agent_workers.restart_hermes_gateway") as restart,
         ):
             worker.run()
         self.assertEqual(out.ok, [True])
@@ -125,7 +123,6 @@ class InternalHealthWorkerTests(TestCase):
         kwargs = sync.call_args.kwargs
         self.assertEqual(kwargs.get("home"), engine.source.home)
         self.assertIs(kwargs.get("reconnect_gateway"), False)
-        restart.assert_not_called()
 
     def test_engine_failed_emits_diagnostic_detail(self) -> None:
         error = EngineError(EngineErrorCode.NOT_INSTALLED, "missing")
@@ -227,6 +224,31 @@ class CloseEventShutdownTests(TestCase):
         src = inspect.getsource(mw.MainWindow.closeEvent)
         self.assertIn("shared_engine().shutdown", src)
         self.assertIn("app.quit()", src)
+
+
+class ControlSyncWorkerTests(TestCase):
+    def test_control_sync_finishes_from_report_without_gateway(self) -> None:
+        report = SimpleNamespace(
+            ok=True,
+            mcp_fail_count=0,
+            messages=["SpeakTools ok"],
+            errors=[],
+            mcp_servers=[],
+            summary_line=lambda: "Iris Agent: SpeakTools ok",
+        )
+        worker = IrisAgentControlSyncWorker("http://127.0.0.1:8642/v1")
+        results: list[tuple[bool, str]] = []
+        worker.finished_ok.connect(lambda ok, summary: results.append((ok, summary)))
+        with patch(
+            "iris.ui.workers.iris_agent_workers.sync_iris_control",
+            return_value=report,
+        ) as sync:
+            worker.run()
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0][0])
+        self.assertIn("SpeakTools", results[0][1])
+        sync.assert_called_once()
+        self.assertIs(sync.call_args.kwargs.get("reconnect_gateway"), False)
 
 
 class InternalModelSyncTests(TestCase):

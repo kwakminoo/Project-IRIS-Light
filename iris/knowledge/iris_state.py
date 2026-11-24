@@ -55,7 +55,7 @@ def build_state(
     *,
     ollama_model: str = "",
     hermes_enabled: bool = False,
-    hermes_base_url: str = "",
+    agent_base_url: str = "",
     hermes_api_key: str = "",
     api_providers: list[Any] | None = None,
     history: Any = None,
@@ -67,7 +67,7 @@ def build_state(
     state["대화 모델"] = str(ollama_model or "").strip() or "(선택 안 됨)"
     state["백엔드"] = "Iris Agent" if hermes_enabled else "Ollama 직행"
     if hermes_enabled:
-        state["Iris Agent 게이트웨이"] = str(hermes_base_url or "").strip()
+        state["Iris Agent 게이트웨이"] = str(agent_base_url or "").strip()
         state["Iris Agent API 키"] = mask(hermes_api_key)
 
     providers = list(api_providers or [])
@@ -332,7 +332,7 @@ if __name__ == "__main__":
     state = build_state(
         ollama_model="qwen3:8b",
         hermes_enabled=True,
-        hermes_base_url="http://127.0.0.1:8642/v1",
+        agent_base_url="http://127.0.0.1:8642/v1",
         hermes_api_key="sk-hermes-secret",
         api_providers=[_P()],
         history=_H(),

@@ -89,7 +89,7 @@ class PerRoutineModelTests(TestCase):
             agent_enabled=True,
             agent_base_url="http://127.0.0.1:8642/v1",
             agent_api_key="k",
-            agent_command="hermes",
+            agent_command="iris-agent",
             ollama_base_url="http://127.0.0.1:11434/v1",
         )
         with patch(

@@ -1,6 +1,7 @@
-"""로그온 시 Iris Agent gateway만 미리 켠다. Qt·Iris 창 없음.
+"""로그온 시 Iris Agent runtime(home/engine)을 미리 준비한다. Qt·Iris 창 없음.
 
 Windows 작업 스케줄러가 `pythonw` 로 직접 실행한다(`-m` 아님).
+Product ready는 gateway(:8642)가 아니라 sidecar/home이다.
 """
 
 from __future__ import annotations
@@ -52,8 +53,8 @@ def main() -> int:
         from iris.agent import ensure_iris_agent_runtime
 
         settings = load_settings()
-        # Supervisor entry (Phase 4b). Lifetime: keep-background — warm may
-        # leave gateway running without an Iris window.
+        # Supervisor entry (Phase 4b). Default start_gateway=False —
+        # product warm is runtime/engine ready, not :8642.
         result = ensure_iris_agent_runtime(
             settings.agent_base_url,
             api_key=settings.agent_api_key,
@@ -64,7 +65,7 @@ def main() -> int:
         _log_line(f"fail: {exc}")
         return EXIT_ERROR
     if ok:
-        _log_line("ok: gateway up")
+        _log_line("ok: runtime ready")
         return EXIT_OK
     _log_line("fail: ensure_iris_agent_runtime returned not ok")
     return EXIT_ERROR

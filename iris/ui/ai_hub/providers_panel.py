@@ -445,7 +445,7 @@ class AiProvidersPanel(QGroupBox):
                     pnow,
                     db=self._db,
                     hermes_enabled=bool(self._settings.agent_enabled),
-                    hermes_base_url=self._settings.agent_base_url,
+                    agent_base_url=self._settings.agent_base_url,
                 )
             self._api_status.setText(head if not extra else f"{head}\n{extra}")
         else:

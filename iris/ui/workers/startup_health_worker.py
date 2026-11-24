@@ -19,23 +19,15 @@ class StartupHealthWorker(QThread):
         self,
         *,
         ollama_base_url: str,
-        hermes_base_url: str | None = None,
-        hermes_command: str | None = None,
-        agent_base_url: str | None = None,
-        agent_command: str | None = None,
+        agent_base_url: str = "http://127.0.0.1:8642/v1",
+        agent_command: str = "iris-agent",
         min_model: str = "",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._ollama_base_url = ollama_base_url
-        self._agent_base_url = (
-            agent_base_url
-            if agent_base_url is not None
-            else (hermes_base_url or "http://127.0.0.1:8642/v1")
-        )
-        self._agent_command = (
-            agent_command if agent_command is not None else hermes_command
-        ) or "hermes"
+        self._agent_base_url = agent_base_url or "http://127.0.0.1:8642/v1"
+        self._agent_command = agent_command or "iris-agent"
         self._min_model = min_model
 
     def _probe(self) -> bool:
@@ -96,22 +88,14 @@ class CoreWarmWorker(QThread):
         self,
         *,
         ollama_base_url: str,
-        hermes_base_url: str | None = None,
-        hermes_command: str | None = None,
-        agent_base_url: str | None = None,
-        agent_command: str | None = None,
+        agent_base_url: str = "http://127.0.0.1:8642/v1",
+        agent_command: str = "iris-agent",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._ollama_base_url = ollama_base_url
-        self._agent_base_url = (
-            agent_base_url
-            if agent_base_url is not None
-            else (hermes_base_url or "http://127.0.0.1:8642/v1")
-        )
-        self._agent_command = (
-            agent_command if agent_command is not None else hermes_command
-        ) or "hermes"
+        self._agent_base_url = agent_base_url or "http://127.0.0.1:8642/v1"
+        self._agent_command = agent_command or "iris-agent"
 
     def run(self) -> None:
         try:
@@ -143,7 +127,7 @@ if __name__ == "__main__":
     w = _HangWorker(
         ollama_base_url="http://127.0.0.1:1/v1",
         agent_base_url="http://127.0.0.1:2/v1",
-        agent_command="hermes",
+        agent_command="iris-agent",
     )
     w._timeout_s = 0.4
     got: list[bool] = []

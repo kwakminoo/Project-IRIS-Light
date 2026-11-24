@@ -43,7 +43,7 @@ class VisibleConsoleContractTests(TestCase):
     def test_shared_constant(self) -> None:
         self.assertEqual(
             VISIBLE_CONSOLE_STEPS,
-            frozenset({"ollama_install", "hermes_install", "emulator"}),
+            frozenset({"ollama_install", "iris_agent_install", "emulator"}),
         )
 
 

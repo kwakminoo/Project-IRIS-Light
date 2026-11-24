@@ -16,8 +16,8 @@ from iris.knowledge.iris_wiki import IrisWiki
 from iris.storage.email_accounts import EmailAccount, account_password
 from iris.system.android_emulator import prepare_emulator
 
-# IMAP 무제한 대기로 에뮬 알림이 안 뜨던 회귀 방지
-_EMAIL_CHECK_TIMEOUT_S = 25.0
+# IMAP 무제한 대기로 에뮬 알림이 안 뜨던 회귀 방지 — 유한 타임아웃 유지, 느린 서버용으로 50s
+_EMAIL_CHECK_TIMEOUT_S = 50.0
 
 
 class BootChecksWorker(QThread):
@@ -57,11 +57,11 @@ class BootChecksWorker(QThread):
 
     def _check_wiki(self) -> None:
         try:
-            from iris.ui.chat.skill_mcp_dialogs import hermes_root, list_hermes_mcps, list_hermes_skills
+            from iris.ui.chat.skill_mcp_dialogs import iris_agent_root, list_iris_agent_mcps, list_iris_agent_skills
 
-            root = str(hermes_root())
-            skills = [(n, d) for n, d, _p in list_hermes_skills(limit=120)]
-            mcps = list_hermes_mcps(limit=40)
+            root = str(iris_agent_root())
+            skills = [(n, d) for n, d, _p in list_iris_agent_skills(limit=120)]
+            mcps = list_iris_agent_mcps(limit=40)
             self._wiki.sync_skills_catalog(skills, hermes_root=root)
             self._wiki.sync_mcp_catalog(mcps, hermes_root=root)
             count = len(self._wiki.list_notes())

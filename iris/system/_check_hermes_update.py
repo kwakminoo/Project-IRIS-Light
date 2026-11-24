@@ -7,8 +7,8 @@ import tempfile
 from pathlib import Path
 
 from iris.system.iris_agent_update import (
-    check_hermes_update,
-    hermes_update_argv,
+    check_iris_agent_update,
+    iris_agent_update_argv,
 )
 from iris.system.win_subprocess import no_window_kwargs
 
@@ -26,7 +26,7 @@ def _git(repo: Path, *args: str) -> None:
 
 
 def _main() -> None:
-    assert hermes_update_argv(r"C:\hermes.exe")[-2:] == ["update", "--yes"]
+    assert iris_agent_update_argv(r"C:\hermes.exe")[-2:] == ["update", "--yes"]
 
     with tempfile.TemporaryDirectory(prefix="iris-hermes-upd-") as tmp:
         repo = Path(tmp) / "hermes-agent"
@@ -46,16 +46,16 @@ def _main() -> None:
             **no_window_kwargs(),
         ).stdout.strip()
 
-        same = check_hermes_update(repo=repo, remote_sha=local)
+        same = check_iris_agent_update(repo=repo, remote_sha=local)
         assert not same.available, same
         assert same.detail == "최신"
 
-        behind = check_hermes_update(repo=repo, remote_sha="f" * 40)
+        behind = check_iris_agent_update(repo=repo, remote_sha="f" * 40)
         assert behind.available, behind
         assert behind.local_sha == local
         assert "→" in behind.detail
 
-        missing = check_hermes_update(repo=Path(tmp) / "nope", remote_sha="abc")
+        missing = check_iris_agent_update(repo=Path(tmp) / "nope", remote_sha="abc")
         assert not missing.available
 
     print("hermes_update check ok")

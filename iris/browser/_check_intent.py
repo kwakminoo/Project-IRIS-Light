@@ -20,7 +20,7 @@ from iris.browser.types import (
     MediaState,
     empty_snapshot,
 )
-from iris.runtime.agent_local_gate import hermes_owns_local_intents
+from iris.runtime.agent_local_gate import iris_agent_owns_local_intents
 from iris.system.control_surface import ActionRegistry
 from iris.system.iris_agent_control_sync import _merge_disabled_toolsets
 from iris.ui.window.main_window import MainWindow
@@ -130,8 +130,8 @@ def main() -> int:
 
     gate = (root / "runtime" / "agent_local_gate.py").read_text(encoding="utf-8")
     assert "브라우저 play/pause/search는 예외" not in gate
-    assert hermes_owns_local_intents(True) is True
-    assert hermes_owns_local_intents(False) is False
+    assert iris_agent_owns_local_intents(True) is True
+    assert iris_agent_owns_local_intents(False) is False
 
     teach = browser_teaching_block()
     for spec in command_specs():

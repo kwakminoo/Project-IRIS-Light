@@ -20,13 +20,13 @@ from iris.infrastructure.speak_capability import (
     engine_tool_schemas,
 )
 from iris.knowledge.pdf_export import verify_pdf_file
-from iris.runtime.agent_local_gate import hermes_owns_local_intents
+from iris.runtime.agent_local_gate import iris_agent_owns_local_intents
 from iris.ui._check_control_action_split import _surface
 
 
 def main() -> None:
-    assert hermes_owns_local_intents(True) is True
-    assert hermes_owns_local_intents(False) is False
+    assert iris_agent_owns_local_intents(True) is True
+    assert iris_agent_owns_local_intents(False) is False
 
     window, reg = _surface()
     names = {item["name"] for item in reg.catalog()}

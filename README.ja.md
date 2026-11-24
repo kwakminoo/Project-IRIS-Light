@@ -9,7 +9,8 @@
 **Open Source Desktop AI Agent Runtime**
 
 IRIS は LLM・MCP・Voice Runtime・Local/Cloud Model をつなぎ、**自分の PC 上で動作する AI Agent Runtime** です。
-有料サブスクリプションや手動連携なしに、インストーラー 1 つで [Ollama](https://ollama.com/)（モデル推論）と [Hermes Agent](https://hermes-agent.nousresearch.com/)（ツール・スキル）を準備し、対話型 HUD にまとめます。
+有料サブスクリプションや手動連携なしに、インストーラー 1 つで [Ollama](https://ollama.com/)（モデル推論）と [Iris Agent](docs/domain.md)（ツール・スキル）を準備し、対話型 HUD にまとめます。
+Iris Agent は [Nous Hermes Agent](https://hermes-agent.nousresearch.com/) の MIT コードを基に製品内部へ吸収したランタイムです。
 
 単なるチャットボットではなく、次を目標としています。
 
@@ -58,7 +59,7 @@ STT → UserTurnDispatcher → Agent Runtime → TTS
 ### 3. Runtime Architecture
 
 ```text
-GUI → Runtime Gateway → Hermes → Ollama
+GUI → Runtime Gateway → Iris Agent → Ollama
 ```
 
 <!-- ![Runtime Architecture](assets/demo/runtime.gif) -->
@@ -86,11 +87,11 @@ IRIS はその差を次のように埋めます。
 | Agent ロジックが UI に混在 | Runtime Gateway として実行境界を分離 |
 | GPU がないと使えない | クラウドモデルを基本とし、ローカルモデルは任意 |
 | 音声がアプリに固定 | Voice Runtime を独立した FastAPI サービス（`:18765`）に分離 |
-| ツール拡張ができない | Hermes スキル・MCP で拡張 |
+| ツール拡張ができない | Iris Agent スキル・MCP で拡張 |
 | インストールと連携が複雑 | インストーラーが Python・venv・パッケージ・ランタイムを自動処理 |
 
 IRIS は Web 検索・シェル・ファイル IO を自前で再実装しません。
-**セッション・権限・ストリーミング UI・セットアッププロトコル**を担当し、実行は Ollama/Hermes に委譲します。
+**セッション・権限・ストリーミング UI・セットアッププロトコル**を担当し、実行は Ollama/Iris Agent に委譲します。
 
 ---
 
@@ -98,15 +99,15 @@ IRIS は Web 検索・シェル・ファイル IO を自前で再実装しませ
 
 | Feature | Description |
 |---|---|
-| **LLM Agent** | Hermes 経由のマルチステップ Tool 呼び出し（ファイル・ターミナル・Web） |
-| **MCP** | `iris-control` stdio MCP · Hermes MCP 連携 |
+| **LLM Agent** | Iris Agent 経由のマルチステップ Tool 呼び出し（ファイル・ターミナル・Web） |
+| **MCP** | `iris-control` stdio MCP · Iris Agent MCP 連携 |
 | **Voice Runtime** | STT/TTS を FastAPI サービス（`:18765`）に分離（任意インストール） |
 | **Runtime Gateway** | セッション・権限・ストリーミングを担う実行境界 |
 | **Local Model** | Ollama ローカルモデル（`:11434`） |
 | **Cloud Model** | GPU のない PC 向けの OpenAI 互換 provider |
-| **セットアッププロトコル** | 初回起動時に Ollama・モデル・Hermes・provider・gateway・MCP を段階的に自動化 |
+| **セットアッププロトコル** | 初回起動時に Ollama・モデル・Iris Agent・provider・gateway・MCP を段階的に自動化 |
 | **対話型 HUD** | モデル選択、履歴、思考／ツールログ、リアルタイムストリーミング |
-| **Control Surface** | Hermes → UI の逆制御（`:8765`）· `iris-control` スキル |
+| **Control Surface** | Iris Agent → UI の逆制御（`:8765`）· `iris-control` スキル |
 | **ワークスペース** | システムモニター · メール（複数アカウント）· カレンダー · IDE Companion · Iris Wiki |
 | **ローカル保存** | 設定・プロファイルを SQLite に保存（`~/.iris-light/`） |
 | **任意拡張** | 画面学習（Aloha）· Android エミュレーター · mobile-mcp |
@@ -122,7 +123,7 @@ flowchart TD
     U["ユーザーの自然言語"] --> HUD
     HUD["IRIS HUD · PyQt6<br/>Chat · Monitor · Wiki · Email · Calendar · Settings"] --> GW
     GW["Runtime Gateway<br/>ollama_client · hermes_client · setup_protocol"] --> OL["Ollama :11434<br/>推論 (local / cloud)"]
-    GW --> HM["Hermes :8642<br/>tools · skills"]
+    GW --> HM["Iris Agent :8642<br/>tools · skills"]
     HM --> T["ファイル · ターミナル · Web · MCP"]
     HM -. "Control Surface :8765" .-> HUD
     VR["Voice Runtime :18765 (任意)<br/>STT / TTS · FastAPI"] <--> HUD
@@ -140,7 +141,7 @@ flowchart TD
 <table>
 <tr><td align="center"><b>1</b></td><td><a href="https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup.exe"><b>IRIS-Setup.exe をダウンロード</b></a> — Windows 10/11 · 約 23MB</td></tr>
 <tr><td align="center"><b>2</b></td><td><b>実行</b>します。署名証明書がないため Windows が一度ブロックします — <b>詳細情報 → 実行</b>。Python 確認・仮想環境・パッケージ・検証まで<b>すべて自動</b>で、数分かかります。</td></tr>
-<tr><td align="center"><b>3</b></td><td>デスクトップの <b><code>IRIS</code></b> を実行します。セットアップウィザードが Ollama・Hermes のインストールを案内します。</td></tr>
+<tr><td align="center"><b>3</b></td><td>デスクトップの <b><code>IRIS</code></b> を実行します。セットアップウィザードが Ollama・Iris Agent のインストールを案内します。</td></tr>
 </table>
 
 ソースからインストールする場合は、リポジトリ内の **`setup.bat` をダブルクリック**します。
@@ -162,9 +163,9 @@ chmod +x setup.sh
 ### 初回起動
 
 1. **セットアップウィザード**が開きます。
-2. Core: Ollama のインストール・起動 → 最小モデルの pull → Hermes 導入 → API/provider 接続 → gateway 起動。
+2. Core: Ollama のインストール・起動 → 最小モデルの pull → Iris Agent 導入 → API/provider 接続 → gateway 起動。
 3. Optional（STT 音声・Full TTS・Aloha 画面学習・エミュレーター・Node/mobile-mcp・クラウドログイン）は「今すぐ」か「後で」。
-4. HUD のチャットに自然言語で依頼すると、Hermes/Ollama が応答と Tool 実行をストリーミングします。
+4. HUD のチャットに自然言語で依頼すると、Iris Agent/Ollama が応答と Tool 実行をストリーミングします。
 
 > UI のみのデモ: `IRIS_SETUP_DEMO=1`（実インストールなし）· ドライラン: `IRIS_SETUP_DRY_RUN=1`
 
@@ -185,9 +186,9 @@ python -m iris   # 同等
 
 実装済み:
 
-- [x] LLM Agent Runtime（Hermes Tool 呼び出し・マルチステップ）
+- [x] LLM Agent Runtime（Iris Agent Tool 呼び出し・マルチステップ）
 - [x] Voice Runtime（STT/TTS FastAPI サービス・任意インストール）
-- [x] MCP Integration（`iris-control` stdio · Hermes MCP）
+- [x] MCP Integration（`iris-control` stdio · Iris Agent MCP）
 - [x] Local/Cloud Model Support（Ollama · OpenAI 互換 provider）
 - [x] Installation System（`IRIS-Setup.exe` · `setup.ps1` / `setup.sh`）
 
@@ -220,7 +221,7 @@ python -m iris   # 同等
 | [docs/voice.md](docs/voice.md) | 音声 STT/TTS · ボイスプロファイル |
 | [docs/voice_architecture.md](docs/voice_architecture.md) | Voice Runtime の境界とフロー |
 | [docs/installer-release.md](docs/installer-release.md) | インストーラービルド · リリース手順 |
-| [integrations/hermes-skills/README.md](integrations/hermes-skills/README.md) | Iris Control Surface (Hermes ↔ UI) |
+| [integrations/hermes-skills/README.md](integrations/hermes-skills/README.md) | Iris Control Surface (Iris Agent ↔ UI) |
 | [LICENSE.md](LICENSE.md) | ライセンス根拠 · サードパーティ一覧 |
 
 ---
@@ -246,5 +247,5 @@ UI 全体が **PyQt6**（商用ライセンスを購入しない限り GPL-3.0-o
 
 ## 免責
 
-IRIS は Hermes のツールを通じてローカルのファイルやターミナルに影響を与える可能性があります。
+IRIS は Iris Agent のツールを通じてローカルのファイルやターミナルに影響を与える可能性があります。
 重要な操作の前に権限設定と確認ダイアログを確認してください。本番自動化・無人実行は利用者の責任で行ってください。

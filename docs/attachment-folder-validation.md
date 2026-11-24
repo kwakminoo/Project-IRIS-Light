@@ -16,7 +16,7 @@
 
 ## 공통 처리 구조
 
-파일 선택, 새 Add Folder 메뉴, Windows 로컬 URL 드롭 → 동일한 composer attachment strip → `UserTurn.attachments` → `AttachmentWorker` → `prepare_attachments` → 세션의 `AttachmentStore` → 구조/선택된 본문 → `model_content` → 기존 Hermes/Ollama/OpenAI 호환 메시지 파이프라인.
+파일 선택, 새 Add Folder 메뉴, Windows 로컬 URL 드롭 → 동일한 composer attachment strip → `UserTurn.attachments` → `AttachmentWorker` → `prepare_attachments` → 세션의 `AttachmentStore` → 구조/선택된 본문 → `model_content` → 기존 Iris Agent/Ollama/OpenAI 호환 메시지 파이프라인.
 
 추출은 Qt GUI 스레드 밖에서 실행한다. UI에는 이름만 표시하며 추출 본문은 모델용 메시지로 분리한다. 모델용 첨부 메타데이터 JSON에서 절대 경로와 폴더 루트를 제거한다. 본문은 줄바꿈을 유지한 텍스트 블록으로 전달하고 폴더 인덱스를 본문보다 먼저 배치한다. 첨부 데이터 뒤에도 질문을 표시한다. 저장된 모델용 본문으로 과거 대화 내용을 볼 수 있지만 로컬 경로 접근 권한은 DB에서 복원하지 않는다.
 
@@ -49,7 +49,7 @@
 4. `list_attached_directory(attachment_id, relative_path="")`
 5. `read_file_chunk(attachment_id, relative_path, chunk_index=0)`
 
-현재 앱이 이 API를 호출해 질문별 컨텍스트를 준비한다. Hermes 서버에 모델이 직접 호출하는 native tool로 등록한 것은 아니다.
+현재 앱이 이 API를 호출해 질문별 컨텍스트를 준비한다. Iris Agent 서버에 모델이 직접 호출하는 native tool로 등록한 것은 아니다.
 
 읽기는 현재 세션에서 사용자가 직접 첨부한 루트의 인덱스 항목에 한정한다. `../`, 절대 경로, 드라이브 경로, Windows ADS를 거부하고 실제 resolved path의 범위를 재검증한다. 파일/부모 디렉터리의 심볼릭 링크와 정션도 거부한다. 새 채팅, 채팅 전환, 기록 초기화 때 새 store로 교체하며 이전 worker가 보유한 store도 새 채팅과 분리된다.
 
@@ -65,7 +65,7 @@
 .venv/Scripts/python.exe -m unittest tests.test_attachment_pipeline tests.test_attachment_store tests.test_user_turn_dispatcher tests.test_chat_conversations -q
 ```
 
-실제 추론은 실행 중인 Hermes gateway와 로컬 `gemma4:e2b`를 사용했다. UI에서 추출한 내용을 실제 HTTP 요청으로 보낸 뒤 응답의 값/파일명을 확인했다.
+실제 추론은 실행 중인 Iris Agent gateway와 로컬 `gemma4:e2b`를 사용했다. UI에서 추출한 내용을 실제 HTTP 요청으로 보낸 뒤 응답의 값/파일명을 확인했다.
 
 | 실제 모델 테스트 | 메인 채팅 경로 | IDE 채팅 경로 | 확인 내용 |
 |---|---|---|---|
@@ -102,7 +102,7 @@ DOCX/XLSX, JSON/CSV/코드/설정 파일의 본문 추출과 메타데이터는 
 - `iris/ui/window/main_window.py`: 첫 첨부와 후속 질문의 동일 파이프라인 연결.
 - `iris/ui/chat/chat_panel.py`, `iris/ui/chat/composer_plus_menu.py`: 폴더 선택 메뉴/공통 콜백.
 - `tests/test_attachment_pipeline.py`, `tests/test_attachment_store.py`: 형식/UI/폴더/청크/범위/격리/실제 프로젝트 회귀 검증.
-- `scripts/check_attachment_extended_live.py`: 여러 파일, 폴더 후속 질문, 혼합 첨부, 프로젝트의 실제 Hermes 응답 검증.
+- `scripts/check_attachment_extended_live.py`: 여러 파일, 폴더 후속 질문, 혼합 첨부, 프로젝트의 실제 Iris Agent 응답 검증.
 - `docs/attachment-folder-validation.md`: 이 검증 보고서.
 
 ## 남은 제한

@@ -32,9 +32,9 @@ def check_project_run_requires_reveal() -> None:
 
 
 def check_hermes_disabled_config() -> None:
-    from iris.system.iris_agent_control_sync import verify_hermes_terminal_disabled
+    from iris.system.iris_agent_control_sync import verify_iris_agent_terminal_disabled
 
-    ok, msg = verify_hermes_terminal_disabled()
+    ok, msg = verify_iris_agent_terminal_disabled()
     assert ok, msg
 
 

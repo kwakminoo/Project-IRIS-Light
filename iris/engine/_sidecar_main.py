@@ -210,12 +210,13 @@ def _emit(payload: dict) -> None:
     if kind in ("done", "fail"):
         blob = payload.get("text") or payload.get("detail") or ""
         _watch_trace(f"emit {kind} text_len={len(str(blob))}")
-        # UDP only — terminal files can freeze the Qt UI thread if polled there.
+        # UDP can report success even when Windows drops the packet. Write the
+        # engine-thread fallback first; a received UDP event consumes it.
+        _write_terminal_file(payload)
         try:
             _emit_terminal_via_udp(payload)
         except Exception as exc:
             _watch_trace(f"emit {kind} udp failed {exc!r}")
-            _write_terminal_file(payload)
         return
     data = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
     last: OSError | None = None
@@ -264,7 +265,8 @@ def _request_native_tool(name: str, args: dict) -> str:
 def _install_iris_engine_tools(
     agent: object, *, surface: object = "home"
 ) -> tuple[str, ...]:
-    """Register Iris schemas in Hermes and expose them on this AIAgent instance."""
+    """Register Iris schemas under visible names; replace agent.tools with Iris only."""
+    from iris.infrastructure.absorbed_tool_aliases import model_names, resolve_action
     from iris.infrastructure.speak_capability import (
         engine_tool_action,
         engine_tool_schemas,
@@ -272,16 +274,18 @@ def _install_iris_engine_tools(
     )
     from tools.registry import registry
 
-    schemas = engine_tool_schemas(surface=normalize_speak_surface(surface))
-    tools = list(getattr(agent, "tools", None) or [])
-    existing = {
-        str(row.get("function", {}).get("name") or "")
-        for row in tools
-        if isinstance(row, dict) and isinstance(row.get("function"), dict)
-    }
+    surf = normalize_speak_surface(surface)
+    schemas = engine_tool_schemas(surface=surf)
+    absorbed = model_names()
+    iris_tools: list[dict] = []
     for schema in schemas:
         name = str(schema["name"])
-        action = engine_tool_action(name)
+        if name in absorbed:
+            action = resolve_action(name, surf)
+            if not action:
+                continue
+        else:
+            action = engine_tool_action(name)
         registry.register(
             name=name,
             toolset="iris",
@@ -293,12 +297,12 @@ def _install_iris_engine_tools(
                 _action, dict(args or {})
             ),
         )
-        if name not in existing:
-            tools.append({"type": "function", "function": dict(schema)})
-    agent.tools = tools
+        iris_tools.append({"type": "function", "function": dict(schema)})
+    # Drop Hermes builtins AIAgent preloaded — model sees Iris SpeakTools only.
+    agent.tools = iris_tools
     agent.valid_tool_names = {
         str(row.get("function", {}).get("name") or "")
-        for row in tools
+        for row in iris_tools
         if isinstance(row, dict) and isinstance(row.get("function"), dict)
     }
     return tuple(str(schema["name"]) for schema in schemas)

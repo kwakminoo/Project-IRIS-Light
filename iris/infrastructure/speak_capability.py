@@ -12,6 +12,11 @@ from enum import Enum
 from typing import Any, Callable, Literal, Mapping, Protocol
 
 from iris.apps.directory import AppDirectory, entries_as_dicts
+from iris.infrastructure.absorbed_tool_aliases import (
+    action_to_model_name,
+    model_names,
+    resolve_action,
+)
 
 
 class ExecKind(str, Enum):
@@ -486,13 +491,22 @@ def grants_for_surface(
 
 
 def engine_tool_name(action: str) -> str:
-    """Provider-safe function name for one dotted Control action id."""
-    return (action or "").replace(".", "_")
+    """Provider-visible name: absorbed Hermes alias, else underscored action id."""
+    act = (action or "").strip()
+    return action_to_model_name(act) or act.replace(".", "_")
 
 
 def engine_tool_action(name: str) -> str:
-    """Map a provider-visible function name back to its Control action id."""
+    """Map a provider-visible function name back to its Control action id.
+
+    Surface-routed absorbed names (``terminal``) use ``current_speak_surface()``.
+    Sidecar install prefers ``resolve_action(name, surface)`` with the known surface.
+    """
     key = (name or "").strip()
+    if key in model_names():
+        resolved = resolve_action(key, current_speak_surface())
+        if resolved:
+            return resolved
     return next(
         (
             grant.action
@@ -512,21 +526,32 @@ def bind_live_control_surface(surface: Any | None) -> None:
 def engine_tool_schemas(
     surface: SpeakSurface | str | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    """OpenAI function bodies for engine-visible SpeakTools on one surface."""
+    """OpenAI function bodies for engine-visible SpeakTools on one surface.
+
+    Absorbed actions use Hermes-familiar names (``terminal``, ``write_file``, …).
+    Surface-routed ``terminal`` emits only ``resolve_action('terminal', surface)``.
+    """
     surf = (
         current_speak_surface()
         if surface is None
         else normalize_speak_surface(surface)
     )
     default_parameters = {"type": "object", "additionalProperties": True}
-    schemas = tuple(
-        {
-            "name": engine_tool_name(grant.action),
+    terminal_action = resolve_action("terminal", surf)
+    ordered: dict[str, dict[str, Any]] = {}
+    for grant in grants_for_surface(PHASE4_ALLOWLIST, surf):
+        if action_to_model_name(grant.action) == "terminal":
+            if grant.action != terminal_action:
+                continue
+        name = engine_tool_name(grant.action)
+        if name in ordered:
+            continue
+        ordered[name] = {
+            "name": name,
             "description": grant.summary or grant.action,
             "parameters": dict(grant.parameters or default_parameters),
         }
-        for grant in grants_for_surface(PHASE4_ALLOWLIST, surf)
-    )
+    schemas = tuple(ordered.values())
     names = [str(schema["name"]) for schema in schemas]
     if len(names) != len(set(names)) or not all(_ENGINE_TOOL_NAME_RE.fullmatch(n) for n in names):
         raise AssertionError("engine tool names must be unique provider-safe identifiers")

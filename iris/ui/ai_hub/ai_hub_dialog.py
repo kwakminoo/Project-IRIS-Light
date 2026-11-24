@@ -123,7 +123,7 @@ class AiHubDialog(QDialog):
 
     def _accept(self) -> None:
         _, status = set_hermes_tool_choice(str(self._tool_choice.currentData() or ""))
-        if not status.startswith("hermes agent.tool_choice"):
+        if not status.startswith("Iris Agent tool_choice"):
             QMessageBox.warning(self, "Tool choice 저장 실패", status)
             return
         self._providers.persist()

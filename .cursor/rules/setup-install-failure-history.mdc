@@ -10,7 +10,7 @@ alwaysApply: false
 
 1. **먼저 읽기**: `docs/code-review/Setup패키지설치실패-원인과-개선안.md` §3 표 (S1–S7).
 2. **이미 완료된 해결을 같은 방식으로 반복하지 말 것** (표「다시 쓸 때」열).
-3. Core「Hermes 설치」UI면 이 규칙이 아니라 연번 22 / `docs/code-review/completed/Hermes설치실패-원인과-개선안.md`.
+3. Core「Iris Agent 설치」UI면 이 규칙이 아니라 연번 22 / `docs/code-review/completed/Hermes설치실패-원인과-개선안.md`.
 
 ## 하지 말 것 (이미 썼거나 실패한 패턴)
 
@@ -23,4 +23,4 @@ alwaysApply: false
 ## 잠금(S7) 계약
 
 - `Stop-IrisVenvHolders` → 재시도 삭제 → **rename `*.trash-*`** → robocopy wipe (`Remove-TreeSafe`)
-- hermes `force_retire`와 같은 rename 계약; Force만으로 되돌리지 말 것
+- 엔진 checkout `force_retire`와 같은 rename 계약; Force만으로 되돌리지 말 것

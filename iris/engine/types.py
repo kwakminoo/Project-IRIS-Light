@@ -208,7 +208,6 @@ TurnEvent = Union[
 EngineHome = NewType("EngineHome", Path)
 # Directory IRIS owns. Default iris_agent_home() (~/.iris-light/agent).
 
-HermesHome = NewType("HermesHome", Path)
 EnginePython = NewType("EnginePython", Path)
 GuiPython = NewType("GuiPython", Path)
 

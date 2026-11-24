@@ -9,7 +9,8 @@
 **Open Source Desktop AI Agent Runtime**
 
 IRIS connects LLM, MCP, Voice Runtime, and Local/Cloud Model into an **AI Agent Runtime that runs on your own PC**.
-Instead of a paid subscription or manual wiring, a single installer prepares [Ollama](https://ollama.com/) (model inference) and [Hermes Agent](https://hermes-agent.nousresearch.com/) (tools and skills), then binds them into a conversational HUD.
+Instead of a paid subscription or manual wiring, a single installer prepares [Ollama](https://ollama.com/) (model inference) and [Iris Agent](docs/domain.md) (tools and skills), then binds them into a conversational HUD.
+Iris Agent is an absorbed runtime based on the MIT code of [Nous Hermes Agent](https://hermes-agent.nousresearch.com/).
 
 It aims to be more than a chatbot:
 
@@ -64,7 +65,7 @@ STT → UserTurnDispatcher → Agent Runtime → TTS
 ### 3. Runtime Architecture
 
 ```text
-GUI → Runtime Gateway → Hermes → Ollama
+GUI → Runtime Gateway → Iris Agent → Ollama
 ```
 
 <!-- ![Runtime Architecture](assets/demo/runtime.gif) -->
@@ -92,11 +93,11 @@ IRIS narrows that gap:
 | Agent logic tangled into the UI | Execution boundary separated as a Runtime Gateway |
 | Unusable without a GPU | Cloud models by default, local models optional |
 | Voice bolted onto the app | Voice Runtime runs as a separate FastAPI service (`:18765`) |
-| Hard to extend with tools | Extend through Hermes skills and MCP |
+| Hard to extend with tools | Extend through Iris Agent skills and MCP |
 | Complex install and wiring | The installer handles Python, venv, packages, and runtimes |
 
 IRIS does not reimplement web search, shell, or file IO.
-It owns **sessions, permissions, streaming UI, and the setup protocol**, and delegates execution to Ollama/Hermes.
+It owns **sessions, permissions, streaming UI, and the setup protocol**, and delegates execution to Ollama/Iris Agent.
 
 <details>
 <summary><b>Project background</b></summary>
@@ -114,15 +115,15 @@ It owns **sessions, permissions, streaming UI, and the setup protocol**, and del
 
 | Feature | Description |
 |---|---|
-| **LLM Agent** | Multi-step tool calls through Hermes (file, terminal, web) |
-| **MCP** | `iris-control` stdio MCP · Hermes MCP integration |
+| **LLM Agent** | Multi-step tool calls through Iris Agent (file, terminal, web) |
+| **MCP** | `iris-control` stdio MCP · Iris Agent MCP integration |
 | **Voice Runtime** | STT/TTS split out into a FastAPI service (`:18765`, optional install) |
 | **Runtime Gateway** | Execution boundary owning sessions, permissions, streaming |
 | **Local Model** | Ollama local models (`:11434`) |
 | **Cloud Model** | OpenAI-compatible providers for machines without a GPU |
-| **Setup protocol** | First run automates Ollama, model pull, Hermes, provider, gateway, MCP step by step |
+| **Setup protocol** | First run automates Ollama, model pull, Iris Agent, provider, gateway, MCP step by step |
 | **Conversational HUD** | Model picker, history, thought/tool logs, live streaming |
-| **Control Surface** | Hermes → UI reverse control (`:8765`) · `iris-control` skills |
+| **Control Surface** | Iris Agent → UI reverse control (`:8765`) · `iris-control` skills |
 | **Workspaces** | System monitor · email (multi-account) · calendar · IDE Companion · Iris Wiki |
 | **Local storage** | SQLite for settings and profiles (`~/.iris-light/`) |
 | **Optional extensions** | Screen learning (Aloha) · Android emulator · mobile-mcp |
@@ -138,7 +139,7 @@ flowchart TD
     U["user request (natural language)"] --> HUD
     HUD["IRIS HUD · PyQt6<br/>Chat · Monitor · Wiki · Email · Calendar · Settings"] --> GW
     GW["Runtime Gateway<br/>ollama_client · hermes_client · setup_protocol"] --> OL["Ollama :11434<br/>inference (local / cloud)"]
-    GW --> HM["Hermes :8642<br/>tools · skills"]
+    GW --> HM["Iris Agent :8642<br/>tools · skills"]
     HM --> T["file · terminal · web · MCP"]
     HM -. "Control Surface :8765" .-> HUD
     VR["Voice Runtime :18765 (optional)<br/>STT / TTS · FastAPI"] <--> HUD
@@ -156,15 +157,15 @@ Design docs: [domain & Runtime Gateway](docs/domain.md) · [information architec
 <table>
 <tr><td align="center"><b>1</b></td><td><a href="https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup.exe"><b>Download IRIS-Setup.exe</b></a> — Windows 10/11 · ~23MB</td></tr>
 <tr><td align="center"><b>2</b></td><td><b>Run it.</b> There is no code-signing certificate, so Windows blocks it once — <b>More info → Run anyway</b>. Python detection, venv, package install, and verification are <b>fully automatic</b> and take a few minutes.</td></tr>
-<tr><td align="center"><b>3</b></td><td>Launch <b><code>IRIS</code></b> from the desktop. The setup wizard continues with Ollama and Hermes.</td></tr>
+<tr><td align="center"><b>3</b></td><td>Launch <b><code>IRIS</code></b> from the desktop. The setup wizard continues with Ollama and Iris Agent.</td></tr>
 </table>
 
 ### First run
 
 1. The app opens the **setup wizard**.
-2. Core steps: install and start Ollama → pull a minimal model → install Hermes → connect API/provider → start the gateway.
+2. Core steps: install and start Ollama → pull a minimal model → install Iris Agent → connect API/provider → start the gateway.
 3. Optional steps (STT voice, full TTS, Aloha screen learning, emulator, Node/mobile-mcp, cloud login) can be installed now or later.
-4. Send a natural-language request in the HUD chat; Hermes/Ollama stream the response and tool execution.
+4. Send a natural-language request in the HUD chat; Iris Agent/Ollama stream the response and tool execution.
 
 > UI-only demo: `IRIS_SETUP_DEMO=1` (no real install) · dry run: `IRIS_SETUP_DRY_RUN=1`
 
@@ -247,14 +248,14 @@ copy .env.example .env
 
 ### Software
 
-- **Windows 10/11** recommended (the setup protocol relies on winget/Hermes install scripts)
+- **Windows 10/11** recommended (the setup protocol relies on winget/Iris Agent install scripts)
 - Python **3.11+** recommended
 - A **stable internet connection** is required (cloud models, tool calls)
 
 ### Hardware (cloud-model oriented)
 
-By default IRIS infers with **cloud models** and keeps only the UI, Hermes gateway, and tool execution local.
-No GPU/VRAM for a local LLM is required. The storage figures below cover **IRIS-related installs** (app, venv, Ollama/Hermes runtimes), excluding large local models and the emulator.
+By default IRIS infers with **cloud models** and keeps only the UI, Iris Agent gateway, and tool execution local.
+No GPU/VRAM for a local LLM is required. The storage figures below cover **IRIS-related installs** (app, venv, Ollama/Iris Agent runtimes), excluding large local models and the emulator.
 
 | Item | Minimum | Recommended |
 |------|------|------|
@@ -314,9 +315,9 @@ Desktop and Start-menu shortcuts also prefer source:
 
 Implemented:
 
-- [x] LLM Agent Runtime (Hermes tool calls, multi-step)
+- [x] LLM Agent Runtime (Iris Agent tool calls, multi-step)
 - [x] Voice Runtime (STT/TTS FastAPI service, optional install)
-- [x] MCP Integration (`iris-control` stdio, Hermes MCP)
+- [x] MCP Integration (`iris-control` stdio, Iris Agent MCP)
 - [x] Local/Cloud Model Support (Ollama, OpenAI-compatible providers)
 - [x] Installation System (`IRIS-Setup.exe`, `setup.ps1` / `setup.sh`)
 
@@ -336,7 +337,7 @@ Latest: [**IRIS Light v2026.08.27**](https://github.com/kwakminoo/Project-IRIS-L
 
 Included:
 
-- Agent Runtime (Hermes integration, tool execution)
+- Agent Runtime (Iris Agent integration, tool execution)
 - Voice Runtime (STT/TTS, optional install)
 - MCP Integration
 - Installation System (`IRIS-Setup.exe`, automatic setup scripts)
@@ -356,7 +357,7 @@ The release procedure is documented in [`docs/installer-release.md`](docs/instal
 | [docs/voice_architecture.md](docs/voice_architecture.md) | Voice runtime boundary and flow |
 | [docs/installer-release.md](docs/installer-release.md) | Installer build · release procedure |
 | [docs/demo-video-script.md](docs/demo-video-script.md) | Demo video script · upload steps |
-| [integrations/hermes-skills/README.md](integrations/hermes-skills/README.md) | Iris Control Surface (Hermes ↔ UI) |
+| [integrations/hermes-skills/README.md](integrations/hermes-skills/README.md) | Iris Control Surface (Iris Agent ↔ UI) |
 | [LICENSE.md](LICENSE.md) | Licensing rationale · third-party inventory |
 
 <details>
@@ -365,8 +366,8 @@ The release procedure is documented in [`docs/installer-release.md`](docs/instal
 ```text
 iris/                 # application
   ui/                 # PyQt6 HUD (chat, monitor, wiki, mail, calendar, IDE, settings…)
-  system/             # setup_protocol, ollama_server, hermes_gateway, control_surface
-  infrastructure/     # Ollama/Hermes/email/calendar HTTP clients
+  system/             # setup_protocol, ollama_server, agent gateway, control_surface
+  infrastructure/     # Ollama/Iris Agent/email/calendar HTTP clients
   runtime/            # UserTurnDispatcher · voice intents
   knowledge/          # Iris Wiki · Obsidian vault
   storage/            # SQLite settings, profiles, mail accounts
@@ -375,7 +376,7 @@ iris/                 # application
   audio/              # (optional) voice client · VAD/AEC
   mcp/                # iris-control stdio
 services/voice_runtime/  # (optional) FastAPI STT/TTS :18765
-integrations/         # Hermes skills & plugins, Aloha
+integrations/         # Iris Agent skills source (path still hermes-skills) & plugins, Aloha
 docs/                 # domain · IA · API · voice design
 obsidian-vault/       # project knowledge base (source for Wiki docs)
 scripts/              # build · voice profile · install helper scripts
@@ -393,7 +394,7 @@ LICENSE.md            # licensing rationale · third-party inventory
 |------|------|
 | UI | Python, PyQt6, PyQt6-WebEngine |
 | Model | Ollama (OpenAI-compatible `/v1`) |
-| Agent | Hermes Agent (gateway API, skills, MCP) |
+| Agent | Iris Agent (gateway API, skills, MCP) |
 | Voice | FastAPI (`services/voice_runtime`) |
 | Storage | SQLite (`~/.iris-light/`) |
 | Knowledge | Obsidian-compatible Markdown vault |
@@ -446,5 +447,5 @@ toward a more permissive license are documented in **[`LICENSE.md`](LICENSE.md)*
 
 ## Disclaimer
 
-Through Hermes tools, IRIS can affect local files and terminals.
+Through Iris Agent tools, IRIS can affect local files and terminals.
 Review the permission settings and confirmation dialogs before important operations. Production automation and unattended execution are at your own risk.

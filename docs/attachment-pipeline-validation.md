@@ -9,7 +9,7 @@
 - `ChatPanel._on_composer_drop_paths()`가 일반 파일·폴더를 표시용 `@경로`로 변환했다.
 - `_emit_send()`는 일반 파일을 질문 앞의 `@경로` 문자열에 합쳤다. `send_clicked(text, attachments)`의 두 번째 인자에는 **이미지만** 넣었다.
 - `MainWindow._format_user_turn_content()`도 이미지에 대해 경로 목록만 만들었다.
-- `_record_history()` → `_chat_messages_with_project_context()` → `HermesChatWorker` → `HermesClient.stream_chat()`은 이 텍스트 히스토리를 그대로 보냈다. 파일 본문을 읽거나 추출하는 단계가 없었다.
+- `_record_history()` → `_chat_messages_with_project_context()` → `IrisAgentChatWorker` → `IrisAgentClient.stream_chat()`은 이 텍스트 히스토리를 그대로 보냈다. 파일 본문을 읽거나 추출하는 단계가 없었다.
 - 기존 Wiki용 `content_extract.py`는 TXT·PDF 등을 읽을 수 있었지만 일반 채팅 첨부 경로에 연결되지 않았다. DOCX·PPTX·XLSX용 채팅 추출기도 없었다.
 
 따라서 JSON의 `messages[].content`에 경로는 있었지만, 일반 파일은 구조화된 첨부 목록에서 빠졌고 **본문은 모든 일반 채팅 첨부에서 빠져 있었다**. 단순히 `attachments` 필드 하나를 HTTP에 추가하는 것으로 해결할 수 있는 문제가 아니었다.
@@ -30,7 +30,7 @@
       model_content: 질문 + 추출된 첨부 데이터 JSON
   → ChatSession / SQLite chat_messages.model_content
   → inference_messages (model_content를 실제 messages[].content로 변환)
-  → Hermes / Ollama / OpenAI 호환 요청
+  → Iris Agent / Ollama / OpenAI 호환 요청
   → 모델 응답
 ```
 
@@ -69,9 +69,9 @@ DOCX/PPTX/XLSX는 Python 표준 라이브러리 ZIP/XML로 처리하므로 추�
 - 이전 버전에서 경로만 저장한 과거 첨부 메시지는 본문을 소급 복원하지 않는다. 해당 파일은 다시 첨부해야 한다.
 - 청크 선택은 키워드 방식이며 전체 문서 검색/RAG나 자동 요약은 아니다. 대화가 길어져 모델 전체 컨텍스트 한도를 넘는 문제는 기존 대화 관리 정책의 범위다.
 
-## 실제 Hermes 테스트 결과
+## 실제 Iris Agent 테스트 결과
 
-실제 TXT·PDF·PPTX 파일을 생성하고 **운영 ChatPanel, UserTurnDispatcher, MainWindow 전송 함수, AttachmentWorker**를 호출했다. IDE는 운영 `IdeCompanionPage.mount()`로 같은 채팅 위젯을 재배치했다. 추출된 운영 요청 messages를 실행 중인 로컬 Hermes gateway의 `HermesClient.stream_chat()`에 보내 실제 응답을 받았다. 모델 선택 설정을 변경하지 않았다.
+실제 TXT·PDF·PPTX 파일을 생성하고 **운영 ChatPanel, UserTurnDispatcher, MainWindow 전송 함수, AttachmentWorker**를 호출했다. IDE는 운영 `IdeCompanionPage.mount()`로 같은 채팅 위젯을 재배치했다. 추출된 운영 요청 messages를 실행 중인 로컬 Iris Agent gateway의 `IrisAgentClient.stream_chat()`에 보내 실제 응답을 받았다. 모델 선택 설정을 변경하지 않았다.
 
 앱 전체 시작·TTS·MCP 부수 동작은 검증 harness에서 대체했다. 파일 선택은 네이티브 선택창의 결과 콜백을 호출했고, 드롭은 실제 `QMimeData/QDropEvent`로 실행했다. **사람이 Windows 탐색기를 마우스로 드래그한 수동 테스트는 아니다.** Windows OLE 경로 역시 기존 공통 첨부 진입점으로 연결되지만 이번 실측 드롭은 Qt 이벤트 경로다.
 
@@ -82,7 +82,7 @@ DOCX/PPTX/XLSX는 Python 표준 라이브러리 ZIP/XML로 처리하므로 추�
 | PPTX: CODE 값 | `PPT-9999` | `PPT-9999` | `PPT-9999` | `PPT-9999` |
 | 폴더: app.py의 CODE 값 | — | `FOLDER-7777` | — | `FOLDER-7777` |
 
-**14/14 실제 Hermes 응답 통과.** 폴더의 `node_modules/ignore.txt`에 넣은 제외용 문자열이 모델 요청에 없는 것도 확인했다. 로컬 권한 없음이라는 잘못된 답변은 이 테스트 응답에 나타나지 않았다.
+**14/14 실제 Iris Agent 응답 통과.** 폴더의 `node_modules/ignore.txt`에 넣은 제외용 문자열이 모델 요청에 없는 것도 확인했다. 로컬 권한 없음이라는 잘못된 답변은 이 테스트 응답에 나타나지 않았다.
 
 파일 단위 오류 검증:
 
@@ -93,7 +93,7 @@ DOCX/PPTX/XLSX는 Python 표준 라이브러리 ZIP/XML로 처리하므로 추�
 - 큰 텍스트: 질문 관련 CODE가 파일 끝에 있어도 해당 청크 선택. 생략 표시와 본문 한도 확인.
 - 대화 저장·복원: 원본을 삭제한 뒤에도 저장된 본문으로 후속 질문 context 구성 확인.
 
-최종 코드 상태에서 관련 회귀 검사 **86건 통과** 및 기존 `_check_composer_drop` 통과. 최종 TXT 파일 선택 → Hermes 응답도 한 번 더 실행해 `TXT-1234`를 확인했다. 메인·IDE UI 렌더링 이미지를 생성해 파일 아이콘과 `test.pptx` 칩, 경로·본문 비노출을 확인했다.
+최종 코드 상태에서 관련 회귀 검사 **86건 통과** 및 기존 `_check_composer_drop` 통과. 최종 TXT 파일 선택 → Iris Agent 응답도 한 번 더 실행해 `TXT-1234`를 확인했다. 메인·IDE UI 렌더링 이미지를 생성해 파일 아이콘과 `test.pptx` 칩, 경로·본문 비노출을 확인했다.
 
 ## 로그·증거·재현
 
@@ -103,7 +103,7 @@ DOCX/PPTX/XLSX는 Python 표준 라이브러리 ZIP/XML로 처리하므로 추�
 
 로그에는 경로·파일명·MIME·원본 크기·첨부 ID·본문 길이·해시·생략 여부·오류와 HTTP payload 키·메시지별 본문 길이를 남긴다. 실제 사용자 파일 본문이나 인증 키는 기본 로그에 기록하지 않는다. 검증 fixture의 본문은 아래 JSON 요청 증거로 직접 확인할 수 있다.
 
-- [실제 Hermes 14건 응답](../.iris_light_test_tmp/attachment-live/hermes-results.json)
+- [실제 Iris Agent 14건 응답](../.iris_light_test_tmp/attachment-live/hermes-results.json)
 - [PPTX 실제 모델 요청 messages](../.iris_light_test_tmp/attachment-live/hermes-main-pptx-picker-messages.json)
 - [단계별 실행 로그](../.iris_light_test_tmp/attachment-live/attachments.log)
 - [메인 첨부 UI](../.iris_light_test_tmp/attachments/main-attachment.png)
@@ -136,7 +136,7 @@ $env:QT_QPA_PLATFORM = 'offscreen'
 | `iris/infrastructure/openai_compat_client.py` | `stream_chat`: 최종 HTTP 요청 진단 로그 |
 | `iris/ui/chat/_check_composer_drop.py` | 기존 체크를 새 전송 계약으로 수정 |
 | `tests/test_attachment_pipeline.py` (신규) | 추출·오류·파일 잠금·청크·저장·Qt·운영 전송·HTTP payload 검사 |
-| `scripts/check_attachment_live.py` (신규) | 실제 Hermes 응답 검증·fixture 요청/결과 저장 |
+| `scripts/check_attachment_live.py` (신규) | 실제 Iris Agent 응답 검증·fixture 요청/결과 저장 |
 | `scripts/probe_attachment_runtime.py` (신규) | 읽기 전용 로컬 추론 상태 및 실제 이미지 OCR 오류 확인 |
 
-실제 Hermes gateway 내부의 downstream 모델 HTTP 요청을 별도로 계측한 것은 아니다. IRIS의 최종 요청 본문과 gateway의 실제 CODE 응답으로 첨부 데이터가 추론에 사용된 것을 확인했다. Ollama·OpenAI 호환 직행 경로에는 동일한 `messages[].content`를 연결했으나, 이번 14건 실제 모델 응답 검증은 Hermes 경로에서 수행했다.
+실제 Iris Agent gateway 내부의 downstream 모델 HTTP 요청을 별도로 계측한 것은 아니다. IRIS의 최종 요청 본문과 gateway의 실제 CODE 응답으로 첨부 데이터가 추론에 사용된 것을 확인했다. Ollama·OpenAI 호환 직행 경로에는 동일한 `messages[].content`를 연결했으나, 이번 14건 실제 모델 응답 검증은 Iris Agent 경로에서 수행했다.

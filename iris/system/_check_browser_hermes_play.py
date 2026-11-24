@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from iris.browser.observation import browser_teaching_block
 from iris.config.settings import load_settings
-from iris.system.iris_agent_gateway import is_hermes_gateway_running
+from iris.system.iris_agent_gateway import is_iris_agent_gateway_running
 
 _STREAM_BUDGET_SEC = 45.0
 
@@ -72,7 +72,7 @@ def main() -> int:
     settings = load_settings()
     base = (settings.agent_base_url or "http://127.0.0.1:8642/v1").strip()
     try:
-        up = is_hermes_gateway_running(base, timeout_sec=2.0)
+        up = is_iris_agent_gateway_running(base, timeout_sec=2.0)
     except Exception as exc:
         print(f"SKIP live Hermes play: probe failed ({exc}). Not a unit stand-in. Do not restore regex.")
         return 0
@@ -81,9 +81,9 @@ def main() -> int:
         return 0
 
     from iris.infrastructure.iris_agent_client import IrisAgentClient
-    from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
+    from iris.infrastructure.iris_agent_credentials import resolve_iris_agent_api_key
 
-    client = IrisAgentClient(base, api_key=resolve_hermes_api_key(settings.agent_api_key))
+    client = IrisAgentClient(base, api_key=resolve_iris_agent_api_key(settings.agent_api_key))
     model = (settings.ollama_model or settings.model_name or "").strip()
     if not model or model == "(unset)":
         try:

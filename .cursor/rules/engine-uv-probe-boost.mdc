@@ -6,7 +6,7 @@ alwaysApply: true
 # Engine 설치 = uv sync 성공 후 pip editable 금지
 
 증상: 채팅에 「엔진이 아직 설치되지 않았습니다」 / `Iris Agent Offline` / `engine python is not installed`.
-`~/.iris-light/agent/hermes-agent` 가 없거나 `venv/Scripts/python.exe` 가 없다.
+`~/.iris-light/agent/iris-agent` 가 없거나 `venv/Scripts/python.exe` 가 없다 (레거시 폴백: `hermes-agent`, `iris/engine/runtime.py` `_agent_checkout_root`).
 설치 로그(`agent/logs/iris-install-*.log`)에 `uv sync rc=0` 다음에 `ModuleNotFoundError: aiohttp` 와 Pillow/`browser-harness` `ResolutionImpossible` 이 같이 있다.
 
 ## 원인 (2026-11-17 측정)
@@ -14,7 +14,7 @@ alwaysApply: true
 1. pin(`vendor/iris-agent-runtime/PIN`) 의 `uv.lock` 은 Python ≥3.14 마커만 두고, Windows 기본 sync 에 `aiohttp` 가 빠질 수 있다.
 2. `_probe_venv` 가 `aiohttp` 없어 실패한다.
 3. 예전 복구가 **무조건** `pip install -e .` 를 탔다. pip 는 uv 의 Pillow==13 override 를 무시하고 `browser-harness` pillow==12.3 과 충돌한다.
-4. staging 이 discard 되고 live `hermes-agent` 가 비어 채팅이 NOT_INSTALLED 로 끝난다.
+4. staging 이 discard 되고 live `iris-agent`(없으면 레거시 `hermes-agent`) 가 비어 채팅이 NOT_INSTALLED 로 끝난다.
 
 ## 계약 (깨면 회귀)
 
@@ -32,7 +32,7 @@ alwaysApply: true
 
 ## 재발 시 순서
 
-1. `Test-Path $env:USERPROFILE\.iris-light\agent\hermes-agent\venv\Scripts\python.exe`
+1. `Test-Path $env:USERPROFILE\.iris-light\agent\iris-agent\venv\Scripts\python.exe` (없으면 레거시 `hermes-agent`)
 2. 최신 `~\.iris-light\agent\logs\iris-install-*.log` — `uv sync rc=0` / `aiohttp` / `ResolutionImpossible` / `Pillow`
 3. `python -c "from iris.engine._home import probe_engine_python; from iris.engine.types import _default_engine_home; print(probe_engine_python(_default_engine_home()))"`
 4. 계약 1–2가 코드에 있는지 확인한 뒤 설치를 다시 돌린다.

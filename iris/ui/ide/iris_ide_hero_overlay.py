@@ -114,7 +114,7 @@ class IrisIdeHeroOverlay(QWidget):
         st.addStretch(1)
         for label, value, on in (
             ("OLLAMA", ":11434", True),
-            ("HERMES", ":8642", True),
+            ("ENGINE", "sidecar", True),
             ("STATE", "IDLE", False),
         ):
             st.addWidget(self._status_pill(label, value, on))

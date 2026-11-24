@@ -16,7 +16,7 @@ alwaysApply: true
   - `suppress_platform_ver_console()` — `platform.win32_ver`의 `cmd /c ver` 차단
   - `install_no_console_subprocess_patch()` — `subprocess.*`에 `CREATE_NO_WINDOW`(+SW_HIDE) 기본 주입
 - 개별 호출도 `iris.system.win_subprocess.no_window_kwargs()`를 쓴다 (명시가 안전).
-- Hermes `iris-control` MCP command는 Windows에서 **`pythonw.exe`** (stdio 파이프는 유지, 콘솔 창 없음).
+- Iris Agent `iris-control` MCP command는 Windows에서 **`pythonw.exe`** (stdio 파이프는 유지, 콘솔 창 없음).
 - `adb`, `taskkill`, venv `python`, `git` 등 콘솔 실행은 숨김 플래그 없이 호출하지 않는다.
 - 에뮬 프로세스 목록은 **psutil**만. PowerShell CIM / 숨김 없는 `tasklist` 스캔 금지.
 - CallMonitor 등 폴링 핫패스에서 프로세스 스캔 금지 — adb만, 없으면 바로 실패.

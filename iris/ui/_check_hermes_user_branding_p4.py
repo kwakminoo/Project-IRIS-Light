@@ -22,7 +22,14 @@ HOT_PATH_FILES = (
     "iris/ui/settings/settings_dialog.py",
     "iris/audio/text_normalizer.py",
     "iris/infrastructure/iris_agent_errors.py",
+    "iris/infrastructure/iris_agent_client.py",
+    "iris/system/iris_agent_gateway.py",
+    "iris/system/iris_agent_tool_choice.py",
     "iris/system/iris_agent_memory_nudge.py",
+    "iris/system/iris_agent_ollama_guard.py",
+    "iris/ui/control_actions/action_catalog.json",
+    "iris/ui/control_actions/agent_turn.py",
+    "iris/ui/ai_hub/ai_hub_dialog.py",
     "integrations/hermes-skills/iris-control/iris-vibe-code/SKILL.md",
     "integrations/hermes-skills/iris-control/iris-mobile-mcp/SKILL.md",
 )
@@ -52,6 +59,18 @@ BANNED = (
     "· Hermes",
     "Hermes→Ollama",
     "Hermes가 '비슷한",
+    "Hermes:",
+    "Hermes HTTP",
+    "Hermes 연결",
+    "[Hermes]",
+    "hermes agent.tool_choice",
+    "Hermes-familiar",
+    "separate Hermes builtin",
+    "Hermes stream finished",
+    "Hermes model API",
+    "Hermes CLI",
+    "Hermes api_key",
+    "Hermes 채팅",
 )
 
 
@@ -87,6 +106,23 @@ def main() -> None:
     ):
         if banned in labels:
             hits.append(f"setup_protocol STEP: {banned!r}")
+
+    chat_panel = (ROOT / "iris/ui/chat/chat_panel.py").read_text(encoding="utf-8")
+    assert 'ChatNoticeAction("iris-agent-update://apply"' in chat_panel
+    assert 'ChatNoticeAction("iris-hermes-update://apply"' not in chat_panel
+
+    setup = (ROOT / "iris/system/setup_protocol.py").read_text(encoding="utf-8")
+    assert "action_url=HERMES_INSTALL_URL" not in setup
+    assert "hermes-agent.nousresearch.com/docs" not in setup
+    assert 'HERMES_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.ps1"' in setup
+    logos = (ROOT / "iris/assets/setup_logos.py").read_text(encoding="utf-8")
+    assert '"hermes": "H"' not in logos
+    assert '"hermes": "IA"' in logos
+    tts = (ROOT / "iris/audio/text_normalizer.py").read_text(encoding="utf-8")
+    assert '"Hermes": "아이리스 에이전트"' in tts
+    guard = (ROOT / "iris/system/iris_agent_ollama_guard.py").read_text(encoding="utf-8")
+    assert "Iris Agent 채팅 경로 응답 있음" in guard
+    assert "Hermes 채팅" not in guard
 
     assert not hits, "user/agent-facing Hermes copy:\n  " + "\n  ".join(hits)
     print("hermes_user_branding_p4 ok")

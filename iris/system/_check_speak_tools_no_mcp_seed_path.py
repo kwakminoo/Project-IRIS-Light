@@ -38,15 +38,15 @@ def _main() -> None:
         )
         with (
             patch(
-                "iris.system.iris_agent_control_sync.hermes_home",
+                "iris.system.iris_agent_control_sync.iris_agent_home",
                 return_value=home,
             ),
             patch(
-                "iris.system.iris_agent_soul_sync.hermes_home",
+                "iris.system.iris_agent_soul_sync.iris_agent_home",
                 return_value=home,
             ),
             patch(
-                "iris.system.iris_agent_memory_nudge.hermes_home",
+                "iris.system.iris_agent_memory_nudge.iris_agent_home",
                 return_value=home,
             ),
         ):

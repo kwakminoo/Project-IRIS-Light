@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from iris.infrastructure.iris_agent_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import iris_agent_home
 
 _SERPAPI_ACCOUNT = "https://serpapi.com/account.json"
 _FIRECRAWL_USAGE_URLS = (
@@ -41,7 +41,7 @@ class ApiQuota:
 
 
 def _hermes_env_path() -> Path:
-    return hermes_home() / ".env"
+    return iris_agent_home() / ".env"
 
 
 def _parse_dotenv(path: Path) -> dict[str, str]:

@@ -1,4 +1,4 @@
-"""Hermes Windows 설치 우회 — uv managed Python junction(WinError 448) 회피.
+"""Iris Agent Windows 설치 우회 — uv managed Python junction(WinError 448) 회피.
 
 공식 install.ps1 은 시스템 Python을 거부하고 checkout 전용 uv managed
 interpreter 만 받는다. OneDrive/필터 등으로 minor-version junction 생성이
@@ -9,7 +9,7 @@ interpreter 만 받는다. OneDrive/필터 등으로 minor-version junction 생�
 pip 는 uv.lock pin 을 재현하지 않으며 requirements.txt 는 쓰지 않는다.
 
 Python: 처음엔 3.11 → 3.12 → 3.13 을 고르고, clone 한 뒤 그 저장소의 uv.lock·pyproject 가
-요구하는 범위(hermes_python_range)를 벗어나면 다시 고른다. 2026-10-02 upstream 은
+요구하는 범위(iris_agent_python_range)를 벗어나면 다시 고른다. 2026-10-02 upstream 은
 requires-python 이 >=3.11,<3.15 인데 의존성이 전부 `python_version >= '3.14'` 로 묶여
 3.11 로는 핵심 패키지가 하나도 깔리지 않았다 (ruamel 없음, 실제 사례).
 """
@@ -129,7 +129,7 @@ def _ver(text: str) -> tuple[int, int]:
     return int(major), int(minor)
 
 
-def hermes_python_range(repo: Path) -> PyRange:
+def iris_agent_python_range(repo: Path) -> PyRange:
     """그 checkout 이 실제로 설치되는 Python 범위.
 
     pyproject 의 requires-python 과 uv.lock 의 supported-markers 중 좁은 쪽."""
@@ -287,7 +287,7 @@ def _kill_hermes_tree_holders(agent: Path) -> None:
     except ImportError:
         # taskkill by image — best effort
         flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        for image in ("hermes.exe", "python.exe", "pythonw.exe"):
+        for image in ("iris-agent.exe", "iris.exe", "hermes.exe", "python.exe", "pythonw.exe"):
             subprocess.run(
                 ["taskkill", "/F", "/T", "/IM", image],
                 capture_output=True,
@@ -315,7 +315,7 @@ def _checkout_sidecar(name: str, *, kind: str, keep: str | None = None) -> bool:
     return False
 
 
-def force_retire_hermes_agent(
+def force_retire_iris_agent(
     *,
     command: str = "hermes",
     keep_staging: str | None = None,
@@ -324,7 +324,7 @@ def force_retire_hermes_agent(
 
     keep_staging: 진행 중 clone 디렉터리명(예: iris-agent.staging-…)만 보존.
     """
-    home = gw.hermes_home()
+    home = gw.iris_agent_home()
     home.mkdir(parents=True, exist_ok=True)
     try:
         gw.stop_hermes_gateway(command, wait_sec=6.0)
@@ -430,7 +430,7 @@ def _user_path_prepend(scripts: Path) -> None:
     if s.lower() not in path.lower():
         os.environ["PATH"] = s + os.pathsep + path
     # 제품 홈(또는 IRIS_AGENT_HOME) 아래 Scripts 만 레지스트리에 남긴다.
-    real = gw.hermes_home()
+    real = gw.iris_agent_home()
     try:
         scripts.resolve().relative_to(real.resolve())
     except (ValueError, OSError):
@@ -479,7 +479,7 @@ def _redact(text: str) -> str:
 
 
 def write_install_log(body: str, *, prefix: str = "iris-install", home: Path | None = None) -> Path:
-    log_dir = (home if home is not None else gw.hermes_home()) / "logs"
+    log_dir = (home if home is not None else gw.iris_agent_home()) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     path = log_dir / f"{prefix}-{stamp}.log"
@@ -516,7 +516,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 @contextmanager
-def hermes_install_lock(home: Path) -> Iterator[Path]:
+def iris_agent_install_lock(home: Path) -> Iterator[Path]:
     home.mkdir(parents=True, exist_ok=True)
     path = home / "iris-hermes-install.lock"
     if path.is_file():
@@ -687,7 +687,7 @@ def _activate_staged(
     live = home / IRIS_AGENT_CHECKOUT_NAME
     _retarget_moved_tree(live, old, live)
     if probe_gateway:
-        ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
+        ok, detail = gw.probe_iris_agent_runtime(command=command, timeout_sec=30.0)
     else:
         venv_py = live / ("venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python")
         ok, detail = _probe_venv(venv_py)
@@ -949,7 +949,7 @@ def last_bypass_log_path() -> str:
 
 
 def new_bypass_pip_log_path() -> Path:
-    logs = gw.hermes_home() / "logs"
+    logs = gw.iris_agent_home() / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return logs / f"iris-bypass-pip-{stamp}.log"
@@ -1123,7 +1123,7 @@ def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | No
     return None
 
 
-def install_hermes_with_system_python(
+def install_iris_agent_with_system_python(
     *,
     command: str = "hermes",
     on_stream: StreamFn | None = None,
@@ -1158,11 +1158,11 @@ def install_hermes_with_system_python(
         return InstallResult(False, "사용자가 중단함", "cancel")
 
     try:
-        with hermes_install_lock(home):
-            # probe_hermes_runtime reads the default gateway home. Explicit
+        with iris_agent_install_lock(home):
+            # probe_iris_agent_runtime reads the default gateway home. Explicit
             # EngineHome is a different tree; caller already probed that one.
             if not explicit_home:
-                already, already_detail = gw.probe_hermes_runtime(
+                already, already_detail = gw.probe_iris_agent_runtime(
                     command=command, timeout_sec=30.0
                 )
                 if already:
@@ -1208,7 +1208,7 @@ def install_hermes_with_system_python(
                     "pin SHA 불일치",
                     f"want={pin} got={got}\n" + "\n".join(log),
                 )
-            want = hermes_python_range(staging)
+            want = iris_agent_python_range(staging)
             have = python_version(py)
             log.append(f"repo python range={want} chosen={have}")
             if have is None or not (want[0] <= have < want[1]):
@@ -1263,4 +1263,4 @@ if __name__ == "__main__":
     assert "런타임 실패" in rt and "iris-bypass-pip-rt" in rt
     clipped = clip_needs_user_message("line\n" * 40 + ("x" * 900))
     assert len(clipped) <= _NEEDS_USER_MSG_LIMIT
-    print("hermes_install helpers ok", find_bootstrap_python())
+    print("iris_agent_install helpers ok", find_bootstrap_python())

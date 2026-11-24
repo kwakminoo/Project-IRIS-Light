@@ -9,8 +9,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+from iris.engine.types import EngineHome, EngineReady, InternalSidecar
 from iris.system import iris_agent_gateway as gw
 from iris.system import iris_agent_install as hi
 from iris.system.setup_protocol import SetupProtocol
@@ -23,10 +24,10 @@ class SetupHermesRuntimeRepairTests(unittest.TestCase):
         self.home = self.root / "hermes"
         self.home.mkdir()
         self._home_patch = patch(
-            "iris.system.setup_protocol.hermes_home", lambda: self.home
+            "iris.system.setup_protocol.iris_agent_home", lambda: self.home
         )
         self._home_patch.start()
-        self._gw_home = patch.object(gw, "hermes_home", lambda: self.home)
+        self._gw_home = patch.object(gw, "iris_agent_home", lambda: self.home)
         self._gw_home.start()
 
     def tearDown(self) -> None:
@@ -34,19 +35,19 @@ class SetupHermesRuntimeRepairTests(unittest.TestCase):
         self._home_patch.stop()
         self._td.cleanup()
 
-    def test_step_hermes_install_detects_broken_runtime(self) -> None:
+    def test_step_iris_agent_install_detects_broken_runtime(self) -> None:
         proto = SetupProtocol(dry_run=False, simulate=False)
         with (
             patch(
-                "iris.system.setup_protocol.probe_hermes_runtime",
+                "iris.system.setup_protocol.probe_iris_agent_runtime",
                 return_value=(False, "uv trampoline failed… entity not found"),
             ),
             patch(
-                "iris.system.setup_protocol.hermes_executable",
+                "iris.system.setup_protocol.iris_agent_executable",
                 return_value=str(self.root / "hermes.exe"),
             ),
         ):
-            result = proto._step_hermes_install()
+            result = proto._step_iris_agent_install()
         self.assertEqual(result.status, "needs_user")
         self.assertTrue(result.can_install)
         self.assertIn("깨져", result.message)
@@ -68,135 +69,51 @@ class SetupHermesRuntimeRepairTests(unittest.TestCase):
         self.assertTrue(env_path.is_file())
         self.assertIn("keep-me", env_path.read_text(encoding="utf-8"))
 
-    def test_gateway_step_auto_repairs_missing_hermes_cli(self) -> None:
+    def test_gateway_step_uses_engine_ensure_ready(self) -> None:
+        """ProductReady path: step does Engine.ensure_ready, not :8642 spawn/repair."""
         proto = SetupProtocol(dry_run=False, simulate=False)
         streams: list[str] = []
         proto.bind_stream(lambda t, _p, _r: streams.append(t or ""))
-        crash = gw.GatewayDiagnosis(
-            code=gw.CODE_PROCESS_CRASH,
-            message="gateway 프로세스가 즉시 종료되었습니다 (exit 1).",
-            detail=(
-                "ModuleNotFoundError: No module named 'hermes_cli'\n"
-                "pre_restart_health=timeout:"
-            ),
+        engine = MagicMock()
+        engine.ensure_ready.return_value = EngineReady(
+            InternalSidecar(home=EngineHome(self.home)),
+            "engine is ready",
         )
-        calls = {"ensure": 0, "install": 0}
-        gw._LAST_DIAGNOSIS = crash
-
-        def _ensure(*_a, **_k):
-            calls["ensure"] += 1
-            if calls["ensure"] == 1:
-                gw._LAST_DIAGNOSIS = crash
-                return False
-            gw._LAST_DIAGNOSIS = gw.GatewayDiagnosis(
-                code=gw.CODE_OK, ok=True, message="ok"
-            )
-            return True
-
-        def _install():
-            calls["install"] += 1
-            proto._hermes_runtime_repaired = True
-            return proto._record_step("hermes_install", "done", "repaired")
-
         with (
+            patch("iris.engine.shared_engine", return_value=engine),
             patch(
-                "iris.system.iris_agent_gateway.is_hermes_gateway_running",
-                return_value=False,
+                "iris.system.setup_protocol.sync_iris_control",
+                return_value=MagicMock(summary_line=lambda: "sync ok"),
             ),
-            patch(
-                "iris.system.iris_agent_gateway.ensure_hermes_gateway_running",
-                side_effect=_ensure,
-            ),
-            patch(
-                "iris.system.iris_agent_gateway.restart_hermes_gateway",
-                return_value=True,
-            ),
-            patch(
-                "iris.system.iris_agent_gateway.get_last_gateway_diagnosis",
-                side_effect=lambda: gw._LAST_DIAGNOSIS,
-            ),
-            patch.object(proto, "_install_hermes", side_effect=_install),
-            patch(
-                "iris.system.setup_protocol.verify_iris_mcp_tools",
-                return_value=(True, "mcp ok"),
-            ),
-            patch(
-                "iris.system.setup_protocol.resolve_hermes_api_key",
-                return_value="test-key",
-            ),
+            patch.object(proto, "_install_iris_agent") as install,
         ):
-            result = proto._step_hermes_gateway()
+            result = proto._step_iris_agent_engine()
 
         self.assertEqual(result.status, "done", result)
-        self.assertEqual(calls["install"], 1)
-        self.assertTrue(any("재설치" in s for s in streams), streams)
+        engine.ensure_ready.assert_called_once()
+        install.assert_not_called()
+        self.assertTrue(any("엔진" in s for s in streams), streams)
 
-    def test_gateway_step_auto_repairs_trampoline_once(self) -> None:
+    def test_gateway_step_force_restart_resets_engine(self) -> None:
         proto = SetupProtocol(dry_run=False, simulate=False)
-        streams: list[str] = []
-        proto.bind_stream(lambda t, _p, _r: streams.append(t or ""))
-        crash = gw.GatewayDiagnosis(
-            code=gw.CODE_PROCESS_CRASH,
-            message="gateway 프로세스가 즉시 종료되었습니다 (exit 1).",
-            detail=(
-                "error: uv trampoline failed to spawn Python child process\n"
-                "  Caused by: entity not found (os error 2)"
-            ),
+        engine = MagicMock()
+        engine.ensure_ready.return_value = EngineReady(
+            InternalSidecar(home=EngineHome(self.home)),
+            "engine is ready",
         )
-        calls = {"ensure": 0, "install": 0}
-        gw._LAST_DIAGNOSIS = crash
-
-        def _ensure(*_a, **_k):
-            calls["ensure"] += 1
-            if calls["ensure"] == 1:
-                gw._LAST_DIAGNOSIS = crash
-                return False
-            gw._LAST_DIAGNOSIS = gw.GatewayDiagnosis(
-                code=gw.CODE_OK, ok=True, message="ok"
-            )
-            return True
-
-        def _install():
-            calls["install"] += 1
-            proto._hermes_runtime_repaired = True
-            return proto._record_step("hermes_install", "done", "repaired")
-
         with (
+            patch("iris.engine.shared_engine", return_value=engine),
+            patch("iris.engine.runtime.reset_shared_engine") as reset,
             patch(
-                "iris.system.iris_agent_gateway.is_hermes_gateway_running",
-                return_value=False,
-            ),
-            patch(
-                "iris.system.iris_agent_gateway.ensure_hermes_gateway_running",
-                side_effect=_ensure,
-            ),
-            patch(
-                "iris.system.iris_agent_gateway.restart_hermes_gateway",
-                return_value=True,
-            ),
-            patch(
-                "iris.system.iris_agent_gateway.get_last_gateway_diagnosis",
-                side_effect=lambda: gw._LAST_DIAGNOSIS,
-            ),
-            patch.object(proto, "_install_hermes", side_effect=_install),
-            patch(
-                "iris.system.setup_protocol.verify_iris_mcp_tools",
-                return_value=(True, "mcp ok"),
-            ),
-            patch(
-                "iris.system.setup_protocol.resolve_hermes_api_key",
-                return_value="test-key",
+                "iris.system.setup_protocol.sync_iris_control",
+                return_value=MagicMock(summary_line=lambda: "sync ok"),
             ),
         ):
-            result = proto._step_hermes_gateway()
+            result = proto._step_iris_agent_engine(force_restart=True)
 
         self.assertEqual(result.status, "done", result)
-        self.assertEqual(calls["install"], 1)
-        self.assertGreaterEqual(calls["ensure"], 1)
-        self.assertTrue(
-            any("재설치" in s or "trampoline" in s.lower() for s in streams),
-            streams,
-        )
+        reset.assert_called_once()
+        engine.ensure_ready.assert_called_once()
 
 
 if __name__ == "__main__":

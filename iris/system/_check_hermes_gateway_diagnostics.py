@@ -34,9 +34,9 @@ def _main() -> None:
         os.environ["VIRTUAL_ENV"] = str(root / ".venv-iris")
         os.environ["PYTHONPATH"] = str(root)
         with (
-            patch.object(gw, "hermes_home", return_value=home),
-            patch.object(gw, "_hermes_venv_python", return_value=None),
-            patch.object(gw, "_hermes_venv_dir", return_value=root / "no-venv"),
+            patch.object(gw, "iris_agent_home", return_value=home),
+            patch.object(gw, "_iris_agent_venv_python", return_value=None),
+            patch.object(gw, "_iris_agent_venv_dir", return_value=root / "no-venv"),
         ):
             cleaned = gw._gateway_child_env()
         assert "PYTHONPATH" not in cleaned
@@ -44,7 +44,7 @@ def _main() -> None:
         assert cleaned.get("HERMES_HOME") == str(home)
 
         # --- G3 stale lock ---
-        with patch.object(gw, "hermes_home", return_value=home):
+        with patch.object(gw, "iris_agent_home", return_value=home):
             (home / "gateway.pid").write_text(
                 json.dumps({"pid": 999991}), encoding="utf-8"
             )
@@ -69,7 +69,7 @@ def _main() -> None:
         gw._LAST_CHILD = child
         gw._LAST_LOG_PATHS = (err.with_suffix(".out.log"), err)
         with (
-            patch.object(gw, "hermes_home", return_value=home),
+            patch.object(gw, "iris_agent_home", return_value=home),
             patch.object(
                 gw,
                 "probe_gateway_health",
@@ -95,7 +95,7 @@ def _main() -> None:
         assert diag is not None and diag.code == gw.CODE_PORT_CONFLICT
 
         # --- diagnosis file ---
-        with patch.object(gw, "hermes_home", return_value=home):
+        with patch.object(gw, "iris_agent_home", return_value=home):
             gw._set_diagnosis(
                 gw.GatewayDiagnosis(code=gw.CODE_TIMEOUT, message="timeout demo")
             )

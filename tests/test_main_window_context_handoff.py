@@ -272,7 +272,7 @@ class ContextHandoffWiringTests(TestCase):
         self.win._use_hermes_backend = lambda: True
         self.win._settings.agent_base_url = "http://127.0.0.1:8642/v1"
         self.win._settings.agent_api_key = "k"
-        self.win._settings.agent_command = "hermes"
+        self.win._settings.agent_command = "iris-agent"
         with patch(
             "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             return_value=NS(model="upstream", label="up"),

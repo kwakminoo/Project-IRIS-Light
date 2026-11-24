@@ -21,7 +21,7 @@ from iris.browser.types import (
     empty_snapshot,
 )
 from iris.browser.youtube import page_block_reason
-from iris.runtime.agent_local_gate import hermes_owns_local_intents
+from iris.runtime.agent_local_gate import iris_agent_owns_local_intents
 from iris.system.control_surface import ActionRegistry
 
 
@@ -61,8 +61,8 @@ class BrowserIntentTests(unittest.TestCase):
         self.assertFalse((root / "iris" / "browser" / "intent.py").is_file())
 
     def test_gate_stays_a_bool(self) -> None:
-        self.assertIs(hermes_owns_local_intents(True), True)
-        self.assertIs(hermes_owns_local_intents(False), False)
+        self.assertIs(iris_agent_owns_local_intents(True), True)
+        self.assertIs(iris_agent_owns_local_intents(False), False)
 
     def test_chat_does_not_drive_browser(self) -> None:
         from iris.browser._check_intent import _veto_chats_reach_launch

@@ -105,8 +105,8 @@ class InstallResult:
         return asdict(self)
 
 
-def hermes_home() -> Path:
-    from iris.system.iris_agent_control_sync import hermes_home as _home
+def iris_agent_home() -> Path:
+    from iris.system.iris_agent_control_sync import iris_agent_home as _home
 
     return _home()
 
@@ -221,7 +221,7 @@ def install_from_request(
         home.mkdir(parents=True, exist_ok=True)
         (home / "PROJECT").write_text(str(root), encoding="utf-8")
     else:
-        home = (home or hermes_home()).expanduser()
+        home = (home or iris_agent_home()).expanduser()
     secrets = _accepted_secrets(secrets or {})
     try:
         snap = (fetch or fetch_github)(req.url)

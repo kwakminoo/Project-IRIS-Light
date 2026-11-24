@@ -47,9 +47,9 @@ HTML 삽입 후 초기화되는 문서 여백이었다. 이들도 함께 수정�
 
 ## 렌더링 호출 흐름
 
-1. `HermesClient.stream_chat()`가 `/v1/chat/completions` SSE를 UTF-8/JSON으로 읽는다.
+1. `IrisAgentClient.stream_chat()`가 `/v1/chat/completions` SSE를 UTF-8/JSON으로 읽는다.
 2. `_should_emit_assistant_content()`가 도구 인자 메시지만 제외하고 공백 content는 보존한다.
-3. `HermesChatWorker.run()`이 원문 청크를 합치며 `content_chunk`와 `finished_ok`를 발행한다.
+3. `IrisAgentChatWorker.run()`이 원문 청크를 합치며 `content_chunk`와 `finished_ok`를 발행한다.
 4. `MainWindow._on_content_chunk_for_turn()` → `_on_content_chunk()` →
    `ChatPanel.append_stream_chunk()` → `_append_typing_buffer()`가 누적 원문을 유지한다.
 5. 48ms single-shot timer → `_flush_stream_ui()` → `_replace_typing_body()` →
@@ -99,7 +99,7 @@ entity는 무작정 decode하지 않아 escaped HTML 예제를 HTML 태그로 �
 - Qt에서 표시되지 않는 CSS radius를 사용자 bubble 구현의 근거로 쓰지 않는다.
 - 본문 화살표/일부 기본 수식은 일반 문자로 변환한다. 코드의 같은 표기는 그대로 유지한다.
 
-## Hermes 첫 실행 crash
+## Iris Agent 첫 실행 crash
 
 오늘 09:37:36의 `hermes/logs/gateway.log`에 다음 오류가 있다:
 
@@ -112,7 +112,7 @@ PID 34564가 `gateway.exit_nonzero`로 종료한 기록이 있다.
 해당 실행의 stderr 파일은 비어 있고 stdout에는 시작 배너만 있었다.
 따라서 확인된 원인은 중복 gateway 기동 경쟁이다.
 
-실행 명령은 설치된 Hermes Python에서
+실행 명령은 설치된 Iris Agent Python에서
 `-m hermes_cli.main gateway run --quiet --accept-hooks`였다.
 cwd는 `%LOCALAPPDATA%/hermes/hermes-agent`, HERMES_HOME은
 `%LOCALAPPDATA%/hermes`, API_SERVER_ENABLED=true, host=127.0.0.1,
@@ -125,7 +125,7 @@ port=8642, API_SERVER_KEY 존재, PYTHONPATH 없음이었다. 키 값은 보고�
 
 사용자 오류는 일반 답변 대신 간결한 오류+자세히 보기로 분리했다.
 상세창에서는 진단과 저장된 stdout/stderr를 볼 수 있고 키 패턴은 redact한다.
-Hermes가 실패하면 현재 요청을 실패로 처리한다. 다른 모델로 조용히 바꾸는
+Iris Agent가 실패하면 현재 요청을 실패로 처리한다. 다른 모델로 조용히 바꾸는
 자동 fallback은 추가하지 않았다. 이후 요청은 gateway 상태를 다시 검사한다.
 
 ## 실제 모델 테스트
@@ -133,7 +133,7 @@ Hermes가 실패하면 현재 요청을 실패로 처리한다. 다른 모델로
 실제 MainWindow를 `test_mode=True`의 별도 대화 DB로 실행했다. 모델 응답은 mock하지
 않았다. 입력창의 전송 경로 `_emit_send()` → `_on_user_text()` → 실제 worker를 이용했다.
 기존 사용자 대화를 삭제하지 않았고, 음성 출력과 자동 IDE 파일 생성은 테스트에서 껐다.
-Hermes + 현재 설정의 gemma4:e2b를 사용했다.
+Iris Agent + 현재 설정의 gemma4:e2b를 사용했다.
 
 | 테스트 | 실응답 | 결과 |
 | --- | --- | --- |
@@ -166,7 +166,7 @@ Hermes + 현재 설정의 gemma4:e2b를 사용했다.
 | iris/ui/shared/theme_tokens.py | Qt 줄간격과 inline code/표 색상 |
 | iris/ui/workspaces/workspace_iris_chat.py | ChatLogTextEdit 상속, 누적 buffer, _render_iris_buffer, end_iris |
 | iris/system/hermes_gateway.py | lifecycle 직렬화, GatewayDiagnosis.chat_message/detailed_message |
-| iris/ui/workers/hermes_workers.py | HermesChatWorker.run: 오류 진단 상세 보존 |
+| iris/ui/workers/iris_agent_workers.py | IrisAgentChatWorker.run: 오류 진단 상세 보존 |
 | iris/ui/window/main_window.py | _on_intro_finished, _on_hermes_health, _on_hermes_health_failed, _on_chat_failed |
 | tests/test_chat_rendering_pipeline.py | 손상된 Markdown/entity/청크/코드/lifecycle 재현 테스트 |
 | iris/ui/chat/_check_chat_blocks.py | 새 렌더 결과에 맞는 기존 통합 검사 |
@@ -176,7 +176,7 @@ Hermes + 현재 설정의 gemma4:e2b를 사용했다.
 
 ## 회귀 검사 및 남은 범위
 
-렌더링 pipeline, Hermes gateway 진단/인증, 대화 저장 단위 테스트 77개와
+렌더링 pipeline, Iris Agent gateway 진단/인증, 대화 저장 단위 테스트 77개와
 chat blocks, chat sessions, composer drop, chat images, typing anchor,
 chat render/IDE trigger 검사를 통과했다. PDF/파일/폴더 드롭, 첨부 칩,
 링크/위키 앵커, 코드 복사 원문, 대화 복원, 스크롤 고정을 검사했다.

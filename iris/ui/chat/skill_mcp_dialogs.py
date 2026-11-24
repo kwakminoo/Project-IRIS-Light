@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from iris.infrastructure.iris_agent_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import iris_agent_home
 from iris.ui.settings.hud_dialog import (
     configure_hud_dialog,
     make_hint,
@@ -33,8 +33,8 @@ _KNOWN_MCP_DESC = {
 }
 
 
-def hermes_root() -> Path:
-    return hermes_home()
+def iris_agent_root() -> Path:
+    return iris_agent_home()
 
 
 def _parse_skill_description(text: str) -> str:
@@ -68,9 +68,9 @@ def _parse_skill_description(text: str) -> str:
     return ""
 
 
-def list_hermes_skills(*, limit: int = 80) -> list[tuple[str, str, Path]]:
+def list_iris_agent_skills(*, limit: int = 80) -> list[tuple[str, str, Path]]:
     """(name, description, skill.md path)."""
-    root = hermes_root() / "skills"
+    root = iris_agent_root() / "skills"
     if not root.is_dir():
         return []
     out: list[tuple[str, str, Path]] = []
@@ -93,9 +93,9 @@ def list_hermes_skills(*, limit: int = 80) -> list[tuple[str, str, Path]]:
     return out
 
 
-def list_hermes_mcps(*, limit: int = 40) -> list[tuple[str, str]]:
+def list_iris_agent_mcps(*, limit: int = 40) -> list[tuple[str, str]]:
     """(name, description)."""
-    cfg = hermes_root() / "config.yaml"
+    cfg = iris_agent_root() / "config.yaml"
     if not cfg.is_file():
         return []
     try:
@@ -129,9 +129,9 @@ def list_hermes_mcps(*, limit: int = 40) -> list[tuple[str, str]]:
         return out
     except Exception:
         # fallback: keys only
-        from iris.ui.chat.composer_plus_menu import list_hermes_mcp_names
+        from iris.ui.chat.composer_plus_menu import list_iris_agent_mcp_names
 
-        return [(n, _KNOWN_MCP_DESC.get(n, "(config.yaml)")) for n in list_hermes_mcp_names(limit=limit)]
+        return [(n, _KNOWN_MCP_DESC.get(n, "(config.yaml)")) for n in list_iris_agent_mcp_names(limit=limit)]
 
 
 def _sync_wiki_catalog() -> None:
@@ -140,9 +140,9 @@ def _sync_wiki_catalog() -> None:
         from iris.knowledge.iris_wiki import IrisWiki
 
         wiki = IrisWiki()
-        root = str(hermes_root())
-        skills = [(n, d) for n, d, _p in list_hermes_skills(limit=120)]
-        mcps = list_hermes_mcps(limit=40)
+        root = str(iris_agent_root())
+        skills = [(n, d) for n, d, _p in list_iris_agent_skills(limit=120)]
+        mcps = list_iris_agent_mcps(limit=40)
         wiki.sync_skills_catalog(skills, hermes_root=root)
         wiki.sync_mcp_catalog(mcps, hermes_root=root)
     except Exception:
@@ -153,7 +153,7 @@ def add_custom_skill(name: str, description: str) -> Path:
     safe = re.sub(r"[^\w\-]+", "-", name.strip(), flags=re.UNICODE).strip("-").lower()
     if not safe:
         raise ValueError("스킬 이름이 비어 있습니다")
-    dest = hermes_root() / "skills" / "custom" / safe
+    dest = iris_agent_root() / "skills" / "custom" / safe
     dest.mkdir(parents=True, exist_ok=True)
     md = dest / "SKILL.md"
     desc = (description or "").strip() or safe
@@ -175,7 +175,7 @@ def add_mcp_server(name: str, command: str, args_text: str) -> None:
         import yaml
     except ImportError as exc:
         raise RuntimeError("PyYAML 필요") from exc
-    path = hermes_root() / "config.yaml"
+    path = iris_agent_root() / "config.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
         data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
@@ -369,7 +369,7 @@ class SkillsDialog(QDialog):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        skills = list_hermes_skills()
+        skills = list_iris_agent_skills()
         if not skills:
             empty = QLabel("연결된 스킬이 없습니다.")
             empty.setObjectName("HudDialogHint")
@@ -457,7 +457,7 @@ class McpDialog(QDialog):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        mcps = list_hermes_mcps()
+        mcps = list_iris_agent_mcps()
         if not mcps:
             empty = QLabel("등록된 MCP 서버가 없습니다.")
             empty.setObjectName("HudDialogHint")
@@ -510,13 +510,13 @@ description: >
     assert "second line" in d, d
     d2 = _parse_skill_description("---\nname: x\ndescription: one liner\n---\n\nBody\n")
     assert d2 == "one liner", d2
-    assert isinstance(list_hermes_skills(), list)
-    assert isinstance(list_hermes_mcps(), list)
+    assert isinstance(list_iris_agent_skills(), list)
+    assert isinstance(list_iris_agent_mcps(), list)
     assert callable(probe_mcp_ok)
     print(
         "skill_mcp_dialogs ok",
         "skills",
-        len(list_hermes_skills()),
+        len(list_iris_agent_skills()),
         "mcp",
-        len(list_hermes_mcps()),
+        len(list_iris_agent_mcps()),
     )

@@ -343,14 +343,14 @@ def _check_live() -> None:
 
 
 def _check_hermes_sees_it(home: Path) -> None:
-    from iris.system.iris_agent_gateway import hermes_executable
-    from iris.system.github_extension_install import hermes_home
+    from iris.system.iris_agent_gateway import iris_agent_executable
+    from iris.system.github_extension_install import iris_agent_home
 
-    exe = hermes_executable("hermes")
+    exe = iris_agent_executable("hermes")
     if not exe:
         print("hermes mcp test skip: hermes executable missing")
         return
-    real = hermes_home() / "config.yaml"
+    real = iris_agent_home() / "config.yaml"
     before = real.stat().st_mtime_ns if real.is_file() else None
     import subprocess
 

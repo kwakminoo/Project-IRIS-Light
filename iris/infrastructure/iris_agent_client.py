@@ -17,8 +17,8 @@ from urllib.request import Request, urlopen
 _STREAM_CANCEL_POLL_SEC = 0.2
 
 from iris.infrastructure.iris_agent_credentials import (
-    is_weak_hermes_api_key,
-    resolve_hermes_api_key,
+    is_weak_iris_agent_api_key,
+    resolve_iris_agent_api_key,
 )
 from iris.runtime.stream_usage import parse_stream_usage
 
@@ -184,7 +184,7 @@ def resolve_iris_agent_inference(
     )
 
 
-def infer_hermes_provider(model: str) -> str:
+def infer_iris_agent_provider(model: str) -> str:
     """Iris 모델명 → Hermes provider.
 
     Iris 권장 스택은 로컬 Ollama(:11434)다. 클라우드 모델(`*:cloud`)도
@@ -215,7 +215,7 @@ def _sse_error_message(obj: dict[str, Any]) -> str:
             continue
         if str(choice.get("finish_reason") or "").lower() != "error":
             continue
-        return "Hermes stream finished with error"
+        return "Iris Agent stream finished with error"
     return ""
 
 
@@ -327,7 +327,7 @@ class IrisAgentClient:
     ) -> None:
         self.base_url = normalize_iris_agent_openai_base_url(base_url)
         self.api_root = api_root_from_base(self.base_url)
-        self.api_key = resolve_hermes_api_key(api_key)
+        self.api_key = resolve_iris_agent_api_key(api_key)
         self.command = (command or "hermes").strip() or "hermes"
         self.timeout_sec = timeout_sec
 
@@ -430,7 +430,7 @@ class IrisAgentClient:
         health = self.probe_health(timeout_sec=timeout_sec)
         key = (self.api_key or "").strip()
         key_len = len(key)
-        key_weak = is_weak_hermes_api_key(key) if key else True
+        key_weak = is_weak_iris_agent_api_key(key) if key else True
         models_url = f"{self.base_url}/models"
         if not health.ok:
             return GatewayReadyResult(
@@ -617,7 +617,7 @@ class IrisAgentClient:
         if is_iris_api_runtime_model(model):
             # 호출자가 runtime id를 그대로 넘긴 경우 — 오염 방지
             return
-        provider = (provider or "").strip() or infer_hermes_provider(model)
+        provider = (provider or "").strip() or infer_iris_agent_provider(model)
         if provider == "auto":
             return
         # Hermes 0.19+: 로컬 OpenAI-compat는 custom + base_url
@@ -701,9 +701,9 @@ class IrisAgentClient:
                         return True
             except HTTPError as e:
                 detail = e.read().decode("utf-8", errors="replace")[:200]
-                errors.append(f"Hermes model API {e.code}: {detail or e.reason}")
+                errors.append(f"Iris Agent model API {e.code}: {detail or e.reason}")
             except (URLError, TimeoutError, OSError) as e:
-                errors.append(f"Hermes model API 연결 실패: {e}")
+                errors.append(f"Iris Agent model API 연결 실패: {e}")
         return False
 
     def _set_model_via_cli(
@@ -715,11 +715,11 @@ class IrisAgentClient:
         base_url: str = "",
         api_key: str = "",
     ) -> bool:
-        from iris.system.iris_agent_gateway import hermes_executable
+        from iris.system.iris_agent_gateway import iris_agent_executable
 
-        exe = hermes_executable(self.command)
+        exe = iris_agent_executable(self.command)
         if not exe:
-            errors.append(f"Hermes CLI 실행 파일을 찾을 수 없습니다: {self.command}")
+            errors.append(f"Iris Agent CLI 실행 파일을 찾을 수 없습니다: {self.command}")
             return False
         # Hermes(0.19+)엔 'ollama' provider가 없다 — 로컬 OpenAI-compat 프록시는
         # 'custom'으로 등록해야 한다 (base_url은 아래에서 그대로 127.0.0.1:11434).
@@ -760,22 +760,22 @@ class IrisAgentClient:
                 if proc.returncode != 0:
                     err = (proc.stderr or proc.stdout or "").strip()
                     errors.append(
-                        f"Hermes CLI 실패 ({' '.join(cmd)}): {err or proc.returncode}"
+                        f"Iris Agent CLI 실패 ({' '.join(cmd)}): {err or proc.returncode}"
                     )
                     return False
             if api_key:
                 self._write_model_api_key(api_key, errors)
             return True
         except (OSError, subprocess.TimeoutExpired) as e:
-            errors.append(f"Hermes CLI 실행 실패: {e}")
+            errors.append(f"Iris Agent CLI 실행 실패: {e}")
             return False
 
     def _write_model_api_key(self, api_key: str, errors: list[str]) -> None:
         """config.yaml model.api_key만 upsert (CLI argv 노출 회피)."""
         try:
-            from iris.system.iris_agent_gateway import hermes_home
+            from iris.system.iris_agent_gateway import iris_agent_home
 
-            path = hermes_home() / "config.yaml"
+            path = iris_agent_home() / "config.yaml"
             if not path.is_file():
                 return
             import yaml  # type: ignore
@@ -793,7 +793,7 @@ class IrisAgentClient:
                 encoding="utf-8",
             )
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"Hermes api_key 기록 실패: {exc}")
+            errors.append(f"Iris Agent api_key 기록 실패: {exc}")
 
     def stream_chat(
         self,
@@ -864,7 +864,7 @@ class IrisAgentClient:
                             from iris.infrastructure.iris_agent_errors import format_hermes_sse_error
 
                             raise RuntimeError(
-                                f"Hermes: {format_hermes_sse_error(soft_error, model=model)}"
+                                f"Iris Agent: {format_hermes_sse_error(soft_error, model=model)}"
                             )
                         yield {
                             "content": None,
@@ -937,7 +937,7 @@ class IrisAgentClient:
                         from iris.infrastructure.iris_agent_errors import format_hermes_sse_error
 
                         raise RuntimeError(
-                            f"Hermes: {format_hermes_sse_error(soft_error, model=model)}"
+                            f"Iris Agent: {format_hermes_sse_error(soft_error, model=model)}"
                         )
         except HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:400]
@@ -958,9 +958,9 @@ class IrisAgentClient:
                 from iris.infrastructure.iris_agent_errors import format_hermes_http_401
 
                 raise RuntimeError(format_hermes_http_401()) from e
-            raise RuntimeError(f"Hermes HTTP {e.code}: {detail or e.reason}") from e
+            raise RuntimeError(f"Iris Agent HTTP {e.code}: {detail or e.reason}") from e
         except URLError as e:
-            raise RuntimeError(f"Hermes 연결 실패: {e.reason}") from e
+            raise RuntimeError(f"Iris Agent 연결 실패: {e.reason}") from e
 
     def _get_json(self, url: str) -> dict[str, Any]:
         req = Request(url, method="GET", headers=self._headers())
@@ -1083,10 +1083,10 @@ def _should_emit_assistant_content(chunk: str, choice: dict[str, Any]) -> bool:
 
 
 if __name__ == "__main__":
-    assert infer_hermes_provider("gemma4:31b-cloud") == "ollama"
-    assert infer_hermes_provider("gemma4:26b") == "ollama"
-    assert infer_hermes_provider("anthropic/claude") == "openrouter"
-    assert infer_hermes_provider("api:41025a6367b9:nvidia/nemotron-3") == "auto"
+    assert infer_iris_agent_provider("gemma4:31b-cloud") == "ollama"
+    assert infer_iris_agent_provider("gemma4:26b") == "ollama"
+    assert infer_iris_agent_provider("anthropic/claude") == "openrouter"
+    assert infer_iris_agent_provider("api:41025a6367b9:nvidia/nemotron-3") == "auto"
     assert not is_hermes_syncable_model("api:x:nvidia/y")
     assert is_hermes_syncable_model("gemma4:26b")
     local = resolve_iris_agent_inference("gemma4:26b")
@@ -1126,7 +1126,7 @@ if __name__ == "__main__":
         '[[\n{"name": "read_file", "parameters": {"path": "tetris_game.py"}}\n]',
         {"delta": {}, "finish_reason": "stop"},
     )
-    resolved = resolve_hermes_api_key("")
+    resolved = resolve_iris_agent_api_key("")
     client = IrisAgentClient("http://127.0.0.1:8642/v1", api_key="")
     assert client.api_key == resolved
     empty = IrisAgentClient("http://127.0.0.1:1/v1", api_key="")

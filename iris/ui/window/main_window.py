@@ -409,11 +409,11 @@ class MainWindow(QMainWindow):
         self._iris_update_checked_cids: set[int] = set()
         self._iris_update_recheck = False
         self._iris_update_check_cid = 0
-        self._hermes_update_check_worker: QThread | None = None
-        self._hermes_update_apply_worker: QThread | None = None
-        self._hermes_update_checked_cids: set[int] = set()
-        self._hermes_update_recheck = False
-        self._hermes_update_check_cid = 0
+        self._iris_agent_update_check_worker: QThread | None = None
+        self._iris_agent_update_apply_worker: QThread | None = None
+        self._iris_agent_update_checked_cids: set[int] = set()
+        self._iris_agent_update_recheck = False
+        self._iris_agent_update_check_cid = 0
         self._email_inbox_worker: EmailInboxWorker | None = None
         self._email_idle_worker: EmailIdleWorker | None = None
         self._email_message_worker: EmailMessageWorker | None = None
@@ -821,7 +821,7 @@ class MainWindow(QMainWindow):
         self._chat.mic_clicked.connect(self._warm_embedder_soon)
         self._chat.speaker_clicked.connect(self._on_chat_speaker_clicked)
         self._chat.update_action_clicked.connect(self._on_chat_update_action)
-        self._chat.hermes_update_action_clicked.connect(self._on_hermes_update_action)
+        self._chat.iris_agent_update_action_clicked.connect(self._on_iris_agent_update_action)
         self._chat.ollama_login_clicked.connect(self._on_ollama_cloud_login_clicked)
         left_lay.addWidget(self._chat, 3)
 
@@ -1247,7 +1247,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(500, self._maybe_restore_mic_listen)
         if not self._test_mode:
             QTimer.singleShot(2500, self._begin_app_update_check)
-            QTimer.singleShot(2800, self._begin_hermes_update_check)
+            QTimer.singleShot(2800, self._begin_iris_agent_update_check)
 
     @staticmethod
     def _repair_taskbar_pins() -> None:
@@ -1286,10 +1286,10 @@ class MainWindow(QMainWindow):
             checked = self._iris_update_checked_cids
             begin = self._begin_app_update_check
         else:
-            recheck = self._hermes_update_recheck
-            self._hermes_update_recheck = False
-            checked = self._hermes_update_checked_cids
-            begin = self._begin_hermes_update_check
+            recheck = self._iris_agent_update_recheck
+            self._iris_agent_update_recheck = False
+            checked = self._iris_agent_update_checked_cids
+            begin = self._begin_iris_agent_update_check
         if (recheck or current != started_cid) and current not in checked:
             begin()
 
@@ -1437,41 +1437,41 @@ class MainWindow(QMainWindow):
             ollama_login_status_message(applied=applied),
         )
 
-    def _begin_hermes_update_check(self) -> None:
+    def _begin_iris_agent_update_check(self) -> None:
         if not self._settings.agent_enabled or not self._update_alerts_allowed("agent"):
             return
         cid = int(self._conversation_id or 0)
-        if cid in self._hermes_update_checked_cids:
+        if cid in self._iris_agent_update_checked_cids:
             return
         if (
-            self._hermes_update_check_worker is not None
-            and self._hermes_update_check_worker.isRunning()
+            self._iris_agent_update_check_worker is not None
+            and self._iris_agent_update_check_worker.isRunning()
         ):
-            self._hermes_update_recheck = True
+            self._iris_agent_update_recheck = True
             return
-        self._hermes_update_checked_cids.add(cid)
-        self._hermes_update_check_cid = cid
+        self._iris_agent_update_checked_cids.add(cid)
+        self._iris_agent_update_check_cid = cid
         from iris.ui.workers.iris_agent_update_worker import IrisAgentUpdateCheckWorker
 
         worker = IrisAgentUpdateCheckWorker(
             command=self._settings.agent_command,
             parent=self,
         )
-        self._hermes_update_check_worker = worker
-        worker.finished_ok.connect(self._on_hermes_update_status)
-        worker.failed.connect(self._on_hermes_update_check_failed)
+        self._iris_agent_update_check_worker = worker
+        worker.finished_ok.connect(self._on_iris_agent_update_status)
+        worker.failed.connect(self._on_iris_agent_update_check_failed)
         worker.start()
 
-    def _on_hermes_update_check_failed(self, _message: str) -> None:
-        started = self._hermes_update_check_cid
-        self._hermes_update_check_worker = None
+    def _on_iris_agent_update_check_failed(self, _message: str) -> None:
+        started = self._iris_agent_update_check_cid
+        self._iris_agent_update_check_worker = None
         self._finish_update_recheck("agent", started)
 
-    def _on_hermes_update_status(self, status: object) -> None:
+    def _on_iris_agent_update_status(self, status: object) -> None:
         from iris.storage.update_notify_prefs import should_show_update_prompt
 
-        started = self._hermes_update_check_cid
-        self._hermes_update_check_worker = None
+        started = self._iris_agent_update_check_cid
+        self._iris_agent_update_check_worker = None
         current = int(self._conversation_id or 0)
         if should_show_update_prompt(
             allowed=self._update_alerts_allowed("agent"),
@@ -1479,26 +1479,26 @@ class MainWindow(QMainWindow):
             available=bool(getattr(status, "available", False)),
         ):
             detail = str(getattr(status, "detail", "") or "").strip()
-            self._chat.append_hermes_update_prompt(detail=detail)
+            self._chat.append_iris_agent_update_prompt(detail=detail)
         self._finish_update_recheck("agent", started)
 
-    def _on_hermes_update_action(self, action: str) -> None:
+    def _on_iris_agent_update_action(self, action: str) -> None:
         kind = (action or "").strip().lower()
         if kind == "later":
-            self._chat.dismiss_hermes_update_prompt(
+            self._chat.dismiss_iris_agent_update_prompt(
                 "이 채팅에서는 Iris Agent 안내를 닫았습니다. 새 채팅을 열거나 Iris를 다시 시작하면 다시 안내합니다."
             )
             return
         if kind != "apply":
             return
         if (
-            self._hermes_update_apply_worker is not None
-            and self._hermes_update_apply_worker.isRunning()
+            self._iris_agent_update_apply_worker is not None
+            and self._iris_agent_update_apply_worker.isRunning()
         ):
             return
         from iris.ui.workers.iris_agent_update_worker import IrisAgentUpdateApplyWorker
 
-        self._chat.dismiss_hermes_update_prompt(
+        self._chat.dismiss_iris_agent_update_prompt(
             "Iris Agent 업데이트를 적용하는 중… 끝나면 gateway를 다시 시작합니다."
         )
         worker = IrisAgentUpdateApplyWorker(
@@ -1507,14 +1507,14 @@ class MainWindow(QMainWindow):
             api_key=self._settings.agent_api_key,
             parent=self,
         )
-        self._hermes_update_apply_worker = worker
+        self._iris_agent_update_apply_worker = worker
         worker.progress.connect(self._on_hermes_gateway_notice)
-        worker.finished_ok.connect(self._on_hermes_update_applied)
-        worker.failed.connect(self._on_hermes_update_apply_failed)
+        worker.finished_ok.connect(self._on_iris_agent_update_applied)
+        worker.failed.connect(self._on_iris_agent_update_apply_failed)
         worker.start()
 
-    def _on_hermes_update_applied(self, message: str) -> None:
-        self._hermes_update_apply_worker = None
+    def _on_iris_agent_update_applied(self, message: str) -> None:
+        self._iris_agent_update_apply_worker = None
         self._hermes_online = True
         self._status_header.refresh_backend_status(
             self._settings,
@@ -1525,8 +1525,8 @@ class MainWindow(QMainWindow):
             (message or "Iris Agent 업데이트가 끝났고 gateway를 재시작했습니다.").strip(),
         )
 
-    def _on_hermes_update_apply_failed(self, message: str) -> None:
-        self._hermes_update_apply_worker = None
+    def _on_iris_agent_update_apply_failed(self, message: str) -> None:
+        self._iris_agent_update_apply_worker = None
         self._refresh_hermes_health()
         self._chat.append_message_instant(
             "Iris",
@@ -2363,7 +2363,7 @@ class MainWindow(QMainWindow):
         return build_state(
             ollama_model=self._settings.ollama_model,
             hermes_enabled=bool(self._settings.agent_enabled),
-            hermes_base_url=self._settings.agent_base_url,
+            agent_base_url=self._settings.agent_base_url,
             hermes_api_key=self._settings.agent_api_key,
             api_providers=providers,
             history=history,
@@ -3394,7 +3394,7 @@ class MainWindow(QMainWindow):
             pass
         if not self._test_mode:
             self._begin_app_update_check()
-            self._begin_hermes_update_check()
+            self._begin_iris_agent_update_check()
 
     def _on_new_chat_requested(self) -> None:
         self._open_fresh_work_chat()
@@ -4882,7 +4882,7 @@ class MainWindow(QMainWindow):
 
         if not keep_wiki_batch(text):
             self._wiki_batch_follow = False
-        from iris.runtime.agent_local_gate import hermes_owns_local_intents
+        from iris.runtime.agent_local_gate import iris_agent_owns_local_intents
 
         from iris.ui.wiki_turn import (
             local_document_wiki_save_enabled,
@@ -4905,7 +4905,7 @@ class MainWindow(QMainWindow):
             if self._try_local_skill_run(turn):
                 return
         # Agent가 켜져 있으면 여섯 의도는 모델의 SpeakTools. 꺼져 있을 때만 로컬 정규식.
-        owns = hermes_owns_local_intents(self._use_hermes_backend())
+        owns = iris_agent_owns_local_intents(self._use_hermes_backend())
         if owns:
             if self._try_local_extension_install(turn, allow_new=False):
                 return
@@ -6554,10 +6554,10 @@ class MainWindow(QMainWindow):
             self._live_activity.append_instant_line("IDE control surface missing")
             return
         try:
-            from iris.runtime.agent_local_gate import hermes_owns_local_intents
+            from iris.runtime.agent_local_gate import iris_agent_owns_local_intents
             from iris.system.project_ops import is_run_request
 
-            run_locally = (not hermes_owns_local_intents(self._use_hermes_backend())) and is_run_request(
+            run_locally = (not iris_agent_owns_local_intents(self._use_hermes_backend())) and is_run_request(
                 prompt
             )
             if state is not None and state.get("started"):

@@ -151,7 +151,7 @@ class EnsureReadyInstallTests(TestCase):
 
         engine = Engine(InternalSidecar(home=self.home))
         with patch(
-            "iris.system.iris_agent_install.install_hermes_with_system_python",
+            "iris.system.iris_agent_install.install_iris_agent_with_system_python",
             return_value=SimpleNamespace(ok=False, message="dependency conflict; log: iris-install.log"),
         ):
             result = engine.ensure_ready()
@@ -214,7 +214,7 @@ class EnsureReadyInstallTests(TestCase):
             seen.append((dest, sha, clone))
 
         with patch(
-            "iris.system.iris_agent_install.install_hermes_with_system_python",
+            "iris.system.iris_agent_install.install_iris_agent_with_system_python",
         ) as inst:
             install_into(self.home, runner=runner, clone="repo")
         inst.assert_not_called()
@@ -223,17 +223,17 @@ class EnsureReadyInstallTests(TestCase):
     def test_install_into_without_runner_does_not_clone(self) -> None:
         with (
             patch(
-                "iris.system.iris_agent_install.install_hermes_with_system_python",
+                "iris.system.iris_agent_install.install_iris_agent_with_system_python",
                 return_value=None,
             ) as inst,
-            patch("iris.system.iris_agent_gateway.hermes_home") as hermes_home,
+            patch("iris.system.iris_agent_gateway.iris_agent_home") as iris_agent_home,
         ):
             install_into(self.home)
         inst.assert_called_once()
         kwargs = inst.call_args.kwargs
         self.assertEqual(kwargs["home"], Path(self.home))
         self.assertEqual(kwargs["sha"], ENGINE_HERMES_SHA)
-        hermes_home.assert_not_called()
+        iris_agent_home.assert_not_called()
         self.assertEqual(list(Path(self.home).iterdir()), [])
 
     def test_already_probed_home_skips_install(self) -> None:
@@ -244,7 +244,7 @@ class EnsureReadyInstallTests(TestCase):
             called.append("runner")
 
         with patch(
-            "iris.system.iris_agent_install.install_hermes_with_system_python",
+            "iris.system.iris_agent_install.install_iris_agent_with_system_python",
         ) as inst:
             install_into(self.home, runner=runner)
         inst.assert_not_called()

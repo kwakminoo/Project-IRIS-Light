@@ -6,20 +6,20 @@ import re
 from pathlib import Path
 
 from iris.browser.observation import browser_teaching_block
-from iris.system.iris_agent_control_sync import hermes_home
+from iris.system.iris_agent_control_sync import iris_agent_home
 
 # Bump when nudge text changes. Lower runtime markers must not skip as "already present".
-_NUDGE_VERSION = 42
+_NUDGE_VERSION = 43
 _MARKER = f"<!-- iris-control-nudge-v{_NUDGE_VERSION} -->"
 
-_BLOCK = """<!-- iris-control-nudge-v42 -->
+_BLOCK = """<!-- iris-control-nudge-v43 -->
 ## Iris Light UI control
 
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
 
 1. Prefer product **SpeakTools** first (no iris-control MCP): `get_state`, `get_catalog`, `settings.get`, `wiki.list_notes` / `wiki.search` / `wiki.write_user_note`, `email.list_accounts`, `calendar.list_events`, `local.read_file`, `local.search_files`, `ide.open_folder`, `project.open_similar`, `attachment.copy_to`, `attachment.move_to`, `project.import_attachment`, `shell.run`, `project.run`, `chat.search_past` / `chat_search_past`, `chat.new_session`, `app.demo_ping`, `diagram.render`. Prior chats use skill iris-past-chats. If the chat work_root and the bound IDE folder differ, Iris aligns the IDE folder before write/run; on failure the tool error names the needed folder — do not silently skip.
 
-1a. Provider-visible SpeakTool function names replace dots with underscores (`settings_get`, `wiki_search`, `project_run`, `shell_run`). Use the exact name shown in the tool schema; Iris maps it back to the dotted Control action internally. For "메일 화면 열어줘", call `workspace_open_email({})`.
+1a. Provider-visible SpeakTool names: Iris Agent `terminal` / `write_file` / `read_file` / `search_files` / `web_search` / `web_extract` (Iris Control under the hood), else dots→underscores (`settings_get`, `wiki_search`). Use the exact schema name. For "메일 화면 열어줘", call `workspace_open_email({})`.
 
 2. "ide 켜줘" / open IDE only: SpeakTools path via control `ide.enter_companion`.
 
@@ -27,7 +27,7 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 4. Do NOT claim Iris has no IDE GUI — Iris launches the preferred IDE via control surface.
 
-5. Do NOT use Iris Agent built-in `terminal` tool — it is disabled for Iris. On the **home / assistant** surface use SpeakTools `shell.run` (command under user home; no console window; output is an **Iris Shell** chat card). In **IDE Companion** use SpeakTools `project.run` so output appears in the bound IDE integrated terminal. Never invent a filesystem limit.
+5. Run commands via SpeakTools `terminal` (Iris-owned). Home / assistant → Iris Shell chat card. IDE Companion → bound IDE integrated terminal. Never invent a filesystem limit.
 
 6. Do NOT treat Iris Agent terminal cwd as Iris project_root. Write/run roots are the **bound IDE folder on screen** (session.workspace_root), never a sticky profile project_root.
 
@@ -45,11 +45,11 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 11. Parents for search come from Iris settings (`project_parents`); inspect via `project.list_parents`.
 
-12. After creating/writing code: SpeakTools `project.write_file` with `open=true` (default live write: empty tab → wait visible → stream chunks into the file). `rel_path` is the filename the user asked for. If they did not name a file, ask before writing. Do not invent `iris_generated.py`. Use `typewriter:false` only for instant dump. Never claim 생성·작성·처리 완료 without tool ok and a disk path.
+12. After creating/writing code: SpeakTools `write_file` (Control `project.write_file`) with `open=true` (default live write: empty tab → wait visible → stream chunks into the file). `rel_path` is the filename the user asked for. If they did not name a file, ask before writing. Do not invent `iris_generated.py`. Use `typewriter:false` only for instant dump. Never claim 생성·작성·처리 완료 without tool ok and a disk path.
 12b. Rename: `project.rename_file` with `path` (current relative path) and `new_path`. Find `path` with `project.list_files` or the open editor. If either path is unknown, ask. Do not claim the name changed unless ok.
-12c. Read body: SpeakTools `project.read_file` with `rel_path` (or `path`; use `project.list_files` if unknown). Disk UTF-8 only — not the unsaved Monaco buffer. Dirty tabs need `ide.save` / `ide.edit` first. Missing/escape/binary/too-large fail — never invent content without ok.
+12c. Read body: SpeakTools `read_file` (Control `project.read_file`) with `rel_path` (or `path`; use `project.list_files` if unknown). Disk UTF-8 only — not the unsaved Monaco buffer. Dirty tabs need `ide.save` / `ide.edit` first. Missing/escape/binary/too-large fail — never invent content without ok.
 
-13. On run/npm/pip/python/node/shell requests: home / assistant surface → SpeakTools `shell.run` (Iris Shell chat card, no console). IDE Companion → SpeakTools `project.run` (full output in IDE terminal; chat summary only). Keyword auto-run is off while Iris Agent is on.
+13. On run/npm/pip/python/node/shell requests: SpeakTools `terminal` (home → Iris Shell card; IDE Companion → IDE terminal). Keyword auto-run is off while Iris Agent is on.
 
 14. Calendar / 일정: `workspace.open_calendar`, then `calendar.add_event` / `calendar_list_events` / `calendar.select_day` / `calendar.delete_event` (skill iris-calendar).
 
@@ -143,7 +143,7 @@ def _scrub_dual_root_memory(home: Path) -> None:
 
 
 def ensure_memory_nudge(home: Path | None = None) -> str:
-    root = Path(home) if home is not None else hermes_home()
+    root = Path(home) if home is not None else iris_agent_home()
     mem_dir = root / "memories"
     mem_dir.mkdir(parents=True, exist_ok=True)
     path = mem_dir / "MEMORY.md"

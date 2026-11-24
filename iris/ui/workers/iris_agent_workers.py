@@ -38,10 +38,6 @@ from iris.infrastructure.iris_agent_client import (
     resolve_iris_agent_inference,
 )
 from iris.infrastructure.speak_capability import current_speak_surface
-from iris.system.iris_agent_gateway import (
-    restart_hermes_gateway,
-    verify_iris_mcp_tools,
-)
 from iris.system.iris_agent_control_sync import sync_iris_control
 
 from iris.infrastructure.agent_runtime import (
@@ -122,7 +118,7 @@ class IrisAgentHealthWorker(QThread):
 
 
 class IrisAgentControlSyncWorker(QThread):
-    """설정창/수동 동기화 — UI 스레드에서 sync/restart 금지(데드락·프리즈)."""
+    """설정창/수동 동기화 — 디스크 sync만. :8642 gateway 재기동 없음."""
 
     progress = pyqtSignal(str)
     finished_ok = pyqtSignal(bool, str)  # ok, summary
@@ -136,6 +132,7 @@ class IrisAgentControlSyncWorker(QThread):
         parent=None,
     ) -> None:
         super().__init__(parent)
+        # Compat ctor args (settings still pass gateway fields); unused on product path.
         self._base_url = base_url
         self._api_key = api_key
         self._command = command
@@ -144,7 +141,7 @@ class IrisAgentControlSyncWorker(QThread):
         lines: list[str] = []
         try:
             self.progress.emit("상태: MCP/스킬 동기화 중…")
-            report = sync_iris_control(reconnect_gateway=True)
+            report = sync_iris_control(reconnect_gateway=False)
             lines.append(report.summary_line())
             shown = list(report.messages[:8])
             for msg in report.messages:
@@ -158,35 +155,8 @@ class IrisAgentControlSyncWorker(QThread):
                 lines.append(f"  [{mark}] {s.get('name')}: {s.get('detail')}")
             if report.errors:
                 lines.append("오류: " + "; ".join(report.errors[:2]))
-
-            self.progress.emit("상태: Iris Agent gateway 재기동…")
-            ok = restart_hermes_gateway(
-                self._base_url,
-                api_key=self._api_key,
-                command=self._command,
-                wait_sec=60.0,
-            )
-            if not ok:
-                from iris.system.iris_agent_gateway import (
-                    get_last_gateway_diagnosis,
-                    hermes_runtime_report,
-                )
-
-                runtime = hermes_runtime_report(command=self._command)
-                diag = get_last_gateway_diagnosis()
-                why = diag.user_message() if diag is not None else runtime
-                lines.insert(0, why)
-                if diag is not None and runtime not in why:
-                    lines.insert(1, runtime)
-                self.finished_ok.emit(False, "\n".join(lines))
-                return
-
-            mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self._command)
-            lines.append(mcp_detail)
-            self.finished_ok.emit(
-                bool(report.ok and mcp_ok and report.mcp_fail_count == 0),
-                "\n".join(lines),
-            )
+            ok = bool(report.ok and report.mcp_fail_count == 0)
+            self.finished_ok.emit(ok, "\n".join(lines))
         except Exception as exc:  # noqa: BLE001
             self.finished_ok.emit(False, f"상태: 실패 — {exc}")
 

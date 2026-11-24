@@ -2,7 +2,7 @@
 
 - pin 파일 == load_pinned_sha
 - update 가 pin 밖 floating main 을 쓰지 않음
-- 홈이 iris_agent_home / hermes_home 단일 경로
+- 홈이 iris_agent_home / iris_agent_home 단일 경로
 - ollama guard 는 present API 가 있고 gateway 경로가 부재 시 apply 1회
 - 설치본이 있으면 HEAD == pin 이고 guard present (멱등)
 """
@@ -15,13 +15,13 @@ from pathlib import Path
 from unittest import mock
 
 from iris.infrastructure.agent_runtime import (
-    iris_agent_home,
+    iris_agent_repo_dir,
     load_pinned_sha,
     load_upstream_url,
     product_agent_home,
     vendor_runtime_root,
 )
-from iris.infrastructure.iris_agent_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import iris_agent_home
 from iris.system import iris_agent_gateway as gw
 from iris.system import iris_agent_update as upd
 from iris.system.iris_agent_ollama_guard import ollama_options_guard_present
@@ -35,7 +35,7 @@ def _main() -> None:
 
     # update 목표 = pin (네트워크 floating main 추격 아님)
     assert upd.fetch_hermes_remote_sha(Path(".")) == pin
-    src = inspect.getsource(upd.check_hermes_update)
+    src = inspect.getsource(upd.check_iris_agent_update)
     assert "ls-remote" not in src
     assert "load_pinned_sha" in inspect.getsource(upd)
     assert "refs/heads/main" not in inspect.getsource(upd)
@@ -45,7 +45,7 @@ def _main() -> None:
         product.mkdir()
         with mock.patch.dict("os.environ", {"IRIS_AGENT_HOME": str(product)}, clear=False):
             assert iris_agent_home() == product
-            assert hermes_home() == product
+            assert iris_agent_home() == product
         legacy_only = Path(tmp) / "legacy-local"
         legacy_only.mkdir()
         (legacy_only / "hermes").mkdir()
@@ -61,17 +61,17 @@ def _main() -> None:
     # credentials 와 sync 가 같은 홈
     from iris.system import iris_agent_control_sync as sync
 
-    assert hermes_home() == sync.hermes_home() == iris_agent_home()
+    assert iris_agent_home() == sync.iris_agent_home() == iris_agent_home()
 
     # gateway ensure: 부재 시 apply, 이미 있으면 False(멱등)
     gsrc = inspect.getsource(gw._apply_ollama_options_guard_now)
     assert "apply_ollama_options_guard" in gsrc
     assert "ollama_options_guard_present" in gsrc
 
-    repo = upd.hermes_repo_dir()
-    if repo is not None and (repo / ".git").exists():
+    repo = iris_agent_repo_dir(iris_agent_home())
+    if (repo / ".git").exists():
         local = upd._git(repo, "rev-parse", "HEAD")
-        status = upd.check_hermes_update(repo=repo)
+        status = upd.check_iris_agent_update(repo=repo)
         assert status.remote_sha.lower() == pin.lower()
         if local.lower() == pin.lower():
             assert not status.available
@@ -99,7 +99,7 @@ def _main() -> None:
             encoding="utf-8",
         )
         assert not ollama_options_guard_present(bare)
-        with mock.patch.object(gw, "_hermes_agent_dir", return_value=bare):
+        with mock.patch.object(gw, "_iris_agent_dir", return_value=bare):
             assert gw._apply_ollama_options_guard_now() is True
             assert ollama_options_guard_present(bare)
             assert gw._apply_ollama_options_guard_now() is False

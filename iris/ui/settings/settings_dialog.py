@@ -47,7 +47,7 @@ from iris.infrastructure.external_api_keys import (
     SEARCH_PRESETS,
     SearchPreset,
     active_search_preset_id,
-    apply_hermes_search_backend,
+    apply_iris_agent_search_backend,
     load_calendar_api_key,
     load_search_api_keys,
     load_search_entries,
@@ -826,7 +826,7 @@ class SettingsDialog(QDialog):
             )
             backend = search_preset_by_id(active).hermes_backend
             if backend:
-                apply_hermes_search_backend(backend)
+                apply_iris_agent_search_backend(backend)
         if hasattr(self, "_calendar_api_key"):
             key = self._calendar_api_key.text().strip()
             save_calendar_api_key(key)
@@ -2307,8 +2307,8 @@ class SettingsDialog(QDialog):
             f"Ollama {'OK' if snap.get('ollama_exe') else '없음'}"
             + self._setup_running_suffix(snap.get("ollama_running")),
             f"로컬 모델 {int(snap.get('local_model_count') or 0)}개",
-            f"에이전트 {'OK' if snap.get('hermes_exe') else '없음'}"
-            + self._setup_running_suffix(snap.get("hermes_running")),
+            f"에이전트 {'OK' if snap.get('agent_exe') else '없음'}"
+            + self._setup_running_suffix(snap.get("agent_running")),
             f"venv {'OK' if snap.get('venv_ok') else '없음'}",
             f"API 키 {'설정됨' if snap.get('api_key_set') else '없음'}",
             f"core_ready={'예' if is_core_ready() else '아니오'}",
@@ -2340,7 +2340,7 @@ class SettingsDialog(QDialog):
         """실행 파일·venv·core_ready 중 하나라도 없으면 설치 필요."""
         return not (
             bool(snap.get("ollama_exe"))
-            and bool(snap.get("hermes_exe"))
+            and bool(snap.get("agent_exe"))
             and bool(snap.get("venv_ok"))
             and bool(snap.get("core_ready"))
         )
@@ -2495,13 +2495,14 @@ class SettingsDialog(QDialog):
 
     def _run_hermes_control_sync(self) -> None:
         from iris.agent import IrisAgentControlSyncWorker
-        from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
+        from iris.infrastructure.iris_agent_credentials import resolve_iris_agent_api_key
 
         if self._sync_worker is not None and self._sync_worker.isRunning():
             return
-        base = (self._settings.agent_base_url or "").strip() or "http://127.0.0.1:8642/v1"
+        # Compat ctor arg only — ControlSyncWorker ignores base on product path.
+        base = (self._settings.agent_base_url or "").strip()
         try:
-            key = resolve_hermes_api_key(self._settings.agent_api_key)
+            key = resolve_iris_agent_api_key(self._settings.agent_api_key)
         except Exception:
             key = self._settings.agent_api_key or ""
         cmd = (self._settings.agent_command or "").strip() or "hermes"
@@ -2717,17 +2718,16 @@ class SettingsDialog(QDialog):
                     )
         self._persist_search_calendar_api_keys()
         try:
-            from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
+            from iris.infrastructure.iris_agent_credentials import resolve_iris_agent_api_key
 
-            hermes_api_key = resolve_hermes_api_key(self._settings.agent_api_key)
+            hermes_api_key = resolve_iris_agent_api_key(self._settings.agent_api_key)
         except Exception:
             hermes_api_key = self._settings.agent_api_key or ""
         self._result = LightSettingsSelection(
             ollama_base_url=self._ollama_url.text().strip() or "http://127.0.0.1:11434/v1",
             ollama_model=self._ollama_model.text().strip(),
             agent_command=self._settings.agent_command or "hermes",
-            agent_base_url=self._settings.agent_base_url
-            or "http://127.0.0.1:8642/v1",
+            agent_base_url=(self._settings.agent_base_url or "").strip(),
             agent_api_key=hermes_api_key,
             voice_prefs=voice_prefs,
             learning_prefs=learning_prefs,

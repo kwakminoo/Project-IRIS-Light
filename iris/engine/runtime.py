@@ -636,6 +636,9 @@ class Engine:
                             line = data.decode("utf-8", errors="replace")
                             if not line.endswith("\n"):
                                 line += "\n"
+                            # Sidecar writes this before UDP so a silently
+                            # dropped datagram still lands. UDP won; discard it.
+                            _read_terminal_file_impl(hello_pid)
                             _watch_trace(f"recv udp bytes={len(data)}")
                     except socket.timeout:
                         pass

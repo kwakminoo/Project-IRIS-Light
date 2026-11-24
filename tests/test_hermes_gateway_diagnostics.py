@@ -32,7 +32,7 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         gw._LAST_DIAGNOSIS = None
         gw._LAST_CHILD = None
         gw._LAST_LOG_PATHS = None
-        self._home_patch = patch.object(gw, "hermes_home", lambda: self.home)
+        self._home_patch = patch.object(gw, "iris_agent_home", lambda: self.home)
         self._home_patch.start()
 
     def tearDown(self) -> None:
@@ -47,8 +47,8 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         os.environ["PYTHONPATH"] = str(self.root / "src")
         os.environ["PYTHONHOME"] = str(self.root / "pyhome")
         with (
-            patch.object(gw, "_hermes_venv_python", return_value=None),
-            patch.object(gw, "_hermes_venv_dir", return_value=self.root / "missing-venv"),
+            patch.object(gw, "_iris_agent_venv_python", return_value=None),
+            patch.object(gw, "_iris_agent_venv_dir", return_value=self.root / "missing-venv"),
         ):
             env = gw._gateway_child_env()
         self.assertNotEqual(env.get("VIRTUAL_ENV"), str(iris_venv))
@@ -64,7 +64,7 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         (scripts / "python.exe").write_text("", encoding="utf-8")
         os.environ["VIRTUAL_ENV"] = str(self.root / ".venv-iris")
         os.environ["PYTHONPATH"] = "polluted"
-        with patch.object(gw, "_hermes_agent_dir", return_value=self.root / "hermes-agent"):
+        with patch.object(gw, "_iris_agent_dir", return_value=self.root / "hermes-agent"):
             env = gw._gateway_child_env()
         self.assertEqual(env["VIRTUAL_ENV"], str(hermes_venv))
         self.assertNotIn("PYTHONPATH", env)
@@ -197,7 +197,7 @@ class GatewayDiagnosticsTests(unittest.TestCase):
             patch.object(gw, "_windows_gateway_procs_alive", return_value=False),
             patch.object(gw, "_gateway_lock_path", return_value=Path("no-lock-file")),
         ):
-            ok = gw.ensure_hermes_gateway_running(
+            ok = gw.ensure_iris_agent_gateway_running(
                 "http://127.0.0.1:8642/v1", wait_sec=1.0
             )
         self.assertFalse(ok)
@@ -252,7 +252,7 @@ class GatewayDiagnosticsTests(unittest.TestCase):
             gw.is_hermes_gateway_dep_missing_failure("connection refused")
         )
 
-    def test_probe_hermes_runtime_missing_pyvenv_home(self) -> None:
+    def test_probe_iris_agent_runtime_missing_pyvenv_home(self) -> None:
         agent = self.home / "hermes-agent" / "venv"
         scripts = agent / "Scripts"
         scripts.mkdir(parents=True)
@@ -261,8 +261,8 @@ class GatewayDiagnosticsTests(unittest.TestCase):
             "home = C:\\definitely\\missing\\uv\\python\\cpython\n",
             encoding="utf-8",
         )
-        with patch.object(gw, "_hermes_agent_dir", return_value=self.home / "hermes-agent"):
-            ok, detail = gw.probe_hermes_runtime(timeout_sec=5.0)
+        with patch.object(gw, "_iris_agent_dir", return_value=self.home / "hermes-agent"):
+            ok, detail = gw.probe_iris_agent_runtime(timeout_sec=5.0)
         self.assertFalse(ok)
         self.assertIn("pyvenv home", detail)
 
@@ -304,7 +304,7 @@ class GatewayDiagnosticsTests(unittest.TestCase):
             patch.object(gw, "prune_orphan_gateway_procs", return_value=0),
         ):
             self.assertTrue(
-                gw.ensure_hermes_gateway_running("http://127.0.0.1:8642/v1")
+                gw.ensure_iris_agent_gateway_running("http://127.0.0.1:8642/v1")
             )
         diag = gw.get_last_gateway_diagnosis()
         self.assertIsNotNone(diag)
@@ -336,7 +336,7 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         )
         with patch.object(gw, "probe_gateway_health", return_value=healthy):
             with patch(
-                "iris.system.iris_agent_gateway.resolve_hermes_api_key",
+                "iris.system.iris_agent_gateway.resolve_iris_agent_api_key",
                 return_value="x" * 40,
             ):
                 with patch.object(

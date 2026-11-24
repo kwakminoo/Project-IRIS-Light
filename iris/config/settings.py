@@ -16,8 +16,11 @@ class Settings:
 
     # Iris Agent policy.
     agent_enabled: bool = True
-    agent_command: str = "hermes"
-    agent_base_url: str = "http://127.0.0.1:8642/v1"
+    agent_command: str = "iris-agent"
+    # Product ready = InternalSidecar (engine), not HTTP :8642.
+    # Empty = no advertised ExternalGateway URL. Opt-in diagnostics may still
+    # pass a URL; agent_enabled does not require :8642.
+    agent_base_url: str = ""
     agent_api_key: str = ""
 
     # 공공데이터포털 — 한국천문연구원 특일(공휴일) API
@@ -62,25 +65,29 @@ def load_settings(env_path: Path | None = None) -> Settings:
     model = os.environ.get("IRIS_OLLAMA_MODEL", "").strip()
     raw_key = os.environ.get("IRIS_AGENT_API_KEY", "").strip()
     try:
-        from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
+        from iris.infrastructure.iris_agent_credentials import resolve_iris_agent_api_key
 
-        agent_api_key = resolve_hermes_api_key(raw_key)
+        agent_api_key = resolve_iris_agent_api_key(raw_key)
     except Exception:
         agent_api_key = raw_key
-    raw_base = os.environ.get(
-        "IRIS_AGENT_BASE_URL", "http://127.0.0.1:8642/v1"
-    ).strip()
-    try:
-        from iris.infrastructure.iris_agent_client import normalize_iris_agent_openai_base_url
+    # Unset/empty → "" (sidecar product). Do not default-advertise :8642.
+    raw_base = os.environ.get("IRIS_AGENT_BASE_URL", "").strip()
+    if not raw_base:
+        agent_base = ""
+    else:
+        try:
+            from iris.infrastructure.iris_agent_client import (
+                normalize_iris_agent_openai_base_url,
+            )
 
-        agent_base = normalize_iris_agent_openai_base_url(raw_base)
-    except Exception:
-        agent_base = raw_base.strip() or "http://127.0.0.1:8642/v1"
+            agent_base = normalize_iris_agent_openai_base_url(raw_base)
+        except Exception:
+            agent_base = raw_base
     return Settings(
         ollama_base_url=os.environ.get("IRIS_OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1").strip(),
         ollama_model=model,
         agent_enabled=_env_bool("IRIS_AGENT_ENABLED", default=True),
-        agent_command=os.environ.get("IRIS_AGENT_COMMAND", "hermes").strip() or "hermes",
+        agent_command=os.environ.get("IRIS_AGENT_COMMAND", "iris-agent").strip() or "iris-agent",
         agent_base_url=agent_base,
         agent_api_key=agent_api_key,
         data_go_kr_service_key=os.environ.get("IRIS_DATA_GO_KR_SERVICE_KEY", "").strip(),

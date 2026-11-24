@@ -16,7 +16,7 @@ class HermesToolChoiceTests(TestCase):
         with TemporaryDirectory() as tmp:
             home = Path(tmp)
             with patch(
-                "iris.infrastructure.iris_agent_credentials.hermes_home",
+                "iris.infrastructure.iris_agent_credentials.iris_agent_home",
                 return_value=home,
             ):
                 self.assertEqual(load_hermes_tool_choice(), "auto")
@@ -33,7 +33,7 @@ class HermesToolChoiceTests(TestCase):
         with TemporaryDirectory() as tmp:
             home = Path(tmp)
             with patch(
-                "iris.infrastructure.iris_agent_credentials.hermes_home",
+                "iris.infrastructure.iris_agent_credentials.iris_agent_home",
                 return_value=home,
             ):
                 changed, status = set_hermes_tool_choice("always")

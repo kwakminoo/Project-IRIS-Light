@@ -40,7 +40,7 @@ Agent-readable:
 **Before**
 
 ```python
-"""Iris MCP adapters (stdio bridges for Hermes)."""
+"""Iris MCP adapters (stdio bridges for Iris Agent)."""
 ```
 
 **After** — 저장소 반영본 참고.

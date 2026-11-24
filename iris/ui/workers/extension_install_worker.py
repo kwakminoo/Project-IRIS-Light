@@ -1,4 +1,4 @@
-"""채팅 GitHub MCP/Skill 설치 — Hermes 설정에 반영한 뒤 gateway를 다시 붙인다."""
+"""채팅 GitHub MCP/Skill 설치 — Hermes 설정에 반영. gateway 재기동 없음."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ class ExtensionInstallWorker(QThread):
         self._secrets = dict(secrets or {})
         self._directory = directory
         self._reload = reload_gateway
+        # Compat (settings still pass gateway fields); unused for :8642 spawn.
         self._base_url = base_url
         self._api_key = api_key
         self._command = command
@@ -41,7 +42,7 @@ class ExtensionInstallWorker(QThread):
             )
             data = result.to_dict()
             if result.mcp_added and self._reload:
-                data["runtime"] = self._reload_gateway()
+                data["runtime"] = self._reload_runtime()
             elif result.mcp_added:
                 data["runtime"] = (
                     "설정은 저장되어 다음 Iris Agent 기동 때 로드됩니다."
@@ -50,18 +51,21 @@ class ExtensionInstallWorker(QThread):
         except Exception as exc:  # noqa: BLE001
             self.finished_err.emit(str(exc)[:400])
 
-    def _reload_gateway(self) -> str:
+    def _reload_runtime(self) -> str:
+        """Optional engine recycle after disk install. Never spawns :8642."""
         try:
-            from iris.system.iris_agent_gateway import restart_hermes_gateway
+            from iris.engine import EngineFailed, shared_engine
+            from iris.engine.runtime import reset_shared_engine
 
-            ok = restart_hermes_gateway(
-                self._base_url,
-                api_key=self._api_key,
-                command=self._command,
-                wait_sec=60.0,
-            )
+            reset_shared_engine()
+            result = shared_engine().ensure_ready()
         except Exception as exc:  # noqa: BLE001
-            return f"설정은 저장됐지만 gateway 재시작에 실패했습니다: {exc}"[:300]
-        if ok:
-            return "Iris Agent gateway를 재시작했습니다. 이제 이 MCP 도구를 사용할 수 있습니다."
-        return "설정은 저장됐지만 gateway 재시작에 실패했습니다. Iris Agent를 다시 켜면 적용됩니다."
+            return (
+                f"설정은 저장됐지만 엔진 준비에 실패했습니다: {exc}"
+            )[:300]
+        if isinstance(result, EngineFailed):
+            detail = result.error.detail or result.user_message
+            return (
+                f"설정은 저장됐지만 엔진 준비에 실패했습니다: {detail}"
+            )[:300]
+        return "설정은 저장됐고 엔진을 다시 준비했습니다. (HTTP gateway 재시작은 사용하지 않음)"

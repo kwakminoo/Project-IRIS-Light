@@ -35,6 +35,10 @@ def main() -> None:
     proto = SetupProtocol()
     snap = proto.detect()
     assert "ollama_exe" in snap
+    assert "agent_exe" in snap
+    assert "agent_running" in snap
+    assert "hermes_exe" not in snap
+    assert "hermes_running" not in snap
     assert "local_model_count" in snap
     assert local_inference_models(["llama3.2:latest", "gemma4:31b-cloud"]) == ["llama3.2:latest"]
     assert not has_usable_inference_backend(["minimax-m3:cloud"], cloud_signed_in=False)
@@ -57,9 +61,10 @@ def main() -> None:
     assert parse_install_percent("pulling manifest") is None
     from iris.ui.window.setup_wizard import _STREAM_STEPS
 
-    assert "hermes_gateway" in _STREAM_STEPS and "core_smoke" in _STREAM_STEPS
+    assert "iris_agent_engine" in _STREAM_STEPS and "core_smoke" in _STREAM_STEPS
+    assert "hermes_gateway" not in _STREAM_STEPS
     assert VISIBLE_CONSOLE_STEPS == frozenset(
-        {"ollama_install", "hermes_install", "emulator"}
+        {"ollama_install", "iris_agent_install", "emulator"}
     )
     assert core_needs_user_next("skip", allow_skip=False) == "reverify"
     assert core_needs_user_next("skip", allow_skip=True) == "skip"

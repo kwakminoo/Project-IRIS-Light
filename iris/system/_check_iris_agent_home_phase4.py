@@ -21,7 +21,7 @@ from iris.infrastructure.agent_runtime import (
     product_agent_home,
     vendor_runtime_root,
 )
-from iris.infrastructure.iris_agent_credentials import hermes_home
+from iris.infrastructure.iris_agent_credentials import iris_agent_home
 from iris.runtime.chat_canonical import (
     AGENT_SESSION_DB_ROLE,
     CHAT_PRODUCT_OF_RECORD,
@@ -36,7 +36,7 @@ def _check_pin_contract() -> None:
     assert pin == (vendor_runtime_root() / "PIN").read_text(encoding="utf-8").strip().split()[0]
     assert upd.fetch_hermes_remote_sha(Path(".")) == pin
     assert "load_pinned_sha" in inspect.getsource(upd)
-    assert "ls-remote" not in inspect.getsource(upd.check_hermes_update)
+    assert "ls-remote" not in inspect.getsource(upd.check_iris_agent_update)
     assert "load_pinned_sha" in inspect.getsource(install)
 
 
@@ -58,7 +58,7 @@ def _check_home_prefers_product() -> None:
         with mock.patch.dict(os.environ, env, clear=False):
             assert product_agent_home() == product
             assert iris_agent_home() == product
-            assert hermes_home() == product
+            assert iris_agent_home() == product
             # 레거시가 있어도 활성 홈은 제품 경로 (폴백 금지)
             assert legacy_agent_home() == legacy
             assert iris_agent_home() != legacy
@@ -108,7 +108,7 @@ def _check_chat_canonical() -> None:
 def _check_ensure_wired() -> None:
     from iris.system import iris_agent_gateway as gw
 
-    src = inspect.getsource(gw.ensure_hermes_gateway_running)
+    src = inspect.getsource(gw.ensure_iris_agent_gateway_running)
     assert "ensure_iris_agent_home" in src
 
 

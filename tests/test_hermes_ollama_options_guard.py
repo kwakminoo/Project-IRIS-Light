@@ -100,7 +100,7 @@ class OllamaNumCtxSyncTests(unittest.TestCase):
         self.home = Path(self._td.name)
         self.path = self.home / "config.yaml"
         self._patch = patch(
-            "iris.infrastructure.iris_agent_credentials.hermes_home",
+            "iris.infrastructure.iris_agent_credentials.iris_agent_home",
             lambda: self.home,
         )
         self._patch.start()
@@ -158,7 +158,7 @@ class SetInferenceModelSyncTests(unittest.TestCase):
             client = IrisAgentClient("http://127.0.0.1:8642/v1")
             with (
                 patch(
-                    "iris.infrastructure.iris_agent_credentials.hermes_home",
+                    "iris.infrastructure.iris_agent_credentials.iris_agent_home",
                     lambda: home,
                 ),
                 patch.object(client, "_set_model_via_api", return_value=True),

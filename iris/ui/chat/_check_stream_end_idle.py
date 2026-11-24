@@ -1,4 +1,4 @@
-"""Stream end must idle typing: H1 land clears sticky stop / scroll yank."""
+"""Stream end must idle typing; mid-stream may drip to H1 via plain typing."""
 
 from __future__ import annotations
 
@@ -31,6 +31,13 @@ def _settle(ms: int = 40) -> None:
     loop.exec()
 
 
+def _h1_stream_raw(panel: ChatPanel) -> str:
+    buf = getattr(panel, "_part_stream_buf", None)
+    if buf is None:
+        return ""
+    return str(getattr(buf, "_raw", "") or "")
+
+
 def main() -> int:
     panel = ChatPanel()
     panel.resize(640, 480)
@@ -42,14 +49,24 @@ def main() -> int:
 
     panel.set_generating(True)
     panel.begin_stream_message("Iris", speech_sync=False)
-    # Mid-stream chunks must not arm the plain typing timer (PartStream paints).
     panel.append_stream_chunk("Hermes PDF turn landed on H1 already. ")
-    assert not panel._typing_timer.isActive(), (
-        "append_stream_chunk must not start plain typing while PartStream is active"
+    # Mid-stream: plain typing MAY be armed; H1 text must be a prefix of the buffer
+    # (not necessarily the full chunk yet if the timer has not ticked).
+    h1 = _h1_stream_raw(panel)
+    assert panel._typing_text.startswith(h1), (
+        f"H1 stream must be a prefix of buffer, h1={h1!r} buf={panel._typing_text!r}"
     )
+    assert h1 != panel._typing_text, (
+        "append_stream_chunk(speech_sync=False) must not push the whole chunk to H1 immediately"
+    )
+
     panel.append_stream_chunk("After end_stream_message, typing must be idle and stop must clear.")
-    assert not panel._typing_timer.isActive(), (
-        "append_stream_chunk must not start plain typing while PartStream is active"
+    h1 = _h1_stream_raw(panel)
+    assert panel._typing_text.startswith(h1), (
+        f"H1 stream must stay a prefix of buffer, h1={h1!r} buf={panel._typing_text!r}"
+    )
+    assert h1 != panel._typing_text, (
+        "second chunk must not dump the full buffer to H1 immediately"
     )
 
     panel.end_stream_message(_FINAL)

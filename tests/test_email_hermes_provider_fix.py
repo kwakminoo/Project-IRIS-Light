@@ -8,7 +8,7 @@ from iris.infrastructure.email_client import (
     filter_summaries_since,
 )
 from iris.infrastructure.iris_agent_client import (
-    infer_hermes_provider,
+    infer_iris_agent_provider,
     is_hermes_syncable_model,
     is_iris_api_runtime_model,
 )
@@ -19,8 +19,8 @@ def test_iris_api_model_not_synced_to_hermes() -> None:
     mid = "api:41025a6367b9:nvidia/nemotron-3-ultra-550b-a55b"
     assert is_iris_api_runtime_model(mid)
     assert not is_hermes_syncable_model(mid)
-    assert infer_hermes_provider(mid) == "auto"
-    assert infer_hermes_provider("gemma4:26b") == "ollama"
+    assert infer_iris_agent_provider(mid) == "auto"
+    assert infer_iris_agent_provider("gemma4:26b") == "ollama"
 
 
 def test_agent_context_includes_inbox() -> None:
