@@ -30,6 +30,7 @@ _OFF_UI_ACTIONS = frozenset(
         "email.read_message",
         # 터미널 로그 폴링·브리지 왕복이 최대 90초 — UI 스레드면 Windows "응답 없음"
         "project.run",
+        "shell.run",
         "chat.exec_python",
         "note.export_pdf",
         "extension.install_github",
@@ -67,6 +68,37 @@ _OFF_UI_ACTIONS = frozenset(
 def runs_off_ui_thread(action: str) -> bool:
     name = (action or "").strip()
     return name in _OFF_UI_ACTIONS or any(name.startswith(p) for p in _OFF_UI_PREFIXES)
+
+
+def invoke_http_timeout(
+    action: str,
+    args: dict[str, Any] | None = None,
+    *,
+    confirm_required: bool = False,
+) -> float | None:
+    """/v1/invoke UI-invoker 대기 초. None이면 끝날 때까지 (다이얼로그·confirm).
+
+    Off-UI 액션은 call_registered가 invoker를 안 쓰므로 이 값이 무시된다.
+    """
+    name = (action or "").strip()
+    payload = args if isinstance(args, dict) else {}
+    if name == "ide.marketplace_install":
+        return 180.0
+    if name in ("ide.debug", "ide.task", "ide.edit", "ide.save"):
+        return 45.0
+    if name in ("ide.pick_open_file", "ide.pick_open_folder"):
+        return None
+    # confirm이 Qt 메인에서 HUD를 띄우면 15s UiThreadTimeout에 죽는다.
+    if confirm_required and not runs_off_ui_thread(name):
+        return None
+    if name == "project.write_file":
+        if bool(payload.get("open", True)) and bool(
+            payload.get("typewriter", payload.get("stream", True))
+        ):
+            return 180.0
+        if bool(payload.get("stream")):
+            return 120.0
+    return 15.0
 
 
 def _is_client_gone(exc: BaseException) -> bool:
@@ -476,23 +508,11 @@ class ControlSurface:
                     if not isinstance(args, dict):
                         args = {k: v for k, v in payload.items() if k not in ("action", "args")}
 
-                    # ponytail: live file stream 은 메인스레드에서 길어질 수 있음
-                    timeout: float | None = 15.0
-                    if action == "ide.marketplace_install":
-                        # VSIX 받기 + 켜진 Theia 재기동(health 대기 최대 120초)
-                        timeout = 180.0
-                    elif action in ("ide.debug", "ide.task", "ide.edit", "ide.save"):
-                        timeout = 45.0
-                    elif action in ("ide.pick_open_file", "ide.pick_open_folder"):
-                        timeout = None
-                    elif action == "project.write_file":
-                        # open+live stream 기본 — 작성 연출 대기
-                        if bool(args.get("open", True)) and bool(
-                            args.get("typewriter", args.get("stream", True))
-                        ):
-                            timeout = 180.0
-                        elif bool(args.get("stream")):
-                            timeout = 120.0
+                    spec = surface.registry.spec(action)
+                    confirm_required = bool(spec.confirm_required) if spec is not None else False
+                    timeout = invoke_http_timeout(
+                        action, args, confirm_required=confirm_required
+                    )
 
                     body = call_registered(surface, action, args, timeout=timeout)
                     self._json(200 if body.get("ok") else 400, body)

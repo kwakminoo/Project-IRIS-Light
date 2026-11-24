@@ -3155,6 +3155,8 @@ class ChatPanel(QWidget):
         output: str = "",
         status: str = "ok",
         block_id: str | None = None,
+        phase: str | None = None,
+        **_kwargs,
     ) -> str:
         """Cursor식 도구/셸 실행 카드를 채팅 로그에 인라인 삽입."""
         self.finish_typing()
@@ -3167,6 +3169,7 @@ class ChatPanel(QWidget):
             status=status or "ok",
             block_id=bid,
             collapsed=False,
+            phase=(phase or "done").strip() or "done",
         )
         self._log._tool_blocks[bid] = block
         cursor = self._log.textCursor()
@@ -3178,6 +3181,7 @@ class ChatPanel(QWidget):
                 block.output,
                 block.status,
                 block.block_id,
+                phase=block.phase,
             )
         )
         self._log.setTextCursor(cursor)
