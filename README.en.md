@@ -6,19 +6,21 @@
 
 # IRIS
 
-**Open Source Desktop AI Agent Runtime**
+**Desktop AI agent that runs on your PC**
 
-IRIS connects LLM, MCP, Voice Runtime, and Local/Cloud Model into an **AI Agent Runtime that runs on your own PC**.
-Instead of a paid subscription or manual wiring, a single installer prepares [Ollama](https://ollama.com/) (model inference) and [Iris Agent](docs/domain.md) (tools and skills), then binds them into a conversational HUD.
-Iris Agent is an absorbed runtime based on the MIT code of [Nous Hermes Agent](https://hermes-agent.nousresearch.com/).
+IRIS bundles a chat HUD, **Iris Agent** (tools and skills), and **Ollama** (local/cloud models) in one install.
+It is not a subscription chatbot. The goal is to run file, terminal, web, mail, calendar, and IDE work **on the same machine**.
 
-It aims to be more than a chatbot:
+**Iris Agent** is IRIS’s first-party agent runtime.
+It absorbs and renames [Nous Hermes Agent](https://hermes-agent.nousresearch.com/) (MIT). The product path does **not** depend on Hermes or an external `:8642` gateway.
+Turns run through an **InternalSidecar** Engine. State lives under `~/.iris-light/`.
 
-- **Agent Runtime** — multi-step request handling
-- **Tool Execution** — file, terminal, web
-- **MCP Integration** — external tool connectivity
-- **Voice Interaction** — STT/TTS as a standalone service
-- **Runtime Gateway** — a separated execution boundary
+Core pieces:
+
+- **Iris Agent** — multi-step tool turns
+- **SpeakTools** — product tool surface (shell, project files, mail, calendar, IDE)
+- **Ollama** — local/cloud inference
+- **Voice Runtime** (optional) — STT/TTS on `:18765`
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/downloads/)
@@ -65,7 +67,7 @@ STT → UserTurnDispatcher → Agent Runtime → TTS
 ### 3. Runtime Architecture
 
 ```text
-GUI → Runtime Gateway → Iris Agent → Ollama
+GUI → Engine (Iris Agent sidecar) → Ollama / SpeakTools
 ```
 
 <!-- ![Runtime Architecture](assets/demo/runtime.gif) -->
@@ -90,14 +92,14 @@ IRIS narrows that gap:
 | Problem | How IRIS solves it |
 |------|------|
 | Locked into one vendor | Pick and connect Ollama or any OpenAI-compatible provider |
-| Agent logic tangled into the UI | Execution boundary separated as a Runtime Gateway |
+| Agent logic tangled into the UI | Turns run in Engine/InternalSidecar (no product ExternalGateway) |
 | Unusable without a GPU | Cloud models by default, local models optional |
 | Voice bolted onto the app | Voice Runtime runs as a separate FastAPI service (`:18765`) |
-| Hard to extend with tools | Extend through Iris Agent skills and MCP |
+| Hard to extend with tools | Extend through Iris Agent skills and SpeakTools |
 | Complex install and wiring | The installer handles Python, venv, packages, and runtimes |
 
-IRIS does not reimplement web search, shell, or file IO.
-It owns **sessions, permissions, streaming UI, and the setup protocol**, and delegates execution to Ollama/Iris Agent.
+IRIS does not reimplement web search, shell, or file IO from scratch.
+It owns **sessions, permissions, streaming UI, setup protocol, and the product tool surface**, and delegates inference to Ollama and the agent loop to Iris Agent.
 
 <details>
 <summary><b>Project background</b></summary>
@@ -115,20 +117,14 @@ It owns **sessions, permissions, streaming UI, and the setup protocol**, and del
 
 | Feature | Description |
 |---|---|
-| **LLM Agent** | Multi-step tool calls through Iris Agent (file, terminal, web) |
-| **MCP** | `iris-control` stdio MCP · Iris Agent MCP integration |
-| **Voice Runtime** | STT/TTS split out into a FastAPI service (`:18765`, optional install) |
-| **Runtime Gateway** | Execution boundary owning sessions, permissions, streaming |
-| **Local Model** | Ollama local models (`:11434`) |
-| **Cloud Model** | OpenAI-compatible providers for machines without a GPU |
-| **Setup protocol** | First run automates Ollama, model pull, Iris Agent, provider, gateway, MCP step by step |
-| **Conversational HUD** | Model picker, history, thought/tool logs, live streaming |
-| **Control Surface** | Iris Agent → UI reverse control (`:8765`) · `iris-control` skills |
-| **Workspaces** | System monitor · email (multi-account) · calendar · IDE Companion · Iris Wiki |
-| **Local storage** | SQLite for settings and profiles (`~/.iris-light/`) |
+| **Iris Agent** | First-party agent runtime · multi-step tool turns |
+| **SpeakTools** | Product tools by surface (`shell.run`, `project.read_file`, mail, calendar, IDE) |
+| **Local / Cloud models** | Ollama `:11434` · OpenAI-compatible providers |
+| **Conversational HUD** | Model picker, history, thought/tool logs, streaming |
+| **Workspaces** | Monitor · email · calendar · IRIS IDE Companion · Iris Wiki |
+| **Voice** (optional) | STT/TTS `:18765` |
+| **Local storage** | SQLite · logs · agent home (`~/.iris-light/`) |
 | **Optional extensions** | Screen learning (Aloha) · Android emulator · mobile-mcp |
-
-In progress: Instagram / Discord / Kakao / Telegram workspaces.
 
 ---
 
@@ -136,17 +132,17 @@ In progress: Instagram / Discord / Kakao / Telegram workspaces.
 
 ```mermaid
 flowchart TD
-    U["user request (natural language)"] --> HUD
-    HUD["IRIS HUD · PyQt6<br/>Chat · Monitor · Wiki · Email · Calendar · Settings"] --> GW
-    GW["Runtime Gateway<br/>ollama_client · hermes_client · setup_protocol"] --> OL["Ollama :11434<br/>inference (local / cloud)"]
-    GW --> HM["Iris Agent :8642<br/>tools · skills"]
-    HM --> T["file · terminal · web · MCP"]
-    HM -. "Control Surface :8765" .-> HUD
-    VR["Voice Runtime :18765 (optional)<br/>STT / TTS · FastAPI"] <--> HUD
+    U["user"] --> HUD
+    HUD["IRIS HUD · PyQt6"] --> ENG
+    ENG["Engine · InternalSidecar<br/>Iris Agent turn"] --> OL["Ollama :11434"]
+    ENG --> ST["SpeakTools / skills"]
+    ST -. Control HTTP .-> HUD
+    VR["Voice Runtime :18765 (optional)"] <--> HUD
 ```
 
-Full-resolution diagram: [`docs/ia/iris-system-architecture.png`](docs/ia/iris-system-architecture.png)
-Design docs: [domain & Runtime Gateway](docs/domain.md) · [information architecture & request paths](docs/ia/IA.md)
+- Product default: **InternalSidecar** (no dependency on ExternalGateway `:8642`)
+- Iris Agent install tree: `~/.iris-light/agent/`
+- Design: [docs/domain.md](docs/domain.md) · [docs/ia/IA.md](docs/ia/IA.md)
 
 ---
 

@@ -6,6 +6,10 @@
 
 # IRIS
 
+**运行在本机上的桌面 AI 代理**
+
+> 最新产品说明请优先阅读 [한국어 README](README.md) / [English README](README.en.md)。Iris Agent 是 IRIS 的一等代理运行时，产品路径不依赖外部 `:8642` gateway。
+
 **Open Source Desktop AI Agent Runtime**
 
 IRIS 将 LLM、MCP、Voice Runtime 与 Local/Cloud Model 连接起来，是一个**运行在你自己 PC 上的 AI Agent Runtime**。

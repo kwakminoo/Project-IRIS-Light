@@ -6,6 +6,10 @@
 
 # IRIS
 
+**PC上で動くデスクトップAIエージェント**
+
+> 最新の製品説明は [한국어 README](README.md) / [English README](README.en.md) を優先してください。Iris Agent は製品の独立ランタイムで、外部 `:8642` gateway には依存しません。
+
 **Open Source Desktop AI Agent Runtime**
 
 IRIS は LLM・MCP・Voice Runtime・Local/Cloud Model をつなぎ、**自分の PC 上で動作する AI Agent Runtime** です。
