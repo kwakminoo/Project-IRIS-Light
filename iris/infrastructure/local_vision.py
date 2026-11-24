@@ -13,7 +13,7 @@ import os
 import threading
 import time
 from typing import Callable, Optional
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from iris.infrastructure.ollama_client import OllamaClient, _native_base
@@ -153,8 +153,8 @@ def delete_model(
     if on_progress:
         on_progress("삭제 중…", None)
     url = f"{_native_base(base_url)}/api/delete"
-    body = json.dumps({"name": model}).encode("utf-8")
-    req = Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+    body = json.dumps({"model": model}).encode("utf-8")
+    req = Request(url, data=body, method="DELETE", headers={"Content-Type": "application/json"})
     try:
         with urlopen(req, timeout=120) as resp:
             if should_abort and should_abort():
@@ -167,6 +167,15 @@ def delete_model(
                     ev = None
                 if isinstance(ev, dict) and ev.get("error"):
                     return str(ev["error"])[:200]
+    except HTTPError as e:
+        try:
+            raw = e.read()
+            ev = json.loads(raw.decode("utf-8", "replace")) if raw else None
+            if isinstance(ev, dict) and ev.get("error"):
+                return str(ev["error"])[:200]
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            pass
+        return str(e)[:200]
     except (URLError, TimeoutError, OSError) as e:
         return str(e)[:200]
     forget_cache()
