@@ -149,7 +149,7 @@ class SyncReport:
 
     def summary_line(self) -> str:
         if self.errors and not self.mcp_installed:
-            return f"Iris↔Hermes control sync fail: {self.errors[0][:100]}"
+            return f"Iris Agent control sync fail: {self.errors[0][:100]}"
         bits = []
         if self.mcp_installed:
             bits.append(
@@ -164,7 +164,7 @@ class SyncReport:
         bits.append(f"skills {len(self.skills_ok)}/{len(SKILL_NAMES)}")
         if self.mcp_servers:
             bits.append(f"mcp {self.mcp_ok_count}/{len(self.mcp_servers)} healthy")
-        return "Iris↔Hermes: " + ", ".join(bits)
+        return "Iris Agent: " + ", ".join(bits)
 
 
 def _is_gui_frozen_exe(path: str | Path) -> bool:
@@ -274,8 +274,15 @@ def desired_mcp_block(repo: Path) -> dict[str, Any]:
     return block
 
 
+def _agent_checkout(home: Path | None = None) -> Path:
+    # Lazy: agent_runtime.apply_iris_agent_baseline_overlays imports this module.
+    from iris.infrastructure.agent_runtime import iris_agent_repo_dir
+
+    return iris_agent_repo_dir(_resolved_home(home))
+
+
 def _hermes_mcp_tool_candidates(home: Path | None = None) -> list[Path]:
-    agent = _resolved_home(home) / "hermes-agent"
+    agent = _agent_checkout(home)
     found = [
         agent / "tools" / "mcp_tool.py",
         agent / "hermes_cli" / "tools" / "mcp_tool.py",
@@ -355,7 +362,7 @@ def ensure_hermes_stdio_dead_check_patch(
     if mutate is None:
         mutate = home is not None
     if agent_root is None and home is not None:
-        agent_root = _resolved_home(home) / "hermes-agent"
+        agent_root = _agent_checkout(home)
     status = verify_hermes_stdio_dead_check(agent_root=agent_root)
     if not mutate:
         return status
@@ -363,7 +370,7 @@ def ensure_hermes_stdio_dead_check_patch(
         return status
     path = _mcp_tool_path_for_agent(agent_root)
     if path is None:
-        agent = _resolved_home(home) / "hermes-agent"
+        agent = _agent_checkout(home)
         checked = "\n".join(f"  - {p}" for p in _hermes_mcp_tool_candidates(home))
         if not agent.is_dir():
             return (
@@ -951,7 +958,7 @@ def verify_install(repo: Path | None = None, *, home: Path | None = None) -> Syn
     path = hermes_config_path(home)
     if not path.is_file():
         report.ok = False
-        report.errors.append("Hermes config.yaml missing")
+        report.errors.append("Iris Agent config.yaml missing")
         return report
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
@@ -975,7 +982,7 @@ def verify_install(repo: Path | None = None, *, home: Path | None = None) -> Syn
         report.errors.append("mcp mobile-mcp not present or stale")
     if not shutil.which("npx"):
         report.messages.append(
-            "npx not found - install Node 20+ so Hermes can spawn mobile-mcp"
+            "npx not found - install Node 20+ so Iris Agent can spawn mobile-mcp"
         )
 
     dst = hermes_skills_iris_control_dir(home)
@@ -1073,8 +1080,7 @@ def sync_iris_control(
             tool_choice_overlay_present,
         )
 
-        # hermes_home() already product agent home; avoid agent_runtime import cycle.
-        agent_root = hermes_home() / "hermes-agent"
+        agent_root = _agent_checkout(hermes_home())
         if agent_root.is_dir() and not tool_choice_overlay_present(agent_root):
             for line in apply_hermes_tool_choice_overlay(agent_root):
                 report.messages.append(line)

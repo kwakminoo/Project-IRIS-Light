@@ -9,17 +9,17 @@ from iris.browser.observation import browser_teaching_block
 from iris.system.iris_agent_control_sync import hermes_home
 
 # Bump when nudge text changes. Lower runtime markers must not skip as "already present".
-_NUDGE_VERSION = 39
+_NUDGE_VERSION = 40
 _MARKER = f"<!-- iris-control-nudge-v{_NUDGE_VERSION} -->"
 
-_BLOCK = """<!-- iris-control-nudge-v39 -->
+_BLOCK = """<!-- iris-control-nudge-v40 -->
 ## Iris Light UI control
 
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
 
-1. Prefer product **SpeakTools** first (no iris-control MCP): `get_state`, `get_catalog`, `settings.get`, `wiki.list_notes` / `wiki.search` / `wiki.write_user_note`, `email.list_accounts`, `calendar.list_events`, `local.read_file`, `local.search_files`, `ide.open_folder`, `project.open_similar`, `attachment.copy_to`, `attachment.move_to`, `project.import_attachment`, `shell.run`, `project.run`, `chat.set_title`, `chat.search_past` / `chat_search_past`, `chat.new_session`, `app.demo_ping`, `diagram.render` (legacy aliases `iris.session.get_state`, `iris.wiki.list_notes`, `iris.wiki.search`, `iris.mail.list_accounts`, `iris.calendar.list_events` still resolve). Prior chats use skill iris-past-chats. If the chat work_root and the bound IDE folder differ, Iris aligns the IDE folder before write/run; on failure the tool error names the needed folder — do not silently skip.
+1. Prefer product **SpeakTools** first (no iris-control MCP): `get_state`, `get_catalog`, `settings.get`, `wiki.list_notes` / `wiki.search` / `wiki.write_user_note`, `email.list_accounts`, `calendar.list_events`, `local.read_file`, `local.search_files`, `ide.open_folder`, `project.open_similar`, `attachment.copy_to`, `attachment.move_to`, `project.import_attachment`, `shell.run`, `project.run`, `chat.search_past` / `chat_search_past`, `chat.new_session`, `app.demo_ping`, `diagram.render`. Prior chats use skill iris-past-chats. If the chat work_root and the bound IDE folder differ, Iris aligns the IDE folder before write/run; on failure the tool error names the needed folder — do not silently skip.
 
-1a. Provider-visible SpeakTool function names replace dots with underscores (`settings_get`, `wiki_search`, `project_run`, `iris_shell`). Use the exact name shown in the tool schema; Iris maps it back to the dotted Control action internally.
+1a. Provider-visible SpeakTool function names replace dots with underscores (`settings_get`, `wiki_search`, `project_run`, `shell_run`). Use the exact name shown in the tool schema; Iris maps it back to the dotted Control action internally. For "메일 화면 열어줘", call `workspace_open_email({})`.
 
 2. "ide 켜줘" / open IDE only: SpeakTools path via control `ide.enter_companion`.
 
@@ -31,9 +31,9 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 6. Do NOT treat Iris Agent terminal cwd as Iris project_root. Write/run roots are the **bound IDE folder on screen** (session.workspace_root), never a sticky profile project_root.
 
-7. Named project (e.g. AI guitar tab / 자료구조 / 동양미래대학교): native `iris.project.open_similar` args=`{query}` (or alias `project.open_similar`).
+7. Named project (e.g. AI guitar tab / 자료구조 / 동양미래대학교): `project_open_similar` args=`{query}`.
 
-8. Absolute path: native `iris.ide.open_folder` args=`{path}` (or alias `ide.open_folder`).
+8. Absolute path: `ide_open_folder` args=`{path}`.
 
 8b. New folder / Desktop folder / 바탕화면에 폴더 만들어 / create project folder: SpeakTools `project.create_scaffold` with `name`, `parent` (Desktop / 바탕화면 when the user said so; else first project parent), `template` (`empty`|`python-hello`|`gugudan`), `open=true`. This creates a real disk folder and opens IDE Companion (skill iris-work-start). Do NOT refuse as "physical folders unavailable". Do NOT invent a filesystem limit. Prefer this over terminal mkdir.
 
@@ -51,9 +51,9 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 13. On run/npm/pip/python/node/shell requests: home / assistant surface → SpeakTools `shell.run` (Iris Shell chat card, no console). IDE Companion → SpeakTools `project.run` (full output in IDE terminal; chat summary only). Keyword auto-run is off while Iris Agent is on.
 
-14. Calendar / 일정: `workspace.open_calendar`, then `calendar.add_event` / native `iris.calendar.list_events` / `calendar.select_day` / `calendar.delete_event` (skill iris-calendar).
+14. Calendar / 일정: `workspace.open_calendar`, then `calendar.add_event` / `calendar_list_events` / `calendar.select_day` / `calendar.delete_event` (skill iris-calendar).
 
-15. Wiki / 위키에 저장: no keyword shortcut while Iris Agent is on. PDF·URL·파일 한 건 → `wiki.import_content` (`source`, `mode=raw|summarize`). 여러 PDF·파일은 `wiki.import_pages` (`sources` 에 실제 경로) 한 번. 첨부가 있으면 `wiki.write_user_note` 로 그 본문을 쓰지 말 것. 저장됐는지만 물으면 native `iris.wiki.search` (alias `wiki.search`). 직전 답변 → `wiki.write_user_note`; never claim saved without ok (skill iris-wiki). 여러 페이지·사이트 전체는 `wiki.import_pages` (`source` 또는 `sources`, `discover=true`). 페이지마다 `import_content` 를 반복하지 말 것. 저장 성공은 반환의 saved 건수로만 말한다. rel_path 를 비우면 사용자·학습자료·인사이트·projects·research 로 분류된다. inbox 를 기본 경로로 넣지 말 것. 저장된 노트는 `iris.wiki.search`. 이미 있는 노트를 폴더로 옮기거나 분류하면 `wiki.move_notes` (`sources`, `dest_folder`). 같은 바이트를 복사한 뒤 원본을 지운다. `wiki.write_user_note` 로 본문을 다시 쓰지 말 것. `iris.wiki.list_notes` (alias `wiki.list_notes`) 의 total 이 전체다. truncated 이면 그 페이지만 정리해도 완료가 아니다.
+15. Wiki / 위키에 저장: no keyword shortcut while Iris Agent is on. PDF·URL·파일 한 건 → `wiki.import_content` (`source`, `mode=raw|summarize`). 여러 PDF·파일은 `wiki.import_pages` (`sources` 에 실제 경로) 한 번. 첨부가 있으면 `wiki.write_user_note` 로 그 본문을 쓰지 말 것. 저장됐는지만 물으면 `wiki_search`. 직전 답변 → `wiki.write_user_note`; never claim saved without ok (skill iris-wiki). 여러 페이지·사이트 전체는 `wiki.import_pages` (`source` 또는 `sources`, `discover=true`). 페이지마다 `import_content` 를 반복하지 말 것. 저장 성공은 반환의 saved 건수로만 말한다. rel_path 를 비우면 사용자·학습자료·인사이트·projects·research 로 분류된다. inbox 를 기본 경로로 넣지 말 것. 저장된 노트는 `wiki_search`. 이미 있는 노트를 폴더로 옮기거나 분류하면 `wiki.move_notes` (`sources`, `dest_folder`). 같은 바이트를 복사한 뒤 원본을 지운다. `wiki.write_user_note` 로 본문을 다시 쓰지 말 것. `wiki_list_notes` 의 total 이 전체다. truncated 이면 그 페이지만 정리해도 완료가 아니다.
 15i. Prior chats / 이전 대화 / 저번에 / 예전에: SpeakTools `chat.search_past` (`query`, optional `limit`≤3; provider name `chat_search_past`). This searches other conversation transcripts — not wiki notes (`wiki.search`). Same-chat follow-ups need no tool. Never invent past chats without tool ok hits (skill iris-past-chats).
 15b. PDF for a submission or a combined note/code (not a wiki save): `note.export_pdf` with `content` and/or `sources` (file paths) and optional `path`. This tool is the save path while Iris Agent is on. Relative path is under the open project. Do not run pdf_create.py, reportlab, or PyMuPDF yourself — that can kill the Iris process. Do not claim saved unless ok and the file exists. Do not write .pdf via project.write_file.
 15c. GitHub MCP/Skill URL: `extension.install_github` (`url`, `kind=auto|mcp|skill`, `scope=project|iris`). In IRIS IDE, scope=project writes the open project only. scope=iris (Iris Agent) only from the main Iris screen, not from IDE. If status is needs_input, ask for the missing key or directory. Do not invent secrets. Do not claim installed without a URL and ok. Do not say an Open VSX extension and an Iris Agent MCP were installed together.
@@ -63,7 +63,7 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 15e. If the user message contains `[자료 본문]`, answer from that excerpt (PDF, folder, file, or link). Do not ask for page screenshots first. Do not say you cannot read PDF. HWP is unsupported. Saving a chat as a PDF file stays 15b (`note.export_pdf` only).
 15h. Lecture PDF chip + create every practice/lab script (`실습 전부 만들어`, `프로그램 N-M 파일로`, dump labs): call `content.dump_lab_scripts` with the Attachment absolute path (optional `out_dir=labs`). Do not ask the user to paste the full PDF. Do not refill via full `content.extract` for this intent. The tool returns written paths/labels only — never program bodies. List those paths in the reply.
 
-16. Email / 메일: `workspace.open_email`, then native `iris.mail.list_accounts` for accounts, then `email.list_messages` (today=true or since=YYYY-MM-DD) / `email.read_message` / `email.open_compose` / `email.send` (skill iris-email). Never invent inbox contents.
+16. Email / 메일: `workspace_open_email` opens the screen; then `email_list_accounts` lists accounts, followed by `email_list_messages` (today=true or since=YYYY-MM-DD) / `email_read_message` / `email_open_compose` / `email_send` (skill iris-email). Never invent inbox contents.
 
 17. "기본화면으로" / home / leave email·calendar·Companion: `ide.exit_companion` if needed, then `workspace.open_assistant`.
 
@@ -168,13 +168,13 @@ def ensure_memory_nudge(home: Path | None = None) -> str:
         and "wiki.import_pages" in existing
         and "wiki.write_user_note" in existing
         and "wiki.import_content" in existing
-        and "iris.wiki.search" in existing
-        and "iris.wiki.list_notes" in existing
-        and "iris.mail.list_accounts" in existing
-        and "iris.calendar.list_events" in existing
-        and "iris.session.get_state" in existing
-        and "iris.ide.open_folder" in existing
-        and "iris.project.open_similar" in existing
+        and "wiki_search" in existing
+        and "wiki_list_notes" in existing
+        and "email_list_accounts" in existing
+        and "calendar_list_events" in existing
+        and "get_state" in existing
+        and "ide_open_folder" in existing
+        and "project_open_similar" in existing
         and "wiki.move_notes" in existing
         and "note.export_pdf" in existing
         and "extension.install_github" in existing

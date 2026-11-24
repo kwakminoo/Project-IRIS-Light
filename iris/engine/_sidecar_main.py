@@ -94,8 +94,11 @@ def _configure_logging() -> None:
     }
     log_path = os.environ.get("IRIS_ENGINE_LOG", "").strip()
     if log_path:
-        logging.basicConfig(filename=log_path, **kwargs)
-        return
+        try:
+            logging.basicConfig(filename=log_path, **kwargs)
+            return
+        except OSError:
+            pass
     logging.basicConfig(stream=sys.stderr, **kwargs)
 
 
@@ -306,8 +309,8 @@ _AGENT_MISSING = False
 
 
 def _import_agent_class() -> type:
-    name = os.environ.get("IRIS_ENGINE_AGENT_MODULE", "").strip() or "run_agent"
-    module = importlib.import_module(name)
+    name = os.environ.get("IRIS_ENGINE_AGENT_MODULE", "").strip()
+    module = importlib.import_module(name) if name else _load_local_helper("agent_entry")
     cls = getattr(module, "AIAgent", None)
     if cls is None:
         raise ImportError("AIAgent is missing")

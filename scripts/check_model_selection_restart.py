@@ -17,7 +17,7 @@ from iris.ui.window.main_window import MainWindow
 from iris.storage.model_prefs import load_selected_model
 app = QApplication([])
 win = MainWindow(test_mode=True)
-win._settings.hermes_enabled = False
+win._settings.agent_enabled = False
 win._verify_api_model_once = lambda model: None
 win._sync_iris_wiki = lambda: None
 win._handoff_context_to = lambda *args: None

@@ -22,8 +22,10 @@ description: >
 
 ## Steps
 
-1. `iris_get_state`
-2. If `ui_mode` is `ide_companion`, `iris_invoke` → `ide.exit_companion`
+Action IDs below use dots; callable Iris function names replace dots with underscores.
+
+1. `get_state`
+2. If `ui_mode` is `ide_companion`, call `ide_exit_companion`
    (restores Iris normal layout; **closes the Companion IDE window Iris opened**,
    never the Cursor that hosts Iris / the user’s own workspace)
 3. If the user also asked for another screen, invoke:
@@ -31,4 +33,4 @@ description: >
    - `workspace.open_obsidian`
    - `workspace.open_calendar`
    - `workspace.open_assistant`
-4. Short status from `iris_get_state`
+4. Short status from `get_state`

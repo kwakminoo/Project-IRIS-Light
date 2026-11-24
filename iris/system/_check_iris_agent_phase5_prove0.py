@@ -105,7 +105,7 @@ def _check_qthread_worker_contract() -> None:
     assert "QWidget" not in run_src
     assert "QtWidgets" not in run_src
     # Unit 2: product chat is InternalSidecar only (HTTP :8642 path retired).
-    chat_src = inspect.getsource(hw.HermesChatWorker)
+    chat_src = inspect.getsource(hw.IrisAgentChatWorker)
     assert "_run_internal" in chat_src
     assert "_run_external" not in chat_src
     assert "shared_engine" in chat_src

@@ -70,10 +70,10 @@
 |------|------|------|
 | `IRIS_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama base (`/v1` 유무 모두 허용, 클라이언트 정규화) |
 | `IRIS_OLLAMA_MODEL` | (비움) | 기본 모델 — 비우면 앱에서 선택 |
-| `IRIS_HERMES_ENABLED` | `1` | Iris Agent 필수 게이트(레거시 키명). 끄기 입구 차단 |
+| `IRIS_AGENT_ENABLED` | `1` | Iris Agent 필수 게이트(레거시 키명). 끄기 입구 차단 |
 | `IRIS_AGENT_HOME` | (비움) | 비우면 `~/.iris-light/agent` |
-| `IRIS_HERMES_BASE_URL` | `http://127.0.0.1:8642` | ExternalGateway 옵션 base |
-| `IRIS_HERMES_API_KEY` | (위저드 생성) | 게이트웨이 `API_SERVER_KEY`와 동일(옵션 경로) |
+| `IRIS_AGENT_BASE_URL` | `http://127.0.0.1:8642` | ExternalGateway 옵션 base |
+| `IRIS_AGENT_API_KEY` | (위저드 생성) | 게이트웨이 `API_SERVER_KEY`와 동일(옵션 경로) |
 | `IRIS_CONTROL_ENABLED` / `HOST` / `PORT` / `TOKEN` | `8765` | Control Surface (compat) |
 | `IRIS_DATA_GO_KR_SERVICE_KEY` | — | 공휴일(캘린더) |
 | `IRIS_SETUP_DEMO` / `DRY_RUN` | — | 시작 프로토콜 데모/드라이런 |
@@ -100,7 +100,7 @@
 | 항목 | 내용 |
 |------|------|
 | **역할** | Iris 채팅·도구 실행의 제품 런타임 (기본 InternalSidecar, 옵션 OpenAI 호환 HTTP) |
-| **연결** | 기본 `iris/engine` InternalSidecar. 옵션 시 `hermes_client.py` ← `IRIS_HERMES_*` |
+| **연결** | 기본 `iris/engine` InternalSidecar. 옵션 시 `iris_agent_client.py` ← `IRIS_AGENT_*` |
 | **Base URL (옵션)** | `http://127.0.0.1:8642` (Iris는 `/v1` suffix 사용) |
 | **인증 (옵션 HTTP)** | `Authorization: Bearer <API_SERVER_KEY>` |
 | **스타트포인트** | 사용자 메시지 전송, 모델 동기화, health 체크 |
@@ -122,8 +122,8 @@
 
 #### 관련 코드
 
-- `iris/infrastructure/hermes_client.py` — `health_ok`, `stream_chat`, `set_inference_model`
-- `iris/ui/workers/hermes_workers.py` / `main_window.py` — UI 워커
+- `iris/infrastructure/iris_agent_client.py` — `health_ok`, `stream_chat`, `set_inference_model`
+- `iris/ui/workers/iris_agent_workers.py` / `main_window.py` — UI 워커
 
 ---
 
@@ -381,7 +381,7 @@ Hermes MCP iris-control (stdio)
 
 MCP 도구: `iris_get_state`, `iris_get_catalog`, `iris_invoke`  
 설치·스킬: `integrations/hermes-skills/README.md`  
-**자동 동기화:** Iris 기동 시 `hermes_iris_control_sync`가 Hermes `config.yaml`·skills·MEMORY에 기록(재시작 유지). 변경 시 gateway `--replace`.
+**자동 동기화:** Iris 기동 시 `iris_agent_control_sync`가 Hermes `config.yaml`·skills·MEMORY에 기록(재시작 유지). 변경 시 gateway `--replace`.
 
 대표 액션: `ide.enter_companion`, `ide.exit_companion`, `ide.open_folder`, `ide.open_file`, `project.write_file` (`open`/`stream`), `project.run`, `workspace.open_*`, `profile.set`, `email.*`, `wiki.*`, `settings.*`  
 고위험(`email.send` 등)은 `args.confirm=true` 필수.

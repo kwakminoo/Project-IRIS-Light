@@ -25,9 +25,9 @@ class EmulatorOffUiTests(unittest.TestCase):
 
     def test_control_surface_invoke_skips_invoker_for_emulator(self) -> None:
         src = Path("iris/system/control_surface.py").read_text(encoding="utf-8")
-        post = src.split("def do_POST", 1)[1].split("class QuietHTTPServer", 1)[0]
-        self.assertIn("runs_off_ui_thread(action)", post)
-        self.assertIn("body = _run()", post)
+        dispatch = src.split("def call_registered", 1)[1].split("class QuietHTTPServer", 1)[0]
+        self.assertIn("if runs_off_ui_thread(action):", dispatch)
+        self.assertIn("return _run()", dispatch)
 
     def test_get_state_uses_fast_emulator_status(self) -> None:
         src = Path("iris/ui/control_bindings.py").read_text(encoding="utf-8")

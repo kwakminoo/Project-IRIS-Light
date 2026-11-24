@@ -1,8 +1,6 @@
 """Unit 5/6/7 — public ``iris.agent`` façade (≤10 exports) + primary call-site names.
 
-Logic lives in ``iris_agent_*``; ``hermes_*`` files are thin re-export shims.
-Product hot paths must use Iris Agent names and must not import
-``hermes_workers`` / HermesChatWorker.
+Logic and product hot paths use Iris Agent names only.
 
 Run:
   .venv\\Scripts\\python.exe -m iris.system._check_iris_agent_facade
@@ -91,14 +89,10 @@ def _check_aliases_are_thin() -> None:
     assert agent.ensure_runtime is ar.ensure_iris_agent_runtime
     assert agent.pin_sha is ar.load_pinned_sha
     assert agent.speak_invoke is speak_invoke_agent_tool
-    assert agent.IrisAgentHealthWorker is hw.HermesHealthWorker
-    assert agent.IrisAgentChatWorker is hw.HermesChatWorker
-    assert agent.IrisAgentControlSyncWorker is hw.HermesControlSyncWorker
-    assert agent.IrisAgentModelSyncWorker is hw.HermesModelSyncWorker
-    assert hw.IrisAgentChatWorker is hw.HermesChatWorker
-    assert hw.IrisAgentHealthWorker is hw.HermesHealthWorker
-    assert hw.IrisAgentControlSyncWorker is hw.HermesControlSyncWorker
-    assert hw.IrisAgentModelSyncWorker is hw.HermesModelSyncWorker
+    assert agent.IrisAgentHealthWorker is hw.IrisAgentHealthWorker
+    assert agent.IrisAgentChatWorker is hw.IrisAgentChatWorker
+    assert agent.IrisAgentControlSyncWorker is hw.IrisAgentControlSyncWorker
+    assert agent.IrisAgentModelSyncWorker is hw.IrisAgentModelSyncWorker
 
 
 def _check_main_window_uses_facade_names() -> None:

@@ -107,7 +107,7 @@ flowchart TB
 
 | 파일 | 내용 |
 |------|------|
-| 프로젝트 `.env` | `IRIS_OLLAMA_*`, `IRIS_HERMES_*`(레거시 키명·필수 게이트), (선택) `IRIS_CONTROL_*`, `IRIS_AGENT_HOME`, `IRIS_SETUP_*` |
+| 프로젝트 `.env` | `IRIS_OLLAMA_*`, `IRIS_AGENT_*`(레거시 키명·필수 게이트), (선택) `IRIS_CONTROL_*`, `IRIS_AGENT_HOME`, `IRIS_SETUP_*` |
 | `~/.iris-light/agent/.env` | 도구·프로바이더 API 키 (Exa, Firecrawl, Naver, API_SERVER_KEY …) |
 | `~/.iris-light/agent/config.yaml` | model provider, `web.search_backend` 등 |
 | `vendor/iris-agent-runtime/PIN` | 런타임 pin SHA |

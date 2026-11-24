@@ -6,7 +6,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from scripts.check_attachment_live import DispatchHarness, OUT, ROOT
-from iris.infrastructure.hermes_client import HermesClient
+from iris.infrastructure.iris_agent_client import IrisAgentClient
 from iris.infrastructure.ollama_client import OllamaClient
 from iris.storage.database import Database
 from iris.ui.chat.chat_panel import ChatPanel
@@ -72,7 +72,7 @@ def run(mode_filter="all", case_filter="all", backend="hermes"):
                 (OUT / f"extended-{mode}-{label}-messages.json").write_text(json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8")
                 print(f"START {mode} {label}", flush=True)
                 try:
-                    events = (HermesClient(timeout_sec=55).stream_chat("gemma4:e2b", messages) if backend == "hermes"
+                    events = (IrisAgentClient(timeout_sec=55).stream_chat("gemma4:e2b", messages) if backend == "hermes"
                               else OllamaClient("http://127.0.0.1:11434", timeout_sec=55).stream_chat("gemma4:e2b", messages, think=False))
                     answer = "".join(e.get("content") or "" for e in events)
                     passed = all(value in answer for value in expected)

@@ -25,11 +25,11 @@ from iris.engine import (  # noqa: E402
     TurnCancelled,
     TurnFinished,
 )
-from iris.infrastructure.iris_agent_client import HermesInferenceTarget  # noqa: E402
+from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget  # noqa: E402
 from iris.ui.workers.iris_agent_workers import (  # noqa: E402
-    HermesChatWorker,
-    HermesHealthWorker,
-    HermesModelSyncWorker,
+    IrisAgentChatWorker,
+    IrisAgentHealthWorker,
+    IrisAgentModelSyncWorker,
 )
 
 
@@ -84,12 +84,12 @@ class _Collector:
 
 class InternalHealthWorkerTests(TestCase):
     def test_constructs_without_gateway_url(self) -> None:
-        worker = HermesHealthWorker()
+        worker = IrisAgentHealthWorker()
         self.assertIsNotNone(worker)
 
     def test_engine_ready_finishes_ok_without_starting_8642(self) -> None:
         engine = _StubEngine()
-        worker = HermesHealthWorker()
+        worker = IrisAgentHealthWorker()
         out = _Collector(worker)
         with (
             patch("iris.ui.workers.iris_agent_workers.shared_engine", return_value=engine),
@@ -107,7 +107,7 @@ class InternalHealthWorkerTests(TestCase):
 
     def test_engine_ready_syncs_engine_home_without_reconnecting_gateway(self) -> None:
         engine = _StubEngine()
-        worker = HermesHealthWorker()
+        worker = IrisAgentHealthWorker()
         out = _Collector(worker)
         report = SimpleNamespace(summary_line=lambda: "engine sync")
         with (
@@ -127,10 +127,10 @@ class InternalHealthWorkerTests(TestCase):
         self.assertIs(kwargs.get("reconnect_gateway"), False)
         restart.assert_not_called()
 
-    def test_engine_failed_emits_user_message(self) -> None:
+    def test_engine_failed_emits_diagnostic_detail(self) -> None:
         error = EngineError(EngineErrorCode.NOT_INSTALLED, "missing")
         engine = _StubEngine(ready=EngineFailed(error))
-        worker = HermesHealthWorker()
+        worker = IrisAgentHealthWorker()
         out = _Collector(worker)
         with (
             patch("iris.ui.workers.iris_agent_workers.shared_engine", return_value=engine),
@@ -138,16 +138,16 @@ class InternalHealthWorkerTests(TestCase):
         ):
             worker.run()
         self.assertEqual(out.ok, [])
-        self.assertEqual(out.failed, [error.user_message])
+        self.assertEqual(out.failed, [error.detail])
         sync.assert_not_called()
 
 
 class InternalChatWorkerTests(TestCase):
     def test_constructs_without_gateway_url(self) -> None:
-        worker = HermesChatWorker(
+        worker = IrisAgentChatWorker(
             "llama",
             [{"role": "user", "content": "hi"}],
-            target=HermesInferenceTarget(model="llama", provider="custom"),
+            target=IrisAgentInferenceTarget(model="llama", provider="custom"),
         )
         self.assertIsNotNone(worker)
 
@@ -160,10 +160,10 @@ class InternalChatWorkerTests(TestCase):
                 TurnFinished("안녕"),
             ]
         )
-        worker = HermesChatWorker(
+        worker = IrisAgentChatWorker(
             "llama",
             [{"role": "user", "content": "hi"}],
-            target=HermesInferenceTarget(model="llama", provider="custom"),
+            target=IrisAgentInferenceTarget(model="llama", provider="custom"),
         )
         out = _Collector(worker)
         with patch("iris.ui.workers.iris_agent_workers.shared_engine", return_value=engine):
@@ -176,10 +176,10 @@ class InternalChatWorkerTests(TestCase):
 
     def test_internal_chat_uses_an_independent_sidecar_fork(self) -> None:
         engine = _ForkingEngine(events=[TurnFinished("parallel")])
-        worker = HermesChatWorker(
+        worker = IrisAgentChatWorker(
             "llama",
             [{"role": "user", "content": "hi"}],
-            target=HermesInferenceTarget(model="llama", provider="custom"),
+            target=IrisAgentInferenceTarget(model="llama", provider="custom"),
         )
         out = _Collector(worker)
         with patch("iris.ui.workers.iris_agent_workers.shared_engine", return_value=engine):
@@ -192,10 +192,10 @@ class InternalChatWorkerTests(TestCase):
 
     def test_cancel_before_send_does_not_start_a_turn(self) -> None:
         engine = _StubEngine(events=[TurnFinished("no")])
-        worker = HermesChatWorker(
+        worker = IrisAgentChatWorker(
             "llama",
             [{"role": "user", "content": "hi"}],
-            target=HermesInferenceTarget(model="llama", provider="custom"),
+            target=IrisAgentInferenceTarget(model="llama", provider="custom"),
         )
         out = _Collector(worker)
         worker.request_cancel()
@@ -207,10 +207,10 @@ class InternalChatWorkerTests(TestCase):
 
     def test_turn_cancelled_is_silent(self) -> None:
         engine = _StubEngine(events=[ContentDelta("x"), TurnCancelled()])
-        worker = HermesChatWorker(
+        worker = IrisAgentChatWorker(
             "llama",
             [{"role": "user", "content": "hi"}],
-            target=HermesInferenceTarget(model="llama", provider="custom"),
+            target=IrisAgentInferenceTarget(model="llama", provider="custom"),
         )
         out = _Collector(worker)
         with patch("iris.ui.workers.iris_agent_workers.shared_engine", return_value=engine):
@@ -231,7 +231,7 @@ class CloseEventShutdownTests(TestCase):
 
 class InternalModelSyncTests(TestCase):
     def test_model_sync_is_noop_on_sidecar_path(self) -> None:
-        worker = HermesModelSyncWorker("http://127.0.0.1:8642/v1", "llama")
+        worker = IrisAgentModelSyncWorker("http://127.0.0.1:8642/v1", "llama")
         ok: list[object] = []
         failed: list[str] = []
         worker.finished_ok.connect(lambda: ok.append(True))
@@ -240,11 +240,11 @@ class InternalModelSyncTests(TestCase):
         self.assertEqual(ok, [True])
         self.assertEqual(failed, [])
 
-    def test_sync_hermes_model_skips_worker_for_sidecar(self) -> None:
+    def test_sync_iris_agent_model_skips_worker_for_sidecar(self) -> None:
         from iris.ui.window.main_window import MainWindow
 
         host = SimpleNamespace(
-            _settings=SimpleNamespace(hermes_enabled=True),
+            _settings=SimpleNamespace(agent_enabled=True),
             _hermes_model_worker=None,
         )
         with patch("iris.ui.window.main_window.IrisAgentModelSyncWorker") as worker_cls:

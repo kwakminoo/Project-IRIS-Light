@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -48,17 +49,30 @@ def _spawn(env: dict[str, str]) -> subprocess.Popen[str]:
     )
 
 
-def _read_hello(proc: subprocess.Popen[str]) -> None:
+def _read_hello(proc: subprocess.Popen[str]) -> int:
     assert proc.stdout is not None
     line = proc.stdout.readline()
     raw = json.loads(line)
-    if raw != {"t": "hello", "ok": True}:
+    if raw.get("t") != "hello" or raw.get("ok") is not True or int(raw.get("pid") or 0) <= 0:
         raise AssertionError(f"hello was not valid: {line!r}")
+    return int(raw["pid"])
 
 
 def _read_event(proc: subprocess.Popen[str]):
     assert proc.stdout is not None
     return parse_turn_event(json.loads(proc.stdout.readline()))
+
+
+def _read_terminal(root: Path, pid: int):
+    path = root / f"{pid}.ndjson"
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if path.is_file():
+            line = path.read_text(encoding="utf-8")
+            path.unlink()
+            return parse_turn_event(json.loads(line))
+        time.sleep(0.02)
+    raise AssertionError("sidecar terminal event was not written")
 
 
 def _system_user_turn() -> str:
@@ -119,9 +133,10 @@ class SidecarAgentLoopTests(TestCase):
             _child_env(
                 IRIS_ENGINE_AGENT_MODULE=_FAKE_MODULE,
                 IRIS_ENGINE_AGENT_RECORD=str(record),
+                IRIS_TERMINAL_DIR=str(record.parent),
             )
         )
-        _read_hello(self._proc)
+        self._hello_pid = _read_hello(self._proc)
         return self._proc
 
     def test_system_user_turn_streams_then_stays_alive_for_a_second_turn(self) -> None:
@@ -133,7 +148,7 @@ class SidecarAgentLoopTests(TestCase):
             proc.stdin.flush()
             first = _read_event(proc)
             second = _read_event(proc)
-            done = _read_event(proc)
+            done = _read_terminal(record.parent, self._hello_pid)
             self.assertEqual(first, ContentDelta("Hel"))
             self.assertEqual(second, ContentDelta("lo"))
             self.assertEqual(done, TurnFinished("Hello"))
@@ -142,7 +157,7 @@ class SidecarAgentLoopTests(TestCase):
             proc.stdin.flush()
             self.assertEqual(_read_event(proc), ContentDelta("Hel"))
             self.assertEqual(_read_event(proc), ContentDelta("lo"))
-            self.assertEqual(_read_event(proc), TurnFinished("Hello"))
+            self.assertEqual(_read_terminal(record.parent, self._hello_pid), TurnFinished("Hello"))
             self.assertIsNone(proc.poll())
             saved = _load_record(record)
             self.assertEqual(len(saved["runs"]), 2)
@@ -159,7 +174,7 @@ class SidecarAgentLoopTests(TestCase):
             assert proc.stdin is not None
             proc.stdin.write(_system_user_turn())
             proc.stdin.flush()
-            _read_event(proc)
+            _read_terminal(record.parent, self._hello_pid)
             _read_event(proc)
             _read_event(proc)
             saved = _load_record(record)
@@ -178,7 +193,7 @@ class SidecarAgentLoopTests(TestCase):
             assert proc.stdin is not None
             proc.stdin.write(_assistant_tail_turn())
             proc.stdin.flush()
-            event = _read_event(proc)
+            event = _read_terminal(record.parent, self._hello_pid)
             self.assertIsInstance(event, TurnFailed)
             assert isinstance(event, TurnFailed)
             self.assertEqual(event.error.code, EngineErrorCode.NO_USER_UTTERANCE)
@@ -188,16 +203,17 @@ class SidecarAgentLoopTests(TestCase):
             self.assertEqual(saved["runs"], [])
 
     def test_missing_agent_module_stays_unwired(self) -> None:
-        self._proc = _spawn(
-            _child_env(IRIS_ENGINE_AGENT_MODULE="iris_engine_missing_agent")
-        )
-        _read_hello(self._proc)
-        assert self._proc.stdin is not None
-        self._proc.stdin.write(_system_user_turn())
-        self._proc.stdin.flush()
-        event = _read_event(self._proc)
-        self.assertIsInstance(event, TurnFailed)
-        assert isinstance(event, TurnFailed)
-        self.assertEqual(event.error.code, EngineErrorCode.UNKNOWN)
-        self.assertEqual(event.error.detail, "agent loop is not wired")
-        self.assertIsNone(self._proc.poll())
+        with TemporaryDirectory() as tmp:
+            self._proc = _spawn(
+                _child_env(IRIS_ENGINE_AGENT_MODULE="iris_engine_missing_agent", IRIS_TERMINAL_DIR=tmp)
+            )
+            pid = _read_hello(self._proc)
+            assert self._proc.stdin is not None
+            self._proc.stdin.write(_system_user_turn())
+            self._proc.stdin.flush()
+            event = _read_terminal(Path(tmp), pid)
+            self.assertIsInstance(event, TurnFailed)
+            assert isinstance(event, TurnFailed)
+            self.assertEqual(event.error.code, EngineErrorCode.UNKNOWN)
+            self.assertEqual(event.error.detail, "agent loop is not wired")
+            self.assertIsNone(self._proc.poll())

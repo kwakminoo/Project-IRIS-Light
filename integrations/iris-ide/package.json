@@ -57,7 +57,7 @@
     "postinstall": "node scripts/stub-windows-ca-certs.js",
     "download:plugins": "theia download:plugins",
     "prebuild": "theia download:plugins",
-    "build": "theia build --mode development && node scripts/patch-theia-build.js",
+    "build": "tsc && theia build --mode development && node scripts/patch-theia-build.js",
     "rebuild": "theia rebuild:browser --cacheRoot .theia",
     "start": "theia start --hostname=127.0.0.1 --plugins=local-dir:./plugins --ovsx-router-config=ovsx-router-config.json",
     "watch": "theia build --watch --mode development"

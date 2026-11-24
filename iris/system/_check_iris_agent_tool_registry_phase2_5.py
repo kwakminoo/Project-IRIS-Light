@@ -23,7 +23,7 @@ from iris.infrastructure.agent_tool_registry import (
 )
 from iris.mcp import iris_control_stdio
 from iris.system.iris_agent_control_sync import project_root
-from iris.ui.workers.iris_agent_workers import HermesChatWorker
+from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker
 
 
 def _block_network(*_a: object, **_k: object) -> None:
@@ -77,7 +77,7 @@ def _main() -> None:
 
     with mock.patch("socket.socket", side_effect=_block_network):
         with mock.patch("socket.create_connection", side_effect=_block_network):
-            mail = HermesChatWorker.invoke_native_tool("iris.mail.list_accounts", {})
+            mail = IrisAgentChatWorker.invoke_native_tool("iris.mail.list_accounts", {})
             cal = speak_invoke_agent_tool(
                 "calendar.list_events", {"limit": 2}, registry=reg
             )
@@ -155,10 +155,10 @@ def _main() -> None:
     assert "_handle_tool" not in stdio_src
 
     for skill_name, markers in (
-        ("iris-email", ("iris.mail.list_accounts",)),
-        ("iris-calendar", ("iris.calendar.list_events",)),
-        ("iris-session-status", ("iris.session.get_state",)),
-        ("iris-work-start", ("iris.ide.open_folder", "iris.project.open_similar")),
+        ("iris-email", ("email_list_accounts",)),
+        ("iris-calendar", ("calendar_list_events",)),
+        ("iris-session-status", ("get_state",)),
+        ("iris-work-start", ("ide_open_folder", "project_open_similar")),
     ):
         skill = (
             root
@@ -175,9 +175,9 @@ def _main() -> None:
     nudge_src = (root / "iris" / "system" / "iris_agent_memory_nudge.py").read_text(
         encoding="utf-8"
     )
-    assert "iris.mail.list_accounts" in nudge_src
-    assert "iris.calendar.list_events" in nudge_src
-    assert "iris.session.get_state" in nudge_src
+    assert "email_list_accounts" in nudge_src
+    assert "calendar_list_events" in nudge_src
+    assert "workspace_open_email" in nudge_src
     assert "iris-control-nudge-v" in nudge_src
     assert "project.create_scaffold" in nudge_src
 

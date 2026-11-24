@@ -170,7 +170,7 @@ def main() -> int:
     # 2 skills
     add(
         2,
-        "iris-work-* 스킬 3개 Hermes skills에 설치",
+        "iris-work-* 스킬 3개 Iris Agent skills에 설치",
         "iris-work-start/end/session-status SKILL.md 존재",
         f"ok={verified.skills_ok} missing={verified.skills_missing}",
         len(verified.skills_ok) == 3 and not verified.skills_missing,

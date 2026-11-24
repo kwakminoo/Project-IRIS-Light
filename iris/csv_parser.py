@@ -1,7 +1,7 @@
 """Simple CSV line parser.
 Handles fields optionally quoted with double quotes. Commas inside quoted
 fields are treated as part of the field. Double quotes inside a quoted
-field are escaped by a pair of double quotes ("""). No support for
+field are escaped by a pair of double quotes (`""`). No support for
 newlines, different delimiters, or complex CSV features.
 """
 

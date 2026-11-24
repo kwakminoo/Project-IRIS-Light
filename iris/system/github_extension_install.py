@@ -418,7 +418,7 @@ def _apply_skills(
         notes.append(
             "Skill "
             + ", ".join(f"'{n}'" for n in result.skill_names)
-            + "을 설치했습니다. Hermes skills 폴더에서 다음 요청부터 인식합니다.\n"
+            + "을 설치했습니다. Iris Agent skills 폴더에서 다음 요청부터 인식합니다.\n"
             + "\n".join(result.skill_paths)
         )
         if result.status == "refused":

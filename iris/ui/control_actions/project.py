@@ -350,11 +350,12 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
     from iris.system.project_ops import (
         bind_python_argv,
         build_iris_terminal_command,
-        build_run_command,
+        build_iris_terminal_shell,
         infer_dev_server_url,
         iris_run_log_path,
         is_static_web_file,
         open_preview_in_browser,
+        plan_run,
         result_from_terminal_log,
         static_web_file_uri,
         summarize_run,
@@ -411,12 +412,18 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
 
     timeout_sec = float(args.get("timeout_sec") or 60)
     try:
-        argv = build_run_command(
+        plan = plan_run(
             command=args.get("command"),
             file=file_arg,
             project_root=root_p,
         )
-        argv = bind_python_argv(argv, root_p)
+        if plan.shell_command is not None:
+            # Cursor-style: 문자열 명령을 셸에 그대로 (shlex/bind_python 금지)
+            argv = [plan.shell_command]
+            shell_cmd = build_iris_terminal_shell(plan.shell_command)
+        else:
+            argv = bind_python_argv(list(plan.argv or []), root_p)
+            shell_cmd = build_iris_terminal_command(argv)
     except Exception as exc:  # noqa: BLE001
         return err_result("project.run", str(exc))
 
@@ -426,8 +433,6 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
             log_p.unlink()
     except OSError:
         pass
-
-    shell_cmd = build_iris_terminal_command(argv)
     tasks_path = ""
     try:
         tasks_path = upsert_iris_run_task(root_s, shell_cmd)

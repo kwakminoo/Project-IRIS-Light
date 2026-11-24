@@ -220,7 +220,7 @@ def _check_standin_still_off_ui_thread() -> None:
 
 def _check_product_8642_untouched() -> None:
     # Unit 2: product chat is sidecar-only; HTTP :8642 branch is gone.
-    chat_src = inspect.getsource(hw.HermesChatWorker)
+    chat_src = inspect.getsource(hw.IrisAgentChatWorker)
     assert "_run_internal" in chat_src
     assert "_run_external" not in chat_src
     assert "shared_engine" in chat_src

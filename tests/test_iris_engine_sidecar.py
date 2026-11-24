@@ -91,6 +91,13 @@ class ParseTurnEventTests(TestCase):
 
 
 class SidecarMainTests(TestCase):
+    def test_hello_when_log_file_is_unwritable(self) -> None:
+        proc = _run_sidecar_main(_child_env(IRIS_ENGINE_LOG=str(_ROOT)))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        first = json.loads(proc.stdout.splitlines()[0])
+        self.assertEqual(first["t"], "hello")
+        self.assertTrue(first["ok"])
+
     def test_gui_python_exits_2(self) -> None:
         proc = _run_sidecar_main(_child_env(IRIS_ENGINE_GUI_PYTHON=sys.executable))
         self.assertEqual(proc.returncode, 2)
@@ -123,6 +130,105 @@ class SidecarMainTests(TestCase):
 
 
 class SidecarExportTests(TestCase):
+    def test_chat_prompt_uses_native_function_names(self) -> None:
+        source = (_ROOT / "iris" / "ui" / "window" / "main_window.py").read_text(
+            encoding="utf-8"
+        )
+        prompt = source.split('"Iris Light UI control:', 1)[1].split(
+            "from iris.browser.observation", 1
+        )[0]
+        self.assertNotIn("iris_invoke", prompt)
+        self.assertIn("workspace_open_email", prompt)
+        self.assertIn("project_run", prompt)
+
+    def test_chat_prompt_actions_are_exposed_as_engine_tools(self) -> None:
+        from iris.infrastructure.speak_capability import (
+            PHASE4_ALLOWLIST,
+            engine_tool_name,
+            engine_tool_schemas,
+        )
+
+        source = (_ROOT / "iris" / "ui" / "window" / "main_window.py").read_text(
+            encoding="utf-8"
+        )
+        prompt = source.split('"Iris Light UI control:', 1)[1].split(
+            "from iris.browser.observation", 1
+        )[0]
+        catalog = {
+            row["name"]
+            for row in json.loads(
+                (_ROOT / "iris" / "ui" / "control_actions" / "action_catalog.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        }
+        advertised = set(re.findall(r"\b[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\b", prompt)) & catalog
+        exposed = {schema["name"] for schema in engine_tool_schemas()}
+        missing = sorted(action for action in advertised if engine_tool_name(action) not in exposed)
+        self.assertEqual(missing, [])
+        self.assertEqual(PHASE4_ALLOWLIST.grant("workspace.open_email").kind.value, "surface")
+
+    def test_iris_skills_use_exposed_native_tools(self) -> None:
+        from iris.infrastructure.speak_capability import engine_tool_name, engine_tool_schemas
+
+        catalog = {
+            row["name"]
+            for row in json.loads(
+                (_ROOT / "iris" / "ui" / "control_actions" / "action_catalog.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        }
+        exposed = {schema["name"] for schema in engine_tool_schemas()}
+        missing: set[str] = set()
+        for path in (_ROOT / "integrations" / "hermes-skills" / "iris-control").glob(
+            "*/SKILL.md"
+        ):
+            content = path.read_text(encoding="utf-8")
+            for obsolete in ("iris_invoke", "iris_get_state", "iris_get_catalog"):
+                self.assertNotIn(obsolete, content, path.name)
+            self.assertNotRegex(content, r"\biris\.(?:session|wiki|mail|calendar|ide|project)\.")
+            actions = set(re.findall(r"\b[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\b", content)) & catalog
+            missing.update(action for action in actions if engine_tool_name(action) not in exposed)
+        self.assertEqual(sorted(missing), [])
+
+    def test_memory_nudge_names_match_registered_tools(self) -> None:
+        from iris.infrastructure.speak_capability import PHASE4_ALLOWLIST, engine_tool_name
+        from iris.system.iris_agent_memory_nudge import _BLOCK
+
+        catalog = {
+            row["name"]
+            for row in json.loads(
+                (_ROOT / "iris" / "ui" / "control_actions" / "action_catalog.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        }
+        exposed = {grant.action for grant in PHASE4_ALLOWLIST.grants}
+        advertised = set(re.findall(r"\b[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\b", _BLOCK)) & catalog
+        self.assertEqual(sorted(advertised - exposed), [])
+        self.assertEqual(sorted(exposed - catalog), [])
+        self.assertNotIn("iris_shell", _BLOCK)
+        self.assertIn(engine_tool_name("workspace.open_email"), _BLOCK)
+
+    def test_email_workspace_tool_reaches_control_surface(self) -> None:
+        from iris.infrastructure.speak_capability import PHASE4_ALLOWLIST, SpeakTools
+
+        class Surface:
+            calls: list[tuple[str, dict]] = []
+
+            def invoke(self, action: str, args: dict) -> dict:
+                self.calls.append((action, args))
+                return {"ok": True, "result": {"workspace_mode": "email"}}
+
+        surface = Surface()
+        result = SpeakTools(PHASE4_ALLOWLIST, surface=surface).invoke(
+            "workspace.open_email", {}
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["workspace_mode"], "email")
+        self.assertEqual(surface.calls, [("workspace.open_email", {})])
+
     def test_engine_tool_names_are_provider_safe_and_reversible(self) -> None:
         from iris.infrastructure.speak_capability import (
             PHASE4_ALLOWLIST,

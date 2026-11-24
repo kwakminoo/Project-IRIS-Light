@@ -147,6 +147,7 @@ def main() -> None:
     hits: list[str] = []
     logic = discovered_hermes_product_modules()
     shims = discovered_hermes_shim_modules()
+    assert not shims, "legacy hermes re-export shims remain:\n  " + "\n  ".join(sorted(shims))
     hits.extend(
         _diff(
             "public hermes_* product modules (logic; shims excluded)",

@@ -19,9 +19,9 @@ from iris.engine import (  # noqa: E402
     InternalSidecar,
     TurnFinished,
 )
-from iris.infrastructure.iris_agent_client import HermesClient, HermesInferenceTarget  # noqa: E402
+from iris.infrastructure.iris_agent_client import IrisAgentClient, IrisAgentInferenceTarget  # noqa: E402
 from iris.runtime.chat_run_slot import ChatRunSlot, choose_turn_model  # noqa: E402
-from iris.ui.workers.iris_agent_workers import HermesChatWorker  # noqa: E402
+from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker  # noqa: E402
 
 
 def _slot() -> ChatRunSlot:
@@ -68,7 +68,7 @@ class _Body:
 
 
 class StreamChatProviderTests(TestCase):
-    def _capture(self, client: HermesClient, *, provider: str) -> dict:
+    def _capture(self, client: IrisAgentClient, *, provider: str) -> dict:
         captured: dict = {}
 
         def fake_open(req, timeout=0):
@@ -85,7 +85,7 @@ class StreamChatProviderTests(TestCase):
         return captured
 
     def test_provider_keeps_requested_model(self) -> None:
-        client = HermesClient("http://127.0.0.1:9/v1", api_key="not-a-real-key")
+        client = IrisAgentClient("http://127.0.0.1:9/v1", api_key="not-a-real-key")
         captured = self._capture(client, provider="custom")
         self.assertEqual(captured["body"]["model"], "gemma-a")
         self.assertEqual(captured["body"]["provider"], "custom")
@@ -94,7 +94,7 @@ class StreamChatProviderTests(TestCase):
         self.assertEqual(captured["listed"], 0)
 
     def test_without_provider_advertised_name_wins(self) -> None:
-        client = HermesClient("http://127.0.0.1:9/v1", api_key="not-a-real-key")
+        client = IrisAgentClient("http://127.0.0.1:9/v1", api_key="not-a-real-key")
         captured = self._capture(client, provider="")
         self.assertEqual(captured["body"]["model"], "hermes-agent")
         self.assertNotIn("provider", captured["body"])
@@ -144,12 +144,12 @@ class ChatWorkerModelTests(TestCase):
     def test_two_targets_keep_requested_model_on_sidecar(self) -> None:
         engine = _RecordingEngine()
         targets = (
-            HermesInferenceTarget(model="gemma-a", provider="custom", display="A"),
-            HermesInferenceTarget(model="gemma-b", provider="openrouter", display="B"),
+            IrisAgentInferenceTarget(model="gemma-a", provider="custom", display="A"),
+            IrisAgentInferenceTarget(model="gemma-b", provider="openrouter", display="B"),
         )
         with patch("iris.ui.workers.iris_agent_workers.shared_engine", return_value=engine):
             for target in targets:
-                worker = HermesChatWorker(
+                worker = IrisAgentChatWorker(
                     target.label,
                     [{"role": "user", "content": "hi"}],
                     target=target,
@@ -163,7 +163,7 @@ class SideCallHermesTests(TestCase):
         from iris.ui.workers.backend_call import BackendRoute, _hermes
 
         client = _FakeClient()
-        target = HermesInferenceTarget(
+        target = IrisAgentInferenceTarget(
             model="vendor/internal-v3", provider="custom", display="friendly"
         )
         route = BackendRoute(
@@ -172,7 +172,7 @@ class SideCallHermesTests(TestCase):
             api_key="gateway-auth",
             target=target,
         )
-        with patch("iris.infrastructure.iris_agent_client.HermesClient", return_value=client):
+        with patch("iris.infrastructure.iris_agent_client.IrisAgentClient", return_value=client):
             text = _hermes(route, [{"role": "user", "content": "제목"}], lambda: False)
         self.assertEqual(text, "ok")
         self.assertEqual(client.set_calls, 0)

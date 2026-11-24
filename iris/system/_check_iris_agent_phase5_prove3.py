@@ -128,7 +128,7 @@ def _check_api_surface_and_8642() -> None:
     # Worker module re-exports reset for UI-side callers (lazy, no new hermes_*).
     assert callable(hw.reset_agent_loop)
     assert callable(hw.replace_agent_loop_worker)
-    chat_src = inspect.getsource(hw.HermesChatWorker)
+    chat_src = inspect.getsource(hw.IrisAgentChatWorker)
     # Unit 2: product chat is sidecar-only; HTTP :8642 branch is gone.
     assert "_run_internal" in chat_src
     assert "_run_external" not in chat_src

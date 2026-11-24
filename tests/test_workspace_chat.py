@@ -56,7 +56,10 @@ class WorkspaceChatTests(unittest.TestCase):
                 )
                 chat.dropEvent(drop)
                 self.assertTrue(drop.isAccepted())
-                self.assertEqual(chat._input_area.attachment_strip.paths(), [str(file)])
+                self.assertEqual(
+                    [os.path.normcase(path) for path in chat._input_area.attachment_strip.paths()],
+                    [os.path.normcase(str(file))],
+                )
                 chat.attach_drop_paths([str(file)])
                 self.assertEqual(len(chat._input_area.attachment_strip.paths()), 1)
                 chat._input.setFocus()
@@ -72,14 +75,25 @@ class WorkspaceChatTests(unittest.TestCase):
                 )
                 chat._input.insertPlainText("둘째 줄")
                 QTest.keyClick(chat._input, Qt.Key.Key_Return)
-                self.assertEqual(sends, [("첫 줄\n둘째 줄", [str(file)])])
+                self.assertEqual(len(sends), 1)
+                self.assertEqual(sends[0][0], "첫 줄\n둘째 줄")
+                self.assertEqual(
+                    [os.path.normcase(path) for path in sends[0][1]],
+                    [os.path.normcase(str(file))],
+                )
                 self.assertEqual(chat._input.text(), "")
                 self.assertEqual(chat._input_area.attachment_strip.paths(), [])
                 chat.attach_drop_paths([str(file)])
                 chat._emit_send()
-                self.assertEqual(sends[-1], ("", [str(file)]))
+                self.assertEqual(sends[-1][0], "")
+                self.assertEqual(
+                    [os.path.normcase(path) for path in sends[-1][1]],
+                    [os.path.normcase(str(file))],
+                )
                 chat.attach_drop_paths([str(file)])
-                chat._input_area.attachment_strip._remove(str(file))
+                chat._input_area.attachment_strip._remove(
+                    chat._input_area.attachment_strip.paths()[0]
+                )
                 self.assertFalse(chat._input_area.input_bar.send_button.isEnabled())
                 chat.set_generating(True)
                 QTest.mouseClick(chat._input_area.input_bar.send_button, Qt.MouseButton.LeftButton)

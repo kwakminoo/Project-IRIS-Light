@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -671,17 +672,23 @@ def _cmd_quote(arg: str) -> str:
     return arg
 
 
+def _default_terminal_shell(shell: str = "") -> str:
+    kind = (shell or "").strip().lower()
+    if kind:
+        return kind
+    return "powershell" if sys.platform == "win32" else "sh"
+
+
 def build_iris_terminal_command(argv: list[str], *, shell: str = "") -> str:
-    """명령을 통합 터미널에 보여 주면서 .iris/last_run.log에 출력과 IRIS_EXIT를 남긴다.
+    """argv를 call-operator/quoted 실행으로 감싸 .iris/last_run.log + IRIS_EXIT를 남긴다.
 
     shell이 비어 있으면 태스크용 기본값이다. Windows 태스크는 powershell.exe를
     고정하므로 PowerShell. IRIS IDE 통합 터미널은 실제 셸을 넘겨야 한다.
+    셸 문장(문자열)은 build_iris_terminal_shell을 쓴다.
     """
     if not argv:
         raise ValueError("empty argv")
-    kind = (shell or "").strip().lower()
-    if not kind:
-        kind = "powershell" if sys.platform == "win32" else "sh"
+    kind = _default_terminal_shell(shell)
     if kind in {"cmd", "cmd.exe"}:
         quoted = " ".join(_cmd_quote(str(a)) for a in argv)
         return (
@@ -711,6 +718,41 @@ def build_iris_terminal_command(argv: list[str], *, shell: str = "") -> str:
     return (
         "mkdir -p .iris; rm -f .iris/last_run.log; "
         f"{{ {cmd}; }} 2>&1 | tee .iris/last_run.log; "
+        'code=${PIPESTATUS[0]}; printf "IRIS_EXIT:%s\\n" "$code" >> .iris/last_run.log; '
+        'exit "$code"'
+    )
+
+
+def build_iris_terminal_shell(shell_command: str, *, shell: str = "") -> str:
+    """Cursor-style: 셸 문장 하나를 쪼개지 않고 Tee / IRIS_EXIT 래퍼에 넣는다.
+
+    PowerShell -Command / bash -c 본문이 이 문자열이다. && 등 연산자를 토큰으로
+    쪼개 & 'cd' … 호출하지 않는다.
+    """
+    body = (shell_command or "").strip()
+    if not body:
+        raise ValueError("empty shell_command")
+    kind = _default_terminal_shell(shell)
+    if kind in {"cmd", "cmd.exe"}:
+        return (
+            "if not exist .iris mkdir .iris\n"
+            "del /f /q .iris\\last_run.log 2>nul\n"
+            f"{body} > .iris\\last_run.log 2>&1\n"
+            "echo IRIS_EXIT:%ERRORLEVEL% >> .iris\\last_run.log\n"
+            "type .iris\\last_run.log\n"
+        )
+    if kind in {"powershell", "pwsh", "powershell.exe"}:
+        return (
+            "New-Item -ItemType Directory -Force -Path .iris | Out-Null; "
+            "Remove-Item -Force -ErrorAction SilentlyContinue .iris\\last_run.log; "
+            f"{body} 2>&1 | Tee-Object -FilePath .iris\\last_run.log; "
+            "$code = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }; "
+            "Add-Content -Path .iris\\last_run.log -Value \"IRIS_EXIT:$code\"; "
+            "exit $code"
+        )
+    return (
+        "mkdir -p .iris; rm -f .iris/last_run.log; "
+        f"{{ {body}; }} 2>&1 | tee .iris/last_run.log; "
         'code=${PIPESTATUS[0]}; printf "IRIS_EXIT:%s\\n" "$code" >> .iris/last_run.log; '
         'exit "$code"'
     )
@@ -910,7 +952,10 @@ def _is_py_version_selector(token: str) -> bool:
 
 
 def bind_python_argv(argv: list[str], root: str | Path) -> list[str]:
-    """argv[0]이 python/py 런처면 project .venv 절대경로로 교체. node 등은 그대로."""
+    """argv[0]이 python/py 런처면 project .venv 절대경로로 교체. node 등은 그대로.
+
+    문자열 셸 모드(RunPlan.shell_command)에는 적용하지 않는다.
+    """
     if not argv:
         return []
     out = [str(x) for x in argv]
@@ -926,23 +971,52 @@ def bind_python_argv(argv: list[str], root: str | Path) -> list[str]:
     return [str(py.resolve()), *rest]
 
 
+@dataclass(frozen=True)
+class RunPlan:
+    """project.run 실행 계획. shell_command와 argv 중 정확히 하나만 둔다."""
+
+    shell_command: str | None = None
+    argv: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        shell = (self.shell_command or "").strip() or None
+        argv = [str(x) for x in self.argv] if self.argv else None
+        if (shell is None) == (argv is None):
+            raise ValueError("RunPlan needs exactly one of shell_command / argv")
+        object.__setattr__(self, "shell_command", shell)
+        object.__setattr__(self, "argv", argv)
+
+
+def plan_run(
+    *,
+    command: str | list | None = None,
+    file: str = "",
+    project_root: str | Path | None = None,
+) -> RunPlan:
+    """command str → shell 모드, list/file → argv 모드."""
+    if isinstance(command, str) and command.strip():
+        return RunPlan(shell_command=command.strip(), argv=None)
+    if isinstance(command, list) and command:
+        return RunPlan(shell_command=None, argv=[str(x) for x in command])
+    return RunPlan(
+        shell_command=None,
+        argv=build_run_command(command=None, file=file, project_root=project_root),
+    )
+
+
 def build_run_command(
     *,
     command: str | list | None = None,
     file: str = "",
     project_root: str | Path | None = None,
 ) -> list[str]:
-    """실행 argv 구성. file만 있으면 확장자로 interpreter 추론."""
+    """실행 argv 구성. list 또는 file만. 문자열 command는 plan_run(shell)을 쓴다."""
     if isinstance(command, list) and command:
         return [str(x) for x in command]
     if isinstance(command, str) and command.strip():
-        # ponytail: 단순 공백 split — 따옴표 복잡 파싱은 천장, list args 권장
-        import shlex
-
-        try:
-            return shlex.split(command.strip(), posix=False)
-        except ValueError:
-            return command.strip().split()
+        raise ValueError(
+            "string command is shell mode — use plan_run / build_iris_terminal_shell, not argv split"
+        )
     rel = (file or "").replace("\\", "/").lstrip("/")
     if not rel:
         raise ValueError("command or file required")
@@ -962,10 +1036,10 @@ def build_run_command(
         return ["node", rel]
     if suffix in (".html", ".htm"):
         raise ValueError(f"use browser preview for static web file: {rel}")
-        raise ValueError(
-            f"[PROJECT_AUTORUN_UNSUPPORTED_TYPE] 자동 실행에 지원하지 않는 파일 형식입니다: "
-            f"{suffix or '(none)'}. Windows Setup 다운로드와 무관합니다."
-        )
+    raise ValueError(
+        f"[PROJECT_AUTORUN_UNSUPPORTED_TYPE] 자동 실행에 지원하지 않는 파일 형식입니다: "
+        f"{suffix or '(none)'}. Windows Setup 다운로드와 무관합니다."
+    )
 
 
 def is_static_web_file(file: str) -> bool:

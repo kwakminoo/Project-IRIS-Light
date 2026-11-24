@@ -237,7 +237,10 @@ class QtAttachmentTests(FixtureCase):
         panel._emit_send()
         panel.send_clicked.disconnect(callback)
         self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0][1], [str(path)])
+        self.assertEqual(
+            [os.path.normcase(item) for item in sent[0][1]],
+            [os.path.normcase(str(path))],
+        )
         self.assertNotIn(str(path), sent[0][0])
         return sent[0]
 
@@ -356,7 +359,7 @@ class QtAttachmentTests(FixtureCase):
 
 class WirePayloadTests(FixtureCase):
     def test_actual_hermes_http_request_contains_body_and_no_local_path(self):
-        from iris.infrastructure.iris_agent_client import HermesClient
+        from iris.infrastructure.iris_agent_client import IrisAgentClient
         captured = []
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -376,7 +379,7 @@ class WirePayloadTests(FixtureCase):
         try:
             prepared = prepare_attachments([str(self.files["txt"])])
             messages = inference_messages([{"role": "user", "content": "read", "model_content": prepared.model_content("read")}])
-            response = "".join(e.get("content") or "" for e in HermesClient(f"http://127.0.0.1:{server.server_port}").stream_chat("test", messages))
+            response = "".join(e.get("content") or "" for e in IrisAgentClient(f"http://127.0.0.1:{server.server_port}").stream_chat("test", messages))
             self.assertEqual(response, "TXT-1234")
             self.assertIn("TXT-1234", captured[0]["messages"][0]["content"])
             self.assertNotIn(str(self.root), json.dumps(captured[0]))

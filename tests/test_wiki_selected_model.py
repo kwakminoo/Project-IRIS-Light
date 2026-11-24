@@ -36,7 +36,7 @@ def _nvidia_db():
 
 
 def _settings():
-    return SimpleNamespace(hermes_enabled=False, ollama_base_url="http://127.0.0.1:11434/v1")
+    return SimpleNamespace(agent_enabled=False, ollama_base_url="http://127.0.0.1:11434/v1")
 
 
 def test_api_runtime_id_goes_to_that_provider():

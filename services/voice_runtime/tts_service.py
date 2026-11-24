@@ -26,6 +26,17 @@ TTS_X_VECTOR_ONLY_MODE = True
 # 보이스 프로필 경로는 전사문이 녹음과 함께 저장돼 있어 ICL을 신뢰할 수 있다.
 PROFILE_PROMPT_PREFIX = "profile"
 
+
+def resolve_cached_tts_model(model_name: str) -> str:
+    if Path(model_name).is_dir():
+        return model_name
+    try:
+        from huggingface_hub import snapshot_download
+
+        return str(snapshot_download(model_name, local_files_only=True))
+    except Exception:  # noqa: BLE001
+        return model_name
+
 # qwen-tts는 language 문자열을 프로세서 프롬프트에 그대로 넣는다.
 # "Korean"(대문자)로 주면 발음이 깨지므로 반드시 소문자로 고정한다.
 TTS_LANGUAGE = "korean"
@@ -284,7 +295,7 @@ class TTSService:
                 load_kwargs = {}
 
             try:
-                return Qwen3TTSModel.from_pretrained(model_name, **load_kwargs)
+                return Qwen3TTSModel.from_pretrained(resolve_cached_tts_model(model_name), **load_kwargs)
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"TTS 모델 로딩 실패 ({model_name}): {exc}") from exc
 

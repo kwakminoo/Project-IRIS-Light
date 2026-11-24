@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import yaml
 
-from iris.infrastructure.iris_agent_client import HermesClient
+from iris.infrastructure.iris_agent_client import IrisAgentClient
 from iris.system.iris_agent_ollama_guard import (
     apply_ollama_options_guard,
     looks_like_ollama_endpoint,
@@ -155,7 +155,7 @@ class SetInferenceModelSyncTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            client = HermesClient("http://127.0.0.1:8642/v1")
+            client = IrisAgentClient("http://127.0.0.1:8642/v1")
             with (
                 patch(
                     "iris.infrastructure.iris_agent_credentials.hermes_home",

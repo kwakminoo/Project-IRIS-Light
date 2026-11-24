@@ -20,6 +20,38 @@ from iris.system.setup_protocol import SetupProtocol
 
 
 class HermesInstallBypassTests(unittest.TestCase):
+    def test_uv_probe_recovers_after_missing_dependency_without_editable_reinstall(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd() / ".tmp") as td:
+            home = Path(td)
+            staging = home / "iris-agent.staging"
+            staging.mkdir()
+            (staging / "uv.lock").write_text("", encoding="utf-8")
+            venv_py = staging / "venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+
+            def run(cmd, **_kwargs):
+                if cmd[1:3] == ["-m", "venv"]:
+                    venv_py.parent.mkdir(parents=True)
+                    venv_py.touch()
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                self.fail(f"unexpected editable reinstall: {cmd}")
+
+            ok = subprocess.CompletedProcess(["uv"], 0, "", "")
+            with (
+                patch.object(hi, "_run", side_effect=run),
+                patch.object(hi, "_run_dep", return_value=ok),
+                patch.object(hi, "_wanted_extras", return_value=()),
+                patch.object(hi, "_probe_venv", side_effect=[(False, "aiohttp missing"), (True, "ok")]),
+                patch.object(hi, "_boost_probe_deps", return_value=ok),
+                patch.object(hi, "_activate_staged", return_value=(True, "ready")),
+            ):
+                result = hi._finish_staged_install(
+                    staging=staging, home=home, stamp="test", py=Path(sys.executable),
+                    uv="uv", command="hermes", log=[], emit=lambda _msg: None,
+                    fail=lambda *_args: self.fail("install should succeed"),
+                    run_streamed=None, should_abort=None, probe_gateway=False,
+                )
+            self.assertTrue(result.ok)
+
     def test_detect_winerror_448(self) -> None:
         sample = (
             "Downloading cpython-3.11.16-windows-x86_64-none\n"
@@ -276,7 +308,7 @@ class HermesInstallLogAndStagingTests(unittest.TestCase):
     def test_staging_failure_keeps_live_tree(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "hermes"
-            live = home / "hermes-agent"
+            live = home / hi.IRIS_AGENT_CHECKOUT_NAME
             live.mkdir(parents=True)
             (live / "KEEP").write_text("ok", encoding="utf-8")
 
@@ -284,6 +316,7 @@ class HermesInstallLogAndStagingTests(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 1, "Obtaining file:///\n", "ERROR: clone failed\n")
 
             with (
+                patch.object(hi, "ensure_iris_agent_home", return_value=home),
                 patch.object(hi.gw, "hermes_home", return_value=home),
                 patch.object(hi.gw, "probe_hermes_runtime", return_value=(False, "missing")),
                 patch.object(hi, "ensure_system_python_winget", return_value=Path("python")),
@@ -295,7 +328,7 @@ class HermesInstallLogAndStagingTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertIn("ERROR:", result.message)
             self.assertTrue((live / "KEEP").is_file())
-            self.assertFalse(any(p.name.startswith("hermes-agent.staging-") for p in home.iterdir()))
+            self.assertFalse(any(p.name.startswith(f"{hi.IRIS_AGENT_CHECKOUT_NAME}.staging-") for p in home.iterdir()))
             self.assertTrue(result.log_path)
             self.assertTrue(Path(result.log_path).is_file())
 
@@ -747,7 +780,7 @@ class HermesInstallDeclaredExtrasTests(unittest.TestCase):
             self.assertTrue(result.ok)
             self.assertEqual(len(boosts), 1)
             self.assertTrue(any("aiohttp==3.14.3" in part for part in boosts[0]))
-            self.assertEqual(len(edits), 1)
+            self.assertEqual(len(edits), 0)
 
 
 if __name__ == "__main__":

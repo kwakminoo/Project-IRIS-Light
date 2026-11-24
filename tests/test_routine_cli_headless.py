@@ -101,7 +101,7 @@ class HeadlessRoutineTests(TestCase):
         return Settings(
             ollama_model="qwen3:8b",
             ollama_base_url="http://127.0.0.1:11434/v1",
-            hermes_enabled=False,
+            agent_enabled=False,
         )
 
     def test_does_nothing_while_iris_is_open(self) -> None:

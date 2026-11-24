@@ -272,7 +272,7 @@ def redact_secrets(text: str) -> str:
         return text
     out = _BEARER_RE.sub("Bearer ***", text)
     out = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}=***", out)
-    live_key = (os.environ.get("IRIS_HERMES_API_KEY") or "").strip()
+    live_key = (os.environ.get("IRIS_AGENT_API_KEY") or "").strip()
     if len(live_key) >= 8 and live_key in out:
         out = out.replace(live_key, "***")
     return out
@@ -720,11 +720,14 @@ HERMES_MIN_OLLAMA_NUM_CTX = 64000
 
 
 def _guard_fresh_hermes_tree() -> None:
-    """공식 설치가 hermes-agent 트리를 만든 직후 Iris Agent baseline overlay 1회."""
+    """공식 설치가 agent checkout 트리를 만든 직후 Iris Agent baseline overlay 1회."""
     try:
-        from iris.infrastructure.agent_runtime import apply_iris_agent_baseline_overlays
+        from iris.infrastructure.agent_runtime import (
+            apply_iris_agent_baseline_overlays,
+            iris_agent_repo_dir,
+        )
 
-        apply_iris_agent_baseline_overlays(hermes_home() / "hermes-agent")
+        apply_iris_agent_baseline_overlays(iris_agent_repo_dir(hermes_home()))
     except Exception:
         return
 
@@ -853,8 +856,8 @@ class SetupProtocol:
             else (hermes_base_url or "http://127.0.0.1:8642/v1")
         )
         cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
-        self.hermes_base_url = normalize_iris_agent_openai_base_url(base)
-        self.hermes_command = cmd
+        self.agent_base_url = normalize_iris_agent_openai_base_url(base)
+        self.agent_command = cmd
         self.min_model = (min_model or default_min_model()).strip() or DEFAULT_MIN_MODEL
         self.simulate = is_setup_demo() if simulate is None else bool(simulate)
         self.dry_run = is_setup_dry_run() if dry_run is None else bool(dry_run)
@@ -1091,7 +1094,7 @@ class SetupProtocol:
     def detect(self) -> dict[str, Any]:
         """현재 환경 스냅샷 (설치 여부·준비 여부)."""
         exe_o = ollama_executable()
-        exe_h = hermes_executable(self.hermes_command)
+        exe_h = hermes_executable(self.agent_command)
         repo = project_root()
         venv_py = repo / ".venv" / "Scripts" / "python.exe"
         if not venv_py.is_file():
@@ -1105,7 +1108,7 @@ class SetupProtocol:
             "ollama_exe": exe_o,
             "ollama_running": ollama_up,
             "hermes_exe": exe_h,
-            "hermes_running": is_hermes_gateway_running(self.hermes_base_url),
+            "hermes_running": is_hermes_gateway_running(self.agent_base_url),
             "venv_ok": venv_py.is_file(),
             "min_model": self.min_model,
             "api_key_set": bool(resolve_hermes_api_key()),
@@ -1115,7 +1118,7 @@ class SetupProtocol:
     def detect_local(self) -> dict[str, Any]:
         """로컬 파일·설정만 — 네트워크 헬스는 enrich_detect_network."""
         exe_o = ollama_executable()
-        exe_h = hermes_executable(self.hermes_command)
+        exe_h = hermes_executable(self.agent_command)
         repo = project_root()
         venv_py = repo / ".venv" / "Scripts" / "python.exe"
         if not venv_py.is_file():
@@ -1145,7 +1148,7 @@ class SetupProtocol:
             timeout_sec=timeout_sec,
         )
         out["hermes_running"] = is_hermes_gateway_running(
-            self.hermes_base_url,
+            self.agent_base_url,
             timeout_sec=timeout_sec,
         )
         return out
@@ -1258,16 +1261,16 @@ class SetupProtocol:
             self._record_last_verify("quick", False, detail)
             return False, detail
         key = resolve_hermes_api_key()
-        if not is_hermes_gateway_running(self.hermes_base_url, api_key=key, timeout_sec=3.0):
+        if not is_hermes_gateway_running(self.agent_base_url, api_key=key, timeout_sec=3.0):
             from iris.system.iris_agent_gateway import probe_gateway_health
 
             # 잔상 TIMEOUT 진단을 그대로 쓰지 않는다 — 지금 /health 를 다시 본다.
-            health = probe_gateway_health(self.hermes_base_url, timeout_sec=3.0)
+            health = probe_gateway_health(self.agent_base_url, timeout_sec=3.0)
             if health.ok:
                 from iris.system.iris_agent_gateway import probe_gateway_ready
 
                 ready = probe_gateway_ready(
-                    self.hermes_base_url, api_key=key, timeout_sec=3.0
+                    self.agent_base_url, api_key=key, timeout_sec=3.0
                 )
                 detail = (
                     f"[READY] /health OK 이지만 gateway_ready 실패 ({ready.code}).\n"
@@ -1306,12 +1309,12 @@ class SetupProtocol:
             self._record_last_verify("full", False, report)
             return False, report
         key = resolve_hermes_api_key()
-        if not is_hermes_gateway_running(self.hermes_base_url, api_key=key):
+        if not is_hermes_gateway_running(self.agent_base_url, api_key=key):
             from iris.system.iris_agent_gateway import probe_gateway_health, probe_gateway_ready
 
-            health = probe_gateway_health(self.hermes_base_url, timeout_sec=3.0)
+            health = probe_gateway_health(self.agent_base_url, timeout_sec=3.0)
             ready = probe_gateway_ready(
-                self.hermes_base_url, api_key=key, timeout_sec=3.0
+                self.agent_base_url, api_key=key, timeout_sec=3.0
             )
             report_gw = format_inference_report(
                 local_models=list(info.get("local_models") or []),
@@ -1367,7 +1370,7 @@ class SetupProtocol:
             return False, detail
         from iris.infrastructure.iris_agent_client import IrisAgentClient
 
-        auth = IrisAgentClient(self.hermes_base_url, api_key=key).probe_chat_auth()
+        auth = IrisAgentClient(self.agent_base_url, api_key=key).probe_chat_auth()
         if auth == "unauthorized":
             detail = (
                 "[API_KEY] Iris Agent 게이트웨이 채팅 401 Unauthorized "
@@ -1381,7 +1384,7 @@ class SetupProtocol:
             detail = "Iris Agent 채팅 엔드포인트에 연결할 수 없습니다\n" + report
             self._record_last_verify("full", False, detail)
             return False, detail
-        mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self.hermes_command)
+        mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self.agent_command)
         if not mcp_ok:
             detail = f"MCP 검증 실패: {mcp_detail}\n{report}"
             self._record_last_verify("full", False, detail)
@@ -2447,13 +2450,15 @@ class SetupProtocol:
         return None
 
     def _step_hermes_install(self) -> SetupStepResult:
-        ok, detail = probe_hermes_runtime(command=self.hermes_command)
+        ok, detail = probe_hermes_runtime(command=self.agent_command)
         if ok:
             return self._record_step(
                 "hermes_install", "done", f"Iris Agent 사용 가능 ({detail})"
             )
-        broken = bool(hermes_executable(self.hermes_command)) or (
-            hermes_home() / "hermes-agent"
+        from iris.infrastructure.agent_runtime import iris_agent_repo_dir
+
+        broken = bool(hermes_executable(self.agent_command)) or (
+            iris_agent_repo_dir(hermes_home())
         ).is_dir()
         if broken:
             return SetupStepResult(
@@ -2482,7 +2487,7 @@ class SetupProtocol:
         """깨진 hermes-agent 트리 정리 (.env·config.yaml 유지). 잠금 시 rename 우회."""
         from iris.system.iris_agent_install import force_retire_hermes_agent
 
-        return force_retire_hermes_agent(command=self.hermes_command)
+        return force_retire_hermes_agent(command=self.agent_command)
 
     def _run_hermes_official_installer(self) -> subprocess.CompletedProcess[str]:
         """공식 install.ps1 — HTTPS clone은 스크립트가 SSH 실패 후 처리.
@@ -2587,7 +2592,7 @@ class SetupProtocol:
         )
         try:
             result = install_hermes_with_system_python(
-                command=self.hermes_command,
+                command=self.agent_command,
                 on_stream=lambda m: self._emit_stream(m, None, replace=False),
                 run_streamed=self._run_streamed,
                 should_abort=lambda: self._abort,
@@ -2617,7 +2622,7 @@ class SetupProtocol:
 
         if self._abort:
             return self._hermes_cancelled()
-        ok, detail = probe_hermes_runtime(command=self.hermes_command)
+        ok, detail = probe_hermes_runtime(command=self.agent_command)
         if ok:
             return self._hermes_done(f"Iris Agent 이미 사용 가능 ({detail})")
         if sys.platform != "win32":
@@ -2640,8 +2645,10 @@ class SetupProtocol:
                 replace=False,
             )
             return self._install_hermes_bypass()
-        if (hermes_home() / "hermes-agent").is_dir() or hermes_executable(
-            self.hermes_command
+        from iris.infrastructure.agent_runtime import iris_agent_repo_dir
+
+        if iris_agent_repo_dir(hermes_home()).is_dir() or hermes_executable(
+            self.agent_command
         ):
             wipe_msg = self._wipe_hermes_agent_runtime()
             self._emit_stream(f"깨진 Iris Agent 런타임 정리… {wipe_msg}", None, replace=False)
@@ -2655,7 +2662,7 @@ class SetupProtocol:
             return self._hermes_cancelled()
         except (OSError, subprocess.TimeoutExpired) as exc:
             refresh_process_path()
-            ok_after, detail_after = probe_hermes_runtime(command=self.hermes_command)
+            ok_after, detail_after = probe_hermes_runtime(command=self.agent_command)
             if ok_after:
                 return self._hermes_done(f"시간 초과 후 Iris Agent 사용 가능 ({detail_after})")
             kind = getattr(exc, "kind", "") or "exit"
@@ -2672,7 +2679,7 @@ class SetupProtocol:
             )
             return self._install_hermes_bypass()
         refresh_process_path()
-        ok_after, detail_after = probe_hermes_runtime(command=self.hermes_command)
+        ok_after, detail_after = probe_hermes_runtime(command=self.agent_command)
         if ok_after:
             _guard_fresh_hermes_tree()
             return self._hermes_done(f"Iris Agent 설치됨 ({detail_after})")
@@ -2699,7 +2706,7 @@ class SetupProtocol:
         existing = load_hermes_dotenv()
         key = (existing.get("API_SERVER_KEY") or "").strip()
         if not key:
-            key = (os.environ.get("IRIS_HERMES_API_KEY") or "").strip()
+            key = (os.environ.get("IRIS_AGENT_API_KEY") or "").strip()
         key_rotated = False
         if force_rotate or is_weak_hermes_api_key(key):
             key = secrets.token_urlsafe(32)
@@ -2712,8 +2719,8 @@ class SetupProtocol:
                 "API_SERVER_KEY": key,
             },
         )
-        _upsert_dotenv(_iris_env_path(), {"IRIS_HERMES_API_KEY": key})
-        os.environ["IRIS_HERMES_API_KEY"] = key
+        _upsert_dotenv(_iris_env_path(), {"IRIS_AGENT_API_KEY": key})
+        os.environ["IRIS_AGENT_API_KEY"] = key
         # 확인만 — 키 값은 메시지에 넣지 않음
         if not resolve_hermes_api_key():
             return self._record_step("hermes_env", "failed", "API 키 동기화 실패")
@@ -2847,23 +2854,23 @@ class SetupProtocol:
             if prefer_restart:
                 # Home + provider via supervisor; restart is a lifecycle variant.
                 ensure_iris_agent_runtime(
-                    self.hermes_base_url,
+                    self.agent_base_url,
                     api_key=key,
-                    command=self.hermes_command,
+                    command=self.agent_command,
                     start_gateway=False,
                 )
                 return restart_hermes_gateway(
-                    self.hermes_base_url,
+                    self.agent_base_url,
                     api_key=key,
-                    command=self.hermes_command,
+                    command=self.agent_command,
                     wait_sec=60.0,
                     should_abort=_aborting,
                     on_progress=_progress,
                 )
             return ensure_iris_agent_runtime(
-                self.hermes_base_url,
+                self.agent_base_url,
                 api_key=key,
-                command=self.hermes_command,
+                command=self.agent_command,
                 wait_sec=55.0,
                 should_abort=_aborting,
                 on_progress=_progress,
@@ -2888,7 +2895,7 @@ class SetupProtocol:
             if diag.code != CODE_PROCESS_CRASH:
                 return False
             ok_rt, detail_rt = probe_hermes_runtime(
-                command=self.hermes_command, timeout_sec=12.0
+                command=self.agent_command, timeout_sec=12.0
             )
             return (not ok_rt) and (
                 is_hermes_trampoline_failure(detail_rt)
@@ -2903,10 +2910,10 @@ class SetupProtocol:
         _progress("Iris Agent gateway 상태 확인…")
         # health-only(timeout)와 ready(/v1/models)를 분리 — 예전엔 health만으로 done
         health_up = is_hermes_gateway_running(
-            self.hermes_base_url, api_key=key, timeout_sec=2.0
+            self.agent_base_url, api_key=key, timeout_sec=2.0
         )
         ready_up = (
-            is_hermes_gateway_running(self.hermes_base_url, api_key=key)
+            is_hermes_gateway_running(self.agent_base_url, api_key=key)
             if health_up
             else False
         )
@@ -2920,7 +2927,7 @@ class SetupProtocol:
         elif health_up and ready_up and not _aborting():
             from iris.system.iris_agent_gateway import mark_gateway_already_running
 
-            diag = mark_gateway_already_running(self.hermes_base_url)
+            diag = mark_gateway_already_running(self.agent_base_url)
             if diag.ok:
                 _progress("gateway 이미 실행 중 — ready OK, 유지")
                 ok = True
@@ -2932,7 +2939,7 @@ class SetupProtocol:
             from iris.system.iris_agent_gateway import probe_gateway_ready
 
             ready = probe_gateway_ready(
-                self.hermes_base_url, api_key=key, timeout_sec=3.0
+                self.agent_base_url, api_key=key, timeout_sec=3.0
             )
             _progress(
                 f"gateway /health OK · ready 실패 ({ready.code}: {ready.detail}) — 재기동…"
@@ -2942,13 +2949,13 @@ class SetupProtocol:
                     normalize_iris_agent_openai_base_url,
                 )
 
-                self.hermes_base_url = normalize_iris_agent_openai_base_url(
-                    self.hermes_base_url
+                self.agent_base_url = normalize_iris_agent_openai_base_url(
+                    self.agent_base_url
                 )
-                os.environ["IRIS_HERMES_BASE_URL"] = self.hermes_base_url
+                os.environ["IRIS_AGENT_BASE_URL"] = self.agent_base_url
                 _upsert_dotenv(
                     _iris_env_path(),
-                    {"IRIS_HERMES_BASE_URL": self.hermes_base_url},
+                    {"IRIS_AGENT_BASE_URL": self.agent_base_url},
                 )
                 # 404 ≠ 약한 키 — rotate 금지, .env 키·ENABLED만 보강
                 self._step_hermes_env(force_rotate=False)
@@ -3015,7 +3022,7 @@ class SetupProtocol:
             )
         _progress("SpeakTools 자세 검증…")
         mcp_ok, mcp_detail = verify_iris_mcp_tools(
-            command=self.hermes_command, timeout_sec=25.0
+            command=self.agent_command, timeout_sec=25.0
         )
         if _aborting():
             return self._record_step("hermes_gateway", "failed", "사용자가 중단함")
@@ -3058,7 +3065,7 @@ class SetupProtocol:
             from iris.infrastructure.iris_agent_client import normalize_iris_agent_openai_base_url
 
             ready = probe_gateway_ready(
-                self.hermes_base_url, timeout_sec=3.0
+                self.agent_base_url, timeout_sec=3.0
             )
             # 404는 키 불일치가 아님 — base_url 정규화 + 강제 재기동만
             is_404 = ready.code == "models_404" or ready.http_status == 404
@@ -3066,13 +3073,13 @@ class SetupProtocol:
                 ready.code == "models_http" and "401" in (ready.detail or "")
             )
             if is_404:
-                self.hermes_base_url = normalize_iris_agent_openai_base_url(
-                    self.hermes_base_url
+                self.agent_base_url = normalize_iris_agent_openai_base_url(
+                    self.agent_base_url
                 )
-                os.environ["IRIS_HERMES_BASE_URL"] = self.hermes_base_url
+                os.environ["IRIS_AGENT_BASE_URL"] = self.agent_base_url
                 _upsert_dotenv(
                     _iris_env_path(),
-                    {"IRIS_HERMES_BASE_URL": self.hermes_base_url},
+                    {"IRIS_AGENT_BASE_URL": self.agent_base_url},
                 )
                 self._emit_stream(
                     "gateway /v1/models 404 — base_url 정규화 후 gateway 재기동"
@@ -3902,17 +3909,17 @@ def _self_check() -> None:
     assert "abcDEF123456" not in redact_secrets("API_SERVER_KEY=abcDEF123456789")
     assert "***" in redact_secrets("API_SERVER_KEY=abcDEF123456789")
     assert "supersecrettoken" not in redact_secrets("Authorization: Bearer supersecrettoken")
-    prev_env_key = os.environ.get("IRIS_HERMES_API_KEY")
-    os.environ["IRIS_HERMES_API_KEY"] = "live-secret-value-1234567890"
+    prev_env_key = os.environ.get("IRIS_AGENT_API_KEY")
+    os.environ["IRIS_AGENT_API_KEY"] = "live-secret-value-1234567890"
     try:
         assert "live-secret-value-1234567890" not in redact_secrets(
             "some output live-secret-value-1234567890 embedded"
         )
     finally:
         if prev_env_key is None:
-            os.environ.pop("IRIS_HERMES_API_KEY", None)
+            os.environ.pop("IRIS_AGENT_API_KEY", None)
         else:
-            os.environ["IRIS_HERMES_API_KEY"] = prev_env_key
+            os.environ["IRIS_AGENT_API_KEY"] = prev_env_key
 
     # --- 음성 런타임: 실제 TTS(torch/qwen) 설치 여부는 returncode가 아니라
     #     site-packages 실물로 판별해야 한다 ---

@@ -131,7 +131,8 @@ const bundleHasCurrentExt =
     bundleText.includes('IRIS_EXIT:') &&
     bundleText.includes('setDiagnostics') &&
     bundleText.includes('iris.pdf') &&
-    bundleText.includes('iris-pdf');
+    bundleText.includes('iris-pdf') &&
+    bundleText.includes('iris-markdown-preview-breadcrumb');
 if (rebundle || !bundleHasIris || !bundleHasCurrentExt) {
     console.log('patch-theia-build: rebundling frontend (iris extension)...');
     execSync('node esbuild.mjs', { cwd: root, stdio: 'inherit' });

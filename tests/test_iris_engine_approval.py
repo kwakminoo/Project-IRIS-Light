@@ -52,9 +52,9 @@ class EngineToolsCatalogTests(TestCase):
             assert_iris_engine_tools_catalog(("iris_invoke", "iris_invoke"))
         self.assertIn("duplicate", str(ctx.exception))
 
-    def test_stdio_tool_names_match_the_single_list(self) -> None:
+    def test_speak_tools_replace_the_removed_stdio_catalog(self) -> None:
         from iris.mcp.iris_control_stdio import TOOLS
+        from iris.infrastructure.speak_capability import PHASE4_ALLOWLIST
 
-        names = tuple(tool["name"] for tool in TOOLS)
-        self.assertEqual(names, IRIS_ENGINE_TOOLS)
-        assert_iris_engine_tools_catalog(names)
+        self.assertEqual(TOOLS, [])
+        self.assertEqual(IRIS_ENGINE_TOOLS, PHASE4_ALLOWLIST.names())

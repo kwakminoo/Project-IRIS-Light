@@ -10,8 +10,11 @@ from unittest import mock
 
 from iris.infrastructure import agent_runtime as ar
 from iris.infrastructure.agent_runtime import (
+    IRIS_AGENT_CHECKOUT_NAME,
+    LEGACY_AGENT_CHECKOUT_NAME,
     ensure_iris_agent_home,
     iris_agent_home,
+    iris_agent_repo_dir,
     legacy_agent_home,
     load_pinned_sha,
     migrate_legacy_agent_home,
@@ -109,16 +112,34 @@ def _check_ensure_wired() -> None:
     assert "ensure_iris_agent_home" in src
 
 
+def _check_repo_dir_resolve() -> None:
+    with tempfile.TemporaryDirectory(prefix="iris-p4-repo-") as tmp:
+        home = Path(tmp)
+        assert iris_agent_repo_dir(home) == home / IRIS_AGENT_CHECKOUT_NAME
+        (home / LEGACY_AGENT_CHECKOUT_NAME).mkdir()
+        assert iris_agent_repo_dir(home) == home / LEGACY_AGENT_CHECKOUT_NAME
+        (home / IRIS_AGENT_CHECKOUT_NAME).mkdir()
+        assert iris_agent_repo_dir(home) == home / IRIS_AGENT_CHECKOUT_NAME
+
+
+def _check_baseline_keeps_absorbed_toolsets() -> None:
+    src = inspect.getsource(ar.apply_iris_agent_baseline_overlays)
+    assert "apply_absorbed_toolsets_overlay" in src
+
+
 def _main() -> None:
     _check_pin_contract()
     _check_home_prefers_product()
     _check_no_legacy_active_writer()
     _check_chat_canonical()
     _check_ensure_wired()
+    _check_repo_dir_resolve()
+    _check_baseline_keeps_absorbed_toolsets()
     print(
         "iris_agent_home_phase4 ok",
         load_pinned_sha()[:7],
         iris_agent_home(),
+        iris_agent_repo_dir(),
         CHAT_PRODUCT_OF_RECORD,
     )
 

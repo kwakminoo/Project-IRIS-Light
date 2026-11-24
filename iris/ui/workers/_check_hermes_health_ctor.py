@@ -25,8 +25,8 @@ def main() -> None:
     )
     text = mw.replace("\r\n", "\n")
     assert "IrisAgentHealthWorker(parent=self)" in text
-    assert "IrisAgentHealthWorker(\n            self._settings.hermes_base_url" not in text
-    assert "api_key=self._settings.hermes_api_key" not in text.split("IrisAgentChatWorker(")[1].split(
+    assert "IrisAgentHealthWorker(\n            self._settings.agent_base_url" not in text
+    assert "api_key=self._settings.agent_api_key" not in text.split("IrisAgentChatWorker(")[1].split(
         ")"
     )[0]
     assert "IrisAgentChatWorker(\n                target.model or model," in text

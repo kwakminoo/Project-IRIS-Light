@@ -48,7 +48,9 @@ _POLLUTION_ENV_KEYS = (
 
 
 def engine_python(home: EngineHome) -> EnginePython | None:
-    venv = Path(home) / "hermes-agent" / "venv"
+    from iris.infrastructure.agent_runtime import iris_agent_repo_dir
+
+    venv = iris_agent_repo_dir(Path(home)) / "venv"
     if sys.platform == "win32":
         scripts = venv / "Scripts"
         for name in ("python.exe", "python.cmd", "python"):
@@ -127,10 +129,13 @@ def install_into(
     *,
     clone: object | None = None,
     runner: Callable[..., object] | None = None,
-) -> None:
+) -> EngineError | None:
     if probe_engine_python(home) is None:
         return
-    dest = Path(home) / "hermes-agent"
+    from iris.infrastructure.agent_runtime import IRIS_AGENT_CHECKOUT_NAME
+
+    # New installs always create under canonical iris-agent.
+    dest = Path(home) / IRIS_AGENT_CHECKOUT_NAME
     if runner is not None:
         runner(dest, sha=_engine_pin_sha(), clone=clone)
         return
@@ -140,4 +145,7 @@ def install_into(
         home=Path(home), sha=_engine_pin_sha()
     )
     if result is not None and not getattr(result, "ok", True):
-        return
+        return EngineError(
+            EngineErrorCode.NOT_INSTALLED,
+            str(getattr(result, "message", "Iris Agent 설치에 실패했습니다.")),
+        )

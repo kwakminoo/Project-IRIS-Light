@@ -22,7 +22,7 @@ from iris.infrastructure.iris_agent_client import (
     IrisAgentClient,
     HealthProbeResult,
 )
-from iris.infrastructure.agent_runtime import ensure_iris_agent_home
+from iris.infrastructure.agent_runtime import ensure_iris_agent_home, iris_agent_repo_dir
 from iris.infrastructure.iris_agent_credentials import (
     hermes_home,
     load_hermes_dotenv,
@@ -267,13 +267,14 @@ def _new_gateway_log_paths() -> tuple[Path, Path]:
 
 
 def _windows_hermes_candidates() -> list[Path]:
-    """venv Scripts 와 공식 설치 심(hermes/bin, hermes-agent/bin)."""
+    """venv Scripts 와 공식 설치 심(hermes/bin, checkout/bin)."""
     home = hermes_home()
-    scripts = home / "hermes-agent" / "venv" / "Scripts"
+    repo = iris_agent_repo_dir(home)
+    scripts = repo / "venv" / "Scripts"
     return [
         scripts / "hermes.exe",
         scripts / "hermes-agent.exe",
-        home / "hermes-agent" / "bin" / "hermes.exe",
+        repo / "bin" / "hermes.exe",
         home / "bin" / "hermes.exe",
         home / "bin" / "hermes.cmd",
     ]
@@ -331,7 +332,7 @@ def probe_gateway_health(
 
 
 def _hermes_agent_dir() -> Path:
-    return hermes_home() / "hermes-agent"
+    return iris_agent_repo_dir(hermes_home())
 
 
 def _hermes_venv_dir() -> Path:

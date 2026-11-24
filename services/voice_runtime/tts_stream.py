@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from services.voice_runtime.config import CONFIG
-from services.voice_runtime.tts_service import TTS_LANGUAGE, TTSService, _pcm16_bytes
+from services.voice_runtime.tts_service import TTS_LANGUAGE, TTSService, _pcm16_bytes, resolve_cached_tts_model
 
 DEFAULT_SAMPLE_RATE = 24000
 PCM_YIELD_BYTES = 4096
@@ -141,7 +141,7 @@ def _load_fast_model(service: TTSService, model_name: str) -> Any | None:
             getattr(fast_mod, "__version__", "unknown"),
             model_name,
         )
-        model = cls.from_pretrained(model_name, device="cuda:0", dtype=torch.bfloat16)
+        model = cls.from_pretrained(resolve_cached_tts_model(model_name), device="cuda:0", dtype=torch.bfloat16)
         LOGGER.info("FAST QWEN LOADED: model=%s", model_name)
         return model
 

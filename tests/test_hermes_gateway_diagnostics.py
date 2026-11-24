@@ -340,7 +340,7 @@ class GatewayDiagnosticsTests(unittest.TestCase):
                 return_value="x" * 40,
             ):
                 with patch.object(
-                    gw.HermesClient,
+                    gw.IrisAgentClient,
                     "probe_gateway_ready",
                     return_value=type(
                         "R",
@@ -356,7 +356,7 @@ class GatewayDiagnosticsTests(unittest.TestCase):
                     )(),
                 ):
                     with patch.object(
-                        gw.HermesClient, "probe_chat_auth", return_value="ok"
+                        gw.IrisAgentClient, "probe_chat_auth", return_value="ok"
                     ):
                         diag = gw.mark_gateway_already_running(
                             "http://127.0.0.1:8642/v1"

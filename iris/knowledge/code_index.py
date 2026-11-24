@@ -44,11 +44,15 @@ class IrisCodeIndex:
             folder = rel.parts[0] if len(rel.parts) > 1 else "root"
             if rel.stem == "__init__":
                 # 패키지 자신을 가리키는 실제 import 경로("iris.ui")에 맞춘다.
-                title = rel.parent.name or "iris"
                 module = "iris." + ".".join(rel.parent.parts) if rel.parent.parts else "iris"
             else:
-                title = rel.stem
                 module = "iris." + ".".join(rel.with_suffix("").parts)
+            # The top-level folder groups notes; include the remaining path to avoid overwrites.
+            title = (
+                rel.parent.name if rel.stem == "__init__" and len(rel.parts) <= 2
+                else ".".join(rel.with_suffix("").parts[1:]) if len(rel.parts) > 1
+                else rel.stem
+            )
             doc, symbols, imports = self._parse(path)
             files.append(
                 CodeFile(

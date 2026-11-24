@@ -16,6 +16,10 @@ class TypographyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        for name in ("malgun.ttf", "segoeui.ttf", "arial.ttf", "consola.ttf"):
+            path = Path("C:/Windows/Fonts") / name
+            if path.is_file():
+                QFontDatabase.addApplicationFont(str(path))
         cls.app.setFont(QFont("Noto Sans KR", 10))
 
     def tearDown(self):

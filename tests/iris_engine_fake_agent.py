@@ -4,6 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import types
+
+_tools = types.ModuleType("tools")
+_registry = types.ModuleType("tools.registry")
+_registry.registry = types.SimpleNamespace(register=lambda **_kwargs: None)
+sys.modules.setdefault("tools", _tools)
+sys.modules.setdefault("tools.registry", _registry)
 
 _CTORS: list[dict] = []
 _RUNS: list[dict] = []
@@ -29,6 +37,7 @@ class AIAgent:
         skip = {
             "stream_delta_callback",
             "tool_progress_callback",
+            "tool_complete_callback",
             "reasoning_callback",
         }
         recorded = {

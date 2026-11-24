@@ -1,4 +1,4 @@
-"""History · 모델 자동 전환 설정 박스 — 저장·복원 왕복과 활성/비활성 연동."""
+"""History 설정과 AI Hub 모델 전환 설정의 저장·복원 계약."""
 
 from __future__ import annotations
 
@@ -22,16 +22,16 @@ from iris.storage.failover_prefs import (  # noqa: E402
 )
 from iris.ui.settings.history_failover_box import (  # noqa: E402
     build_history_failover_box,
-    chain_from_box,
     save_history_failover,
 )
+from iris.ui.ai_hub.routing_panel import AiRoutingPanel  # noqa: E402
 
 
 def _add_entry(box, model: str, backend: str = "ollama", free: bool = True) -> None:
     entry = FallbackEntry(model=model, backend=backend, free=free)
     item = QListWidgetItem(model)
     item.setData(256, entry)
-    box.chain_list.addItem(item)
+    box._chain_list.addItem(item)
 
 
 class HistoryFailoverBoxTests(TestCase):
@@ -48,22 +48,25 @@ class HistoryFailoverBoxTests(TestCase):
         self.assertTrue(box.history_enabled.isChecked())
         self.assertTrue(box.record_chat.isChecked())
         self.assertTrue(box.record_inputs.isChecked())
-        self.assertTrue(box.failover_enabled.isChecked())
-        self.assertEqual(box.chain_list.count(), 0)
+        panel = AiRoutingPanel(self.db)
+        self.assertTrue(panel._enabled.isChecked())
+        self.assertEqual(panel._chain_list.count(), 0)
 
     def test_round_trip_through_the_database(self) -> None:
         box = build_history_failover_box(self.db)
         box.record_actions.setChecked(False)
         box.retrieval_limit.setValue(9)
         box.embed_model.setText("bge-m3")
-        box.failover_mode.setCurrentIndex(box.failover_mode.findData(MODE_RETRY))
-        box.retry_count.setValue(4)
-        box.preempt_percent.setValue(88)
-        box.ask_old_model_summary.setChecked(False)
-        _add_entry(box, "free:a")
-        _add_entry(box, "free:b", backend="api", free=False)
+        panel = AiRoutingPanel(self.db)
+        panel._mode.setCurrentIndex(panel._mode.findData(MODE_RETRY))
+        panel._retry_count.setValue(4)
+        panel._preempt_percent.setValue(88)
+        panel._ask_summary.setChecked(False)
+        _add_entry(panel, "free:a")
+        _add_entry(panel, "free:b", backend="api", free=False)
 
         save_history_failover(self.db, box)
+        panel.persist()
 
         history = load_history_settings(self.db)
         self.assertFalse(history.record_actions)
@@ -85,9 +88,10 @@ class HistoryFailoverBoxTests(TestCase):
         reopened = build_history_failover_box(self.db)
         self.assertFalse(reopened.record_actions.isChecked())
         self.assertEqual(reopened.retrieval_limit.value(), 9)
-        self.assertEqual(reopened.chain_list.count(), 2)
+        reopened_panel = AiRoutingPanel(self.db)
+        self.assertEqual(reopened_panel._chain_list.count(), 2)
         self.assertEqual(
-            [e.model for e in chain_from_box(reopened)], ["free:a", "free:b"]
+            [e.model for e in reopened_panel._chain_entries()], ["free:a", "free:b"]
         )
 
     def test_turning_history_off_disables_its_controls(self) -> None:
@@ -108,29 +112,29 @@ class HistoryFailoverBoxTests(TestCase):
         self.assertTrue(box.embed_model.isEnabled())
 
     def test_retry_count_only_matters_in_retry_mode(self) -> None:
-        box = build_history_failover_box(self.db)
-        box.failover_mode.setCurrentIndex(box.failover_mode.findData(MODE_RETRY))
-        self.assertTrue(box.retry_count.isEnabled())
-        box.failover_mode.setCurrentIndex(box.failover_mode.findData(MODE_OFF))
-        self.assertFalse(box.retry_count.isEnabled())
+        panel = AiRoutingPanel(self.db)
+        panel._mode.setCurrentIndex(panel._mode.findData(MODE_RETRY))
+        self.assertTrue(panel._retry_count.isEnabled())
+        panel._mode.setCurrentIndex(panel._mode.findData(MODE_OFF))
+        self.assertFalse(panel._retry_count.isEnabled())
 
     def test_turning_failover_off_disables_the_chain_editor(self) -> None:
-        box = build_history_failover_box(self.db)
-        box.failover_enabled.setChecked(False)
-        self.assertFalse(box.chain_list.isEnabled())
-        self.assertFalse(box.failover_mode.isEnabled())
+        panel = AiRoutingPanel(self.db)
+        panel._enabled.setChecked(False)
+        self.assertFalse(panel._chain_list.isEnabled())
+        self.assertFalse(panel._mode.isEnabled())
 
     def test_preempt_percent_follows_its_toggle(self) -> None:
-        box = build_history_failover_box(self.db)
-        box.preempt_enabled.setChecked(False)
-        self.assertFalse(box.preempt_percent.isEnabled())
-        box.preempt_enabled.setChecked(True)
-        self.assertTrue(box.preempt_percent.isEnabled())
+        panel = AiRoutingPanel(self.db)
+        panel._preempt_enabled.setChecked(False)
+        self.assertFalse(panel._preempt_percent.isEnabled())
+        panel._preempt_enabled.setChecked(True)
+        self.assertTrue(panel._preempt_percent.isEnabled())
 
     def test_saving_an_empty_chain_keeps_failover_usable(self) -> None:
         """후보가 없으면 전환할 곳이 없을 뿐, 설정이 깨지면 안 된다."""
-        box = build_history_failover_box(self.db)
-        save_history_failover(self.db, box)
+        panel = AiRoutingPanel(self.db)
+        panel.persist()
         failover = load_failover_settings(self.db)
         self.assertEqual(failover.chain, [])
         self.assertTrue(failover.enabled)

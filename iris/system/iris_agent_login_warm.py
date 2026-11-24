@@ -1,4 +1,4 @@
-"""Windows 로그온 시 Hermes gateway를 백그라운드로 미리 켠다.
+"""Windows 로그온 시 Iris Agent를 백그라운드로 미리 켠다.
 
 Iris UI 없이 `pythonw` + CLI만 돌린다. 작업은 하나(`ONLOGON`)만 둔다 —
 루틴 깨우기(`routine_wake`)와 같은 schtasks 패턴이다.
@@ -17,7 +17,8 @@ from xml.sax.saxutils import escape
 
 from iris.system.routine_wake import _decode, python_runner
 
-TASK_NAME = r"\IrisLight\HermesGatewayWarm"
+TASK_NAME = r"\IrisLight\IrisAgentWarm"
+LEGACY_TASK_NAME = r"\IrisLight\HermesGatewayWarm"
 _TIMEOUT_SEC = 15
 _NOT_FOUND_HINTS = ("cannot find", "does not exist", "찾을 수 없", "없습니다")
 
@@ -33,7 +34,7 @@ def is_supported() -> bool:
 
 
 def cli_script() -> Path:
-    return Path(__file__).resolve().parents[1] / "hermes_login_warm_cli.py"
+    return Path(__file__).resolve().parents[1] / "iris_agent_login_warm_cli.py"
 
 
 def build_task_command(runner: Path | None = None, script: Path | None = None) -> str:
@@ -146,7 +147,7 @@ def register() -> WarmStatus:
         except OSError:
             pass
     if code == 0:
-        return WarmStatus(registered=True, detail="로그인 시 Hermes 미리 기동")
+        return WarmStatus(registered=True, detail="로그인 시 Iris Agent 미리 기동")
     return WarmStatus(
         registered=False,
         detail=text[:300] or f"schtasks 종료 코드 {code}",
@@ -166,6 +167,10 @@ def unregister() -> WarmStatus:
 
 
 def sync(wanted: bool) -> WarmStatus:
+    if is_supported():
+        code, detail = _run(["schtasks", "/Delete", "/TN", LEGACY_TASK_NAME, "/F"])
+        if code != 0 and not any(hint in detail.lower() for hint in _NOT_FOUND_HINTS):
+            return WarmStatus(False, f"이전 로그인 작업 정리 실패: {detail[:200]}")
     current = query()
     if wanted:
         return current if current.registered else register()
@@ -177,12 +182,12 @@ if __name__ == "__main__":
 
     cmd = build_task_command(
         Path(r"C:\py w\pythonw.exe"),
-        Path(r"C:\proj\hermes_login_warm_cli.py"),
+        Path(r"C:\proj\iris_agent_login_warm_cli.py"),
     )
-    assert cmd == '"C:\\py w\\pythonw.exe" "C:\\proj\\hermes_login_warm_cli.py"'
+    assert cmd == '"C:\\py w\\pythonw.exe" "C:\\proj\\iris_agent_login_warm_cli.py"'
     assert cmd.count('"') == 4
 
-    assert cli_script().name == "hermes_login_warm_cli.py"
+    assert cli_script().name == "iris_agent_login_warm_cli.py"
     runner = python_runner()
     assert runner.name in ("pythonw.exe", "python.exe", Path(sys.executable).name)
 
@@ -201,4 +206,4 @@ if __name__ == "__main__":
         assert register().registered is False
         assert query().registered is False
 
-    print("hermes_login_warm self-check ok")
+    print("iris_agent_login_warm self-check ok")

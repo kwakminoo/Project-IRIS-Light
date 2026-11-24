@@ -92,6 +92,7 @@ from iris.runtime.stream_usage import TokenUsage
 from iris.runtime.voice_intents import IntentContext, VoiceIntent, match_intent
 from iris.storage.ai_analytics import AiCallSample, record_sample
 from iris.storage.database import Database
+from iris.storage.model_favorite_prefs import load_model_favorites, toggle_model_favorite
 from iris.storage.model_prefs import (
     load_ollama_model_probes,
     load_selected_model,
@@ -393,6 +394,8 @@ class MainWindow(QMainWindow):
         self._tts_warmup_model = ""
         self._tts_runtime_ready = False
         self._tts_bootstrap_worker: TTSRuntimeBootstrapWorker | None = None
+        self._mic_bootstrap_worker: TTSRuntimeBootstrapWorker | None = None
+        self._mic_start_requested = False
         self._model_worker: OllamaModelListWorker | None = None
         self._ollama_cleanup_worker: OllamaModelsVerifyWorker | None = None
         self._listed_models: list[OllamaModelInfo] = []
@@ -807,6 +810,7 @@ class MainWindow(QMainWindow):
         self._chat.stop_clicked.connect(self._on_chat_stop)
         self._chat.typing_finished.connect(self._sync_chat_stop_for_presentation)
         self._chat.model_changed.connect(self._on_model_changed)
+        self._chat.model_favorite_toggled.connect(self._on_model_favorite_toggled)
         self._chat.files_attached.connect(self._on_composer_files)
         self._chat.skill_inserted.connect(self._on_composer_skill)
         self._chat.mcp_inserted.connect(self._on_composer_mcp)
@@ -1710,6 +1714,7 @@ class MainWindow(QMainWindow):
                 f"클라우드 미로그인 — 초기 모델을 로컬 '{resolved}'로 선택"
             )
         self._chat.set_models(visible, selected=resolved or preferred)
+        self._chat.set_model_favorites(load_model_favorites(self._db))
         if visible:
             chosen = self._chat.current_model()
             persist = bool(boot and resolved and resolved != preferred)
@@ -1802,6 +1807,7 @@ class MainWindow(QMainWindow):
         if api_only:
             preferred = self._saved_model or ""
             self._chat.set_models(api_only, selected=preferred)
+            self._chat.set_model_favorites(load_model_favorites(self._db))
             self._live_activity.append_instant_line(
                 f"Ollama 목록 실패 — API 모델 {len(api_only)}개만 표시: {err[:120]}"
             )
@@ -1873,6 +1879,11 @@ class MainWindow(QMainWindow):
 
     def _on_model_changed(self, model: str) -> None:
         self._apply_selected_model(model, persist=True)
+
+    def _on_model_favorite_toggled(self, runtime: str) -> None:
+        if self._db is not None:
+            toggle_model_favorite(self._db, runtime)
+            self._chat.set_model_favorites(load_model_favorites(self._db))
 
     def _first_local_picker_model(self) -> str:
         """피커에 있는 로컬 채팅 모델 하나 (임베딩·클라우드 제외)."""
@@ -2429,7 +2440,7 @@ class MainWindow(QMainWindow):
             )
 
     def _sync_hermes_login_warm(self) -> None:
-        """로그인 시 Hermes 미리 기동 작업을 prefs에 맞춘다. 원하는 값이 같을 때는 생략."""
+        """로그인 시 Iris Agent 미리 기동 작업을 prefs에 맞춘다."""
         from iris.storage.iris_agent_login_warm_prefs import load_hermes_login_warm
         from iris.system.iris_agent_login_warm import is_supported, sync
 
@@ -4967,7 +4978,7 @@ class MainWindow(QMainWindow):
         if not (self._use_hermes_backend() and self._hermes_online):
             if self._try_local_skill_run(turn):
                 return
-        # Hermes가 켜져 있으면 여섯 의도는 모델의 iris_invoke. 꺼져 있을 때만 로컬 정규식.
+        # Agent가 켜져 있으면 여섯 의도는 모델의 SpeakTools. 꺼져 있을 때만 로컬 정규식.
         owns = hermes_owns_local_intents(self._use_hermes_backend())
         if owns:
             if self._try_local_extension_install(turn, allow_new=False):
@@ -6691,26 +6702,6 @@ class MainWindow(QMainWindow):
             state = MicState.OFF
         return "ON" if state.is_listening_ui() else "OFF"
 
-    def _ensure_voice_runtime(self) -> bool:
-        try:
-            self._voice_runtime.set_base_url(self._voice_prefs.voice_runtime_url)
-            status = self._voice_runtime.ensure_started(
-                mock_mode=self._voice_prefs.voice_runtime_mock
-            )
-            self._tts_runtime_ready = bool(status.running)
-            self._status_header.set_tts_status(self._tts_idle_status())
-            if status.running:
-                self._request_tts_warmup()
-                self._request_stt_warmup()
-            return status.running
-        except Exception as exc:  # noqa: BLE001
-            self._tts_runtime_ready = False
-            self._status_header.set_tts_status("ERROR")
-            self._live_activity.append_instant_line(
-                f"Voice runtime 오류: {exc} (메인 앱은 계속 사용 가능)"
-            )
-            return False
-
     def _schedule_tts_runtime_bootstrap(self, *, force: bool = False) -> None:
         if self._test_mode or (not self._voice_prefs.tts_enabled and not force):
             return
@@ -7311,15 +7302,60 @@ class MainWindow(QMainWindow):
             self._stop_mic_listen()
             self._persist_mic_listen_preferred(False)
             return
+        if self._mic_start_requested and self._mic_bootstrap_worker is not None:
+            self._mic_start_requested = False
+            self._status_header.set_stt_status("OFF")
+            self._persist_mic_listen_preferred(False)
+            return
         if not self._voice_prefs.stt_enabled:
             self._live_activity.append_instant_line(
                 "STT가 비활성화되어 있습니다. 설정에서 STT 사용을 켜세요."
             )
             return
-        if not self._ensure_voice_runtime():
-            return
-        self._start_mic_listen()
+        self._request_mic_start()
         self._persist_mic_listen_preferred(True)
+
+    def _request_mic_start(self) -> None:
+        self._mic_start_requested = True
+        self._status_header.set_stt_status("BUSY")
+        if self._mic_bootstrap_worker is not None:
+            return
+        url = self._voice_prefs.voice_runtime_url
+        self._voice_runtime.set_base_url(url)
+        worker = TTSRuntimeBootstrapWorker(
+            runtime=self._voice_runtime, runtime_url=url, model_name="",
+            mock_mode=self._voice_prefs.voice_runtime_mock, warmup=False, parent=self,
+        )
+        self._mic_bootstrap_worker = worker
+        worker.finished_ok.connect(self._on_mic_bootstrap_done)
+        worker.failed.connect(self._on_mic_bootstrap_failed)
+        worker.finished.connect(lambda w=worker: self._on_mic_bootstrap_finished(w))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_mic_bootstrap_done(self, result: object) -> None:
+        running = bool(result.get("running")) if isinstance(result, dict) else False
+        self._tts_runtime_ready = running
+        self._status_header.set_tts_status(self._tts_idle_status())
+        if self._mic_start_requested and running and self._voice_prefs.stt_enabled:
+            self._start_mic_listen()
+        elif not running:
+            self._on_mic_bootstrap_failed("Voice runtime did not start")
+        else:
+            self._mic_start_requested = False
+            self._status_header.set_stt_status("OFF")
+
+    def _on_mic_bootstrap_failed(self, err: str) -> None:
+        self._mic_start_requested = False
+        self._tts_runtime_ready = False
+        self._status_header.set_tts_status("ERROR")
+        self._status_header.set_stt_status("ERROR")
+        self._live_activity.append_instant_line(f"Voice runtime 오류: {err[:160]}")
+        self._persist_mic_listen_preferred(False)
+
+    def _on_mic_bootstrap_finished(self, worker: TTSRuntimeBootstrapWorker) -> None:
+        if self._mic_bootstrap_worker is worker:
+            self._mic_bootstrap_worker = None
 
     def _persist_mic_listen_preferred(self, preferred: bool) -> None:
         if bool(getattr(self._voice_prefs, "mic_listen_preferred", False)) == preferred:
@@ -7374,12 +7410,12 @@ class MainWindow(QMainWindow):
             return
         if self._mic.state.is_listening_ui() or self._mic.state == MicState.STARTING:
             return
-        if not self._ensure_voice_runtime():
-            return
         self._live_activity.append_instant_line("VOICE mic_listen restored")
-        self._start_mic_listen()
+        self._request_mic_start()
 
     def _stop_mic_listen(self) -> None:
+        self._mic_start_requested = False
+        self._status_header.set_stt_status("OFF")
         self._stt_session = self._mic.session_id + 1
         self._stt_queue.clear_pending()
         self._cancel_stt_pending_ux()
@@ -9036,11 +9072,9 @@ class MainWindow(QMainWindow):
                     "STT가 비활성화되어 있습니다. 설정에서 STT 사용을 켜세요."
                 )
                 return
-            if not self._ensure_voice_runtime():
-                return
-            self._start_mic_listen()
+            self._request_mic_start()
             self._persist_mic_listen_preferred(True)
-        elif (not on) and listening:
+        elif (not on) and (listening or self._mic_start_requested):
             self._stop_mic_listen()
             self._persist_mic_listen_preferred(False)
 
@@ -9063,7 +9097,7 @@ class MainWindow(QMainWindow):
         self._refresh_context_gauge()
 
     def _chat_messages_with_project_context(self) -> list[dict[str, str]]:
-        """Iris Agent/Ollama 요청용 — Iris Control MCP 지침 + project_root.
+        """Iris Agent/Ollama 요청용 — Iris SpeakTools 지침 + project_root.
 
         Iris Agent 경로는 HERMES_HOME/SOUL.md가 identity(slot #1)라 페르소나를
         여기 넣지 않는다(중복·토큰 낭비). Ollama 직행만 SOUL 원본을 주입한다.
@@ -9103,13 +9137,14 @@ class MainWindow(QMainWindow):
             if persona:
                 bits.append(persona)
         bits.append(
-            "Iris Light UI control: for IDE / Companion / open project / 작업 시작, "
-            "use MCP tools iris_get_state / iris_get_catalog / iris_invoke "
-            "(e.g. iris_invoke action=ide.enter_companion). "
+            "Iris Light UI control: use the available Iris function tools. "
+            "Tool function names replace action dots with underscores: "
+            "workspace.open_email is workspace_open_email({}); ide.enter_companion is ide_enter_companion({}). "
+            "Call only listed functions; never put an action name inside a function name. "
             "Do NOT use terminal cursor/code alone — that skips Companion tiling. "
-            "Do NOT use Iris Agent built-in terminal tool — it is disabled; ALWAYS iris_invoke project.run "
+            "Do NOT use Iris Agent built-in terminal tool — it is disabled; ALWAYS use project_run "
             "so commands run in the bound IDE integrated terminal (IRIS IDE or Cursor). "
-            "Do NOT invent that Iris has no IDE — Iris controls the preferred IDE via MCP. "
+            "Do NOT invent that Iris has no IDE — Iris controls the preferred IDE via its tools. "
             "Writing code: project.write_file with open=true and rel_path set to the filename the user asked for. "
             "If they did not name a file, ask before writing. Do not invent iris_generated.py. "
             "Rename: project.rename_file with path and new_path. Look up path first. If either path is unknown, ask. "
@@ -9173,7 +9208,7 @@ class MainWindow(QMainWindow):
             "ide.enter_companion, ide.exit_companion, workspace.open_assistant, "
             "workspace.open_email, workspace.open_calendar, workspace.open_obsidian, "
             "voice.mic_on, voice.mic_off. "
-            "메일/이메일 화면: iris_invoke workspace.open_email. "
+            "메일/이메일 화면: workspace_open_email({}). "
             "오늘 온 메일·받은편지 요약: email.list_messages (args.today=true 또는 since=YYYY-MM-DD). "
             "본문 읽기: email.read_message (uid). 일정: workspace.open_calendar + calendar.*. "
             "기본 화면/홈으로: workspace.open_assistant (Companion이면 ide.exit_companion 후). "
@@ -11407,6 +11442,9 @@ class MainWindow(QMainWindow):
             if self._tts_bootstrap_worker is not None and self._tts_bootstrap_worker.isRunning():
                 self._tts_bootstrap_worker.request_cancel()
                 self._tts_bootstrap_worker.wait(2000)
+            if self._mic_bootstrap_worker is not None and self._mic_bootstrap_worker.isRunning():
+                self._mic_bootstrap_worker.request_cancel()
+                self._mic_bootstrap_worker.wait(2000)
             for slot in self._runs.all_slots():
                 worker = slot.worker
                 if worker is None or not getattr(worker, "isRunning", lambda: False)():

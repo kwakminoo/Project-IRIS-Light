@@ -17,7 +17,7 @@ from iris.infrastructure.speak_capability import (
     default_speak_tools,
 )
 from iris.mcp.iris_control_stdio import TOOLS
-from iris.ui.workers.iris_agent_workers import HermesChatWorker
+from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker
 
 
 _MCP_TRIPLE = ("iris_get_state", "iris_get_catalog", "iris_invoke")
@@ -30,7 +30,8 @@ def _main() -> None:
     )
     assert IRIS_ENGINE_TOOLS == PHASE4_ALLOWLIST.names()
     assert IRIS_ENGINE_TOOLS == default_speak_tools().engine_names()
-    assert "chat.set_title" in IRIS_ENGINE_TOOLS
+    assert "workspace.open_email" in IRIS_ENGINE_TOOLS
+    assert "chat.set_title" not in IRIS_ENGINE_TOOLS
     assert "project.run" in IRIS_ENGINE_TOOLS
     assert "iris_invoke" not in IRIS_ENGINE_TOOLS
 
@@ -50,12 +51,12 @@ def _main() -> None:
     except AssertionError as exc:
         assert "MCP triple" in str(exc) or "iris_get_state" in str(exc)
 
-    assert HermesChatWorker.engine_tool_names() == IRIS_ENGINE_TOOLS
-    listed = HermesChatWorker.invoke_native_tool("wiki.list_notes", {"limit": 1})
+    assert IrisAgentChatWorker.engine_tool_names() == IRIS_ENGINE_TOOLS
+    listed = IrisAgentChatWorker.invoke_native_tool("wiki.list_notes", {"limit": 1})
     assert listed.get("call_path") == "native", listed
     assert listed.get("ok") is True, listed
-    titled = HermesChatWorker.invoke_native_tool("chat.set_title", {"title": "u3"})
-    assert titled.get("call_path") == "native", titled
+    opened = IrisAgentChatWorker.invoke_native_tool("workspace.open_email", {})
+    assert opened.get("call_path") == "native", opened
 
     workers_text = (
         _ROOT / "iris" / "ui" / "workers" / "iris_agent_workers.py"
@@ -74,7 +75,7 @@ def _main() -> None:
         encoding="utf-8"
     )
     for bare in (
-        "chat.set_title",
+        "workspace_open_email",
         "settings.get",
         "wiki.write_user_note",
         "project.run",

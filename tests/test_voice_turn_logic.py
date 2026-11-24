@@ -52,6 +52,7 @@ class VoiceTurnLogicTests(TestCase):
         self.h._tts_active_play = False
         self.h._tts_queue = []
         self.h._busy = False
+        self.h._conversation_id = 1
         self.h._chat = _ChatStub(draft="보고서 작성 중")
         self.h._live_activity = _LiveActivityStub()
         self.h._cancel_calls: list[tuple[str, bool]] = []
@@ -63,6 +64,8 @@ class VoiceTurnLogicTests(TestCase):
         self.h._in_tts_echo_tail = lambda: MainWindow._in_tts_echo_tail(self.h)
         self.h._tts_blocks_voice_input = lambda: MainWindow._tts_blocks_voice_input(self.h)
         self.h._cancel_stt_pending_ux = lambda **kwargs: None
+        self.h._log_user_input = lambda text: None
+        self.h._mirror_voice_listening_status = self.h._chat.set_user_listening_status
         self.h._stop_stt_ux_timer = lambda: None
         self.h._mic_listen_active = True
         self.h._split_voice_wake_words = lambda: MainWindow._split_voice_wake_words(self.h)
@@ -144,7 +147,7 @@ class VoiceTurnLogicTests(TestCase):
         self.h._busy = True
         self.h._voice_prefs.voice_barge_in_enabled = False
         # dispatcher busy 시뮬레이션 — active turn이 있어야 queue 로그 경로
-        first = self.h._turn_dispatcher.submit(text="이전", source="voice", session_id=0)
+        first = self.h._turn_dispatcher.submit(text="이전", source="voice", session_id=1)
         self.assertIsNotNone(first)
         MainWindow._submit_voice_turn(self.h, "다음 말", session_id=1)
         self.assertEqual(self.h._cancel_calls, [])

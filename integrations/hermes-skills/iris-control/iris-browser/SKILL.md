@@ -12,11 +12,12 @@ description: >
 
 One visible QWebEngine page: dedicated 80:20 shell, or companion left work area plus right chat.
 Agent and human chrome share `BrowserSession`.
+Action IDs below use dots; callable Iris function names replace dots with underscores.
 
 ## Steps
 
-1. `iris_get_state` — read `browser_open`, `browser_url`, `browser_title`, `browser_phase`. Title is chrome, not article body.
-2. `iris_invoke` → `browser.open` if closed.
+1. `get_state` — read `browser_open`, `browser_url`, `browser_title`, `browser_phase`. Title is chrome, not article body.
+2. `browser_open` with `{}` if closed.
 3. Pick action. Results are packed: `trusted` plus untrusted `page_text`. Copy `{ref}` from PAGE TEXT.
 
 | User intent | Action | Args |

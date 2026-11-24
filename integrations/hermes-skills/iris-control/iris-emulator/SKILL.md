@@ -13,12 +13,13 @@ description: >
 # Iris emulator (phase 1)
 
 Lifecycle (launch/kill/status) and project AVD stay here. Rich UI automation → **iris-mobile-mcp**.
+Action IDs below use dots; callable Iris function names replace dots with underscores.
 
 ## Steps
 
-1. `iris_get_state` — check `emulator_running`, `emulator_phase`, `emulator_serial`,
+1. `get_state` — check `emulator_running`, `emulator_phase`, `emulator_serial`,
    `emulator_adb_ready`, `emulator_boot_completed`, `emulator_avd`.
-2. If not running: `iris_invoke` → `emulator.launch`
+2. If not running: `emulator_launch` with `{}`.
 3. Then `emulator.wait_ready` (`{timeout_s?: 180}`) until `phase=ready` / boot_completed.
    Or poll `emulator.status` (`phase`: starting|booting|ready|stopped).
 4. Pick action:

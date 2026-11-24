@@ -53,13 +53,14 @@ class ModelSelectionTests(unittest.TestCase):
             ],
             selected="gemma4:31b-cloud",
         )
-        local, ollama, _brands, singles = split_picker_groups(panel._picker_models)
+        local, ollama, brands, singles = split_picker_groups(panel._picker_models)
         self.assertEqual(
             {m.runtime for m in local},
             {"api:lm:foo", "llama3.2:latest"},
         )
         self.assertEqual([m.runtime for m in ollama], ["gemma4:31b-cloud"])
-        self.assertEqual([m.runtime for m in singles], ["api:nv:meta/llama"])
+        self.assertEqual([m.runtime for m in brands["nv"]], ["api:nv:meta/llama"])
+        self.assertEqual(singles, [])
         panel._select_model_runtime("llama3.2:latest")
         self.assertEqual(panel.current_model(), "llama3.2:latest")
         self.assertEqual(signals, ["llama3.2:latest"])

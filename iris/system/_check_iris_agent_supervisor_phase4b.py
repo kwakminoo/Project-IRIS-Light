@@ -33,7 +33,7 @@ def _check_public_ensure_symbol() -> None:
 
 
 def _check_three_entry_points_call_supervisor() -> None:
-    health_src = inspect.getsource(hw.HermesHealthWorker.run)
+    health_src = inspect.getsource(hw.IrisAgentHealthWorker.run)
     # Health path went through Engine.ensure_ready (sidecar); not a bare gateway start.
     assert "ensure_ready" in health_src
     assert "ensure_hermes_gateway_running" not in health_src
@@ -65,7 +65,7 @@ def _check_three_entry_points_call_supervisor() -> None:
 
 
 def _check_alias_optional() -> None:
-    assert hw.IrisAgentHealthWorker is hw.HermesHealthWorker
+    assert hw.IrisAgentHealthWorker is hw.IrisAgentHealthWorker
 
 
 def _check_no_legacy_log_path_in_setup() -> None:

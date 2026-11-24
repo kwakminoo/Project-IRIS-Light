@@ -10,8 +10,8 @@ description: >
 
 ## Steps
 
-1. Prefer native `iris.tools.catalog` when checking which Iris tools exist.
-   For live UI state call native `iris.session.get_state` (alias `get_state`) —
+1. Prefer `get_catalog` when checking which Iris tools exist.
+   For live UI state call `get_state` —
    product speak path, no MCP Control HTTP. If the result is `requires_iris_ui`,
    tell the user to ask from Iris chat (or click) so Qt MainWindow can answer.
 2. Reply in a short bullet list: ui_mode, workspace_mode, preferred_ide, project_root, model, agent online.

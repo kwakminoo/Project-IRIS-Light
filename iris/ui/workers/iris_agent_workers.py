@@ -35,7 +35,6 @@ from iris.ui.workers.chat_attempt import (
 )
 from iris.infrastructure.iris_agent_client import (
     IrisAgentInferenceTarget,
-    resolve_hermes_inference,
     resolve_iris_agent_inference,
 )
 from iris.infrastructure.speak_capability import current_speak_surface
@@ -103,7 +102,7 @@ class IrisAgentHealthWorker(QThread):
             source = _engine_source()
             result = shared_engine().ensure_ready()
             if isinstance(result, EngineFailed):
-                self.failed.emit(result.user_message)
+                self.failed.emit(result.error.detail or result.user_message)
                 return
             if isinstance(result, EngineReady) and result.summary:
                 self.notice.emit(result.summary)
@@ -522,22 +521,12 @@ class IrisAgentLoopStandinWorker(QThread):
             self.failed.emit(format_agent_loop_failure(e))
 
 
-# Compat aliases for pre-rename imports (Wave B). Canonical names are IrisAgent*.
-HermesHealthWorker = IrisAgentHealthWorker
-HermesChatWorker = IrisAgentChatWorker
-HermesControlSyncWorker = IrisAgentControlSyncWorker
-HermesModelSyncWorker = IrisAgentModelSyncWorker
-
 # re-export for callers that resolve targets in UI thread
 __all__ = [
     "IrisAgentHealthWorker",
     "IrisAgentControlSyncWorker",
     "IrisAgentModelSyncWorker",
     "IrisAgentChatWorker",
-    "HermesHealthWorker",
-    "HermesControlSyncWorker",
-    "HermesModelSyncWorker",
-    "HermesChatWorker",
     "IrisAgentLoopStandinWorker",
     "IRIS_AGENT_LOOP_UI_SIGNALS",
     "safe_agent_ui_slot",
@@ -545,7 +534,6 @@ __all__ = [
     "ChatAttempt",
     "IrisAgentInferenceTarget",
     "resolve_iris_agent_inference",
-    "resolve_hermes_inference",
     "format_agent_loop_failure",
     "AGENT_LOOP_PROPAGATE_BASE",
     "AGENT_LOOP_FAILED_PREFIX",

@@ -23,7 +23,7 @@ from iris.engine import (
     shared_engine,
 )
 from iris.engine.runtime import _turn_api_key, reset_shared_engine
-from iris.infrastructure.iris_agent_client import HermesInferenceTarget
+from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
 
 
 def _turn(*, cancelled: bool = False) -> StatelessTurn:
@@ -32,7 +32,7 @@ def _turn(*, cancelled: bool = False) -> StatelessTurn:
         token.cancel()
     return StatelessTurn(
         transcript=ChatTranscript.parse([{"role": "user", "content": "hi"}]),
-        model=HermesInferenceTarget(model="llama3.2", provider="custom"),
+        model=IrisAgentInferenceTarget(model="llama3.2", provider="custom"),
         cancel=token,
     )
 
@@ -132,7 +132,7 @@ class EngineReadyStubTests(TestCase):
         token = CancelToken()
         turn = StatelessTurn(
             transcript=ChatTranscript.parse([{"role": "user", "content": "hi"}]),
-            model=HermesInferenceTarget(model="llama3.2", provider="custom"),
+            model=IrisAgentInferenceTarget(model="llama3.2", provider="custom"),
             cancel=token,
         )
 
@@ -167,7 +167,7 @@ class EngineReadyStubTests(TestCase):
     def test_ollama_turn_sends_compat_api_key(self) -> None:
         turn = StatelessTurn(
             transcript=ChatTranscript.parse([{"role": "user", "content": "hi"}]),
-            model=HermesInferenceTarget(
+            model=IrisAgentInferenceTarget(
                 model="gemma4:e2b",
                 provider="custom",
                 base_url="http://127.0.0.1:11434/v1",
@@ -177,7 +177,7 @@ class EngineReadyStubTests(TestCase):
         self.assertEqual(_turn_api_key(turn), "ollama")
         keyed = StatelessTurn(
             transcript=turn.transcript,
-            model=HermesInferenceTarget(
+            model=IrisAgentInferenceTarget(
                 model="gpt",
                 provider="custom",
                 base_url="https://api.example/v1",
@@ -202,8 +202,8 @@ class ParseEngineSourceTests(TestCase):
         source = parse_engine_source(
             SimpleNamespace(
                 hermes_external_gateway=True,
-                hermes_base_url="http://127.0.0.1:8642/v1",
-                hermes_api_key="k",
+                agent_base_url="http://127.0.0.1:8642/v1",
+                agent_api_key="k",
             )
         )
         self.assertIsInstance(source, InternalSidecar)

@@ -70,7 +70,7 @@ def _stream_mentions(chunks: list[dict], *needles: str) -> bool:
 
 def main() -> int:
     settings = load_settings()
-    base = (settings.hermes_base_url or "http://127.0.0.1:8642/v1").strip()
+    base = (settings.agent_base_url or "http://127.0.0.1:8642/v1").strip()
     try:
         up = is_hermes_gateway_running(base, timeout_sec=2.0)
     except Exception as exc:
@@ -83,7 +83,7 @@ def main() -> int:
     from iris.infrastructure.iris_agent_client import IrisAgentClient
     from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
 
-    client = IrisAgentClient(base, api_key=resolve_hermes_api_key(settings.hermes_api_key))
+    client = IrisAgentClient(base, api_key=resolve_hermes_api_key(settings.agent_api_key))
     model = (settings.ollama_model or settings.model_name or "").strip()
     if not model or model == "(unset)":
         try:

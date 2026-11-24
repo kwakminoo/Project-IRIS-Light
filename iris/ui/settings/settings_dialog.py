@@ -187,19 +187,6 @@ class LightSettingsSelection:
     voice_prefs: VoicePreferences
     learning_prefs: LearningPreferences
 
-    @property
-    def hermes_command(self) -> str:
-        return self.agent_command
-
-    @property
-    def hermes_base_url(self) -> str:
-        return self.agent_base_url
-
-    @property
-    def hermes_api_key(self) -> str:
-        return self.agent_api_key
-
-
 def _nearest_index(combo, value: float) -> int:
     """콤보에서 저장된 수치와 가장 가까운 항목. 임의 값이 들어와도 UI가 깨지지 않는다."""
     try:
@@ -2435,8 +2422,8 @@ class SettingsDialog(QDialog):
                     self.progress.emit("서비스 기동·연결 확인 중…")
                     _warm_core_services(
                         ollama_base_url=self._proto.ollama_base_url,
-                        agent_base_url=self._proto.hermes_base_url,
-                        agent_command=self._proto.hermes_command,
+                        agent_base_url=self._proto.agent_base_url,
+                        agent_command=self._proto.agent_command,
                         wait_sec=30.0,
                     )
                     ok, detail = self._proto.verify_core()

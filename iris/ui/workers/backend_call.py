@@ -89,14 +89,8 @@ def _hermes(route, messages, stop) -> str:
         model = target.model
         provider = str(getattr(target, "provider", "") or "").strip()
         base_url = str(getattr(target, "base_url", "") or "").strip()
-        synced = False
-        try:
-            client.set_inference_model(target.model, target=target)
-            synced = True
-        except Exception:
-            synced = False
-        # Sync 실패 + custom endpoint면 Hermes 레지스트리 404를 피하고 제공자로 직행.
-        if not synced and base_url and provider == "custom":
+        # Side calls must not overwrite the interactive chat model selection.
+        if base_url and provider == "custom":
             return _api(
                 BackendRoute(
                     backend=BACKEND_API,
@@ -184,7 +178,6 @@ if __name__ == "__main__":
     fake = _FakeHermes()
     _orig = _hc.IrisAgentClient
     _hc.IrisAgentClient = lambda *a, **k: fake  # type: ignore[misc, assignment]
-    _hc.HermesClient = _hc.IrisAgentClient
     try:
         out = collect_reply(
             BackendRoute(backend=BACKEND_AGENT, model="ignored", target=_FakeTarget()),
@@ -197,7 +190,6 @@ if __name__ == "__main__":
         )
     finally:
         _hc.IrisAgentClient = _orig
-        _hc.HermesClient = _orig
     assert out == "ok"
     assert out_legacy == "ok"
     assert fake.synced is not None
@@ -206,7 +198,6 @@ if __name__ == "__main__":
     assert fake.synced[1].model == "nvidia/test-model"
 
     _hc.IrisAgentClient = lambda *a, **k: _FailSyncHermes()  # type: ignore[misc, assignment]
-    _hc.HermesClient = _hc.IrisAgentClient
     _orig_stream = _oc.stream_chat
 
     def _fake_api_stream(*a, **k):
@@ -220,7 +211,6 @@ if __name__ == "__main__":
         )
     finally:
         _hc.IrisAgentClient = _orig
-        _hc.HermesClient = _orig
         _oc.stream_chat = _orig_stream
     assert out2 == "via-api"
     print("backend_call self-check ok")

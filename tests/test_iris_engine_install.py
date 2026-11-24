@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -22,6 +23,7 @@ from iris.engine._home import (
     install_into,
     probe_engine_python,
 )
+from iris.infrastructure.agent_runtime import IRIS_AGENT_CHECKOUT_NAME, load_pinned_sha
 
 
 def _child_pids() -> set[int]:
@@ -34,7 +36,7 @@ def _child_pids() -> set[int]:
 
 def _write_fake_python(home: Path, *, ok: bool) -> Path:
     if sys.platform == "win32":
-        scripts = home / "hermes-agent" / "venv" / "Scripts"
+        scripts = home / IRIS_AGENT_CHECKOUT_NAME / "venv" / "Scripts"
         scripts.mkdir(parents=True)
         path = scripts / "python.cmd"
         if ok:
@@ -45,7 +47,7 @@ def _write_fake_python(home: Path, *, ok: bool) -> Path:
                 encoding="utf-8",
             )
         return path
-    bin_dir = home / "hermes-agent" / "venv" / "bin"
+    bin_dir = home / IRIS_AGENT_CHECKOUT_NAME / "venv" / "bin"
     bin_dir.mkdir(parents=True)
     path = bin_dir / "python"
     if ok:
@@ -61,7 +63,7 @@ def _write_fake_python(home: Path, *, ok: bool) -> Path:
 
 class EngineHomePinTests(TestCase):
     def test_engine_hermes_sha_is_the_how_pin(self) -> None:
-        self.assertEqual(ENGINE_HERMES_SHA, "4787e4d56fc8d9265d4c7d3c0fe5accee86b4078")
+        self.assertEqual(ENGINE_HERMES_SHA, load_pinned_sha())
 
     def test_home_helpers_stay_private(self) -> None:
         import iris.engine as engine
@@ -119,11 +121,18 @@ class ProbeEnginePythonTests(TestCase):
 
 class EnsureReadyInstallTests(TestCase):
     def setUp(self) -> None:
-        self._tmp = TemporaryDirectory()
+        self._tmp = TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / ".tmp")
         self.home = EngineHome(Path(self._tmp.name))
 
     def tearDown(self) -> None:
-        self._tmp.cleanup()
+        for attempt in range(20):
+            try:
+                self._tmp.cleanup()
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
 
     def test_empty_home_does_not_spawn(self) -> None:
         engine = Engine(InternalSidecar(home=self.home))
@@ -136,6 +145,18 @@ class EnsureReadyInstallTests(TestCase):
         assert isinstance(result, EngineFailed)
         self.assertEqual(result.error.code, EngineErrorCode.NOT_INSTALLED)
         self.assertIsNone(engine._child)
+
+    def test_failed_install_reports_installer_reason(self) -> None:
+        from types import SimpleNamespace
+
+        engine = Engine(InternalSidecar(home=self.home))
+        with patch(
+            "iris.system.iris_agent_install.install_hermes_with_system_python",
+            return_value=SimpleNamespace(ok=False, message="dependency conflict; log: iris-install.log"),
+        ):
+            result = engine.ensure_ready()
+        self.assertIsInstance(result, EngineFailed)
+        self.assertIn("dependency conflict", result.error.detail)
 
     def test_empty_home_installs_then_is_ready(self) -> None:
         from tests.test_iris_engine_spawn import _hello_waiter_python
@@ -197,7 +218,7 @@ class EnsureReadyInstallTests(TestCase):
         ) as inst:
             install_into(self.home, runner=runner, clone="repo")
         inst.assert_not_called()
-        self.assertEqual(seen, [(Path(self.home) / "hermes-agent", ENGINE_HERMES_SHA, "repo")])
+        self.assertEqual(seen, [(Path(self.home) / IRIS_AGENT_CHECKOUT_NAME, ENGINE_HERMES_SHA, "repo")])
 
     def test_install_into_without_runner_does_not_clone(self) -> None:
         with (

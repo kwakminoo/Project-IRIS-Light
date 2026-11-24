@@ -1,7 +1,6 @@
 """Product UI code should import IrisAgent* worker names, not Hermes* class names.
 
-HermesChatWorker may remain as a compatibility alias in iris_agent_workers.py.
-Self-checks under _check_* may still mention Hermes names while migrating.
+Compatibility aliases are no longer allowed in product modules.
 
 Run:
   .venv\\Scripts\\python.exe -m iris.ui._check_iris_branding_worker_aliases
@@ -29,13 +28,6 @@ def _product_ui_files() -> list[Path]:
         name = path.name
         if name.startswith("_check_") or name == "_check_iris_branding_worker_aliases.py":
             continue
-        # Definition + shim modules may still define Hermes* aliases.
-        if name in (
-            "iris_agent_workers.py",
-            "hermes_workers.py",
-            "iris_agent_update_worker.py",
-        ):
-            continue
         out.append(path)
     return out
 
@@ -52,7 +44,7 @@ def find_hermes_worker_imports() -> list[str]:
                 _FORBIDDEN_BARE.search(line) and "import" in line
             ):
                 hits.append(f"{rel}:{i}:{line.strip()}")
-            elif _FORBIDDEN_BARE.search(line) and "IrisAgent" not in line:
+            elif _FORBIDDEN_BARE.search(line):
                 # Instantiation / type refs in product UI
                 if (
                     "HermesChatWorker(" in line

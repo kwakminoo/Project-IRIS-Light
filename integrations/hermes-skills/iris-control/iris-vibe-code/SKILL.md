@@ -9,15 +9,17 @@ description: >
 
 # Iris vibe code
 
+Action IDs below use dots; callable Iris function names replace dots with underscores.
+
 ## Steps
 
-1. SpeakTools `get_state` (alias `iris.session.get_state`) — need `project_root` and preferably `ui_mode=ide_companion`.
+1. SpeakTools `get_state` — need `project_root` and preferably `ui_mode=ide_companion`.
    If no project / not companion: follow **iris-work-start** first (`project.open_similar` / `ide.open_folder` / `project.create_scaffold`).
    If `work_root` and the bound IDE folder differ, Iris aligns via `ide.open_folder` before write/run; on failure the tool error names the needed folder — do not silently skip.
 2. **Write + reveal live:**
    Control action `project.write_file` with
    `args`: `{ project_root?, rel_path, content, open: true }`
-   Prefer Iris Speak/Control product path. Use `mcp__iris_control__iris_invoke` only when that MCP tool is listed (IRIS_CONTROL_MCP_COMPAT).
+   Call `project_write_file` through Iris SpeakTools.
    `rel_path` is the file the user named. If they did not name one, ask before writing. Do not invent `iris_generated.py`. Never claim 생성·작성 without ok and a disk path.
    → Iris opens an empty tab, waits until the filename is visible in the IDE title, then streams small chunks into the file so the IDE file watcher shows the code growing. Do not set `typewriter:false` unless the user wants an instant dump.
 2b. **Rename:**

@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
+from PyQt6.QtWidgets import QApplication
+
 from iris.storage.database import Database
 from iris.storage.voice_prefs import (
     VOICE_PREFS_KEY,
@@ -16,6 +18,8 @@ from iris.storage.voice_prefs import (
     resolve_saved_voice_data_dir,
     save_voice_preferences,
 )
+
+_APP = QApplication.instance() or QApplication([])
 
 
 class VoicePrefsTests(TestCase):
@@ -198,9 +202,6 @@ class VoiceRuntimeVenvResolveTests(TestCase):
 
 class ChatInsertInputTests(TestCase):
     def test_insert_appends_not_overwrite(self) -> None:
-        from PyQt6.QtWidgets import QApplication
-
-        app = QApplication.instance() or QApplication([])
         from iris.ui.chat.chat_panel import ChatPanel
 
         panel = ChatPanel()
@@ -209,7 +210,7 @@ class ChatInsertInputTests(TestCase):
         self.assertEqual(panel.current_input_text(), "hello world")
         panel.insert_input_text("again")
         self.assertEqual(panel.current_input_text(), "hello world again")
-        self.assertIsNotNone(app)
+        self.assertIsNotNone(_APP)
 
 
 class TtsQueueOrderTests(TestCase):

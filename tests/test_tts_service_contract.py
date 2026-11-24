@@ -22,11 +22,23 @@ from services.voice_runtime.tts_service import (
     TTS_LANGUAGE,
     TTS_X_VECTOR_ONLY_MODE,
     TTSService,
+    resolve_cached_tts_model,
 )
 
 
 MODEL_NAME = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
 SAMPLE_RATE = 24000
+
+
+class CachedModelResolveTests(TestCase):
+    def test_cached_model_uses_local_snapshot_without_network(self) -> None:
+        with patch("huggingface_hub.snapshot_download", return_value="C:/cached/qwen") as download:
+            self.assertEqual(resolve_cached_tts_model(MODEL_NAME), "C:/cached/qwen")
+        download.assert_called_once_with(MODEL_NAME, local_files_only=True)
+
+    def test_uncached_model_keeps_repository_id(self) -> None:
+        with patch("huggingface_hub.snapshot_download", side_effect=FileNotFoundError):
+            self.assertEqual(resolve_cached_tts_model(MODEL_NAME), MODEL_NAME)
 
 
 class FakeQwen3TTSModel:

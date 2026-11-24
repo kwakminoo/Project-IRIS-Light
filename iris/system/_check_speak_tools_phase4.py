@@ -21,7 +21,7 @@ from iris.infrastructure.speak_capability import (
     default_speak_tools,
     resolve_legacy_name,
 )
-from iris.ui.workers.iris_agent_workers import HermesChatWorker
+from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker
 
 
 _REQUIRED = frozenset(
@@ -38,7 +38,7 @@ _REQUIRED = frozenset(
         "ide.open_folder",
         "project.open_similar",
         "project.run",
-        "chat.set_title",
+        "workspace.open_email",
         "chat.search_past",
         "chat.new_session",
         "diagram.render",
@@ -69,12 +69,12 @@ class _FakeActions:
                     "confirm_required": False,
                 },
             )(),
-            "chat.set_title": type(
+            "workspace.open_email": type(
                 "S",
                 (),
                 {
-                    "name": "chat.set_title",
-                    "summary": "Rename chat",
+                    "name": "workspace.open_email",
+                    "summary": "Open email workspace",
                     "risk": "low",
                     "confirm_required": False,
                 },
@@ -137,7 +137,7 @@ def _main() -> None:
     assert resolve_legacy_name("iris.tools.ping") == "ping"
 
     surface = _RecordingSurface(
-        {"ok": True, "action": "chat.set_title", "result": {"title": "t"}}
+        {"ok": True, "action": "workspace.open_email", "result": {"workspace_mode": "email"}}
     )
     tools = SpeakTools(
         PHASE4_ALLOWLIST,
@@ -177,14 +177,14 @@ def _main() -> None:
     assert pure.call_path == "native"
     assert pure.bridge == "none"
 
-    unknown = tools.invoke("email.list_messages", {})
+    unknown = tools.invoke("email.add_account", {})
     assert unknown.ok is False
 
     for action in (
         "wiki.write_user_note",
         "ide.open_folder",
         "project.run",
-        "chat.set_title",
+        "workspace.open_email",
         "settings.get",
     ):
         surface.calls.clear()
@@ -218,10 +218,10 @@ def _main() -> None:
     assert write.get("error") == "requires_iris_ui"
     assert write.get("bridge") == "none"
 
-    titled = speak_invoke_agent_tool("chat.set_title", {"title": "Sprint"})
-    assert titled.get("call_path") == "native", titled
-    assert titled.get("ok") is False
-    assert titled.get("error") == "requires_iris_ui"
+    opened = speak_invoke_agent_tool("workspace.open_email", {})
+    assert opened.get("call_path") == "native", opened
+    assert opened.get("ok") is False
+    assert opened.get("error") == "requires_iris_ui"
 
     via_mcp_shape = try_native_control_invoke(
         "wiki.write_user_note", {"title": "t", "content": "c"}
@@ -230,9 +230,9 @@ def _main() -> None:
     assert via_mcp_shape.get("call_path") == "native"
     assert via_mcp_shape.get("error") == "requires_iris_ui"
 
-    via_title = try_native_control_invoke("chat.set_title", {"title": "x"})
-    assert via_title is not None
-    assert via_title.get("call_path") == "native"
+    via_open = try_native_control_invoke("workspace.open_email", {})
+    assert via_open is not None
+    assert via_open.get("call_path") == "native"
 
     via_run = try_native_control_invoke("project.run", {"file": "main.py"})
     assert via_run is not None
@@ -242,12 +242,12 @@ def _main() -> None:
     assert listed.get("ok") is True, listed
     assert listed.get("call_path") == "native"
 
-    legacy = HermesChatWorker.invoke_native_tool("iris.wiki.list_notes", {"limit": 1})
+    legacy = IrisAgentChatWorker.invoke_native_tool("iris.wiki.list_notes", {"limit": 1})
     assert legacy.get("ok") is True, legacy
     assert legacy.get("call_path") == "native"
 
     live = default_speak_tools()
-    assert "chat.set_title" in live.engine_names()
+    assert "workspace.open_email" in live.engine_names()
     assert "project.run" in live.engine_names()
 
     confirm_surface = _RecordingSurface(

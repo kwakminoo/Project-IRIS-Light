@@ -144,8 +144,8 @@ _SHARED: Engine | None = None
 def _settings_from_env() -> object:
     # Unit 2: external-gateway env is ignored by parse_engine_source.
     return SimpleNamespace(
-        hermes_base_url=os.environ.get("IRIS_HERMES_BASE_URL", ""),
-        hermes_api_key=os.environ.get("IRIS_HERMES_API_KEY", ""),
+        agent_base_url=os.environ.get("IRIS_AGENT_BASE_URL", ""),
+        agent_api_key=os.environ.get("IRIS_AGENT_API_KEY", ""),
     )
 
 
@@ -269,12 +269,14 @@ def _terminate_child(proc: subprocess.Popen[str]) -> None:
     if proc.poll() is None:
         if sys.platform == "win32":
             try:
-                subprocess.run(
+                killed = subprocess.run(
                     ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                     capture_output=True,
                     timeout=_STOP_TIMEOUT_SEC,
                     **no_window_kwargs(),
                 )
+                if killed.returncode != 0:
+                    proc.kill()
             except (OSError, subprocess.TimeoutExpired):
                 proc.kill()
         else:
@@ -436,7 +438,9 @@ class Engine:
                     EngineErrorCode.NOT_INSTALLED,
                     EngineErrorCode.WRONG_PYTHON,
                 ):
-                    install_into(home)
+                    install_error = install_into(home)
+                    if isinstance(install_error, EngineError):
+                        return EngineFailed(install_error)
                     probe = probe_engine_python(home)
                 if probe is not None:
                     return EngineFailed(probe)
@@ -476,7 +480,9 @@ class Engine:
                 import psutil
 
                 if psutil.pid_exists(int(pid)):
-                    psutil.Process(int(pid)).kill()
+                    real_child = psutil.Process(int(pid))
+                    real_child.kill()
+                    real_child.wait(timeout=_STOP_TIMEOUT_SEC)
                     _watch_trace(f"stop killed hello_pid={pid}")
             except Exception:
                 pass

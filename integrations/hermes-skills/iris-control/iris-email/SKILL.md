@@ -11,29 +11,29 @@ description: >
 
 ## Prefer native seed tools
 
-- Accounts (no passwords): native `iris.mail.list_accounts` (alias `email.list_accounts`).
-  Speak path does not use MCP Control HTTP for this seed tool.
-- Catalog / live UI state: `iris.tools.catalog` / `iris.session.get_state` when needed.
+- Accounts (no passwords): `email_list_accounts`.
+- Catalog / live UI state: `get_catalog` / `get_state` when needed.
 - Inbox read/send still use Control actions (`email.list_messages`, …) via the product
   tool path — never invent Gmail web clicks or claim you read mail without tool results.
+  Action IDs in this skill use dots; the callable function names use underscores.
 
 ## Steps
 
-1. `iris.mail.list_accounts` — note account `id` / `address` / `label`.
+1. `email_list_accounts` — note account `id` / `address` / `label`.
 2. Open UI if needed:
-   `iris_invoke` → `workspace.open_email`
+   `workspace_open_email` with `{}`
 3. List mail (for "오늘 온 메일", "받은편지 요약"):
-   `iris_invoke` → `email.list_messages`
+   `email_list_messages`
    args examples:
    - `{today: true}` — today only (uses UI cache by default — fast, no freeze)
    - `{since: "YYYY-MM-DD", limit: 40}`
    - `{refresh: true}` — force fresh IMAP (slower; only when cache is stale)
 4. Read body:
-   `iris_invoke` → `email.read_message` args `{uid}`
+   `email_read_message` args `{uid}`
    (also opens the message in Iris UI)
 5. Compose / send:
-   - `email.open_compose`
-   - `email.send` args `{to, subject, body, confirm: true}` — high risk, needs confirm
+   - `email_open_compose`
+   - `email_send` args `{to, subject, body}` — high risk, needs human confirmation
 
 ## Notes
 

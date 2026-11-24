@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from iris.infrastructure.iris_agent_client import HermesClient
+from iris.infrastructure.iris_agent_client import IrisAgentClient
 from iris.infrastructure.iris_agent_credentials import (
     is_weak_hermes_api_key,
     resolve_hermes_api_key,
@@ -255,13 +255,13 @@ class HermesApiKeyResolveTests(TestCase):
             self.assertEqual(resolve_hermes_api_key(""), "")
 
 
-class HermesClientAuthTests(TestCase):
+class IrisAgentClientAuthTests(TestCase):
     def test_chat_client_sends_bearer_even_if_caller_passes_empty_key(self) -> None:
         with patch(
             "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
-            client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
+            client = IrisAgentClient("http://127.0.0.1:8642/v1", api_key="")
             self.assertEqual(client.api_key, "gateway-secret")
             headers = client._headers(json_body=True)
             self.assertEqual(headers.get("Authorization"), "Bearer gateway-secret")
@@ -271,7 +271,7 @@ class HermesClientAuthTests(TestCase):
             "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={},
         ):
-            client = HermesClient("http://127.0.0.1:1/v1", api_key="")
+            client = IrisAgentClient("http://127.0.0.1:1/v1", api_key="")
             self.assertFalse(client.gateway_ready())
             ready = client.probe_gateway_ready()
             self.assertFalse(ready.ok)
@@ -287,7 +287,7 @@ class HermesClientAuthTests(TestCase):
             "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "x" * 40},
         ):
-            client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
+            client = IrisAgentClient("http://127.0.0.1:8642/v1", api_key="")
             healthy = HealthProbeResult(
                 ok=True, code="ok", url="http://127.0.0.1:8642/health"
             )
@@ -326,7 +326,7 @@ class HermesClientAuthTests(TestCase):
             normalize_iris_agent_openai_base_url("http://127.0.0.1:8642/v1/v1"),
             "http://127.0.0.1:8642/v1",
         )
-        client = HermesClient("http://127.0.0.1:8642", api_key="x" * 40)
+        client = IrisAgentClient("http://127.0.0.1:8642", api_key="x" * 40)
         self.assertEqual(client.base_url, "http://127.0.0.1:8642/v1")
 
     def test_probe_gateway_ready_models_404(self) -> None:
@@ -339,7 +339,7 @@ class HermesClientAuthTests(TestCase):
             "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "x" * 40},
         ):
-            client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
+            client = IrisAgentClient("http://127.0.0.1:8642/v1", api_key="")
             healthy = HealthProbeResult(
                 ok=True, code="ok", url="http://127.0.0.1:8642/health"
             )
@@ -526,7 +526,7 @@ class HermesGatewayStepReadyTests(TestCase):
             "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={},
         ):
-            client = HermesClient("http://127.0.0.1:1/v1", api_key="")
+            client = IrisAgentClient("http://127.0.0.1:1/v1", api_key="")
             self.assertEqual(client.probe_chat_auth(), "unauthorized")
 
     def test_probe_http_401_is_unauthorized(self) -> None:
@@ -537,7 +537,7 @@ class HermesGatewayStepReadyTests(TestCase):
             "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
-            client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
+            client = IrisAgentClient("http://127.0.0.1:8642/v1", api_key="")
             err = HTTPError(
                 "http://127.0.0.1:8642/v1/chat/completions",
                 401,
@@ -556,7 +556,7 @@ class HermesGatewayStepReadyTests(TestCase):
             "iris.infrastructure.iris_agent_credentials.load_hermes_dotenv",
             return_value={"API_SERVER_KEY": "gateway-secret"},
         ):
-            client = HermesClient("http://127.0.0.1:8642/v1", api_key="")
+            client = IrisAgentClient("http://127.0.0.1:8642/v1", api_key="")
             err = HTTPError(
                 "http://127.0.0.1:8642/v1/chat/completions",
                 400,

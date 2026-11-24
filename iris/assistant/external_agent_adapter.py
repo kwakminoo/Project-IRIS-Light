@@ -16,7 +16,7 @@ def external_backend_status_line(
     """상태 칩용 한 줄 요약."""
     if settings is None:
         return "Iris Agent (Unavailable)"
-    if not settings.hermes_enabled:
+    if not settings.agent_enabled:
         status = "Unavailable"
     elif hermes_online:
         status = "Connected"

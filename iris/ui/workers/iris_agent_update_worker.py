@@ -61,11 +61,6 @@ class IrisAgentUpdateApplyWorker(QThread):
             self.failed.emit(str(exc)[:400])
 
 
-# Compat aliases (Wave E).
-HermesUpdateCheckWorker = IrisAgentUpdateCheckWorker
-HermesUpdateApplyWorker = IrisAgentUpdateApplyWorker
-
-
 if __name__ == "__main__":
     from PyQt6.QtCore import QCoreApplication
 
@@ -77,7 +72,5 @@ if __name__ == "__main__":
     assert hermes_update_argv("hermes") == ["hermes", "update", "--yes"]
     st = IrisAgentUpdateStatus(available=True, detail="abc → def")
     assert st.available
-    assert HermesUpdateCheckWorker is IrisAgentUpdateCheckWorker
-    assert HermesUpdateApplyWorker is IrisAgentUpdateApplyWorker
     assert Path(".").exists()
     print("hermes_update_worker ok")

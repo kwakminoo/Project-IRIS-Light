@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -21,8 +22,8 @@ from iris.engine import (
     TurnFailed,
 )
 from iris.engine._sidecar import encode_host_command, parse_turn_event
-from iris.engine.runtime import _sidecar_env
-from iris.infrastructure.iris_agent_client import HermesInferenceTarget
+from iris.engine.runtime import _read_terminal_file_impl, _sidecar_env
+from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
 from iris.system.win_subprocess import no_window_kwargs
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +33,7 @@ _SIDECAR_MAIN = _ROOT / "iris" / "engine" / "_sidecar_main.py"
 def _turn() -> StatelessTurn:
     return StatelessTurn(
         transcript=ChatTranscript.parse([{"role": "user", "content": "hi"}]),
-        model=HermesInferenceTarget(model="llama3.2", provider="custom"),
+        model=IrisAgentInferenceTarget(model="llama3.2", provider="custom"),
         cancel=CancelToken(),
     )
 
@@ -48,7 +49,7 @@ def _child_env(**overrides: str) -> dict[str, str]:
     return env
 
 
-def _spawn_real_sidecar() -> subprocess.Popen[str]:
+def _spawn_real_sidecar(**env_overrides: str) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [sys.executable, str(_SIDECAR_MAIN)],
         stdin=subprocess.PIPE,
@@ -57,7 +58,7 @@ def _spawn_real_sidecar() -> subprocess.Popen[str]:
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=_child_env(),
+        env=_child_env(**env_overrides),
         cwd=str(_ROOT),
         **no_window_kwargs(),
     )
@@ -67,9 +68,21 @@ def _read_hello(proc: subprocess.Popen[str]) -> dict:
     assert proc.stdout is not None
     line = proc.stdout.readline()
     raw = json.loads(line)
-    if raw != {"t": "hello", "ok": True}:
+    if raw.get("t") != "hello" or raw.get("ok") is not True or int(raw.get("pid") or 0) <= 0:
         raise AssertionError(f"hello was not valid: {line!r}")
     return raw
+
+
+def _read_terminal(pid: int) -> TurnFailed:
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        line = _read_terminal_file_impl(pid)
+        if line:
+            event = parse_turn_event(json.loads(line))
+            assert isinstance(event, TurnFailed)
+            return event
+        time.sleep(0.05)
+    raise AssertionError("sidecar terminal event timed out")
 
 
 def _write_cmd(home: Path, body: str) -> Path:
@@ -125,15 +138,13 @@ class SidecarTurnPipeTests(TestCase):
                 continue
 
     def test_turn_fails_unknown_then_stop_exits_0(self) -> None:
-        self._proc = _spawn_real_sidecar()
-        _read_hello(self._proc)
+        self._proc = _spawn_real_sidecar(IRIS_ENGINE_AGENT_MODULE="__iris_missing_agent__")
+        hello = _read_hello(self._proc)
         assert self._proc.stdin is not None
         assert self._proc.stdout is not None
         self._proc.stdin.write(encode_host_command("turn"))
         self._proc.stdin.flush()
-        event = parse_turn_event(json.loads(self._proc.stdout.readline()))
-        self.assertIsInstance(event, TurnFailed)
-        assert isinstance(event, TurnFailed)
+        event = _read_terminal(int(hello["pid"]))
         self.assertEqual(event.error.code, EngineErrorCode.UNKNOWN)
         self.assertEqual(event.error.detail, "agent loop is not wired")
         self.assertIsNone(self._proc.poll())
@@ -143,14 +154,12 @@ class SidecarTurnPipeTests(TestCase):
 
     def test_unknown_command_is_protocol_and_child_stays_up(self) -> None:
         self._proc = _spawn_real_sidecar()
-        _read_hello(self._proc)
+        hello = _read_hello(self._proc)
         assert self._proc.stdin is not None
         assert self._proc.stdout is not None
         self._proc.stdin.write(encode_host_command("nope"))
         self._proc.stdin.flush()
-        event = parse_turn_event(json.loads(self._proc.stdout.readline()))
-        self.assertIsInstance(event, TurnFailed)
-        assert isinstance(event, TurnFailed)
+        event = _read_terminal(int(hello["pid"]))
         self.assertEqual(event.error.code, EngineErrorCode.PROTOCOL)
         self.assertIsNone(self._proc.poll())
         self._proc.stdin.close()

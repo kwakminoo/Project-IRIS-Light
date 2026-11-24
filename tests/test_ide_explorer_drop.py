@@ -1,4 +1,5 @@
 """IDE native file drops survive repeated WebEngine target refreshes."""
+import os
 import sys
 import unittest
 from unittest.mock import patch
@@ -7,6 +8,8 @@ from unittest.mock import patch
 @unittest.skipUnless(sys.platform == "win32", "Windows OLE targets")
 class IdeExplorerDropTests(unittest.TestCase):
     def test_real_native_child_registration_survives_refresh(self):
+        if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+            self.skipTest("native OLE registration requires a visible Windows desktop")
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QApplication, QWidget
         from iris.ui.window import win_ole_drop as dnd

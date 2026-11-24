@@ -104,7 +104,7 @@ class SttUxTests(TestCase):
         ]
         self.assertEqual(
             prefixes,
-            ["STATE", "MODEL", "TTS", "IRIS LOCAL", "AGENT", "STT"],
+            ["STATE", "MODEL", "TTS", "BROWSER", "IRIS LOCAL", "AGENT", "STT"],
         )
         self.assertNotIn("OPENCLAW", prefixes)
         self.assertNotIn("HERMES", prefixes)

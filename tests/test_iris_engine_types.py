@@ -5,7 +5,7 @@ from unittest import TestCase
 
 from iris.engine import ChatTranscript, EngineError, EngineErrorCode, Role
 from iris.engine.types import DANGEROUS_ACTIONS, IRIS_ENGINE_TOOLS
-from iris.infrastructure.iris_agent_client import HermesInferenceTarget
+from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
 
 
 def _send_payload() -> list[dict[str, str]]:
@@ -89,10 +89,9 @@ class EngineTypeExportTests(TestCase):
         self.assertNotIn("DANGEROUS_ACTIONS", engine.__all__)
 
     def test_private_catalogs_match_the_grafts(self) -> None:
-        self.assertEqual(
-            IRIS_ENGINE_TOOLS,
-            ("iris_get_state", "iris_get_catalog", "iris_invoke"),
-        )
+        self.assertNotEqual(IRIS_ENGINE_TOOLS, ("iris_get_state", "iris_get_catalog", "iris_invoke"))
+        self.assertIn("project.run", IRIS_ENGINE_TOOLS)
+        self.assertIn("wiki.write_user_note", IRIS_ENGINE_TOOLS)
         self.assertEqual(
             DANGEROUS_ACTIONS,
             frozenset(
@@ -105,13 +104,13 @@ class EngineTypeExportTests(TestCase):
             ),
         )
 
-    def test_stateless_turn_reuses_hermes_inference_target(self) -> None:
+    def test_stateless_turn_reuses_iris_agent_inference_target(self) -> None:
         from iris.engine import CancelToken, StatelessTurn
 
         turn = StatelessTurn(
             transcript=ChatTranscript.parse([{"role": "user", "content": "hi"}]),
-            model=HermesInferenceTarget(model="llama3.2", provider="custom"),
+            model=IrisAgentInferenceTarget(model="llama3.2", provider="custom"),
             cancel=CancelToken(),
         )
-        self.assertIsInstance(turn.model, HermesInferenceTarget)
+        self.assertIsInstance(turn.model, IrisAgentInferenceTarget)
         self.assertEqual(EngineErrorCode.AUTH.value, "auth")

@@ -3,7 +3,7 @@
 Product owns the seed catalog. Every seed tool is ``native`` and runs
 in-process (no MCP stdio, no Control HTTP on the product speak path).
 
-Speak/chat path: :func:`speak_invoke_agent_tool` (HermesChatWorker).
+Speak/chat path: :func:`speak_invoke_agent_tool` (IrisAgentChatWorker).
 MCP ``iris_invoke`` for covered seed ``control_action`` values is redirected
 via :func:`try_native_control_invoke` (product-path shrink; not plan B rename).
 Non-catalog Control actions may still use Control HTTP as **compat only**.
@@ -521,7 +521,7 @@ def speak_invoke_agent_tool(
 ) -> dict[str, Any]:
     """Speak/chat worker entry via SpeakTools (PHASE4), else seed registry.
 
-    HermesChatWorker calls this instead of MCP stdio → Control HTTP for
+    IrisAgentChatWorker calls this instead of MCP stdio → Control HTTP for
     product-owned tools.
     """
     from iris.infrastructure.speak_capability import (

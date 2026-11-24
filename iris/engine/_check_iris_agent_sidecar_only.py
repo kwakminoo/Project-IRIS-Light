@@ -23,8 +23,8 @@ def _check_parse_ignores_external_flag() -> None:
 
     flagged = SimpleNamespace(
         hermes_external_gateway=True,
-        hermes_base_url="http://127.0.0.1:8642/v1",
-        hermes_api_key="k",
+        agent_base_url="http://127.0.0.1:8642/v1",
+        agent_api_key="k",
     )
     source = parse_engine_source(flagged)
     assert isinstance(source, InternalSidecar), type(source)
@@ -37,9 +37,9 @@ def _check_env_cannot_reopen_external() -> None:
     with patch.dict(
         os.environ,
         {
-            "IRIS_HERMES_EXTERNAL_GATEWAY": "1",
-            "IRIS_HERMES_BASE_URL": "http://127.0.0.1:8642/v1",
-            "IRIS_HERMES_API_KEY": "env-key",
+            "IRIS_AGENT_EXTERNAL_GATEWAY": "1",
+            "IRIS_AGENT_BASE_URL": "http://127.0.0.1:8642/v1",
+            "IRIS_AGENT_API_KEY": "env-key",
         },
         clear=False,
     ):
@@ -62,7 +62,7 @@ def _check_settings_has_no_external_product_flag() -> None:
         encoding="utf-8"
     )
     assert "hermes_external_gateway" not in settings_src
-    assert "IRIS_HERMES_EXTERNAL_GATEWAY" not in settings_src
+    assert "IRIS_AGENT_EXTERNAL_GATEWAY" not in settings_src
 
 
 def _check_product_workers_have_no_external_branch() -> None:

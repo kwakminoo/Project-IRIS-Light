@@ -44,7 +44,7 @@ class ExtensionInstallWorker(QThread):
                 data["runtime"] = self._reload_gateway()
             elif result.mcp_added:
                 data["runtime"] = (
-                    "설정은 저장되어 다음 Hermes 기동 때 로드됩니다."
+                    "설정은 저장되어 다음 Iris Agent 기동 때 로드됩니다."
                 )
             self.finished_ok.emit(data)
         except Exception as exc:  # noqa: BLE001

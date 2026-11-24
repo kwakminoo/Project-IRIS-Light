@@ -1402,6 +1402,7 @@ class ChatPanel(QWidget):
     # 타이핑 효과가 끝났을 때 — 정지 버튼(presenting) 해제용
     typing_finished = pyqtSignal()
     model_changed = pyqtSignal(str)
+    model_favorite_toggled = pyqtSignal(str)
     files_attached = pyqtSignal(list)
     skill_inserted = pyqtSignal(str)
     mcp_inserted = pyqtSignal(str)
@@ -1514,6 +1515,7 @@ class ChatPanel(QWidget):
         self._model_guard_prev_index = 0
         self._model_guard_silent = False
         self._picker_models: list[PickerModel] = []
+        self._model_favorites: set[str] = set()
         self._model_picker_menu: ModelPickerMenu | None = None
         self._input.submit_requested.connect(self._on_submit_or_stop)
         self._input.textChanged.connect(self._on_input_changed)
@@ -2098,6 +2100,15 @@ class ChatPanel(QWidget):
     def set_mic_recording(self, recording: bool) -> None:
         self._waveform.set_listening(recording)
 
+    def set_model_favorites(self, runtimes) -> None:
+        self._model_favorites = {
+            value.strip() for value in runtimes if isinstance(value, str) and value.strip()
+        }
+
+    def _on_model_favorite_toggled(self, runtime: str) -> None:
+        if runtime.strip():
+            self.model_favorite_toggled.emit(runtime.strip())
+
     def set_models(
         self,
         models: list["OllamaModelInfo"] | list[str],
@@ -2279,7 +2290,9 @@ class ChatPanel(QWidget):
             self._model_picker_menu.hide()
             self._model_picker_menu.deleteLater()
             self._model_picker_menu = None
-        local, ollama, brands, singles = split_picker_groups(self._picker_models)
+        local, ollama, brands, singles = split_picker_groups(
+            self._picker_models, favorites=self._model_favorites
+        )
         brand_rows = [
             (pid, brand_label(items, pid), len(items)) for pid, items in brands.items()
         ]
@@ -2288,6 +2301,7 @@ class ChatPanel(QWidget):
             has_ollama=bool(ollama),
             brands=brand_rows,
             singles=singles,
+            favorites=self._model_favorites,
             parent=self,
         )
         menu.open_local.connect(
@@ -2305,11 +2319,14 @@ class ChatPanel(QWidget):
         )
         menu.open_brand.connect(self._on_open_brand)
         menu.model_chosen.connect(self._select_model_runtime)
+        menu.favorite_toggled.connect(self._on_model_favorite_toggled)
         self._model_picker_menu = menu
         menu.popup_above(self._input_area.input_bar._model_shell)
 
     def _on_open_brand(self, brand_id: str) -> None:
-        _local, _ollama, brands, _singles = split_picker_groups(self._picker_models)
+        _local, _ollama, brands, _singles = split_picker_groups(
+            self._picker_models, favorites=self._model_favorites
+        )
         items = brands.get(brand_id) or []
         title = brand_label(items, brand_id)
         QTimer.singleShot(0, lambda: self._show_brand_dialog(title, items))
@@ -2326,8 +2343,10 @@ class ChatPanel(QWidget):
                 "시안=도구 가능 · 회색=도구 미지원 · 주황=미확인 · 붉음=유료/구독. "
                 "모델을 고른 뒤 「사용」을 누르세요."
             ),
+            favorites=self._model_favorites,
         )
         dlg.model_chosen.connect(self._select_model_runtime)
+        dlg.favorite_toggled.connect(self._on_model_favorite_toggled)
         dlg.exec()
 
     def _select_model_runtime(self, runtime: str) -> None:

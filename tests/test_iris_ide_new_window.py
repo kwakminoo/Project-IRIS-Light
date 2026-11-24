@@ -13,11 +13,13 @@ project_root_path가 비어 있을 때 theia_args에 워크스페이스 경로�
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from iris.system.iris_agent_control_sync import project_root
-from iris.system.iris_ide_runtime import IrisIdeRuntimeManager
+from iris.system.iris_ide_runtime import IrisIdeRuntimeManager, runtime_install_dir
 
 _REAL_POPEN = subprocess.Popen
 
@@ -33,6 +35,7 @@ class IrisIdeNewWindowTests(unittest.TestCase):
         fake_proc = MagicMock()
         fake_proc.pid = 4242
         captured: list[list[str]] = []
+        installed_root = runtime_install_dir()
 
         def _fake_popen(args, **kwargs):
             joined = " ".join(str(a) for a in args)
@@ -42,11 +45,17 @@ class IrisIdeNewWindowTests(unittest.TestCase):
             # node --version 등 다른 subprocess 호출(is_node_ready 등)은 실제로 흘려보낸다.
             return _REAL_POPEN(args, **kwargs)
 
-        with patch("iris.system.iris_ide_runtime.subprocess.Popen", side_effect=_fake_popen), \
+        with tempfile.TemporaryDirectory(dir=project_root() / ".tmp") as state_dir, \
+             patch("iris.system.iris_ide_runtime.iris_state_dir", return_value=Path(state_dir)), \
+             patch("iris.system.iris_ide_runtime.runtime_install_dir", return_value=installed_root), \
+             patch("iris.system.iris_ide_runtime.subprocess.Popen", side_effect=_fake_popen), \
              patch("iris.system.iris_ide_runtime._free_port", side_effect=[59001, 59002]), \
+             patch("iris.system.iris_ide_runtime.shutil.copy2"), \
              patch.object(IrisIdeRuntimeManager, "_write_state", return_value=None), \
              patch.object(IrisIdeRuntimeManager, "wait_until_ready", return_value=(True, "ready")):
             ok, msg = mgr.start(project_root_path)
+            for handle in mgr._proc_logs:
+                handle.close()
         self.assertTrue(ok, msg)
         # captured[0] is the bridge process, captured[1] is the theia CLI process
         self.assertEqual(len(captured), 2)

@@ -235,8 +235,8 @@ def _default_engine_home() -> EngineHome:
 def parse_engine_source(settings: object) -> EngineSource:
     """Settings boundary. Product path is always InternalSidecar.
 
-    agent_enabled (alias hermes_enabled) is the 'use the engine' flag.
-    It does not mean ':8642 is up'. hermes_external_gateway / IRIS_HERMES_EXTERNAL_GATEWAY
+    agent_enabled is the 'use the engine' flag.
+    It does not mean ':8642 is up'. IRIS_AGENT_EXTERNAL_GATEWAY
     no longer select a product source.
     """
     _ = settings

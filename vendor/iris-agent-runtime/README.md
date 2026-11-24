@@ -14,7 +14,7 @@
 
 - Pin file `PIN` is the only allowed checkout for install/update.
 - Update must not chase Nous `origin/main`.
-- Soft-patches (ollama options guard; dead-check verify) land at install/update via `apply_iris_agent_baseline_overlays`. Gateway start does not string-replace agent sources.
+- Soft-patches (ollama options guard; dead-check verify; tool_choice; absorbed terminal/browser toolsets) land at install/update via `apply_iris_agent_baseline_overlays`. Gateway start does not string-replace agent sources.
 - Runtime home is `iris_agent_home()` → `IRIS_AGENT_HOME` or `~/.iris-light/agent` only.
   Legacy `%LOCALAPPDATA%\hermes` is migrate-from (copy, never delete); active writers use product home.
   Install/update checkout the pin in `PIN` via `load_pinned_sha()` (see `hermes_install` / `hermes_update`).

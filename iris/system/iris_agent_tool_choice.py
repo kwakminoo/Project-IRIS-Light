@@ -356,6 +356,7 @@ def note_tool_choice_400(
 
 
 def hermes_home_agent_root() -> Path:
+    from iris.infrastructure.agent_runtime import iris_agent_repo_dir
     from iris.infrastructure.iris_agent_credentials import hermes_home
 
-    return hermes_home() / "hermes-agent"
+    return iris_agent_repo_dir(hermes_home())

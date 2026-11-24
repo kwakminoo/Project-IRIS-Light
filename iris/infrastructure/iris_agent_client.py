@@ -44,10 +44,6 @@ def normalize_iris_agent_openai_base_url(base_url: str) -> str:
     return f"{root}/v1"
 
 
-# Compat alias (Wave E).
-normalize_hermes_openai_base_url = normalize_iris_agent_openai_base_url
-
-
 # Hermes /health 정상 본문: {"status":"ok","platform":"hermes-agent",...}
 _HEALTH_OK_STATUSES = frozenset({"ok", "healthy", "up", "ready", "running"})
 
@@ -142,10 +138,6 @@ class IrisAgentInferenceTarget:
         return (self.display or self.model or "").strip()
 
 
-# Compat alias (Wave D) — prefer IrisAgentInferenceTarget.
-HermesInferenceTarget = IrisAgentInferenceTarget
-
-
 def resolve_iris_agent_inference(
     runtime: str,
     *,
@@ -190,10 +182,6 @@ def resolve_iris_agent_inference(
         api_key="",
         display=raw,
     )
-
-
-# Compat alias (Wave E).
-resolve_hermes_inference = resolve_iris_agent_inference
 
 
 def infer_hermes_provider(model: str) -> str:
@@ -981,10 +969,6 @@ class IrisAgentClient:
             return data if isinstance(data, dict) else {}
 
 
-# Compat alias (Wave D) — prefer IrisAgentClient.
-HermesClient = IrisAgentClient
-
-
 def host_label_for_hermes(base_url: str) -> str:
     try:
         netloc = urlparse(api_root_from_base(base_url)).netloc
@@ -1108,8 +1092,6 @@ if __name__ == "__main__":
     local = resolve_iris_agent_inference("gemma4:26b")
     assert local.provider == "custom" and "11434" in local.base_url
     assert local.model == "gemma4:26b"
-    assert resolve_hermes_inference is resolve_iris_agent_inference
-    assert normalize_hermes_openai_base_url is normalize_iris_agent_openai_base_url
     assert "OLLAMA_API_KEY" in _sse_error_message(
         {
             "choices": [{"finish_reason": "error", "delta": {}}],
@@ -1151,6 +1133,4 @@ if __name__ == "__main__":
     if not empty.api_key:
         assert empty.probe_chat_auth() == "unauthorized"
     assert IrisAgentClient.__name__ == "IrisAgentClient"
-    assert HermesClient is IrisAgentClient
-    assert HermesInferenceTarget is IrisAgentInferenceTarget
     print("iris_agent_client self-check ok")

@@ -2,6 +2,7 @@
 // integrations/iris-ide/src/browser/style/iris-ide-start.css 로 닿는다.
 import '../../src/browser/style/iris-ide-start.css';
 import '../../src/browser/style/iris-pdf.css';
+import '../../src/browser/style/iris-markdown-preview.css';
 
 import { ContainerModule } from '@theia/core/shared/inversify';
 import {
@@ -11,6 +12,7 @@ import {
     WidgetFactory,
 } from '@theia/core/lib/browser';
 import { TabBarToolbarContribution } from '@theia/core/lib/browser/shell/tab-bar-toolbar';
+import { BreadcrumbsRenderer } from '@theia/core/lib/browser/breadcrumbs/breadcrumbs-renderer';
 import { CommandContribution, MenuContribution } from '@theia/core/lib/common';
 import { WorkspaceOpenHandlerContribution } from '@theia/workspace/lib/browser';
 import { IrisIdeFrontendContribution } from './iris-ide-frontend-contribution';
@@ -20,13 +22,15 @@ import { IrisIdeStartContribution } from './iris-ide-start-contribution';
 import { IrisIdeStartWidget, IRIS_IDE_START_WIDGET_ID } from './iris-ide-start-widget';
 import { IrisIdeRunToolbar } from './iris-ide-run-toolbar';
 import { IrisPdfOpenHandler } from './iris-pdf-open-handler';
+import { IrisMarkdownBreadcrumbsRenderer } from './iris-markdown-breadcrumbs';
 import {
     IrisPdfWidget,
     IrisPdfWidgetOptions,
     IRIS_PDF_WIDGET_FACTORY_ID,
 } from './iris-pdf-widget';
 
-export default new ContainerModule(bind => {
+export default new ContainerModule((bind, _unbind, _isBound, rebind) => {
+    rebind(BreadcrumbsRenderer).to(IrisMarkdownBreadcrumbsRenderer);
     bind(IrisIdeEditorStateService).toSelf().inSingletonScope();
     bind(IrisIdeBridgePoller).toSelf().inSingletonScope();
     bind(IrisIdeFrontendContribution).toSelf().inSingletonScope();

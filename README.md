@@ -9,7 +9,8 @@
 **Open Source Desktop AI Agent Runtime**
 
 IRIS는 LLM · MCP · Voice Runtime · Local/Cloud Model을 연결해 **내 PC에서 실행되는 AI Agent Runtime**입니다.
-유료 구독이나 복잡한 수동 연동 없이, 설치 프로그램 하나로 [Ollama](https://ollama.com/)(모델 추론)와 [Hermes Agent](https://hermes-agent.nousresearch.com/)(도구·스킬)를 준비하고 대화형 HUD로 묶습니다.
+유료 구독이나 복잡한 수동 연동 없이, 설치 프로그램 하나로 [Ollama](https://ollama.com/)(모델 추론)와 [Iris Agent](docs/domain.md)(도구·스킬)를 준비하고 대화형 HUD로 묶습니다.
+Iris Agent는 [Nous Hermes Agent](https://hermes-agent.nousresearch.com/)의 MIT 코드를 기반으로 제품 내부에 흡수한 런타임입니다.
 
 단순 챗봇이 아니라 다음을 목표로 합니다.
 
@@ -66,7 +67,7 @@ STT → UserTurnDispatcher → Agent Runtime → TTS
 ### 3. Runtime Architecture
 
 ```text
-GUI → Runtime Gateway → Hermes → Ollama
+GUI → Runtime Gateway → Iris Agent → Ollama
 ```
 
 <!-- ![Runtime Architecture](assets/demo/runtime.gif) -->
@@ -94,11 +95,11 @@ IRIS는 그 간격을 다음 방식으로 좁힙니다.
 | Agent 로직이 UI에 섞임 | Runtime Gateway로 실행 경계를 분리 |
 | GPU 없으면 못 씀 | 클라우드 모델을 기본으로, 로컬 모델은 선택 |
 | 음성이 앱에 묶임 | Voice Runtime을 별도 FastAPI 서비스(`:18765`)로 분리 |
-| 도구 확장이 막힘 | Hermes 스킬 · MCP로 확장 |
+| 도구 확장이 막힘 | Iris Agent 스킬 · MCP로 확장 |
 | 설치·연동이 복잡 | 설치 프로그램이 Python·venv·패키지·런타임까지 자동 처리 |
 
 IRIS는 웹검색·셸·파일 IO를 자체 재구현하지 않습니다.
-**세션·권한·스트리밍 UI·시작 프로토콜**을 담당하고, 실행은 Ollama/Hermes에 위임합니다.
+**세션·권한·스트리밍 UI·시작 프로토콜**을 담당하고, 실행은 Ollama/Iris Agent에 위임합니다.
 
 <details>
 <summary><b>기대 효과 (프로젝트 배경)</b></summary>
@@ -116,15 +117,15 @@ IRIS는 웹검색·셸·파일 IO를 자체 재구현하지 않습니다.
 
 | Feature | Description |
 |---|---|
-| **LLM Agent** | Hermes를 통한 멀티스텝 도구 호출 (파일·터미널·웹) |
-| **MCP** | `iris-control` stdio MCP · Hermes MCP 연동 |
+| **LLM Agent** | Iris Agent를 통한 멀티스텝 도구 호출 (파일·터미널·웹) |
+| **MCP** | `iris-control` stdio MCP · Iris Agent MCP 연동 |
 | **Voice Runtime** | STT/TTS를 별도 FastAPI 서비스(`:18765`)로 분리 (선택 설치) |
 | **Runtime Gateway** | 세션·권한·스트리밍을 담당하는 실행 경계 |
 | **Local Model** | Ollama 로컬 모델 (`:11434`) |
 | **Cloud Model** | GPU 없는 PC를 위한 OpenAI 호환 provider |
-| **시작 프로토콜** | 첫 실행 시 Ollama·모델·Hermes·provider·gateway·MCP를 단계적으로 자동화 |
+| **시작 프로토콜** | 첫 실행 시 Ollama·모델·Iris Agent·provider·gateway·MCP를 단계적으로 자동화 |
 | **대화형 HUD** | 모델 선택, 대화 이력, 사고/도구 로그, 실시간 스트리밍 |
-| **Control Surface** | Hermes → UI 역제어 (`:8765`) · `iris-control` 스킬 |
+| **Control Surface** | Iris Agent → UI 역제어 (`:8765`) · `iris-control` 스킬 |
 | **워크스페이스** | 시스템 모니터 · 이메일(다중 계정) · 캘린더 · IDE Companion · Iris Wiki |
 | **로컬 저장** | 설정·프로필 등 SQLite (`~/.iris-light/`) |
 | **선택 확장** | 화면 학습(Aloha) · Android 에뮬레이터 · mobile-mcp |
@@ -139,8 +140,8 @@ IRIS는 웹검색·셸·파일 IO를 자체 재구현하지 않습니다.
 flowchart TD
     U["사용자 자연어"] --> HUD
     HUD["IRIS HUD · PyQt6<br/>Chat · Monitor · Wiki · Email · Calendar · Settings"] --> GW
-    GW["Runtime Gateway<br/>ollama_client · hermes_client · setup_protocol"] --> OL["Ollama :11434<br/>모델 추론 (로컬/클라우드)"]
-    GW --> HM["Hermes :8642<br/>도구 · 스킬"]
+    GW["Runtime Gateway<br/>ollama_client · iris_agent_client · setup_protocol"] --> OL["Ollama :11434<br/>모델 추론 (로컬/클라우드)"]
+    GW --> HM["Iris Agent :8642<br/>도구 · 스킬"]
     HM --> T["파일 · 터미널 · 웹 · MCP"]
     HM -. "Control Surface :8765" .-> HUD
     VR["Voice Runtime :18765 (선택)<br/>STT / TTS · FastAPI"] <--> HUD
@@ -158,15 +159,15 @@ flowchart TD
 <table>
 <tr><td align="center"><b>1</b></td><td><a href="https://github.com/kwakminoo/Project-IRIS-Light/releases/latest/download/IRIS-Setup.exe"><b>IRIS-Setup.exe 내려받기</b></a> — Windows 10/11 · 약 23MB</td></tr>
 <tr><td align="center"><b>2</b></td><td><b>실행</b>합니다. 서명 인증서가 없어 Windows가 한 번 막습니다 — <b>추가 정보 → 실행</b>. 파이썬 확인 · 가상환경 · 패키지 설치 · 검증까지 <b>전부 자동</b>이라 몇 분 걸립니다.</td></tr>
-<tr><td align="center"><b>3</b></td><td>바탕화면의 <b><code>IRIS</code></b> 를 실행합니다. 시작 위저드가 Ollama · Hermes 설치를 이어서 안내합니다.</td></tr>
+<tr><td align="center"><b>3</b></td><td>바탕화면의 <b><code>IRIS</code></b> 를 실행합니다. 시작 위저드가 Ollama · Iris Agent 설치를 이어서 안내합니다.</td></tr>
 </table>
 
 ### 첫 실행
 
 1. 앱이 **시작 위저드**를 띄웁니다.
-2. Core 단계: Ollama 공식 설치·기동 → 최소 모델 pull → Hermes 설치 → API/provider 연결 → gateway 기동.
+2. Core 단계: Ollama 공식 설치·기동 → 최소 모델 pull → Iris Agent 설치 → API/provider 연결 → gateway 기동.
 3. Optional(STT 음성·Full TTS·업무학습 Aloha·에뮬레이터·Node/mobile-mcp·클라우드 로그인 등)은 「설치」또는 「나중에」.
-4. HUD 채팅에서 자연어 요청을 보내면, Hermes/Ollama가 응답·도구 실행을 스트리밍합니다.
+4. HUD 채팅에서 자연어 요청을 보내면, Iris Agent/Ollama가 응답·도구 실행을 스트리밍합니다.
 
 > 데모만 보려면: `IRIS_SETUP_DEMO=1` (실제 설치 없음) · UI 미리보기: `IRIS_SETUP_DRY_RUN=1`
 
@@ -251,15 +252,15 @@ copy .env.example .env
 
 ### 소프트웨어
 
-- **Windows 10/11** 권장 (시작 프로토콜·winget/Hermes 설치 스크립트 기준)
-- `%LOCALAPPDATA%`가 OneDrive 하면 Hermes 공식 uv가 WinError 448에 걸릴 수 있음 — Iris 우회 설치(시스템 Python)를 사용합니다
+- **Windows 10/11** 권장 (시작 프로토콜·winget/Iris Agent 설치 스크립트 기준)
+- `%LOCALAPPDATA%`가 OneDrive 하면 Iris Agent 공식 uv가 WinError 448에 걸릴 수 있음 — Iris 우회 설치(시스템 Python)를 사용합니다
 - Python **3.11+** 권장
 - **안정적인 인터넷** 필수 (클라우드 모델·도구 호출)
 
 ### 하드웨어 (클라우드 모델 위주)
 
-IRIS는 기본적으로 **클라우드 모델**로 추론하고, 로컬에는 UI·Hermes 게이트웨이·도구 실행만 둡니다.
-로컬 LLM용 GPU/VRAM은 필요하지 않습니다. 아래 저장 공간은 **IRIS 관련 설치분**(앱·venv·Ollama/Hermes 런타임, 대용량 로컬 모델·에뮬레이터 제외) 기준입니다.
+IRIS는 기본적으로 **클라우드 모델**로 추론하고, 로컬에는 UI·Iris Agent 게이트웨이·도구 실행만 둡니다.
+로컬 LLM용 GPU/VRAM은 필요하지 않습니다. 아래 저장 공간은 **IRIS 관련 설치분**(앱·venv·Ollama/Iris Agent 런타임, 대용량 로컬 모델·에뮬레이터 제외) 기준입니다.
 
 | 구분 | 최소 | 권장 |
 |------|------|------|
@@ -319,9 +320,9 @@ chmod +x run.sh
 
 구현 완료:
 
-- [x] LLM Agent Runtime (Hermes 도구 호출 · 멀티스텝)
+- [x] LLM Agent Runtime (Iris Agent 도구 호출 · 멀티스텝)
 - [x] Voice Runtime (STT/TTS FastAPI 서비스 · 선택 설치)
-- [x] MCP Integration (`iris-control` stdio · Hermes MCP)
+- [x] MCP Integration (`iris-control` stdio · Iris Agent MCP)
 - [x] Local/Cloud Model Support (Ollama · OpenAI 호환 provider)
 - [x] Installation System (`IRIS-Setup.exe` · `setup.ps1` / `setup.sh`)
 
@@ -341,7 +342,7 @@ chmod +x run.sh
 
 포함 범위:
 
-- Agent Runtime (Hermes 연동 · 도구 실행)
+- Agent Runtime (Iris Agent 연동 · 도구 실행)
 - Voice Runtime (STT/TTS · 선택 설치)
 - MCP Integration
 - Installation System (`IRIS-Setup.exe` · 자동 setup 스크립트)
@@ -367,7 +368,7 @@ chmod +x run.sh
 | [docs/voice_architecture.md](docs/voice_architecture.md) | 음성 런타임 경계 · 흐름 |
 | [docs/installer-release.md](docs/installer-release.md) | 설치 프로그램 빌드 · 릴리스 절차 |
 | [docs/demo-video-script.md](docs/demo-video-script.md) | 데모 영상 촬영 대본 · 업로드 절차 |
-| [integrations/hermes-skills/README.md](integrations/hermes-skills/README.md) | Iris Control Surface (Hermes ↔ UI) |
+| [integrations/hermes-skills/README.md](integrations/hermes-skills/README.md) | Iris Control Surface (Iris Agent ↔ UI) |
 | [LICENSE.md](LICENSE.md) | 라이선스 근거 · 서드파티 인벤토리 |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | 제3자 고지 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 기여 가이드 |
@@ -378,8 +379,8 @@ chmod +x run.sh
 ```text
 iris/                 # 앱 본체
   ui/                 # PyQt6 HUD (채팅, 모니터, 위키, 메일, 캘린더, IDE, 설정…)
-  system/             # setup_protocol, ollama_server, hermes_gateway, control_surface
-  infrastructure/     # Ollama/Hermes/email/calendar HTTP 클라이언트
+  system/             # setup_protocol, ollama_server, iris_agent_gateway, control_surface
+  infrastructure/     # Ollama/Iris Agent/email/calendar HTTP 클라이언트
   runtime/            # UserTurnDispatcher · voice intents
   knowledge/          # Iris Wiki · Obsidian vault
   storage/            # SQLite 설정·프로필·메일 계정 등
@@ -388,7 +389,7 @@ iris/                 # 앱 본체
   audio/              # (선택) 음성 클라이언트 · VAD/AEC
   mcp/                # iris-control stdio
 services/voice_runtime/  # (선택) FastAPI STT/TTS :18765
-integrations/         # Hermes 스킬·플러그인, Aloha 등
+integrations/         # Iris Agent 스킬·플러그인, Aloha 등
 docs/                 # 도메인·IA·API·음성 설계
 obsidian-vault/       # 프로젝트 지식 베이스 (Wiki docs 소스)
 scripts/              # 빌드·보이스 프로필·설치 보조 스크립트
@@ -406,7 +407,7 @@ LICENSE.md            # 라이선스 근거·서드파티 인벤토리
 |------|------|
 | UI | Python, PyQt6, PyQt6-WebEngine |
 | 모델 | Ollama (OpenAI 호환 `/v1`) |
-| 에이전트 | Hermes Agent (gateway API, skills, MCP) |
+| 에이전트 | Iris Agent (gateway API, skills, MCP) |
 | 음성 | FastAPI (`services/voice_runtime`) |
 | 저장 | SQLite (`~/.iris-light/`) |
 | 지식 | Obsidian 호환 Markdown vault |
@@ -463,5 +464,5 @@ pynput·soxr(LGPL), ShowUI-Aloha(Apache-2.0, 벤더링), 그 외 MIT/BSD/Apache/
 
 ## 면책
 
-IRIS는 Hermes 도구를 통해 로컬 파일·터미널에 영향을 줄 수 있습니다.
+IRIS는 Iris Agent 도구를 통해 로컬 파일·터미널에 영향을 줄 수 있습니다.
 중요한 작업 전에는 권한 설정과 확인 다이얼로그를 확인하세요. 프로덕션 자동화·무인 실행은 사용자 책임 하에 진행하세요.

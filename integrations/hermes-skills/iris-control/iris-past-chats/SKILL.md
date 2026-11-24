@@ -12,7 +12,7 @@ description: >
 
 Prefer Iris Agent SpeakTools (no MCP Control HTTP):
 
-- `chat.search_past` (provider name may appear as `chat_search_past`)
+- `chat_search_past` (Control action ID: `chat.search_past`)
   - Required: `query` — topic words from the user's ask
   - Optional: `limit` — 1..3 (default 3)
 
@@ -28,7 +28,7 @@ other conversation transcripts in Iris History.
 
 ## Steps
 
-1. Call `chat.search_past` with a short `query` that names the topic.
+1. Call `chat_search_past` with a short `query` that names the topic.
 2. Read `hits` / `prompt_block` / `sources_note` / `count` from the ok result.
 3. Answer from those hits. Say you used a prior chat when you rely on them.
 4. If `count` is 0 or settings disabled (`message` present), say nothing useful

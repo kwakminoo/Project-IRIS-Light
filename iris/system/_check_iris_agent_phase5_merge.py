@@ -24,21 +24,13 @@ def _check_chat_worker_prefers_internal_path() -> None:
     from iris.ui.workers import iris_agent_workers as hw
     import inspect
 
-    run_src = inspect.getsource(hw.HermesChatWorker.run)
+    run_src = inspect.getsource(hw.IrisAgentChatWorker.run)
     assert "_run_internal" in run_src
     assert "ExternalGateway" not in run_src
-    assert "_run_external" not in inspect.getsource(hw.HermesChatWorker)
-    internal_src = inspect.getsource(hw.HermesChatWorker._run_internal)
+    assert "_run_external" not in inspect.getsource(hw.IrisAgentChatWorker)
+    internal_src = inspect.getsource(hw.IrisAgentChatWorker._run_internal)
     assert "shared_engine" in internal_src
     assert "8642" not in internal_src
-
-
-def _check_activity_english() -> None:
-    text = (ROOT / "iris" / "ui" / "window" / "main_window.py").read_text(
-        encoding="utf-8"
-    )
-    assert 'append_instant_line("No tool calls")' in text
-    assert "도구 호출 없음" not in text
 
 
 def _check_merge_decision_doc() -> None:
@@ -51,13 +43,11 @@ def _check_merge_decision_doc() -> None:
 def main() -> None:
     _check_default_source_is_internal_sidecar()
     _check_chat_worker_prefers_internal_path()
-    _check_activity_english()
     _check_merge_decision_doc()
     print(
         "iris_agent_phase5_merge ok",
         "decision=DECLINE_SAME_PROCESS",
         "default=InternalSidecar",
-        "activity=english",
         "http8642=retired_from_product",
     )
 

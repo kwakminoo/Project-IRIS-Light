@@ -98,7 +98,7 @@ class ContextHandoffWiringTests(TestCase):
             _settings=SimpleNamespace(
                 ollama_model="paid:big",
                 ollama_base_url="http://127.0.0.1:11434",
-                hermes_enabled=False,
+                agent_enabled=False,
             ),
             _history_embed_worker=None,
             _use_hermes_backend=lambda: False,
@@ -270,15 +270,15 @@ class ContextHandoffWiringTests(TestCase):
         self.assertEqual(route.model, "qwen3:8b")
 
         self.win._use_hermes_backend = lambda: True
-        self.win._settings.hermes_base_url = "http://127.0.0.1:8642/v1"
-        self.win._settings.hermes_api_key = "k"
-        self.win._settings.hermes_command = "hermes"
+        self.win._settings.agent_base_url = "http://127.0.0.1:8642/v1"
+        self.win._settings.agent_api_key = "k"
+        self.win._settings.agent_command = "hermes"
         with patch(
             "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
             return_value=NS(model="upstream", label="up"),
         ):
             route = MainWindow._summary_route_for(self.win, "qwen3:8b")
-        self.assertEqual(route.backend, "hermes")
+        self.assertEqual(route.backend, "agent")
         self.assertEqual(route.target.model, "upstream")
 
     def test_summary_route_api_model_skips_hermes(self) -> None:
@@ -442,7 +442,7 @@ class ContextHandoffWiringTests(TestCase):
             FallbackEntry(model="api:zz:remote", backend="api"),
         ]
         save_failover_settings(self.db, settings)
-        self.win._settings.hermes_enabled = True
+        self.win._settings.agent_enabled = True
         self.win._use_hermes_backend = lambda: True
         self.win._context_limit_cache.update(
             {"paid:big": 128_000, "free:a": 128_000, "api:zz:remote": 128_000}

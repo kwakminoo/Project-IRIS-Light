@@ -1,0 +1,33 @@
+.theia-breadcrumbs .theia-breadcrumb-item:has(+ .iris-markdown-preview-breadcrumb)::after {
+    display: none;
+}
+
+.iris-markdown-preview-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 100%;
+    padding-left: 7px;
+    color: var(--theia-breadcrumb-foreground);
+}
+
+.iris-markdown-preview-breadcrumb:not(:last-of-type)::after {
+    font-family: codicon;
+    content: "\eab6";
+    padding-inline: 3px 6px;
+}
+
+.iris-markdown-preview-breadcrumb button {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.iris-markdown-preview-breadcrumb button:hover,
+.iris-markdown-preview-breadcrumb button:focus-visible {
+    color: var(--theia-breadcrumb-focusForeground);
+    text-decoration: underline;
+}

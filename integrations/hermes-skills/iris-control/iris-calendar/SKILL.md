@@ -11,20 +11,20 @@ description: >
 
 ## Prefer native seed tools
 
-- List schedules: native `iris.calendar.list_events` (alias `calendar.list_events`).
-  Speak path does not use MCP Control HTTP for this seed tool.
-- Live UI mode: `iris.session.get_state` when needed.
+- List schedules: `calendar_list_events`.
+- Live UI mode: `get_state` when needed.
 - Open/add/delete/select still use Control actions via the product tool path —
   do **not** invent local calendar files; schedules live in Iris DB + wiki `user/schedule/`.
+  Action IDs below use dots; callable function names replace dots with underscores.
 
 ## Steps
 
-1. `iris.session.get_state` — note `workspace_mode` (needs Iris UI; if `requires_iris_ui`, ask user to speak in Iris chat or click).
+1. `get_state` — note `workspace_mode` (needs Iris UI; if `requires_iris_ui`, ask user to speak in Iris chat or click).
 2. Open calendar if needed:
-   `iris_invoke` → `workspace.open_calendar`
+   `workspace_open_calendar` with `{}`
 3. Inspect:
    - `calendar.status` — selected day + events
-   - `iris.calendar.list_events` — full list (native)
+   - `calendar_list_events` — full list (native)
 4. Navigate:
    - `calendar.set_month` args `{year, month}`
    - `calendar.select_day` args `{date: "YYYY-MM-DD"}`

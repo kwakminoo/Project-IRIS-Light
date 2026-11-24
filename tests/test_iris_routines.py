@@ -93,7 +93,7 @@ class IrisStateSecretTests(TestCase):
 
     def test_absent_key_says_so_plainly(self) -> None:
         state = build_state(hermes_enabled=True, hermes_api_key="")
-        self.assertEqual(state["Hermes API 키"], "없음")
+        self.assertEqual(state["Iris Agent API 키"], "없음")
 
     def test_secret_label_detection(self) -> None:
         self.assertTrue(is_secret_label("Hermes API 키"))
@@ -102,7 +102,7 @@ class IrisStateSecretTests(TestCase):
 
     def test_state_covers_what_the_user_configured(self) -> None:
         self.assertEqual(self.state["대화 모델"], "qwen3:8b")
-        self.assertEqual(self.state["백엔드"], "Hermes 에이전트")
+        self.assertEqual(self.state["백엔드"], "Iris Agent")
         self.assertIn("대화", self.state["History 기록"])
         self.assertIn("bge-m3", self.state["History 검색"])
         self.assertIn("free:a", self.state["전환 후보"])

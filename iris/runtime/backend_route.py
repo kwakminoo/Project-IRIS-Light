@@ -39,7 +39,7 @@ def resolve_backend_route(
     if not name:
         return None
 
-    if bool(getattr(settings, "hermes_enabled", False)):
+    if bool(getattr(settings, "agent_enabled", False)):
         try:
             from iris.infrastructure.iris_agent_client import resolve_iris_agent_inference
 
@@ -53,9 +53,9 @@ def resolve_backend_route(
         return BackendRoute(
             backend=AGENT_BACKEND,
             model=name,
-            base_url=getattr(settings, "hermes_base_url", ""),
-            api_key=getattr(settings, "hermes_api_key", ""),
-            command=getattr(settings, "hermes_command", "hermes"),
+            base_url=getattr(settings, "agent_base_url", ""),
+            api_key=getattr(settings, "agent_api_key", ""),
+            command=getattr(settings, "agent_command", "hermes"),
             target=target,
         )
 
@@ -130,7 +130,7 @@ def settings_for_model(settings: Any, ollama_base_url: str) -> Any:
     from types import SimpleNamespace
 
     return SimpleNamespace(
-        hermes_enabled=False,
+        agent_enabled=False,
         ollama_base_url=ollama_base_url or "http://127.0.0.1:11434/v1",
     )
 
@@ -192,7 +192,7 @@ if __name__ == "__main__":
     from types import SimpleNamespace
 
     ollama_only = SimpleNamespace(
-        hermes_enabled=False, ollama_base_url="http://127.0.0.1:11434/v1"
+        agent_enabled=False, ollama_base_url="http://127.0.0.1:11434/v1"
     )
     route = resolve_backend_route(ollama_only, None, "qwen3:8b")
     assert route.backend == "ollama" and route.model == "qwen3:8b"
@@ -243,10 +243,10 @@ if __name__ == "__main__":
 
     # Hermes 가 켜져 있으면 전부 게이트웨이로
     hermes_on = SimpleNamespace(
-        hermes_enabled=True,
-        hermes_base_url="http://127.0.0.1:8642/v1",
-        hermes_api_key="k",
-        hermes_command="hermes",
+        agent_enabled=True,
+        agent_base_url="http://127.0.0.1:8642/v1",
+        agent_api_key="k",
+        agent_command="hermes",
         ollama_base_url="http://127.0.0.1:11434/v1",
     )
 
@@ -254,7 +254,6 @@ if __name__ == "__main__":
 
     original = hc.resolve_iris_agent_inference
     hc.resolve_iris_agent_inference = lambda m, **kw: SimpleNamespace(model=f"up/{m}", label=m)
-    hc.resolve_hermes_inference = hc.resolve_iris_agent_inference
     try:
         route = resolve_backend_route(hermes_on, None, "qwen3:8b")
         assert route.backend == AGENT_BACKEND and route.target.model == "up/qwen3:8b"
@@ -264,11 +263,9 @@ if __name__ == "__main__":
 
         # 해석이 실패하면 None
         hc.resolve_iris_agent_inference = lambda m, **kw: (_ for _ in ()).throw(ValueError("없음"))
-        hc.resolve_hermes_inference = hc.resolve_iris_agent_inference
         assert resolve_backend_route(hermes_on, None, "api:gone:x") is None
     finally:
         hc.resolve_iris_agent_inference = original
-        hc.resolve_hermes_inference = original
 
     # 루틴 고정 모델
     pinned = SimpleNamespace(model="qwen3:32b")

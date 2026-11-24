@@ -19,12 +19,13 @@ Windows + 로컬 Android SDK + 프로젝트 AVD `IrisLight_Pixel` 전제.
 
 | Intent | Where |
 |--------|--------|
-| 에뮬 켜기/끄기/상태, 프로젝트 AVD, Iris UI | `iris_invoke` → `emulator.*` / `workspace.open_mobile` (iris-emulator) |
-| **Play 스토어 앱 설치** (인스타/텔레그램 등) | `iris_invoke` → `emulator.play_install` (iris-emulator) — 딥링크 + UI 트리라 더 안정적 |
-| 화면 글자 확인·글자로 탭 | `iris_invoke` → `emulator.ui_texts` / `emulator.tap_text` (iris-emulator) |
+| 에뮬 켜기/끄기/상태, 프로젝트 AVD, Iris UI | Iris `emulator_*` / `workspace_open_mobile` tools (iris-emulator) |
+| **Play 스토어 앱 설치** (인스타/텔레그램 등) | `emulator_play_install` (iris-emulator) — 딥링크 + UI 트리라 더 안정적 |
+| 화면 글자 확인·글자로 탭 | `emulator_ui_texts` / `emulator_tap_text` (iris-emulator) |
 | 디바이스 목록, 스크린샷, UI 요소, 좌표 탭/스와이프, APK 설치·실행·종료, 키 입력 | **mobile-mcp** tools below |
 
-Do **not** reimplement mobile-mcp inside iris-control. Do **not** use iris-control alone for deep UI trees.
+Do **not** reimplement mobile-mcp inside Iris. Do **not** use Iris emulator tools alone for deep UI trees.
+Action IDs below use dots; callable Iris function names replace dots with underscores.
 
 ## mobile-mcp tools (canonical names)
 
@@ -36,10 +37,10 @@ Crashes: `mobile_list_crashes`, `mobile_get_crash`
 
 ## Steps
 
-1. `iris_get_state` — `emulator_running` / `emulator_serial` / `emulator_avd`.
-2. Not running → `iris_invoke` `emulator.launch` → poll `emulator.status` until serial (`emulator-*`) appears (boot can take tens of seconds; retry).
+1. `get_state` — `emulator_running` / `emulator_serial` / `emulator_avd`.
+2. Not running → `emulator_launch` → poll `emulator_status` until serial (`emulator-*`) appears (boot can take tens of seconds; retry).
 3. Then `mobile_list_available_devices` — prefer **IrisLight_Pixel** / serial matching Iris `emulator_serial` (usually `emulator-5554`). Multiple devices: ask or pick the Iris serial.
-   If Iris `emulator_phase` is booting: `iris_invoke` `emulator.wait_ready` first.
+   If Iris `emulator_phase` is booting: `emulator_wait_ready` first.
 4. UI work: `mobile_take_screenshot` and/or `mobile_list_elements_on_screen` → `mobile_click_on_screen_at_coordinates` / `mobile_type_keys` / `mobile_swipe_on_screen` / `mobile_press_button`.
 5. APK: prefer `mobile_install_app` then `mobile_launch_app` (package name). Fallback: iris `emulator.install` / `emulator.start_app` if mobile-mcp unavailable.
    Play 스토어 설치는 mobile-mcp로 검색·좌표 탭을 시도하지 말고 `emulator.play_install`을 쓴다.

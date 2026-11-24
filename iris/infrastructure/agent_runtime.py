@@ -28,9 +28,11 @@ log = logging.getLogger(__name__)
 # 문서 §10 / 2026-10-27 런타임과 동일. vendor/iris-agent-runtime/PIN 이 우선.
 IRIS_AGENT_PIN_SHA = "a382af23f4c067d23463b5781958684c2cda82bc"
 IRIS_AGENT_UPSTREAM_URL = "https://github.com/NousResearch/hermes-agent.git"
+IRIS_AGENT_CHECKOUT_NAME = "iris-agent"
+LEGACY_AGENT_CHECKOUT_NAME = "hermes-agent"
 
 _MIGRATE_STAMP = ".iris-agent-migrated-from"
-# config / .env / memories only — hermes-agent checkout 은 pin 재설치.
+# config / .env / memories only — agent checkout 은 pin 재설치.
 # MEMORY.md / USER.md live under memories/; do not dual-copy root stubs.
 _MIGRATE_FILES = (".env", "config.yaml")
 _MIGRATE_DIRS = ("memories", "skills")
@@ -86,7 +88,15 @@ def iris_agent_home() -> Path:
 
 
 def iris_agent_repo_dir(home: Path | None = None) -> Path:
-    return (home or iris_agent_home()) / "hermes-agent"
+    """제품 checkout 경로. iris-agent 우선, 없으면 레거시 hermes-agent, 둘 다 없으면 생성 목표(iris-agent)."""
+    base = home or iris_agent_home()
+    canonical = base / IRIS_AGENT_CHECKOUT_NAME
+    legacy = base / LEGACY_AGENT_CHECKOUT_NAME
+    if canonical.is_dir():
+        return canonical
+    if legacy.is_dir():
+        return legacy
+    return canonical
 
 
 @dataclass
@@ -520,7 +530,7 @@ def ensure_iris_agent_runtime(
 ) -> IrisAgentRuntimeEnsureResult:
     """Iris Agent 수명 supervisor — home → provider → gateway (멱등).
 
-    setup / HermesHealthWorker / login warm 이 이 심볼만 통해 ensure 한다.
+    setup / IrisAgentHealthWorker / login warm 이 이 심볼만 통해 ensure 한다.
     Lifetime: keep-background (Iris 종료 후에도 gateway 유지 가능).
     """
     home = ensure_iris_agent_home()
@@ -602,6 +612,9 @@ def apply_iris_agent_baseline_overlays(agent_root: Path) -> list[str]:
     from iris.system.iris_agent_tool_choice import apply_hermes_tool_choice_overlay
 
     messages.extend(apply_hermes_tool_choice_overlay(root))
+    from iris.system.iris_agent_absorbed_toolsets import apply_absorbed_toolsets_overlay
+
+    messages.extend(apply_absorbed_toolsets_overlay(root))
     stamp = root / ".iris-agent-baseline"
     try:
         stamp.write_text(f"{load_pinned_sha()}\n", encoding="utf-8")
@@ -611,10 +624,25 @@ def apply_iris_agent_baseline_overlays(agent_root: Path) -> list[str]:
 
 
 if __name__ == "__main__":
+    import tempfile
+
     assert len(load_pinned_sha()) >= 7
     assert load_upstream_url().startswith("https://")
     home = iris_agent_home()
     assert isinstance(home, Path)
-    assert iris_agent_repo_dir(home) == home / "hermes-agent"
+    with tempfile.TemporaryDirectory(prefix="iris-repo-dir-") as tmp:
+        h = Path(tmp)
+        assert iris_agent_repo_dir(h) == h / IRIS_AGENT_CHECKOUT_NAME
+        (h / LEGACY_AGENT_CHECKOUT_NAME).mkdir()
+        assert iris_agent_repo_dir(h) == h / LEGACY_AGENT_CHECKOUT_NAME
+        (h / IRIS_AGENT_CHECKOUT_NAME).mkdir()
+        assert iris_agent_repo_dir(h) == h / IRIS_AGENT_CHECKOUT_NAME
+    resolved = iris_agent_repo_dir(home)
+    assert resolved.name in (IRIS_AGENT_CHECKOUT_NAME, LEGACY_AGENT_CHECKOUT_NAME)
     assert iris_agent_home() == product_agent_home()
-    print("agent_runtime self-check ok", load_pinned_sha()[:7], home)
+    print(
+        "agent_runtime self-check ok",
+        load_pinned_sha()[:7],
+        home,
+        resolved,
+    )

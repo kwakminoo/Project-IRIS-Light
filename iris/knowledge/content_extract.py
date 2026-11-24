@@ -199,7 +199,13 @@ def _bootstrap_tessdata(tesseract_cmd: str) -> Path:
                 shutil.copy2(src, dest)
                 continue
         if lang == "kor":
-            _download_tessdata(lang, dest)
+            try:
+                _download_tessdata(lang, dest)
+            except (OSError, URLError) as exc:
+                raise RuntimeError(
+                    "OCR 실패 (pdf-ocr): tessdata 다운로드에 실패했습니다. "
+                    "scripts\\setup_tesseract.ps1 을 실행하세요."
+                ) from exc
     missing = [lang for lang in _TESSDATA_LANGS if not (user / f"{lang}.traineddata").is_file()]
     if missing:
         raise RuntimeError(

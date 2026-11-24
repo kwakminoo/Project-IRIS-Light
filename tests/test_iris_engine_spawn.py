@@ -16,6 +16,7 @@ from iris.engine import (
     EngineReady,
     InternalSidecar,
 )
+from iris.infrastructure.agent_runtime import IRIS_AGENT_CHECKOUT_NAME
 
 
 def _child_pids() -> set[int]:
@@ -49,12 +50,12 @@ def _wait_pid_gone(pid: int, timeout: float = 5.0) -> bool:
 
 def _write_cmd(home: Path, name: str, body: str) -> Path:
     if sys.platform == "win32":
-        scripts = home / "hermes-agent" / "venv" / "Scripts"
+        scripts = home / IRIS_AGENT_CHECKOUT_NAME / "venv" / "Scripts"
         scripts.mkdir(parents=True, exist_ok=True)
         path = scripts / name
         path.write_text(body.replace("\n", "\r\n"), encoding="utf-8")
         return path
-    bin_dir = home / "hermes-agent" / "venv" / "bin"
+    bin_dir = home / IRIS_AGENT_CHECKOUT_NAME / "venv" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     path = bin_dir / "python"
     path.write_text(body, encoding="utf-8")
@@ -64,8 +65,8 @@ def _write_cmd(home: Path, name: str, body: str) -> Path:
 
 def _hello_waiter_python(home: Path) -> Path:
     waiter = (
-        "import json,sys;"
-        "print(json.dumps({'t':'hello','ok':True}), flush=True);"
+        "import json,os,sys;"
+        "print(json.dumps({'t':'hello','ok':True,'pid':os.getpid()}), flush=True);"
         "sys.stdin.read()"
     )
     if sys.platform == "win32":
@@ -96,7 +97,7 @@ def _no_hello_python(home: Path) -> Path:
 
 class EngineSpawnTests(TestCase):
     def setUp(self) -> None:
-        self._tmp = TemporaryDirectory()
+        self._tmp = TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / ".tmp")
         self.home = EngineHome(Path(self._tmp.name))
         self.engine = Engine(InternalSidecar(home=self.home))
         self._probe = patch("iris.engine.runtime.probe_engine_python", return_value=None)
@@ -106,7 +107,14 @@ class EngineSpawnTests(TestCase):
 
     def tearDown(self) -> None:
         self.engine.shutdown()
-        self._tmp.cleanup()
+        for attempt in range(20):
+            try:
+                self._tmp.cleanup()
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
 
     def test_hello_child_is_ready_and_second_ensure_does_not_respawn(self) -> None:
         _hello_waiter_python(Path(self.home))

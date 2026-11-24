@@ -12,6 +12,7 @@ from typing import Callable
 
 from iris.infrastructure.agent_runtime import (
     apply_iris_agent_baseline_overlays,
+    iris_agent_repo_dir,
     load_pinned_sha,
     load_upstream_url,
 )
@@ -34,7 +35,7 @@ HermesUpdateStatus = IrisAgentUpdateStatus
 
 
 def hermes_repo_dir(command: str = "hermes") -> Path | None:
-    """실행 중인 hermes 체크아웃. venv Scripts 위, 없으면 제품 홈/hermes-agent."""
+    """실행 중인 hermes 체크아웃. venv Scripts 위, 없으면 제품 홈 iris_agent_repo_dir."""
     from iris.infrastructure.iris_agent_credentials import hermes_home
     from iris.system.iris_agent_gateway import hermes_executable
 
@@ -43,7 +44,7 @@ def hermes_repo_dir(command: str = "hermes") -> Path | None:
         for parent in Path(exe).resolve().parents:
             if (parent / ".git").exists() and (parent / "hermes_cli").is_dir():
                 return parent
-    repo = hermes_home() / "hermes-agent"
+    repo = iris_agent_repo_dir(hermes_home())
     if (repo / ".git").exists():
         return repo
     return None

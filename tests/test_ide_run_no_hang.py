@@ -52,8 +52,8 @@ class _FakeBridgeClient:
         self.token = "test-token"
         self._run = run_terminal_command
 
-    def run_terminal_command(self, command: str, *, cwd: str = "") -> dict:
-        return self._run(command, cwd=cwd, client=self)
+    def run_terminal_command(self, command: str, *, cwd: str = "", argv=None) -> dict:
+        return self._run(command, cwd=cwd, argv=argv, client=self)
 
 
 class _FakeSurface:
@@ -93,11 +93,11 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
     def test_successful_run_reports_ok_and_output(self) -> None:
         """정상 실행되는 경우: t0 UnboundLocalError 없이 성공 결과가 반환돼야 한다."""
 
-        def run_terminal_command(command, *, cwd, client):
+        def run_terminal_command(command, *, cwd, argv, client):
             # project.run이 시작 때 로그를 지우므로, 브리지 응답 시점에 다시 쓴다.
             log = Path(cwd) / ".iris" / "last_run.log"
             log.parent.mkdir(parents=True, exist_ok=True)
-            log.write_text("hello from bridge\n", encoding="utf-8")
+            log.write_text("hello from bridge\nIRIS_EXIT:0\n", encoding="utf-8")
             return {
                 "command": command,
                 "queued": True,
@@ -116,7 +116,7 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
     def test_bridge_exception_returns_clean_error_not_unboundlocalerror(self) -> None:
         """IDE 실행 중 오류 발생: 예전엔 t0 UnboundLocalError로 원인이 가려졌다."""
 
-        def run_terminal_command(command, *, cwd, client):
+        def run_terminal_command(command, *, cwd, argv, client):
             raise ConnectionRefusedError("bridge not reachable")
 
         result = _invoke_project_run(self.root, run_terminal_command)
@@ -155,7 +155,7 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()  # 테스트 종료 후 스레드가 계속 남아있지 않도록
 
-        def run_terminal_command(command, *, cwd, client):
+        def run_terminal_command(command, *, cwd, argv, client):
             started.set()
             release.wait(60.0)  # 응답 없는 브릿지 흉내 — 테스트가 끝날 때까지 반환하지 않음
             return {"output": "too late"}
@@ -181,23 +181,14 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
 
 class ProjectRunOffUiHelperTests(unittest.TestCase):
     def test_fast_function_returns_promptly(self) -> None:
-        result, exc, timed_out = control_bindings._run_off_ui_with_timeout(
-            lambda: 42, timeout_sec=5.0
-        )
-        self.assertEqual(result, 42)
-        self.assertIsNone(exc)
-        self.assertFalse(timed_out)
+        self.assertEqual(control_bindings._bridge_call_pumping(lambda: 42, timeout=5.0), 42)
 
     def test_exception_is_captured_not_raised(self) -> None:
         def _boom():
             raise ValueError("nope")
 
-        result, exc, timed_out = control_bindings._run_off_ui_with_timeout(
-            _boom, timeout_sec=5.0
-        )
-        self.assertIsNone(result)
-        self.assertIsInstance(exc, ValueError)
-        self.assertFalse(timed_out)
+        with self.assertRaisesRegex(ValueError, "nope"):
+            control_bindings._bridge_call_pumping(_boom, timeout=5.0)
 
     def test_never_returning_function_times_out_bounded(self) -> None:
         release = threading.Event()
@@ -207,13 +198,9 @@ class ProjectRunOffUiHelperTests(unittest.TestCase):
             return "late"
 
         t0 = time.monotonic()
-        result, exc, timed_out = control_bindings._run_off_ui_with_timeout(
-            _hang, timeout_sec=0.2, poll_interval=0.01
-        )
+        with self.assertRaises(control_bindings.BridgeCallTimeout):
+            control_bindings._bridge_call_pumping(_hang, timeout=0.2)
         elapsed = time.monotonic() - t0
-        self.assertTrue(timed_out)
-        self.assertIsNone(result)
-        self.assertIsNone(exc)
         self.assertLess(elapsed, 1.0)
         release.set()
 
@@ -224,9 +211,13 @@ class ProjectRunOffUiHelperTests(unittest.TestCase):
         def _hang():
             release.wait(5.0)
 
-        control_bindings._run_off_ui_with_timeout(
-            _hang, timeout_sec=0.15, pump=lambda: pump_calls.append(1), poll_interval=0.01
-        )
+        old_pump = control_bindings._qt_pump
+        control_bindings._qt_pump = lambda: pump_calls.append(1)
+        try:
+            with self.assertRaises(control_bindings.BridgeCallTimeout):
+                control_bindings._bridge_call_pumping(_hang, timeout=0.15)
+        finally:
+            control_bindings._qt_pump = old_pump
         release.set()
         self.assertGreater(len(pump_calls), 0, "Qt event loop must keep pumping while waiting")
 

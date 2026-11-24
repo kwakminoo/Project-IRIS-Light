@@ -60,9 +60,9 @@ def check_invalid_and_write(reg: ActionRegistry, window: MagicMock) -> None:
     assert attached["ok"] is False
     assert attached["error"] == "path required"
 
-    hermes = reg.invoke("settings.set", {"hermes_enabled": False})
-    assert hermes["ok"] is False
-    assert "cannot be disabled" in hermes["error"]
+    agent = reg.invoke("settings.set", {"agent_enabled": False})
+    assert agent["ok"] is False
+    assert "cannot be disabled" in agent["error"]
 
     window._settings.ollama_base_url = "http://old"
     applied = reg.invoke("settings.set", {"ollama_base_url": "http://127.0.0.1:11434"})
@@ -127,7 +127,7 @@ def main() -> None:
     before = json.loads(_CATALOG.read_text(encoding="utf-8"))
     assert got == before, "action catalog drifted"
     names = [a["name"] for a in got]
-    assert len(names) == len(set(names)) == 160
+    assert len(names) == len(set(names)) == 162
     assert "project.delete" in names
     assert reg.spec("attachment.copy_to").confirm_required is True
     assert reg.spec("attachment.move_to").confirm_required is True

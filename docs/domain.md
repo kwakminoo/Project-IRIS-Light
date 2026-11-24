@@ -91,7 +91,7 @@
 
 ```text
 UserProfile
-Settings { ollama_*, hermes_enabled(필수 게이트), voice_prefs_v1, control_* }
+Settings { ollama_*, agent_enabled(필수 게이트), voice_prefs_v1, control_* }
 
 ConversationSession { id, created_at, model_ref }
 Message { role, content, created_at, tool_traces? }

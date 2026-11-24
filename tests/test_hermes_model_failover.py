@@ -26,7 +26,7 @@ from iris.engine import (  # noqa: E402
     TurnFinished,
 )
 from iris.ui.workers.chat_attempt import ChatAttempt  # noqa: E402
-from iris.ui.workers.iris_agent_workers import HermesChatWorker  # noqa: E402
+from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker  # noqa: E402
 
 
 def _target(upstream: str, label: str = ""):
@@ -82,7 +82,7 @@ class _ScriptEngine:
 
 
 class _Collector:
-    def __init__(self, worker: HermesChatWorker) -> None:
+    def __init__(self, worker: IrisAgentChatWorker) -> None:
         self.content: list[str] = []
         self.switches: list[tuple[str, str, bool]] = []
         self.ok: list[str] = []
@@ -104,7 +104,7 @@ class HermesFailoverTests(TestCase):
         ]
 
     def _run(self, attempts, engine: _ScriptEngine) -> _Collector:
-        worker = HermesChatWorker(
+        worker = IrisAgentChatWorker(
             attempts[0].label,
             attempts[0].messages,
             attempts=attempts,
@@ -245,7 +245,7 @@ class HermesFailoverTests(TestCase):
                 "upstream-free": "불려선 안 됨",
             }
         )
-        worker = HermesChatWorker(
+        worker = IrisAgentChatWorker(
             "paid:big",
             self.msgs,
             attempts=[
@@ -263,7 +263,7 @@ class HermesFailoverTests(TestCase):
     def test_legacy_single_target_call_still_works(self) -> None:
         """attempts 를 안 넘기는 기존 호출부 호환."""
         engine = _ScriptEngine({"upstream-solo": "예전 방식"})
-        worker = HermesChatWorker(
+        worker = IrisAgentChatWorker(
             "solo-label",
             self.msgs,
             target=_target("upstream-solo", "solo-label"),

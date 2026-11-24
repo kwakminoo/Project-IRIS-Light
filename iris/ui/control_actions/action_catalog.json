@@ -204,6 +204,12 @@
     "confirm_required": false
   },
   {
+    "name": "chat.search_past",
+    "summary": "Search prior chat conversations (not wiki notes) by query",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
     "name": "chat.send",
     "summary": "Submit composer text as a user turn (same as Send)",
     "risk": "medium",
@@ -552,12 +558,6 @@
     "confirm_required": false
   },
   {
-    "name": "shell.run",
-    "summary": "Run a home-surface shell command (no console window; chat Iris Shell card)",
-    "risk": "high",
-    "confirm_required": true
-  },
-  {
     "name": "learning.get",
     "summary": "Get learned workflow details",
     "risk": "low",
@@ -772,6 +772,12 @@
     "summary": "Set Ollama settings; agent URL/key/command are not editable",
     "risk": "high",
     "confirm_required": false
+  },
+  {
+    "name": "shell.run",
+    "summary": "Run a shell command on the Iris home surface (no console window; output appears as an Iris Shell chat card). cwd must be under the user home. When IDE Companion is active, use project.run instead.",
+    "risk": "high",
+    "confirm_required": true
   },
   {
     "name": "ui.open_mcp",

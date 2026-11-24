@@ -25,7 +25,7 @@ from iris.ui.settings.settings_dialog import LightSettingsSelection, SettingsDia
 def check_default_is_on() -> None:
     s = Settings()
     assert s.agent_enabled is True, "에이전트 기본값이 꺼져 있음"
-    assert s.hermes_enabled is True, "hermes_enabled alias must track agent_enabled"
+    assert not hasattr(s, "hermes_enabled")
 
 
 def check_settings_dialog_has_no_switch(app: QApplication) -> None:
@@ -45,17 +45,10 @@ def check_control_action_rejects_disable() -> None:
     surface.registry = reg = ActionRegistry()
     _register_actions(MagicMock(), surface)
 
-    off = reg.invoke("settings.set", {"hermes_enabled": False})
-    assert off["ok"] is False, "settings.set이 에이전트 끄기를 수용함"
-    err = (off["error"] or "").lower()
-    assert "agent" in err or "hermes" in err, off["error"]
-
     off_agent = reg.invoke("settings.set", {"agent_enabled": False})
     assert off_agent["ok"] is False, "settings.set이 agent_enabled 끄기를 수용함"
 
-    # 켜는 요청은 무해한 no-op이어야 함 (기존 클라이언트 호환)
-    on = reg.invoke("settings.set", {"hermes_enabled": True})
-    assert on["ok"] is True, on.get("error")
+    # 켜는 요청은 무해한 no-op이어야 함.
     on_agent = reg.invoke("settings.set", {"agent_enabled": True})
     assert on_agent["ok"] is True, on_agent.get("error")
 
@@ -65,9 +58,6 @@ def check_control_action_rejects_agent_shell_fields() -> None:
     surface.registry = reg = ActionRegistry()
     _register_actions(MagicMock(), surface)
     for key, value in (
-        ("hermes_base_url", "http://evil.example/v1"),
-        ("hermes_api_key", "sk-leak"),
-        ("hermes_command", "evil-hermes"),
         ("agent_base_url", "http://evil.example/v1"),
         ("agent_api_key", "sk-leak"),
         ("agent_command", "evil-agent"),

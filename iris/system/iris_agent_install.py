@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from iris.infrastructure.agent_runtime import (
+    IRIS_AGENT_CHECKOUT_NAME,
+    LEGACY_AGENT_CHECKOUT_NAME,
     apply_iris_agent_baseline_overlays,
     ensure_iris_agent_home,
     load_pinned_sha,
@@ -304,14 +306,23 @@ def _kill_hermes_tree_holders(agent: Path) -> None:
     time.sleep(0.4)
 
 
+def _checkout_sidecar(name: str, *, kind: str, keep: str | None = None) -> bool:
+    """iris-agent / hermes-agent 의 .broken- / .trash- / .staging- 사이드카."""
+    for base in (IRIS_AGENT_CHECKOUT_NAME, LEGACY_AGENT_CHECKOUT_NAME):
+        prefix = f"{base}.{kind}-"
+        if name.startswith(prefix) and name != (keep or ""):
+            return True
+    return False
+
+
 def force_retire_hermes_agent(
     *,
     command: str = "hermes",
     keep_staging: str | None = None,
 ) -> str:
-    """잠긴 hermes-agent / .broken-* / staging-* 를 rename 으로 치우고 삭제 시도.
+    """잠긴 iris-agent·hermes-agent / .broken-* / staging-* 를 rename 으로 치우고 삭제 시도.
 
-    keep_staging: 진행 중 clone 디렉터리명(예: hermes-agent.staging-…)만 보존.
+    keep_staging: 진행 중 clone 디렉터리명(예: iris-agent.staging-…)만 보존.
     """
     home = gw.hermes_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -322,7 +333,10 @@ def force_retire_hermes_agent(
 
     notes: list[str] = []
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    targets = [home / "hermes-agent"]
+    targets = [
+        home / IRIS_AGENT_CHECKOUT_NAME,
+        home / LEGACY_AGENT_CHECKOUT_NAME,
+    ]
     try:
         targets.extend(
             sorted(
@@ -330,12 +344,9 @@ def force_retire_hermes_agent(
                 for p in home.iterdir()
                 if p.is_dir()
                 and (
-                    p.name.startswith("hermes-agent.broken-")
-                    or p.name.startswith("hermes-agent.trash-")
-                    or (
-                        p.name.startswith("hermes-agent.staging-")
-                        and p.name != (keep_staging or "")
-                    )
+                    _checkout_sidecar(p.name, kind="broken")
+                    or _checkout_sidecar(p.name, kind="trash")
+                    or _checkout_sidecar(p.name, kind="staging", keep=keep_staging)
                 )
             )
         )
@@ -346,7 +357,7 @@ def force_retire_hermes_agent(
         if not path.exists():
             continue
         _kill_hermes_tree_holders(path)
-        trash = home / f"hermes-agent.trash-{stamp}-{path.name[-8:]}"
+        trash = home / f"{IRIS_AGENT_CHECKOUT_NAME}.trash-{stamp}-{path.name[-8:]}"
         try:
             path.rename(trash)
             notes.append(f"치움→{trash.name}")
@@ -395,20 +406,20 @@ def force_retire_hermes_agent(
     # 오래된 trash 최대 N개 · 남은 staging(보존분 제외) 전부 삭제
     try:
         trashes = sorted(
-            p for p in home.iterdir() if p.is_dir() and p.name.startswith("hermes-agent.trash-")
+            p
+            for p in home.iterdir()
+            if p.is_dir() and _checkout_sidecar(p.name, kind="trash")
         )
         for old in trashes[:-_MAX_TRASH_KEEP]:
             shutil.rmtree(old, ignore_errors=True)
         for st in home.iterdir():
-            if (
-                st.is_dir()
-                and st.name.startswith("hermes-agent.staging-")
-                and st.name != (keep_staging or "")
+            if st.is_dir() and _checkout_sidecar(
+                st.name, kind="staging", keep=keep_staging
             ):
                 shutil.rmtree(st, ignore_errors=True)
     except OSError:
         pass
-    return "; ".join(notes) if notes else "정리할 hermes-agent 없음"
+    return "; ".join(notes) if notes else "정리할 agent checkout 없음"
 
 
 def _user_path_prepend(scripts: Path) -> None:
@@ -514,7 +525,7 @@ def hermes_install_lock(home: Path) -> Iterator[Path]:
         except (OSError, ValueError):
             pid = 0
         if _pid_alive(pid):
-            raise InstallBusy(f"다른 Hermes 설치가 진행 중입니다 (pid {pid})")
+            raise InstallBusy(f"다른 Iris Agent 설치가 진행 중입니다 (pid {pid})")
     path.write_text(str(os.getpid()), encoding="utf-8")
     try:
         yield path
@@ -597,19 +608,20 @@ def _discard_tree(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _restore_backup(home: Path, stamp: str) -> None:
-    live = home / "hermes-agent"
-    backup = home / f"hermes-agent.prev-{stamp}"
-    failed = home / f"hermes-agent.failed-{stamp}"
+def _restore_backup(home: Path, stamp: str, *, restore_legacy: bool = False) -> None:
+    live = home / IRIS_AGENT_CHECKOUT_NAME
+    destination = home / (LEGACY_AGENT_CHECKOUT_NAME if restore_legacy else IRIS_AGENT_CHECKOUT_NAME)
+    backup = home / f"{IRIS_AGENT_CHECKOUT_NAME}.prev-{stamp}"
+    failed = home / f"{IRIS_AGENT_CHECKOUT_NAME}.failed-{stamp}"
     if live.exists():
         try:
             _discard_tree(failed)
             live.rename(failed)
         except OSError:
             return
-    if backup.exists() and not live.exists():
+    if backup.exists() and not destination.exists():
         try:
-            backup.rename(live)
+            backup.rename(destination)
         except OSError:
             pass
 
@@ -666,10 +678,13 @@ def _activate_staged(
 ) -> tuple[bool, str]:
     """교체하고 경로를 고친 뒤, 최종 위치에서만 실행 probe 한다."""
     old = Path(staging)
+    restore_legacy = not (home / IRIS_AGENT_CHECKOUT_NAME).exists() and (
+        home / LEGACY_AGENT_CHECKOUT_NAME
+    ).exists()
     swapped, note = _swap_in_staging(home, staging, stamp)
     if not swapped:
         return False, note
-    live = home / "hermes-agent"
+    live = home / IRIS_AGENT_CHECKOUT_NAME
     _retarget_moved_tree(live, old, live)
     if probe_gateway:
         ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
@@ -677,18 +692,29 @@ def _activate_staged(
         venv_py = live / ("venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python")
         ok, detail = _probe_venv(venv_py)
     if not ok:
-        _restore_backup(home, stamp)
+        _restore_backup(home, stamp, restore_legacy=restore_legacy)
         return False, detail
+    legacy = home / LEGACY_AGENT_CHECKOUT_NAME
+    if legacy.exists():
+        trash = home / f"{LEGACY_AGENT_CHECKOUT_NAME}.trash-{stamp}-leftover"
+        try:
+            legacy.rename(trash)
+            shutil.rmtree(trash, ignore_errors=True)
+        except OSError:
+            pass
     return True, detail
 
 
 def _swap_in_staging(home: Path, staging: Path, stamp: str) -> tuple[bool, str]:
-    live = home / "hermes-agent"
-    backup = home / f"hermes-agent.prev-{stamp}"
+    live = home / IRIS_AGENT_CHECKOUT_NAME
+    legacy = home / LEGACY_AGENT_CHECKOUT_NAME
+    backup = home / f"{IRIS_AGENT_CHECKOUT_NAME}.prev-{stamp}"
     moved = False
-    if live.exists():
+    # 캐노니컬이 없고 레거시만 있으면 그걸 백업으로 비킨다.
+    incumbent = live if live.exists() else (legacy if legacy.exists() else None)
+    if incumbent is not None:
         try:
-            live.rename(backup)
+            incumbent.rename(backup)
             moved = True
         except OSError as exc:
             return False, f"기존 설치를 비키지 못했습니다: {exc}"
@@ -697,7 +723,7 @@ def _swap_in_staging(home: Path, staging: Path, stamp: str) -> tuple[bool, str]:
     except OSError as exc:
         if moved and backup.exists() and not live.exists():
             try:
-                backup.rename(live)
+                backup.rename(incumbent)
             except OSError:
                 pass
         return False, f"staging 교체 실패, 기존 설치 유지 시도: {exc}"
@@ -871,18 +897,20 @@ def _finish_staged_install(
         if boost.returncode != 0:
             _discard_tree(staging)
             return fail("exit", "gateway/mcp 의존성 보강 실패", "\n".join(log))
-        emit("probe pin 후 editable 재설치…")
-        edit = _run(
-            [str(venv_py), "-m", "pip", "install", "-e", "."],
-            cwd=str(staging),
-            timeout=300.0,
-        )
-        log.append(edit.stdout or "")
-        log.append(edit.stderr or "")
-        if edit.returncode != 0:
-            _discard_tree(staging)
-            return fail("exit", "editable 재설치 실패", "\n".join(log))
         ok, detail = _probe_venv(venv_py)
+        if not ok:
+            emit("probe pin 후 editable 재설치…")
+            edit = _run(
+                [str(venv_py), "-m", "pip", "install", "-e", "."],
+                cwd=str(staging),
+                timeout=300.0,
+            )
+            log.append(edit.stdout or "")
+            log.append(edit.stderr or "")
+            if edit.returncode != 0:
+                _discard_tree(staging)
+                return fail("exit", "editable 재설치 실패", "\n".join(log))
+            ok, detail = _probe_venv(venv_py)
     log.append(f"probe={ok} {detail}")
     if not ok:
         _discard_tree(staging)
@@ -894,7 +922,12 @@ def _finish_staged_install(
     if not runtime_ok:
         log.append(runtime_detail)
         return fail("probe", "최종 경로 실행 검증 실패", "\n".join(log))
-    live_scripts = (home / "hermes-agent" / "venv" / ("Scripts" if sys.platform == "win32" else "bin"))
+    live_scripts = (
+        home
+        / IRIS_AGENT_CHECKOUT_NAME
+        / "venv"
+        / ("Scripts" if sys.platform == "win32" else "bin")
+    )
     _user_path_prepend(live_scripts)
     return InstallResult(True, f"우회 설치 성공 ({runtime_detail})", "ok")
 
@@ -1069,15 +1102,15 @@ def _checkout_pinned_sha(git: str, staging: Path, pin: str) -> subprocess.Comple
 
 
 def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | None:
-    """staging → hermes-agent rename. 실패 시 메시지."""
+    """staging → iris-agent rename. 실패 시 메시지."""
     if agent.exists():
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        trash = home / f"hermes-agent.trash-{stamp}-swap"
+        trash = home / f"{IRIS_AGENT_CHECKOUT_NAME}.trash-{stamp}-swap"
         try:
             agent.rename(trash)
             shutil.rmtree(trash, ignore_errors=True)
         except OSError as exc:
-            return f"기존 hermes-agent 교체 실패: {exc}"
+            return f"기존 {IRIS_AGENT_CHECKOUT_NAME} 교체 실패: {exc}"
     try:
         staging.rename(agent)
     except OSError as exc:
@@ -1142,7 +1175,7 @@ def install_hermes_with_system_python(
             if should_abort and should_abort():
                 return InstallResult(False, "사용자가 중단함", "cancel")
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            staging = home / f"hermes-agent.staging-{stamp}"
+            staging = home / f"{IRIS_AGENT_CHECKOUT_NAME}.staging-{stamp}"
             _discard_tree(staging)
             pin = (sha or "").strip() or load_pinned_sha()
             _emit(f"Iris Agent 런타임 pin checkout ({pin[:7]})…")
@@ -1174,7 +1207,7 @@ def install_hermes_with_system_python(
             have = python_version(py)
             log.append(f"repo python range={want} chosen={have}")
             if have is None or not (want[0] <= have < want[1]):
-                _emit(f"이 Hermes 는 Python {want[0][0]}.{want[0][1]} 이상이 필요해요 — 다시 고릅니다…")
+                _emit(f"이 Iris Agent는 Python {want[0][0]}.{want[0][1]} 이상이 필요해요 — 다시 고릅니다…")
                 py = ensure_system_python_winget(run_streamed=run_streamed, on_stream=on_stream, want=want)
                 if py is None:
                     _discard_tree(staging)

@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from unittest import TestCase
 
+from PyQt6.QtWidgets import QApplication
+
 from iris.knowledge.wiki_import_ops import wiki_location_label, wiki_save_notice
 from iris.ui.chat.chat_blocks import parse_iris_wiki_anchor, wiki_anchor_for
 from iris.ui.chat.chat_renderer import render_iris_message
+
+_APP = QApplication.instance() or QApplication([])
 
 
 class WikiSaveNoticeTests(TestCase):

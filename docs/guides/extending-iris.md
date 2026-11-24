@@ -47,7 +47,7 @@
 2. 도구는 가능하면 기존 `iris_invoke` 카탈로그 액션만 사용  
    - 새 UI 액션이 필요하면 `control_surface` 카탈로그 확장 = Core 터치 → 이슈로 먼저 합의
 3. Iris 기동 시 sync가 제품 에이전트 홈(`~/.iris-light/agent` 또는 `IRIS_AGENT_HOME`)의 skills로 복사  
-   - 수동: `py -3 -m iris.system.hermes_iris_control_sync --apply`
+   - 수동: `py -3 -m iris.system.iris_agent_control_sync --apply`
 4. 스모크:
 
 ```powershell
@@ -65,7 +65,7 @@ py -3 -m iris.ui._check_control_scenarios
 | 말한 패턴 | IRIS에서 해당하는 것 | 손대는 곳 |
 |-----------|----------------------|-----------|
 | 어댑터 | 외부 런타임을 Iris 호출로 바꿈 | `iris/infrastructure/*_client.py`, `iris/learning/aloha_adapter.py` |
-| 전략 | 같은 사용자 턴의 실행 경로 선택 | `settings.hermes_enabled` — Iris Agent 필수 게이트(끄기 입구 차단). 엔진 소스는 InternalSidecar 기본, ExternalGateway는 env 플래그. 분기는 `iris/engine` · 채팅 워커 |
+| 전략 | 같은 사용자 턴의 실행 경로 선택 | `settings.agent_enabled` — Iris Agent 필수 게이트(끄기 입구 차단). 엔진 소스는 InternalSidecar 기본, ExternalGateway는 env 플래그. 분기는 `iris/engine` · 채팅 워커 |
 | 인터페이스 | 이름 → 핸들러. 호스트는 Protocol | `ActionRegistry.register` (`iris/system/control_surface.py`), `iris/ui/control_actions/hosts.py` |
 | 감싸기 | UI 핸들러를 제어면 액션으로 감쌈 | `iris/ui/control_bindings.py`. 스킬 마크다운은 기존 `iris_invoke`를 감싼다 |
 
@@ -78,8 +78,8 @@ py -3 -m iris.ui._check_control_scenarios
 | 증상·하고 싶은 일 | 먼저 볼 곳 | 기본 태도 |
 |-------------------|------------|-----------|
 | 입력이 턴이 되지 않음 | `iris/runtime/user_turn_dispatcher.py` | 버그 수정 |
-| 에이전트/Ollama HTTP·인증 | `iris/infrastructure/hermes_client.py`, `ollama_client.py`, `iris/engine/` | 버그 수정 |
-| 설치·에이전트 기동 | `iris/system/setup_protocol.py`, `hermes_gateway.py`, `agent_runtime.py` | 버그 수정 |
+| 에이전트/Ollama HTTP·인증 | `iris/infrastructure/iris_agent_client.py`, `ollama_client.py`, `iris/engine/` | 버그 수정 |
+| 설치·에이전트 기동 | `iris/system/setup_protocol.py`, `iris_agent_gateway.py`, `agent_runtime.py` | 버그 수정 |
 | 설정이 저장되지 않음 | `iris/storage/`, `iris/config/settings.py` | 버그 수정 |
 | 새 에이전트 도구 | `integrations/hermes-skills/iris-control/` 또는 `agent_tool_registry` | 코어 diff=0 우선 |
 | 에이전트가 UI 버튼을 누름 | `iris/ui/control_actions/<기능>.py` | 기존 액션 재사용. 새 이름은 이슈 합의 |
@@ -97,10 +97,10 @@ py -3 -m iris.ui._check_control_scenarios
 
 1. 가능하면 새 서버를 만들지 않는다. §2 스킬에서 기존 `iris_invoke`만 호출한다.
 2. 서버가 꼭 필요하면 **별도 프로세스**(라이선스·크래시 격리). 브리지 예는 `iris/mcp/iris_control_stdio.py` → Control Surface HTTP `:8765`.
-3. 에이전트 홈 `config.yaml`의 `mcp_servers`는 손으로 고치지 않는다. `hermes_iris_control_sync`가 upsert 한다.
+3. 에이전트 홈 `config.yaml`의 `mcp_servers`는 손으로 고치지 않는다. `iris_agent_control_sync`가 upsert 한다.
 
 ```powershell
-py -3 -m iris.system.hermes_iris_control_sync --apply
+py -3 -m iris.system.iris_agent_control_sync --apply
 ```
 
 ---
@@ -136,7 +136,7 @@ UI는 Gateway를 HTTP·시그널로만 부른다. 위젯 파일에 Ollama/에이
 ```powershell
 git diff --name-only origin/main...HEAD
 # 기대(스킬만): integrations/hermes-skills/... 만
-# 금지 무단: iris/runtime/, iris/system/hermes_gateway.py, iris/infrastructure/
+# 금지 무단: iris/runtime/, iris/system/iris_agent_gateway.py, iris/infrastructure/
 ```
 
 예외(버그픽스·보안)는 PR 본문에 **왜 Core인지** 한 줄.

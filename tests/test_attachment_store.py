@@ -13,7 +13,7 @@ from tests.test_attachment_pipeline import create_fixtures
 
 class StoreTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / ".tmp")
         self.root = Path(self.tmp.name)
         self.files = create_fixtures(self.root)
         self.folder = self.root / "project"

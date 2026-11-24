@@ -305,7 +305,7 @@ class IrisWiki:
         lines = [
             "# Iris Skills",
             "",
-            "> Hermes `skills/` 폴더에 있는 SKILL.md 기준. Iris Composer + 메뉴와 동기화됩니다.",
+            "> Iris Agent `skills/` 폴더에 있는 SKILL.md 기준. Iris Composer + 메뉴와 동기화됩니다.",
             "",
         ]
         if hermes_root:
@@ -332,7 +332,7 @@ class IrisWiki:
         lines = [
             "# Iris MCP Servers",
             "",
-            "> Hermes `config.yaml`의 `mcp_servers` 등록분. Iris Composer + 메뉴와 동기화됩니다.",
+            "> Iris Agent `config.yaml`의 `mcp_servers` 등록분. Iris Composer + 메뉴와 동기화됩니다.",
             "",
         ]
         if hermes_root:
