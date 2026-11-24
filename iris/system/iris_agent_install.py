@@ -313,7 +313,7 @@ def force_retire_hermes_agent(
 
     keep_staging: 진행 중 clone 디렉터리명(예: hermes-agent.staging-…)만 보존.
     """
-    home = gw.hermes_home()
+    home = gw.iris_agent_home()
     home.mkdir(parents=True, exist_ok=True)
     try:
         gw.stop_hermes_gateway(command, wait_sec=6.0)
@@ -419,7 +419,7 @@ def _user_path_prepend(scripts: Path) -> None:
     if s.lower() not in path.lower():
         os.environ["PATH"] = s + os.pathsep + path
     # 제품 홈(또는 IRIS_AGENT_HOME) 아래 Scripts 만 레지스트리에 남긴다.
-    real = gw.hermes_home()
+    real = gw.iris_agent_home()
     try:
         scripts.resolve().relative_to(real.resolve())
     except (ValueError, OSError):
@@ -468,7 +468,7 @@ def _redact(text: str) -> str:
 
 
 def write_install_log(body: str, *, prefix: str = "iris-install", home: Path | None = None) -> Path:
-    log_dir = (home if home is not None else gw.hermes_home()) / "logs"
+    log_dir = (home if home is not None else gw.iris_agent_home()) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     path = log_dir / f"{prefix}-{stamp}.log"
@@ -916,7 +916,7 @@ def last_bypass_log_path() -> str:
 
 
 def new_bypass_pip_log_path() -> Path:
-    logs = gw.hermes_home() / "logs"
+    logs = gw.iris_agent_home() / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return logs / f"iris-bypass-pip-{stamp}.log"
