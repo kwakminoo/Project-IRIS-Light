@@ -167,12 +167,82 @@ def _check_legacy_unscoped_denies_cross_session() -> None:
         assert cancelled.get("ok") is True, cancelled
 
 
+def _check_consume_binds_final_plan() -> None:
+    """FPR-03: manage(start) consume requires fingerprint + optional tool_call_id."""
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    from iris.system.request_approval import (
+        default_approval_ledger,
+        fingerprint_from_manage_args,
+        reset_approval_ledger_for_tests,
+    )
+
+    reset_approval_ledger_for_tests()
+    with tempfile.TemporaryDirectory() as td:
+        rt = ExecutionRuntime(runs_root=Path(td) / "runs")
+        start_args = {
+            "action": "start",
+            "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
+            "cwd": str(Path.home()),
+        }
+        fp = fingerprint_from_manage_args(start_args)
+        rec = default_approval_ledger().grant(
+            fingerprint=fp,
+            session_id="sess-fpr03",
+            tool_call_id="call-fpr03",
+        )
+        # Wrong tool_call_id → deny
+        denied_tc = rt.manage(
+            start_args,
+            ctx=make_execution_context(
+                session_id="sess-fpr03",
+                approval_reference=rec.request_id,
+                tool_call_id="call-other",
+            ),
+        )
+        assert denied_tc.get("ok") is False, denied_tc
+        assert "tool_call" in str(denied_tc.get("error") or ""), denied_tc
+
+        # Mutated argv after grant → fingerprint mismatch
+        mutated = dict(start_args)
+        mutated["argv"] = [sys.executable, "-c", "print('mutated')"]
+        denied_fp = rt.manage(
+            mutated,
+            ctx=make_execution_context(
+                session_id="sess-fpr03",
+                approval_reference=rec.request_id,
+                tool_call_id="call-fpr03",
+            ),
+        )
+        assert denied_fp.get("ok") is False, denied_fp
+        assert "fingerprint" in str(denied_fp.get("error") or ""), denied_fp
+
+        # Matching final plan → start ok, then cancel
+        started = rt.manage(
+            start_args,
+            ctx=make_execution_context(
+                session_id="sess-fpr03",
+                approval_reference=rec.request_id,
+                tool_call_id="call-fpr03",
+            ),
+        )
+        assert started.get("ok") is True, started
+        run_id = (started.get("data") or {}).get("run_id")
+        owner = make_execution_context(session_id="sess-fpr03")
+        cancelled = rt.manage({"action": "cancel", "run_id": run_id}, ctx=owner)
+        assert cancelled.get("ok") is True, cancelled
+    reset_approval_ledger_for_tests()
+
+
 def main() -> None:
     _check_mid_turn_switch_keeps_frozen_acl_fields()
     _check_handlers_prefer_frozen_over_live()
     _check_clear_on_finish_falls_back_to_live()
     _check_strip_trust_fields_unchanged()
     _check_legacy_unscoped_denies_cross_session()
+    _check_consume_binds_final_plan()
     print("execution_context ok")
 
 

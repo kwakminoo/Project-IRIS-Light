@@ -81,8 +81,10 @@ class SetupProtocolModelChoiceTests(TestCase):
 
 
 class VerifyCoreChatReadyTests(TestCase):
-    def _proto(self) -> SetupProtocol:
-        return SetupProtocol(simulate=False, dry_run=False)
+    def _proto(self, model="gemma4:e2b") -> SetupProtocol:
+        proto = SetupProtocol(min_model=model, simulate=False, dry_run=False)
+        proto._save_state = lambda: None
+        return proto
 
     @patch("iris.system.setup_protocol.ollama_cloud_signed_in", return_value=False)
     @patch(
@@ -95,11 +97,7 @@ class VerifyCoreChatReadyTests(TestCase):
         self.assertFalse(ok)
         self.assertIn("로컬 모델", detail)
 
-    @patch("iris.system.setup_protocol.verify_iris_mcp_tools", return_value=(True, "ok"))
-    @patch(
-        "iris.infrastructure.iris_agent_client.IrisAgentClient.probe_chat_auth",
-        return_value="ok",
-    )
+    @patch("iris.engine.runtime.verify_engine_model")
     @patch(
         "iris.system.setup_protocol.SetupProtocol._verify_engine_ready",
         return_value=(True, "Iris Agent engine ready"),
@@ -111,16 +109,13 @@ class VerifyCoreChatReadyTests(TestCase):
     )
     @patch("iris.system.setup_protocol.is_ollama_running", return_value=True)
     def test_cloud_login_without_local_weights_is_enough(self, *_args) -> None:
-        ok, detail = self._proto().verify_core()
+        ok, detail = self._proto("gemma4:31b-cloud").verify_core()
         self.assertTrue(ok)
         self.assertIn("클라우드", detail)
         self.assertIn("권장", detail)
+        self.assertEqual(_args[-1].call_args.args[1].model, "gemma4:31b-cloud")
 
-    @patch("iris.system.setup_protocol.verify_iris_mcp_tools", return_value=(True, "ok"))
-    @patch(
-        "iris.infrastructure.iris_agent_client.IrisAgentClient.probe_chat_auth",
-        return_value="unauthorized",
-    )
+    @patch("iris.engine.runtime.verify_engine_model", side_effect=RuntimeError("provider rejected model"))
     @patch(
         "iris.system.setup_protocol.SetupProtocol._verify_engine_ready",
         return_value=(True, "Iris Agent engine ready"),
@@ -131,10 +126,10 @@ class VerifyCoreChatReadyTests(TestCase):
         return_value=["gemma4:e2b"],
     )
     @patch("iris.system.setup_protocol.is_ollama_running", return_value=True)
-    def test_inspect_fails_on_chat_401_even_if_health_ok(self, *_args) -> None:
+    def test_inspect_fails_when_provider_rejects_model_even_if_engine_ready(self, *_args) -> None:
         ok, detail = self._proto().verify_core()
         self.assertFalse(ok)
-        self.assertIn("401", detail)
+        self.assertIn("provider rejected model", detail)
 
 
 class OllamaModelStepTests(TestCase):

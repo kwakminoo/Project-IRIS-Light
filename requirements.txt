@@ -1,6 +1,7 @@
 # Iris Light — PyQt6 UI 셸 + Ollama
 PyQt6==6.11.0
 PyQt6-WebEngine==6.11.0
+uv==0.11.24
 psutil>=5.9.0
 mss>=9.0.0
 Pillow>=10.0.0

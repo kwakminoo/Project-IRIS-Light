@@ -86,6 +86,30 @@ class EngineReadyStubTests(TestCase):
     def _internal(self) -> InternalSidecar:
         return InternalSidecar(home=self.home)
 
+    def test_new_selection_takes_effect_after_active_turn(self) -> None:
+        engine = Engine(self._internal())
+        old = SimpleNamespace(args=["old-python"], poll=lambda: None)
+        new = SimpleNamespace(args=["new-python"], poll=lambda: None)
+        engine._child = old
+        engine._turn_active = True
+        with (
+            patch("iris.engine.runtime.engine_python", return_value=Path("new-python")) as selected,
+            patch("iris.engine.runtime.probe_engine_python", return_value=None),
+            patch("iris.engine.runtime._spawn_sidecar", return_value=(new, 42)) as spawn,
+            patch("iris.engine.runtime._send_stop") as stop,
+            patch("iris.engine.runtime._terminate_child"),
+        ):
+            self.assertIsInstance(engine.ensure_ready(), EngineReady)
+            self.assertIs(engine._child, old)
+            selected.assert_not_called()
+            stop.assert_not_called()
+            spawn.assert_not_called()
+            engine._turn_active = False
+            self.assertIsInstance(engine.ensure_ready(), EngineReady)
+            stop.assert_called_once_with(old)
+            spawn.assert_called_once_with(self.home)
+            self.assertIs(engine._child, new)
+
     def test_ensure_ready_on_fresh_sidecar_is_not_installed(self) -> None:
         engine = Engine(self._internal())
         result = engine.ensure_ready()

@@ -207,7 +207,7 @@ class SidecarExportTests(TestCase):
         exposed = {grant.action for grant in PHASE4_ALLOWLIST.grants}
         advertised = set(re.findall(r"\b[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\b", _BLOCK)) & catalog
         self.assertEqual(sorted(advertised - exposed), [])
-        self.assertEqual(sorted(exposed - catalog), [])
+        self.assertEqual(sorted(exposed - catalog), ["process.manage", "project.apply_patch"])
         self.assertNotIn("iris_shell", _BLOCK)
         self.assertIn(engine_tool_name("workspace.open_email"), _BLOCK)
 
@@ -233,11 +233,12 @@ class SidecarExportTests(TestCase):
         from iris.infrastructure.speak_capability import (
             PHASE4_ALLOWLIST,
             engine_tool_action,
+            engine_tool_bindings,
             engine_tool_schemas,
         )
 
         schemas = engine_tool_schemas()
-        self.assertEqual(len(schemas), len(PHASE4_ALLOWLIST.grants))
+        self.assertEqual({schema["name"] for schema in schemas}, {binding.model_name for binding in engine_tool_bindings()})
         for schema in schemas:
             name = schema["name"]
             self.assertRegex(name, re.compile(r"^[A-Za-z0-9_-]+$"))

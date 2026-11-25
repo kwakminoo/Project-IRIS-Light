@@ -106,6 +106,7 @@ class IrisAgentHealthWorker(QThread):
                 report = sync_iris_control(
                     home=source.home,
                     reconnect_gateway=False,
+                    audit_servers=False,
                 )
                 self.notice.emit(report.summary_line())
             except Exception as sync_exc:  # noqa: BLE001

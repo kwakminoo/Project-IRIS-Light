@@ -53,6 +53,7 @@ class ToolShellPart:
     block_id: str = ""
     collapsed: bool = False
     phase: str = "done"
+    allow_always: bool = True
     type: Literal["tool_shell"] = "tool_shell"
 
 

@@ -29,6 +29,9 @@ class SetupHermesRuntimeRepairTests(unittest.TestCase):
         self._home_patch.start()
         self._gw_home = patch.object(gw, "iris_agent_home", lambda: self.home)
         self._gw_home.start()
+        setup_state = patch("iris.system.setup_protocol.save_setup_state")
+        setup_state.start()
+        self.addCleanup(setup_state.stop)
 
     def tearDown(self) -> None:
         self._gw_home.stop()
@@ -52,20 +55,17 @@ class SetupHermesRuntimeRepairTests(unittest.TestCase):
         self.assertTrue(result.can_install)
         self.assertIn("깨져", result.message)
 
-    def test_wipe_hermes_agent_keeps_dotenv(self) -> None:
+    def test_repair_keeps_reference_checkout_and_dotenv(self) -> None:
         agent = self.home / "hermes-agent"
         (agent / "venv").mkdir(parents=True)
         (agent / "venv" / "marker.txt").write_text("x", encoding="utf-8")
         env_path = self.home / ".env"
         env_path.write_text("API_SERVER_KEY=keep-me\n", encoding="utf-8")
-        proto = SetupProtocol(dry_run=False, simulate=False)
-        with (
-            patch.object(hi.gw, "stop_hermes_gateway", return_value=True),
-            patch.object(hi, "_kill_hermes_tree_holders"),
-        ):
-            msg = proto._wipe_hermes_agent_runtime()
-        self.assertTrue("치움" in msg or "삭제" in msg or "정리" in msg, msg)
-        self.assertFalse(agent.exists())
+        with patch("iris.engine._home.probe_engine_python", return_value=object()):
+            result = hi.install_iris_agent_with_system_python(home=self.home)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.kind, "gate")
+        self.assertTrue((agent / "venv" / "marker.txt").is_file())
         self.assertTrue(env_path.is_file())
         self.assertIn("keep-me", env_path.read_text(encoding="utf-8"))
 

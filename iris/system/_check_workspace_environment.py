@@ -1,4 +1,4 @@
-"""U04 / W11-D — Workspace Environment Manager.
+"""U04 / W11-D / FPR-04 — Workspace Environment Manager.
 
 Fails when:
 - ensure_project_python(create=False) invents a .venv
@@ -9,6 +9,9 @@ Fails when:
 - lockfile presence claims poetry/uv support without a binary/env
 - allow_create=False silently creates .venv
 - product sys.executable is chosen as system project env
+- Agent Core ``…/agent/*/venv`` is silently chosen as a user project interpreter
+- agent-core probe python / cwd / environment_id collapse into workspace run path
+- home-without-workspace defaults change (shell cwd / process.manage cwd / bound root)
 
 Run:
   .venv\\Scripts\\python.exe -m iris.system._check_workspace_environment
@@ -31,6 +34,9 @@ from iris.system.project_ops import (
 )
 from iris.system.workspace_env import (
     WorkspaceEnvironmentResolver,
+    _is_agent_core_interpreter,
+    agent_core_home,
+    bind_execution_argv,
     iris_product_python,
     lockfile_names,
     system_python_on_path,
@@ -239,6 +245,177 @@ def _check_product_python_excluded_from_system() -> None:
             assert hit.source == "none"
 
 
+def _agent_core_venv_python() -> Path | None:
+    """Live Agent Core interpreter when installed; else a synthetic path under Agent Home."""
+    try:
+        from iris.engine._home import engine_python
+        from iris.engine.types import _default_engine_home
+
+        live = engine_python(_default_engine_home())
+        if live is not None and Path(live).is_file():
+            return Path(live).resolve()
+    except Exception:
+        pass
+    home = agent_core_home()
+    if sys.platform == "win32":
+        return (home / "hermes-agent" / "venv" / "Scripts" / "python.exe").resolve()
+    return (home / "hermes-agent" / "venv" / "bin" / "python").resolve()
+
+
+def _check_agent_core_venv_not_silent() -> None:
+    """VIRTUAL_ENV / PATH pointing at Agent Core must not become a project interpreter."""
+    agent_py = _agent_core_venv_python()
+    assert _is_agent_core_interpreter(agent_py), agent_py
+    agent_prefix = agent_py.parent.parent  # …/venv
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        project_py = ensure_project_python(root, create=True)
+        assert project_py is not None
+
+        env = {**os.environ, "VIRTUAL_ENV": str(agent_prefix)}
+        env.pop("CONDA_PREFIX", None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            hit = WorkspaceEnvironmentResolver().resolve(
+                project_root=root, allow_create=False
+            )
+        assert hit.source != "virtual_env", hit
+        assert hit.python is not None
+        assert hit.python.resolve() == project_py.resolve()
+        assert hit.python.resolve() != agent_py.resolve()
+        assert not _is_agent_core_interpreter(hit.python)
+
+        # Explicit user preference may still select Agent Core.
+        explicit = WorkspaceEnvironmentResolver().resolve(
+            project_root=root,
+            user_python=agent_py,
+            allow_create=False,
+        )
+        if agent_py.is_file():
+            assert explicit.source == "user"
+            assert explicit.python is not None
+            assert explicit.python.resolve() == agent_py.resolve()
+
+
+def _check_agent_probe_vs_workspace_run_distinct() -> None:
+    """(a) agent-core probe vs (b) workspace run — sys.executable / cwd / environment_id."""
+    from iris.engine._home import engine_python
+    from iris.engine.types import _default_engine_home
+    from iris.system.run_env import build_child_env as scrub_env
+
+    agent_home = _default_engine_home()
+    agent_py = engine_python(agent_home)
+    if agent_py is None or not Path(agent_py).is_file():
+        # No live Agent Core — still prove workspace path stays off Agent Home.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws_py = ensure_project_python(root, create=True)
+            assert ws_py is not None
+            hit = WorkspaceEnvironmentResolver().resolve(
+                project_root=root, allow_create=False
+            )
+            assert hit.python is not None
+            assert hit.python.resolve() == Path(ws_py).resolve()
+            assert not _is_agent_core_interpreter(hit.python)
+            env_ws = scrub_env(
+                {"PATH": "C:\\Windows\\System32"},
+                {"IRIS_ENVIRONMENT_ID": "workspace-run"},
+            )
+            assert env_ws.get("IRIS_ENVIRONMENT_ID") == "workspace-run"
+        return
+
+    agent_py_r = Path(agent_py).resolve()
+    assert _is_agent_core_interpreter(agent_py_r)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        ws_py = ensure_project_python(root, create=True)
+        assert ws_py is not None
+        hit = WorkspaceEnvironmentResolver().resolve(
+            project_root=root, allow_create=False
+        )
+        assert hit.python is not None
+        ws_py_r = hit.python.resolve()
+        assert ws_py_r == Path(ws_py).resolve()
+        assert ws_py_r != agent_py_r
+
+        # argv bind for workspace run uses workspace interpreter, not Agent Core.
+        bound = bind_execution_argv(
+            ["python", "app.py"], project_root=root, allow_create=False
+        )
+        assert Path(bound[0]).resolve() == ws_py_r
+
+        # Distinct environment_id / cwd contracts.
+        env_agent = scrub_env(
+            {"PATH": "C:\\Windows\\System32"},
+            {"IRIS_ENVIRONMENT_ID": "agent-core-probe"},
+        )
+        env_ws = scrub_env(
+            {"PATH": "C:\\Windows\\System32"},
+            {"IRIS_ENVIRONMENT_ID": "workspace-run"},
+        )
+        assert env_agent.get("IRIS_ENVIRONMENT_ID") == "agent-core-probe"
+        assert env_ws.get("IRIS_ENVIRONMENT_ID") == "workspace-run"
+        assert env_agent["IRIS_ENVIRONMENT_ID"] != env_ws["IRIS_ENVIRONMENT_ID"]
+
+        agent_cwd = str(Path(agent_home).resolve())
+        workspace_cwd = str(root.resolve())
+        assert agent_cwd != workspace_cwd
+        assert str(agent_py_r).startswith(str(agent_core_home()))
+        assert not str(ws_py_r).startswith(str(agent_core_home()))
+
+
+def _check_home_without_workspace_defaults() -> None:
+    """No bound workspace: allowed default work path is user home / settings — not Agent Home.
+
+    Documented contracts (source scrape + callable):
+    - iris_shell.default_shell_cwd → Path.home()
+    - process.manage empty cwd without workspace_root → Path.home()
+    - resolve_bound_work_root without bound IDE → error (project write/run refuses Agent Home)
+    """
+    from iris.system.iris_shell import default_shell_cwd
+    from iris.ui.control_bindings import resolve_bound_work_root
+
+    home = Path.home().resolve()
+    assert default_shell_cwd() == home
+    assert home != agent_core_home()
+
+    runtime_src = (
+        Path(__file__).resolve().parent / "execution_runtime.py"
+    ).read_text(encoding="utf-8")
+    # process.manage: no cwd + no workspace_root → user home (not Agent Home).
+    assert "Path.home().resolve()" in runtime_src
+    compact = runtime_src.replace(" ", "").replace("\n", "")
+    assert "cwd_raw=str(Path.home().resolve())" in compact
+
+    window = mock.MagicMock()
+    window._conversation_id = 0
+    window._bound_slot = None
+    window._get_bound_ide_session.return_value = None
+    root, err = resolve_bound_work_root(window, {})
+    assert root == ""
+    assert "bound IDE workspace" in err
+
+
+def _check_ide_bound_workspace_user_interpreter() -> None:
+    """IDE findProjectPython: bound workspace roots + optional userPython preference."""
+    ide = (
+        Path(__file__).resolve().parents[2]
+        / "integrations"
+        / "iris-ide"
+        / "src"
+        / "browser"
+        / "iris-ide-project-python.ts"
+    )
+    text = ide.read_text(encoding="utf-8")
+    assert "userPython" in text
+    assert "workspaceRoots" in text
+    assert "WorkspaceEnvironmentResolver" in text
+    assert "findProjectPython" in text
+    # Preference beats walk-up when the path exists.
+    assert "if (userPython && (await exists(userPython)))" in text.replace("\r\n", "\n")
+
+
 def main() -> None:
     _check_create_false_returns_none()
     _check_bind_does_not_create()
@@ -250,6 +427,10 @@ def main() -> None:
     _check_lockfile_not_support()
     _check_allow_create_false_never_creates()
     _check_product_python_excluded_from_system()
+    _check_agent_core_venv_not_silent()
+    _check_agent_probe_vs_workspace_run_distinct()
+    _check_home_without_workspace_defaults()
+    _check_ide_bound_workspace_user_interpreter()
     print("workspace_environment ok")
 
 

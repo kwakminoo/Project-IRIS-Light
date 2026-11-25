@@ -11,7 +11,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
 
 from iris.engine import EngineError, EngineErrorCode, TurnFailed, TurnFinished
-from iris.storage.conversations import history_dicts
+from iris.storage.conversations import (
+    CANCELLED_NOTE,
+    INTERRUPTED_NOTE,
+    SYSTEM_ERROR_PREFIX,
+    history_dicts,
+)
 
 
 def _check_fail_keeps_user(app: QApplication) -> None:
@@ -37,6 +42,142 @@ def _check_fail_keeps_user(app: QApplication) -> None:
 
     after = [r["content"] for r in history_dicts(win._db, cid)]
     assert "keep-me-on-fail" in after, after
+    assert any(SYSTEM_ERROR_PREFIX in (r.get("content") or "") for r in history_dicts(win._db, cid)), after
+    win.close()
+    app.processEvents()
+
+
+def _check_fail_lands_system_error_row(app: QApplication) -> None:
+    """TOOL_ERROR_BUDGET / fail → DB-visible system-error land; user kept."""
+    from iris.ui.window.main_window import MainWindow
+
+    win = MainWindow(test_mode=True)
+    win.show()
+    app.processEvents()
+    cid = int(win._conversation_id)
+    win._record_history("user", "budget-fail-user")
+    turn_id = "turn-tool-budget"
+    win._turn_gate.begin(turn_id)
+    win._turn_gate.arm()
+    win._turn_worker_meta[turn_id] = cid
+    budget_msg = EngineError(EngineErrorCode.TOOL_ERROR_BUDGET, "Stopped after 10").user_message
+    win._runs.slot(cid).pending_partial = "partial before budget"
+    win._on_chat_failed_for_turn(budget_msg, turn_id)
+    app.processEvents()
+    rows = history_dicts(win._db, cid)
+    texts = [r["content"] for r in rows]
+    assert "budget-fail-user" in texts, texts
+    land = next((t for t in texts if SYSTEM_ERROR_PREFIX in t), "")
+    assert land, texts
+    assert "partial before budget" in land, land
+    assert budget_msg in land or "도구 오류" in land, land
+    assert not any(
+        r["role"] == "assistant"
+        and SYSTEM_ERROR_PREFIX not in (r.get("content") or "")
+        and "partial before budget" == (r.get("content") or "").strip()
+        for r in rows
+    )
+    win.close()
+    app.processEvents()
+
+
+def _check_away_fail_lands_db(app: QApplication) -> None:
+    """Background conversation fail still writes a system-error row for that cid."""
+    from iris.storage.conversations import append_message, create_conversation
+    from iris.ui.window.main_window import MainWindow
+
+    win = MainWindow(test_mode=True)
+    win.show()
+    app.processEvents()
+    foreground = int(win._conversation_id)
+    win._record_history("user", "fg-user")
+    away_cid = int(create_conversation(win._db).id)
+    win._runs.slot(away_cid)
+    append_message(win._db, away_cid, "user", "away-user")
+    turn_id = "turn-away-fail"
+    slot = win._runs.slot(away_cid)
+    slot.gate.begin(turn_id)
+    slot.gate.arm()
+    slot.pending_partial = "away-partial"
+    win._turn_worker_meta[turn_id] = away_cid
+    assert win._conversation_id == foreground
+    win._on_chat_failed_for_turn("away stream died", turn_id)
+    app.processEvents()
+    away_texts = [r["content"] for r in history_dicts(win._db, away_cid)]
+    assert "away-user" in away_texts, away_texts
+    land = next((t for t in away_texts if SYSTEM_ERROR_PREFIX in t), "")
+    assert land and "away-partial" in land, away_texts
+    fg_texts = [r["content"] for r in history_dicts(win._db, foreground)]
+    assert not any(SYSTEM_ERROR_PREFIX in t for t in fg_texts), fg_texts
+    win.close()
+    app.processEvents()
+
+
+def _check_user_stop_lands_cancel_envelope(app: QApplication) -> None:
+    """user_stop → DB system-error cancel land; user kept; not INTERRUPTED_NOTE."""
+    from iris.ui.window.main_window import MainWindow
+
+    win = MainWindow(test_mode=True)
+    win.show()
+    app.processEvents()
+    cid = int(win._conversation_id)
+    win._record_history("user", "stop-user")
+    turn_id = "turn-user-stop"
+    win._turn_gate.begin(turn_id)
+    win._turn_gate.arm()
+    win._turn_worker_meta[turn_id] = cid
+    win._chat.begin_stream_message("Iris", speech_sync=False)
+    win._chat.append_stream_chunk("partial stop text")
+    win._on_chat_stop()
+    app.processEvents()
+    rows = history_dicts(win._db, cid)
+    texts = [r["content"] for r in rows]
+    assert "stop-user" in texts, texts
+    land = next((t for t in texts if SYSTEM_ERROR_PREFIX in t), "")
+    assert land, texts
+    assert "partial stop text" in land, land
+    assert CANCELLED_NOTE in land, land
+    assert INTERRUPTED_NOTE not in land, land
+    # Idempotent: second cancel / late orphan must not add another assistant row.
+    before_n = sum(1 for r in rows if r["role"] == "assistant")
+    win._land_cancelled_turn(
+        turn_id, land, win._runs.slot(cid)
+    )
+    win._persist_orphan_finished(turn_id, "late model prose after cancel")
+    app.processEvents()
+    after = history_dicts(win._db, cid)
+    after_n = sum(1 for r in after if r["role"] == "assistant")
+    assert after_n == before_n, (before_n, after_n, [r["content"] for r in after])
+    assert not any("late model prose" in (r.get("content") or "") for r in after)
+    win.close()
+    app.processEvents()
+
+
+def _check_interrupt_lands_interrupted_envelope(app: QApplication) -> None:
+    """conversation_switch cancel keeps INTERRUPTED_NOTE inside system envelope."""
+    from iris.ui.window.main_window import MainWindow
+
+    win = MainWindow(test_mode=True)
+    win.show()
+    app.processEvents()
+    cid = int(win._conversation_id)
+    win._record_history("user", "switch-user")
+    turn_id = "turn-switch-cancel"
+    win._turn_gate.begin(turn_id)
+    win._turn_gate.arm()
+    win._turn_worker_meta[turn_id] = cid
+    win._chat.begin_stream_message("Iris", speech_sync=False)
+    win._chat.append_stream_chunk("partial switch text")
+    win._cancel_current_turn(
+        reason="conversation_switch", preserve_partial_response=True
+    )
+    app.processEvents()
+    texts = [r["content"] for r in history_dicts(win._db, cid)]
+    assert "switch-user" in texts, texts
+    land = next((t for t in texts if SYSTEM_ERROR_PREFIX in t), "")
+    assert land and INTERRUPTED_NOTE in land, texts
+    assert "partial switch text" in land, land
+    assert CANCELLED_NOTE not in land, land
     win.close()
     app.processEvents()
 
@@ -290,6 +431,10 @@ def main() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
     _check_current_supports_tools()
     _check_fail_keeps_user(app)
+    _check_fail_lands_system_error_row(app)
+    _check_away_fail_lands_db(app)
+    _check_user_stop_lands_cancel_envelope(app)
+    _check_interrupt_lands_interrupted_envelope(app)
     _check_finished_records_assistant(app)
     _check_orphan_without_meta_still_lands(app)
     _check_fail_then_finish_lands(app)

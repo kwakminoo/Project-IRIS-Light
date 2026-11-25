@@ -1006,6 +1006,7 @@ def sync_iris_control(
     repo: Path | None = None,
     reconnect_gateway: bool = False,
     home: Path | None = None,
+    audit_servers: bool = True,
 ) -> SyncReport:
     """스킬·MCP 자세 설치 후 검증. Hermes 디스크에 남겨 Iris 재시작에도 유지.
 
@@ -1018,6 +1019,8 @@ def sync_iris_control(
     """
     repo = repo or project_root()
     target = _resolved_home(home)
+    agent_root = _agent_checkout(target)
+    owned_core = (agent_root / "SOURCE_MANIFEST.json").is_file()
     report = SyncReport(config_path=str(iris_agent_config_path(target)))
 
     try:
@@ -1060,8 +1063,8 @@ def sync_iris_control(
         report.messages.append(f"computer_use policy skip: {exc}")
 
     try:
-        dead_patch = ensure_iris_agent_stdio_dead_check_patch(home=target)
-        report.messages.append(dead_patch)
+        if not owned_core:
+            report.messages.append(ensure_iris_agent_stdio_dead_check_patch(home=target))
     except Exception as exc:  # noqa: BLE001
         report.messages.append(f"hermes dead-check patch skip: {exc}")
 
@@ -1072,11 +1075,10 @@ def sync_iris_control(
             tool_choice_overlay_present,
         )
 
-        agent_root = _agent_checkout(iris_agent_home())
-        if agent_root.is_dir() and not tool_choice_overlay_present(agent_root):
+        if not owned_core and agent_root.is_dir() and not tool_choice_overlay_present(agent_root):
             for line in apply_iris_agent_tool_choice_overlay(agent_root):
                 report.messages.append(line)
-        elif agent_root.is_dir():
+        elif not owned_core and agent_root.is_dir():
             report.messages.append("hermes tool_choice overlay present")
         report.messages.append(
             f"Iris Agent tool_choice: {load_hermes_tool_choice(home=target)}"
@@ -1131,7 +1133,7 @@ def sync_iris_control(
 
     # 등록된 모든 MCP 점검 (다른 서버 설정은 건드리지 않고 상태만 확인·기록)
     try:
-        audited = audit_all_mcp_servers(home=target)
+        audited = audit_all_mcp_servers(home=target) if audit_servers else []
         report.mcp_servers = audited
         report.mcp_ok_count = sum(1 for s in audited if s.get("ok"))
         report.mcp_fail_count = sum(

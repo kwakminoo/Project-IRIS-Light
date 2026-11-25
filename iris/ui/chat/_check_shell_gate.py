@@ -111,8 +111,9 @@ def main() -> int:
     assert attention == [1]
 
     attention.clear()
+    auto_chat = _Chat()
     auto_attn = try_card_confirm(
-        chat=_Chat(),
+        chat=auto_chat,
         command="git status",
         title="Shell",
         approval=ApprovalState(mode_id="run_everything"),
@@ -120,7 +121,50 @@ def main() -> int:
         on_attention=lambda: attention.append(1),
     )
     assert auto_attn.approved is True
+    # FPR-01: auto skips wait only — Shell Box must still appear.
+    assert auto_attn.block_id == "block-1"
+    assert len(auto_chat.inserts) >= 1
+    assert auto_chat.inserts[0]["phase"] == "pending"
     assert attention == []
+
+    # FPR-07/08: EXTERNAL/SENSITIVE — allow_auto=False never skips wait.
+    external_chat = _Chat()
+    external = try_card_confirm(
+        chat=external_chat,
+        command="email.send\nto=a@b.c",
+        title="Email · high",
+        approval=ApprovalState(mode_id="run_everything"),
+        wait=lambda _bid: "run",
+        on_attention=lambda: attention.append(1),
+        allow_auto=False,
+    )
+    assert external.approved is True
+    assert external.block_id == "block-1"
+    assert len(external_chat.inserts) == 1
+    assert attention == [1]
+    assert external_chat.inserts[0].get("allow_always") is False
+    # allow_auto=False path HTML has no Always Allow / Always Run.
+    from iris.ui.chat.chat_renderer import render_tool_shell as _render_sensitive
+
+    sens_html = _render_sensitive(
+        "Email · high",
+        "email.send\nto=a@b.c",
+        "",
+        "ok",
+        "bid",
+        phase="pending",
+        allow_always=False,
+    )
+    assert "iris-run://bid" in sens_html
+    assert "iris-skip://bid" in sens_html
+    assert "iris-always://" not in sens_html
+    assert "Always Run" not in sens_html
+    assert "Always Allow" not in sens_html
+    shell_pending = _render_sensitive(
+        "Shell", "git status", "", "ok", "bid", phase="pending", allow_always=True
+    )
+    assert "iris-always://bid" in shell_pending
+    assert "Always Run" in shell_pending
 
     class _EmptyInsert:
         def insert_tool_block(self, **_kwargs) -> str:
@@ -225,8 +269,10 @@ def main() -> int:
         on_attention=lambda: gate_attn.append(1),
     )
     assert calls == [{"command": "git status"}]
-    assert len(quiet.inserts) == 1
-    assert quiet.inserts[0].get("phase", "done") != "pending"
+    # FPR-01: auto inserts pending Box immediately (wait skipped).
+    assert len(quiet.inserts) >= 1
+    assert quiet.inserts[0]["phase"] == "pending"
+    assert quiet.replacements and quiet.replacements[0][1]["phase"] == "done"
     assert gate_attn == []
 
     calls.clear()
@@ -286,6 +332,42 @@ def main() -> int:
     assert panel._shell_tool_blocks[stored_id].phase == "pending"
     assert panel.replace_tool_block(stored_id, phase="running", output="hi")
     assert panel._shell_tool_blocks[stored_id].phase == "running"
+
+    # FPR-01: auto-approve creates a ToolShell block on real ChatPanel (headless Qt).
+    qt_auto = try_card_confirm(
+        chat=panel,
+        command="echo auto-box",
+        title="Shell",
+        approval=ApprovalState(mode_id="run_everything"),
+        wait=_boom,
+    )
+    assert qt_auto.approved is True
+    assert qt_auto.block_id
+    assert qt_auto.block_id in panel._shell_tool_blocks
+    assert any(
+        getattr(p, "block_id", "") == qt_auto.block_id
+        for t in panel.transcript()._turns
+        for p in t.parts
+    )
+
+    # FPR-01: end_stream must not pop a ToolShell-only / attached shell turn.
+    stream_panel = ChatPanel()
+    stream_panel.begin_stream_message("Iris", speech_sync=False)
+    stream_panel.append_stream_chunk("thinking ")
+    shell_bid = stream_panel.insert_tool_block(
+        title="Shell",
+        command="echo keep",
+        output="",
+        status="ok",
+        phase="pending",
+    )
+    stream_panel.end_stream_message("final answer after shell")
+    kept = "".join(
+        getattr(p, "block_id", "")
+        for t in stream_panel.transcript()._turns
+        for p in t.parts
+    )
+    assert shell_bid in kept, f"ToolShell lost after end_stream: {kept!r}"
 
     card_html = code_card_to_html(
         CodeCardModel(
@@ -358,12 +440,13 @@ def main() -> int:
     assert take_shell_confirm_block(map_chat, request_id=rid_a) == "block-a"
     assert take_shell_confirm_block(map_chat, request_id=rid_a) == ""
 
-    # Command match still works without request_id when distinct.
-    rid_c = stash_shell_confirm_block(map_chat, "block-c", command="unique-c")
-    rid_d = stash_shell_confirm_block(map_chat, "block-d", command="unique-d")
-    assert take_shell_confirm_block(map_chat, command="unique-d") == "block-d"
-    assert take_shell_confirm_block(map_chat, command="unique-c") == "block-c"
-    assert rid_c and rid_d
+    # FPR-03: command-string alone must NOT bind a Shell Box (wrong request race).
+    rid_c = stash_shell_confirm_block(map_chat, "block-c", command="same-cmd")
+    rid_d = stash_shell_confirm_block(map_chat, "block-d", command="same-cmd")
+    assert rid_c and rid_d and rid_c != rid_d
+    assert take_shell_confirm_block(map_chat, command="same-cmd") == ""
+    assert take_shell_confirm_block(map_chat, request_id=rid_d) == "block-d"
+    assert take_shell_confirm_block(map_chat, request_id=rid_c) == "block-c"
 
     # HF-05: take timeout → deny (cleanup, no unbounded wait).
     arm("gate-timeout")

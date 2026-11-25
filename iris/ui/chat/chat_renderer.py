@@ -172,6 +172,7 @@ def render_tool_shell(
     *,
     collapsed: bool = False,
     phase: str = "done",
+    allow_always: bool = True,
 ) -> str:
     block = ToolShellBlock(
         title=title or "Shell",
@@ -181,6 +182,7 @@ def render_tool_shell(
         block_id=block_id or "tool",
         collapsed=collapsed,
         phase=(phase or "done").strip() or "done",
+        allow_always=bool(allow_always),
     )
     return wrap_document_html(marked_tool_shell_to_html(block))
 

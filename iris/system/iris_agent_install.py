@@ -1,28 +1,22 @@
-"""Hermes Windows 설치 우회 — uv managed Python junction(WinError 448) 회피.
+"""Install the bundled Iris Agent Core and atomically select a verified slot.
 
-공식 install.ps1 은 시스템 Python을 거부하고 checkout 전용 uv managed
-interpreter 만 받는다. OneDrive/필터 등으로 minor-version junction 생성이
-실패하면(os error 448) 설치가 멈춘다.
-
-우회: vendor/iris-agent-core 를 staging 에 복사한 뒤 검증에 성공하면 live(iris-agent) 와 교체한다.
-레거시 ~/.iris-light/agent/hermes-agent(Reference) 는 건드리지 않는다.
-의존성은 uv.lock 이 있으면 uv sync --frozen 이 우선이고, 없을 때만 pip.
-pip 는 uv.lock pin 을 재현하지 않으며 requirements.txt 는 쓰지 않는다.
-
-Python: 처음엔 3.11 → 3.12 → 3.13 을 고르고, materialize 한 뒤 그 저장소의 uv.lock·pyproject 가
-요구하는 범위(iris_agent_python_range)를 벗어나면 다시 고른다. 2026-10-02 upstream 은
-requires-python 이 >=3.11,<3.15 인데 의존성이 전부 `python_version >= '3.14'` 로 묶여
-3.11 로는 핵심 패키지가 하나도 깔리지 않았다 (ruamel 없음, 실제 사례).
+Each slot keeps its absolute virtualenv paths. The prior selection remains
+available for recovery. Older checkout helpers remain for compatibility.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import tomllib
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,11 +24,15 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from iris.infrastructure.agent_runtime import (
+    ENGINE_SELECTION_FILE,
     IRIS_AGENT_CHECKOUT_NAME,
     apply_iris_agent_baseline_overlays,
+    engine_slot_path,
     ensure_iris_agent_home,
+    iris_agent_repo_dir,
     load_pinned_sha,
     load_upstream_url,
+    read_engine_selection,
 )
 from iris.system import iris_agent_gateway as gw
 
@@ -80,6 +78,36 @@ def vendor_iris_agent_core_root() -> Path:
     return Path(__file__).resolve().parents[2] / "vendor" / "iris-agent-core"
 
 
+def verify_owned_core_source(root: Path, *, bundled: bool = False) -> dict:
+    """Check the shipped source identity and the inputs used for installation."""
+    manifest = json.loads((root / "SOURCE_MANIFEST.json").read_text(encoding="utf-8"))
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    if (
+        manifest["package"] != "iris-agent-core"
+        or manifest["package"] != project["name"]
+        or manifest["version"] != project["version"]
+        or manifest["entry_point"] != project["scripts"]["iris-agent"]
+        or manifest["upstream_revision"] != _vendor_baseline_sha(root)
+        or (bundled and manifest["upstream_revision"] != load_pinned_sha())
+    ):
+        raise ValueError("Iris Agent source identity does not match its manifest")
+    required = {
+        ".iris-agent-baseline", "LICENSE", "PROVENANCE.md", "iris_agent_cli/main.py",
+        "pyproject.toml", "run_agent.py", "setup.py", "uv.lock",
+    }
+    hashes = manifest["sha256"]
+    if not required.issubset(hashes):
+        raise ValueError("Iris Agent manifest is missing required files")
+    for name, digest in hashes.items():
+        path = (root / name).resolve()
+        if not path.is_relative_to(root.resolve()):
+            raise ValueError(f"Iris Agent manifest path is outside the source tree: {name}")
+        content = path.read_text(encoding="utf-8").encode("utf-8")
+        if hashlib.sha256(content).hexdigest() != digest:
+            raise ValueError(f"Iris Agent source integrity check failed: {name}")
+    return manifest
+
+
 def _vendor_baseline_sha(vendor: Path) -> str:
     """`.iris-agent-baseline` 또는 PROVENANCE 에서 pin SHA."""
     bas = vendor / ".iris-agent-baseline"
@@ -123,16 +151,16 @@ def _materialize_owned_core(staging: Path) -> subprocess.CompletedProcess[str]:
             cmd, 1, "", f"baseline stamp mismatch want={pin} got={bas}"
         )
     try:
-        if staging.exists():
-            shutil.rmtree(staging)
+        verify_owned_core_source(src, bundled=True)
         shutil.copytree(
             src,
             staging,
             ignore=shutil.ignore_patterns(
-                "venv", ".git", "__pycache__", "*.pyc", ".pytest_cache"
+                "venv", ".venv", ".git", "__pycache__", "*.pyc", ".pytest_cache", "*.egg-info", ".env"
             ),
         )
-    except OSError as exc:
+        verify_owned_core_source(staging)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         return subprocess.CompletedProcess(cmd, 1, "", str(exc))
     return subprocess.CompletedProcess(
         cmd, 0, f"materialized from vendor_iris_agent_core ({src}) pin={pin}", ""
@@ -570,38 +598,24 @@ def format_install_failure(prefix: str, body: str, log_path: Path | None, kind: 
     return "\n".join(p for p in (f"{prefix} ({labels.get(kind, kind)})", tail, where) if p)
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if pid == os.getpid():
-        return True
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
 @contextmanager
 def iris_agent_install_lock(home: Path) -> Iterator[Path]:
     home.mkdir(parents=True, exist_ok=True)
-    path = home / "iris-hermes-install.lock"
-    if path.is_file():
+    path = home / "iris-engine.lock"
+    with path.open("a+b") as stream:
+        stream.seek(0)
         try:
-            pid = int((path.read_text(encoding="utf-8") or "0").strip() or "0")
-        except (OSError, ValueError):
-            pid = 0
-        if _pid_alive(pid):
-            raise InstallBusy(f"다른 Hermes 설치가 진행 중입니다 (pid {pid})")
-    path.write_text(str(os.getpid()), encoding="utf-8")
-    try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise InstallBusy("다른 Iris Agent 설치 또는 복구가 진행 중입니다") from exc
         yield path
-    finally:
-        try:
-            if path.is_file() and (path.read_text(encoding="utf-8") or "").strip() == str(os.getpid()):
-                path.unlink()
-        except OSError:
-            pass
 
 
 def _timeout_kind(exc: BaseException) -> str:
@@ -746,30 +760,56 @@ def _retarget_moved_tree(root: Path, old: Path, new: Path) -> int:
     return changed
 
 
-def _activate_staged(
-    home: Path,
-    staging: Path,
-    stamp: str,
-    command: str,
-    *,
-    probe_gateway: bool = True,
-) -> tuple[bool, str]:
-    """교체하고 경로를 고친 뒤, 최종 위치에서만 실행 probe 한다."""
-    old = Path(staging)
-    swapped, note = _swap_in_staging(home, staging, stamp)
-    if not swapped:
-        return False, note
-    live = home / IRIS_AGENT_CHECKOUT_NAME
-    _retarget_moved_tree(live, old, live)
-    if probe_gateway:
-        ok, detail = gw.probe_iris_agent_runtime(command=command, timeout_sec=30.0)
-    else:
-        venv_py = live / ("venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python")
-        ok, detail = _probe_venv(venv_py)
-    if not ok:
-        _restore_backup(home, stamp)
-        return False, detail
-    return True, detail
+def _activate_staged(home: Path, staging: Path) -> tuple[bool, str]:
+    """Select a verified stable slot, retaining the previous active engine."""
+    # ponytail: Keep older slots until cleanup can verify their sidecars have exited.
+    try:
+        current = iris_agent_repo_dir(home)
+        _, last_previous = read_engine_selection(home)
+        previous = current if current.is_dir() else last_previous
+        _write_engine_selection(home, staging, previous if previous and previous.is_dir() else None)
+    except (OSError, ValueError) as exc:
+        return False, f"Iris Agent 전환 실패: {exc}"
+    return True, staging.name
+
+
+def _write_engine_selection(home: Path, active: Path, previous: Path | None) -> None:
+    for slot in (active, previous):
+        if slot is not None and (engine_slot_path(home, slot.name) != slot or not slot.is_dir()):
+            raise ValueError(f"Iris Agent engine slot is unavailable: {slot}")
+    config = {"active": active.name, "previous": previous.name if previous else None}
+    pending = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=home, delete=False) as stream:
+            pending = Path(stream.name)
+            json.dump(config, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(pending, home / ENGINE_SELECTION_FILE)
+    finally:
+        if pending is not None:
+            pending.unlink(missing_ok=True)
+
+
+def rollback_iris_agent(home: Path) -> str:
+    """Probe the recovery slot and select it without moving either installation."""
+    from iris.engine._home import _probe_imports, checkout_python
+
+    with iris_agent_install_lock(home):
+        current, previous = read_engine_selection(home)
+        if current is None or previous is None:
+            raise RuntimeError("Iris Agent recovery slot is unavailable")
+        if (previous / "SOURCE_MANIFEST.json").is_file():
+            ok, detail = _probe_owned_slot(previous, home)
+        else:
+            python = checkout_python(previous)
+            with tempfile.TemporaryDirectory(prefix="iris-recovery-", dir=home) as tmp:
+                error = _probe_imports(Path(python), home=Path(tmp)) if python else None
+            ok, detail = python is not None and error is None, str(error or "Recovery Python missing")
+        if not ok:
+            raise RuntimeError(f"Iris Agent recovery slot failed: {detail}")
+        _write_engine_selection(home, previous, current if current.is_dir() else None)
+        return previous.name
 
 
 def _swap_in_staging(home: Path, staging: Path, stamp: str) -> tuple[bool, str]:
@@ -837,163 +877,106 @@ def _finish_staged_install(
     *,
     staging: Path,
     home: Path,
-    stamp: str,
     py: Path,
     uv: str | None,
-    command: str,
     log: list[str],
     emit: Callable[[str], None],
     fail: Callable[..., InstallResult],
     run_streamed: Callable[..., subprocess.CompletedProcess[str]] | None,
     should_abort: Callable[[], bool] | None,
-    probe_gateway: bool = True,
+    model_check: Callable[[Path], None] | None = None,
 ) -> InstallResult:
-    # packages.find + CLI shims must exist before uv/pip builds editable metadata.
-    # Soft-fail: overlay miss must not abort a otherwise-good install.
-    _guard_installed_agent(staging)
-    venv_dir = staging / "venv"
-    emit("venv 생성…")
-    venv_proc = _run([str(py), "-m", "venv", str(venv_dir)], timeout=180.0)
-    log.append(venv_proc.stdout or "")
-    log.append(venv_proc.stderr or "")
-    if venv_proc.returncode != 0:
+    from iris.engine._home import _stripped_probe_env
+
+    if not uv or not (staging / "uv.lock").is_file():
         _discard_tree(staging)
-        return fail("exit", "venv 실패", "\n".join(log))
-    venv_py = venv_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-    if not venv_py.is_file():
+        return fail("lock", "Iris Agent 설치에 uv와 동봉된 uv.lock이 필요합니다", "Run IRIS Setup again to restore the bundled engine and uv.")
+    venv = staging / "venv"
+    env = _stripped_probe_env(home=None, python=py)
+    env.pop("VIRTUAL_ENV", None)
+    env["UV_PROJECT_ENVIRONMENT"] = str(venv)
+    env["UV_LINK_MODE"] = "copy"
+    cmd = [
+        uv, "sync", "--locked", "--no-dev", "--no-python-downloads",
+        *_uv_extra_args(_wanted_extras(staging)), "--python", str(py),
+    ]
+    emit("Iris Agent 잠금 의존성 설치 (uv sync --locked)…")
+    try:
+        proc = _run_dep(cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0, env=env)
+    except subprocess.TimeoutExpired as exc:
         _discard_tree(staging)
-        return fail("exit", "venv python 없음", str(venv_py))
+        return fail(_timeout_kind(exc), "uv sync 시간 초과", str(exc))
+    except OSError as exc:
+        _discard_tree(staging)
+        return fail("exit", "uv 실행 실패", str(exc))
+    log.extend((proc.stdout or "", proc.stderr or ""))
+    if proc.returncode != 0:
+        _discard_tree(staging)
+        return fail("lock", "잠금 의존성 설치 실패", "\n".join(log))
     if should_abort and should_abort():
         _discard_tree(staging)
         return InstallResult(False, "사용자가 중단함", "cancel")
 
-    extras = _wanted_extras(staging)
-    lock = staging / "uv.lock"
-    installed = False
-    if uv and lock.is_file():
-        # UV_PROJECT_ENVIRONMENT must be staging/venv — bare uv sync creates .venv and
-        # probe (venv/Scripts/python) then fails with ModuleNotFoundError: hermes_cli.
-        extra_note = ",".join(extras) if extras else "no extras"
-        emit(f"uv sync --frozen ({extra_note})…")
-        env = os.environ.copy()
-        env["VIRTUAL_ENV"] = str(venv_dir)
-        env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
-        cmd = [
-            uv, "sync", "--frozen", "--no-dev", "--active",
-            *_uv_extra_args(extras),
-            "--python", str(venv_py),
-        ]
-        started = time.monotonic()
-        try:
-            proc = _run_dep(
-                cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0, env=env
-            )
-        except subprocess.TimeoutExpired as exc:
-            log.append(str(exc))
-            _discard_tree(staging)
-            return fail(_timeout_kind(exc), "uv sync 시간 초과", "\n".join(log))
-        log.append(f"uv sync rc={proc.returncode} elapsed={time.monotonic() - started:.1f}s")
-        log.append(proc.stdout or "")
-        log.append(proc.stderr or "")
-        installed = proc.returncode == 0
-        if not installed:
-            log.append(_PIP_FALLBACK_LIMIT)
-            emit(_PIP_FALLBACK_LIMIT)
-    else:
-        log.append("uv.lock 또는 uv 없음 — " + _PIP_FALLBACK_LIMIT)
-        emit(_PIP_FALLBACK_LIMIT)
-
-    if not installed:
-        spec = _pip_editable_spec(extras)
-        emit(f"pip install -e {spec}…")
-        pip_cmd = [str(venv_py), "-m", "pip", "install", "-e", spec]
-        started = time.monotonic()
-        try:
-            pip = _run_dep(pip_cmd, cwd=str(staging), run_streamed=run_streamed, hard=2400.0)
-        except subprocess.TimeoutExpired as exc:
-            log.append(str(exc))
-            _discard_tree(staging)
-            return fail(_timeout_kind(exc), "pip 시간 초과", "\n".join(log))
-        log.append(f"pip extras rc={pip.returncode} elapsed={time.monotonic() - started:.1f}s")
-        log.append(pip.stdout or "")
-        log.append(pip.stderr or "")
-        if pip.returncode != 0:
-            emit("extras 실패 — pip install -e . 후 aiohttp/mcp pin…")
-            log.append(_PIP_FALLBACK_LIMIT)
-            try:
-                pip = _run_dep(
-                    [str(venv_py), "-m", "pip", "install", "-e", "."],
-                    cwd=str(staging),
-                    run_streamed=run_streamed,
-                    hard=2400.0,
-                )
-            except subprocess.TimeoutExpired as exc:
-                log.append(str(exc))
-                _discard_tree(staging)
-                return fail(_timeout_kind(exc), "pip 시간 초과", "\n".join(log))
-            log.append(pip.stdout or "")
-            log.append(pip.stderr or "")
-            if pip.returncode == 0:
-                boost = _boost_probe_deps(venv_py)
-                log.append(boost.stdout or "")
-                log.append(boost.stderr or "")
-                if boost.returncode != 0:
-                    _discard_tree(staging)
-                    return fail("exit", "gateway/mcp 의존성 보강 실패", "\n".join(log))
-                # pyproject pins are `python_version >= 3.14`. 3.12 editable
-                # install then has zero runtime deps and gateway dies on import.
-                ver = python_version(venv_py)
-                if ver is not None and ver < (3, 14):
-                    core = _pip_unmarked_core_deps(venv_py, staging)
-                    log.append(core.stdout or "")
-                    log.append(core.stderr or "")
-                    if core.returncode != 0:
-                        _discard_tree(staging)
-                        return fail("exit", "Python<3.14 core deps 설치 실패", "\n".join(log))
-        if pip.returncode != 0:
-            _discard_tree(staging)
-            return fail("exit", "pip 설치 실패", "\n".join(log))
-
-    ok, detail = _probe_venv(venv_py)
-    if not ok:
-        emit("probe 실패 — aiohttp/mcp pin…")
-        log.append(detail)
-        boost = _boost_probe_deps(venv_py)
-        log.append(boost.stdout or "")
-        log.append(boost.stderr or "")
-        if boost.returncode != 0:
-            _discard_tree(staging)
-            return fail("exit", "gateway/mcp 의존성 보강 실패", "\n".join(log))
-        # uv sync 성공 뒤에는 pip editable 금지 — Pillow override 를 pip 가 깨뜨림.
-        if not installed:
-            emit("probe pin 후 editable 재설치…")
-            edit = _run(
-                [str(venv_py), "-m", "pip", "install", "-e", "."],
-                cwd=str(staging),
-                timeout=300.0,
-            )
-            log.append(edit.stdout or "")
-            log.append(edit.stderr or "")
-            if edit.returncode != 0:
-                _discard_tree(staging)
-                return fail("exit", "editable 재설치 실패", "\n".join(log))
-        ok, detail = _probe_venv(venv_py)
-    log.append(f"probe={ok} {detail}")
+    ok, detail = _probe_owned_slot(staging, home)
+    log.append(detail)
     if not ok:
         _discard_tree(staging)
-        return fail("probe", "실행 검증 실패", "\n".join(log))
-
-    runtime_ok, runtime_detail = _activate_staged(
-        home, staging, stamp, command, probe_gateway=probe_gateway
-    )
-    if not runtime_ok:
-        log.append(runtime_detail)
+        return fail("probe", "Iris Agent 실행 검증 실패", "\n".join(log))
+    if model_check is not None:
+        try:
+            model_check(staging)
+        except (OSError, RuntimeError, ValueError) as exc:
+            _discard_tree(staging)
+            return fail("probe", "Iris Agent 모델 호환성 검사 실패", str(exc))
+    if should_abort and should_abort():
+        _discard_tree(staging)
+        return InstallResult(False, "사용자가 중단함", "cancel")
+    ok, detail = _activate_staged(home, staging)
+    if not ok:
+        log.append(detail)
         return fail("probe", "최종 경로 실행 검증 실패", "\n".join(log))
-    live_scripts = (
-        home / IRIS_AGENT_CHECKOUT_NAME / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
-    )
-    _user_path_prepend(live_scripts)
-    return InstallResult(True, f"우회 설치 성공 ({runtime_detail})", "ok")
+    return InstallResult(True, f"Iris Agent 설치 성공 ({detail})", "ok")
+
+
+def _probe_owned_slot(staging: Path, home: Path) -> tuple[bool, str]:
+    from iris.engine._home import _stripped_probe_env
+    from iris.engine.runtime import _SIDECAR_MAIN, _hello_ok
+
+    try:
+        manifest = verify_owned_core_source(staging)
+        python = staging / ("venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python")
+        check_imports = (
+            "from importlib.metadata import version; from pathlib import Path; import sys; "
+            "import run_agent, iris_agent_cli, mcp, openai; "
+            "from run_agent import AIAgent; "
+            "root = Path(sys.argv[1]); "
+            "assert Path(run_agent.__file__).resolve() == root / 'run_agent.py'; "
+            "assert Path(iris_agent_cli.__file__).resolve().is_relative_to(root); "
+            "assert Path(sys.prefix).resolve() == root / 'venv'; "
+            "assert version('iris-agent-core') == sys.argv[2]; "
+            "print('iris-agent-core ' + version('iris-agent-core'))"
+        )
+        with tempfile.TemporaryDirectory(prefix="iris-ready-", dir=home) as tmp:
+            probe_home = Path(tmp)
+            env = _stripped_probe_env(home=probe_home, python=python)
+            env.pop("IRIS_ENGINE_AGENT_MODULE", None)
+            env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+            env["IRIS_ENGINE_GUI_PYTHON"] = sys.executable
+            env["IRIS_ENGINE_LOG"] = str(probe_home / "sidecar.log")
+            command = [str(python), "-I", "-c", check_imports, str(staging.resolve()), manifest["version"]]
+            imported = _run(command, cwd=tmp, env=env, timeout=60)
+            if imported.returncode != 0:
+                return False, imported.stderr or imported.stdout or "AIAgent import failed"
+            sidecar = subprocess.run(
+                [str(python), "-I", str(_SIDECAR_MAIN)], input='{"t":"stop"}\n',
+                cwd=tmp, env=env, capture_output=True, encoding="utf-8", errors="replace",
+                timeout=30, **_no_window(),
+            )
+            if sidecar.returncode != 0 or not any(_hello_ok(line) for line in sidecar.stdout.splitlines()):
+                return False, sidecar.stderr or sidecar.stdout or "Sidecar ready probe failed"
+            return True, imported.stdout.strip()
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
 
 
 def combined_install_log_tail(*parts: str, limit: int = 1200) -> str:
@@ -1184,108 +1167,74 @@ def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | No
 
 def install_iris_agent_with_system_python(
     *,
-    command: str = "hermes",
+    command: str = "iris-agent",
     on_stream: StreamFn | None = None,
     run_streamed: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     should_abort: Callable[[], bool] | None = None,
     home: Path | None = None,
     sha: str | None = None,
+    update: bool = False,
+    model_check: Callable[[Path], None] | None = None,
 ) -> InstallResult:
-    """staging 에 vendor core 를 복사·설치하고 import probe 통과 후에만 live 와 교체.
+    """Install the packaged Iris engine into a stable slot, then select it."""
+    from iris.engine._home import probe_engine_python
+    from iris.engine.types import EngineHome
 
-    home 기본은 제품 Iris Agent 홈. Engine 경로면 EngineHome Path 를 넘긴다.
-    기본 경로는 vendor/iris-agent-core materialize (git 불필요).
-    """
+    home = (Path(home) if home is not None else ensure_iris_agent_home()).resolve()
 
-    def _emit(msg: str) -> None:
+    def emit(msg: str) -> None:
         if on_stream:
             on_stream(msg)
 
-    explicit_home = home is not None
-    home = Path(home) if explicit_home else ensure_iris_agent_home()
-    # EngineHome install must not require :8642 gateway probe.
-    probe_gateway = not explicit_home
-
-    def _fail(kind: str, prefix: str, body: str, log_path: Path | None = None) -> InstallResult:
-        path = log_path or write_install_log(
-            body or prefix, prefix="iris-install", home=home
-        )
+    def fail(kind: str, prefix: str, body: str) -> InstallResult:
+        path = write_install_log(body or prefix, prefix="iris-install", home=home)
         msg = format_install_failure(prefix, body, path, kind)
-        _emit(msg)
+        emit(msg)
         return InstallResult(False, msg, kind, str(path))
 
     if should_abort and should_abort():
         return InstallResult(False, "사용자가 중단함", "cancel")
-
     try:
         with iris_agent_install_lock(home):
-            # probe_iris_agent_runtime reads the default gateway home. Explicit
-            # EngineHome is a different tree; caller already probed that one.
-            if not explicit_home:
-                already, already_detail = gw.probe_iris_agent_runtime(
-                    command=command, timeout_sec=30.0
-                )
-                if already:
-                    return InstallResult(
-                        True, f"이미 사용 가능 ({already_detail})", "ok"
-                    )
-            py = ensure_system_python_winget(run_streamed=run_streamed, on_stream=on_stream)
-            if py is None:
-                return _fail("python", "베이스 Python 없음", "py -3.11..3.13 / winget 3.11 실패")
-            _emit(f"우회 설치: 베이스 Python = {py} ({python_version(py)})")
-            log = [f"python={py} version={python_version(py)}", f"uv={shutil.which('uv') or '없음'}"]
+            current = iris_agent_repo_dir(home)
+            if not update and probe_engine_python(EngineHome(home)) is None:
+                return InstallResult(True, f"Iris Agent 사용 가능 ({current.name})")
             vendor = vendor_iris_agent_core_root()
-            if not vendor.is_dir():
-                return _fail("clone", "vendor iris-agent-core 없음", f"expected {vendor}")
-            if should_abort and should_abort():
-                return InstallResult(False, "사용자가 중단함", "cancel")
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            staging = home / f"{IRIS_AGENT_CHECKOUT_NAME}.staging-{stamp}"
-            _discard_tree(staging)
-            pin = (sha or "").strip() or load_pinned_sha()
-            _emit(f"Iris Agent owned core materialize ({pin[:7]})…")
-            started = time.monotonic()
+            try:
+                manifest = verify_owned_core_source(vendor, bundled=True)
+                if sha is not None and sha.strip() != manifest["upstream_revision"]:
+                    raise ValueError("Requested source revision does not match the bundle")
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                return fail("source", "동봉된 Iris Agent 소스를 복구해야 합니다", f"{exc}\nRun IRIS Setup with a verified bundle.")
+            replacing_reference = current.is_dir() and not (current / "SOURCE_MANIFEST.json").is_file()
+            if replacing_reference and manifest.get("legacy_migration_approved") is not True:
+                return fail("gate", "기존 Iris Agent 엔진 유지", "Owned engine is awaiting full product parity. The current installation remains selected.")
+            if current.is_dir() and (update or replacing_reference) and model_check is None:
+                return fail("probe", "Iris Agent 모델 검증이 필요합니다", "Select a model before updating the active engine.")
+            want = iris_agent_python_range(vendor)
+            py = ensure_system_python_winget(run_streamed=run_streamed, on_stream=on_stream, want=want)
+            if py is None:
+                return fail("python", "Iris Agent용 Python 없음", f"필요 범위: {manifest['python']}")
+            scripts = Path(sys.executable).parent
+            bundled_uv = scripts / ("uv.exe" if sys.platform == "win32" else "uv")
+            uv = str(bundled_uv) if bundled_uv.is_file() else shutil.which("uv")
+            if not uv:
+                return fail("lock", "Iris Agent용 uv 없음", "Run IRIS Setup to install the packaged uv dependency.")
+            staging = home / f"{IRIS_AGENT_CHECKOUT_NAME}.slot-{uuid.uuid4().hex[:16]}"
+            emit(f"Iris Agent {manifest['version']} 설치 준비…")
             materialize = _materialize_owned_core(staging)
-            log.append(
-                f"pin={pin} materialize rc={materialize.returncode} "
-                f"elapsed={time.monotonic() - started:.1f}s"
-            )
-            log.append(materialize.stdout or "")
-            log.append(materialize.stderr or "")
-            cli_ok = (staging / "iris_agent_cli").is_dir() or (
-                staging / "hermes_cli"
-            ).is_dir()
-            if materialize.returncode != 0 or not cli_ok:
+            if materialize.returncode != 0:
                 _discard_tree(staging)
-                return _fail("clone", "vendor core materialize 실패", "\n".join(log))
-            want = iris_agent_python_range(staging)
-            have = python_version(py)
-            log.append(f"repo python range={want} chosen={have}")
-            if have is None or not (want[0] <= have < want[1]):
-                _emit(f"이 Hermes 는 Python {want[0][0]}.{want[0][1]} 이상이 필요해요 — 다시 고릅니다…")
-                py = ensure_system_python_winget(run_streamed=run_streamed, on_stream=on_stream, want=want)
-                if py is None:
-                    _discard_tree(staging)
-                    return _fail("python", "맞는 Python 없음", f"필요 범위 {want}: py launcher·winget 실패")
-                _emit(f"베이스 Python 다시 고름 = {py} ({python_version(py)})")
-                log.append(f"rechosen python={py} version={python_version(py)}")
+                return fail("source", "동봉된 Iris Agent 소스 준비 실패", materialize.stderr)
+            log = [f"python={py}", f"uv={uv}", materialize.stdout]
             return _finish_staged_install(
-                staging=staging,
-                home=home,
-                stamp=stamp,
-                py=py,
-                uv=shutil.which("uv"),
-                command=command,
-                log=log,
-                emit=_emit,
-                fail=_fail,
-                run_streamed=run_streamed,
-                should_abort=should_abort,
-                probe_gateway=probe_gateway,
+                staging=staging, home=home, py=py, uv=uv, log=log, emit=emit,
+                fail=fail, run_streamed=run_streamed, should_abort=should_abort, model_check=model_check,
             )
     except InstallBusy as exc:
-        return _fail("lock", "설치 잠금", str(exc))
-
+        return fail("lock", "설치 잠금", str(exc))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return fail("exit", "Iris Agent 설치 실패", str(exc))
 
 
 if __name__ == "__main__":

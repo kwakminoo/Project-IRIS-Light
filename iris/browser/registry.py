@@ -37,11 +37,12 @@ class CommandSpec:
 
 
 def _actor(args: dict[str, Any]) -> Actor:
-    raw = str(args.get("source") or "agent").strip().lower()
-    if raw == "human":
-        return Actor.HUMAN
-    if raw == "system":
-        return Actor.SYSTEM
+    """Actor for wire/tool parse only. Always AGENT.
+
+    Model args must never set HUMAN/SYSTEM. UI panel and internal callers
+    pass Actor on the command object via session.execute, not via wire.
+    """
+    _ = args
     return Actor.AGENT
 
 

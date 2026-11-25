@@ -7,7 +7,7 @@ import os
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
@@ -3236,6 +3236,7 @@ class ChatPanel(QWidget):
         status: str = "ok",
         block_id: str | None = None,
         phase: str | None = None,
+        allow_always: bool = True,
         **_kwargs,
     ) -> str:
         """Cursor식 도구/셸 실행 카드를 H1 transcript에 인라인 삽입."""
@@ -3250,6 +3251,7 @@ class ChatPanel(QWidget):
             block_id=bid,
             collapsed=False,
             phase=(phase or "done").strip() or "done",
+            allow_always=bool(allow_always),
         )
         self._shell_tool_blocks[bid] = block
         self._log._tool_blocks[bid] = block
@@ -3261,6 +3263,7 @@ class ChatPanel(QWidget):
             block_id=bid,
             collapsed=block.collapsed,
             phase=block.phase,
+            allow_always=block.allow_always,
         )
         self.transcript().upsert_tool_shell_part(part)
         return bid
@@ -3274,6 +3277,7 @@ class ChatPanel(QWidget):
         output: str | None = None,
         status: str | None = None,
         phase: str | None = None,
+        allow_always: bool | None = None,
         **_kwargs,
     ) -> bool:
         """Same block_id partial update on H1 (no full transcript rewrite when DOM patch works)."""
@@ -3295,6 +3299,9 @@ class ChatPanel(QWidget):
                 if phase is None
                 else ((phase or "done").strip() or "done")
             ),
+            allow_always=(
+                prev.allow_always if allow_always is None else bool(allow_always)
+            ),
         )
         self._shell_tool_blocks[bid] = block
         self._log._tool_blocks[bid] = block
@@ -3306,6 +3313,7 @@ class ChatPanel(QWidget):
             block_id=bid,
             collapsed=block.collapsed,
             phase=block.phase,
+            allow_always=block.allow_always,
         )
         return bool(self.transcript().upsert_tool_shell_part(part))
 
@@ -3331,6 +3339,7 @@ class ChatPanel(QWidget):
                 output=block.output,
                 status=block.status,
                 phase=block.phase,
+                allow_always=block.allow_always,
             )
 
     def begin_stream_message(
@@ -3390,6 +3399,61 @@ class ChatPanel(QWidget):
             return False
         return self._typing_index < self._typing_reveal_limit()
 
+    @staticmethod
+    def _turn_is_tool_shell_card(turn: Any) -> bool:
+        """Fake shell-{bid} or ToolShell-only turns must survive stream land pops."""
+        mid = str(getattr(turn, "msg_id", "") or "")
+        if mid.startswith("shell-"):
+            return True
+        parts = getattr(turn, "parts", ()) or ()
+        return bool(parts) and all(isinstance(p, ToolShellPart) for p in parts)
+
+    def _pop_stream_turn_before_land(self, host: Any, mid: str) -> list[ToolShellPart]:
+        """Remove the stream placeholder; never drop a ToolShell-only turn.
+
+        Returns ToolShellParts rescued from a popped stream turn so they can be
+        re-attached after the final land.
+        """
+        rescued: list[ToolShellPart] = []
+        if host is None or not getattr(host, "_turns", None):
+            return rescued
+        mid = str(mid or "")
+        turns = host._turns
+        if mid:
+            for i in range(len(turns) - 1, -1, -1):
+                if str(getattr(turns[i], "msg_id", "") or "") == mid:
+                    rescued = [
+                        p
+                        for p in (getattr(turns[i], "parts", ()) or ())
+                        if isinstance(p, ToolShellPart)
+                    ]
+                    turns.pop(i)
+                    host._reset_stream_state()
+                    return rescued
+            return rescued
+        for i in range(len(turns) - 1, -1, -1):
+            if self._turn_is_tool_shell_card(turns[i]):
+                continue
+            rescued = [
+                p
+                for p in (getattr(turns[i], "parts", ()) or ())
+                if isinstance(p, ToolShellPart)
+            ]
+            turns.pop(i)
+            host._reset_stream_state()
+            return rescued
+        return rescued
+
+    def _reattach_tool_shell_parts(self, host: Any, parts: list[ToolShellPart]) -> None:
+        upsert = getattr(host, "upsert_tool_shell_part", None)
+        if not callable(upsert):
+            return
+        for part in parts:
+            try:
+                upsert(part)
+            except Exception:
+                pass
+
     def _apply_deferred_stream_land(self) -> None:
         pending = self._pending_stream_land
         if not pending:
@@ -3398,13 +3462,10 @@ class ChatPanel(QWidget):
         self._pending_stream_land = None
         self.finish_transcript_stream()
         host = self.transcript()
-        if host._turns:
-            last = host._turns[-1]
-            if (not mid) or last.msg_id == mid or not last.parts:
-                host._turns.pop()
-                host._reset_stream_state()
+        rescued = self._pop_stream_turn_before_land(host, mid)
         if body:
             self._land_turn_on_h1(who, body, msg_id=mid)
+        self._reattach_tool_shell_parts(host, rescued)
 
     def end_stream_message(self, final_text: str | None = None) -> None:
         """스트림 종료 — H1에 정규화 본문을 parts로 재착지 (matrix/templates)."""
@@ -3432,13 +3493,10 @@ class ChatPanel(QWidget):
             self._flush_typing_h1_remainder()
         self.finish_transcript_stream()
         host = self.transcript()
-        if host._turns:
-            last = host._turns[-1]
-            if (not mid) or last.msg_id == mid or not last.parts:
-                host._turns.pop()
-                host._reset_stream_state()
+        rescued = self._pop_stream_turn_before_land(host, mid)
         if self._typing_text:
             self._land_turn_on_h1(who, self._typing_text, msg_id=mid)
+        self._reattach_tool_shell_parts(host, rescued)
         self._stream_active = False
         self._stream_block_start = None
         # Plain stream: full body landed — clear leftover buffer (sticky stop / scroll yank).

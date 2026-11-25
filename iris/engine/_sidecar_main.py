@@ -112,6 +112,7 @@ def _is_gui_python() -> bool:
 
 
 _EMIT_LOCK = threading.Lock()
+_NATIVE_TOOL_LOCK = threading.Lock()
 _WATCH_LOG = Path.home() / ".iris-light" / "logs" / "turn_end_watch.log"
 
 
@@ -129,20 +130,22 @@ def _watch_trace(msg: str) -> None:
     threading.Thread(target=_write, name="iris-side-watch", daemon=True).start()
 
 
-def _write_terminal_file(payload: dict) -> None:
-    """Pipe-independent done/fail so the host can land when stdout EINVAL."""
+def _write_terminal_file(payload: dict, *, extension: str = "ndjson") -> bool:
+    """Publish one complete protocol record independently of stdout."""
     kind = payload.get("t")
-    if kind not in ("done", "fail"):
-        return
     try:
         terminal_dir = _terminal_dir()
         terminal_dir.mkdir(parents=True, exist_ok=True)
         line = json.dumps(payload, ensure_ascii=False) + "\n"
-        path = terminal_dir / f"{os.getpid()}.ndjson"
-        path.write_text(line, encoding="utf-8")
+        path = terminal_dir / f"{os.getpid()}.{extension}"
+        pending = path.with_name(path.name + ".tmp")
+        pending.write_text(line, encoding="utf-8")
+        pending.replace(path)
         _watch_trace(f"terminal_file {kind} path={path} dir={terminal_dir}")
     except Exception as exc:
         _watch_trace(f"terminal_file fail {exc!r}")
+        return False
+    return True
 
 
 def _host_fds() -> list[int]:
@@ -207,6 +210,10 @@ def _emit(payload: dict) -> None:
     # Defer callers off logging.Handler.emit.
     # done/fail: UDP (+ file backup). stdout/stderr terminal paths wedge the host.
     kind = payload.get("t")
+    if kind == "tool_request" and os.environ.get("IRIS_TERMINAL_UDP_PORT"):
+        # The request and response are serialized by _NATIVE_TOOL_LOCK.
+        if _write_terminal_file(payload, extension="tool"):
+            return
     if kind in ("done", "fail"):
         blob = payload.get("text") or payload.get("detail") or ""
         _watch_trace(f"emit {kind} text_len={len(str(blob))}")
@@ -239,73 +246,189 @@ def _fail(code: str, detail: str) -> None:
     _emit({"t": "fail", "code": code, "detail": detail})
 
 
-def _request_native_tool(name: str, args: dict) -> str:
+def _request_native_tool(
+    name: str,
+    args: dict,
+    *,
+    model_tool_name: str = "",
+    schema_fingerprint: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    session_id: str = "",
+    workspace_id: str = "",
+) -> str:
     """Execute one Iris-owned tool through the parent process and return JSON."""
     import uuid
 
-    request_id = uuid.uuid4().hex
-    _emit({"t": "tool_request", "id": request_id, "name": name, "args": args})
-    line = sys.stdin.readline()
-    if not line:
-        return json.dumps({"ok": False, "error": "native tool bridge closed"})
+    # The Agent Core may execute tool calls concurrently. The bridge has one stdin,
+    # so keep request + matching response as one serial transaction.
+    with _NATIVE_TOOL_LOCK:
+        request_id = uuid.uuid4().hex
+        payload = {
+            "t": "tool_request",
+            "id": request_id,
+            "name": name,
+            "model_tool_name": model_tool_name,
+            "canonical_action": name,
+            "schema_fingerprint": schema_fingerprint,
+            "tool_call_id": tool_call_id,
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "workspace_id": workspace_id,
+            "args": args,
+        }
+        logging.getLogger(__name__).info(
+            "TOOL_CALL request_id=%s tool_call_id=%s model_tool_name=%s",
+            request_id,
+            tool_call_id,
+            model_tool_name,
+        )
+        _emit(payload)
+        line = sys.stdin.readline()
+        if not line:
+            return json.dumps({"ok": False, "error": "native tool bridge closed"})
+        try:
+            reply = json.loads(line)
+            if not isinstance(reply, dict) or reply.get("t") != "tool_result":
+                raise ValueError("unexpected native tool response")
+            if str(reply.get("id") or "") != request_id:
+                raise ValueError("native tool response id mismatch")
+            result = reply.get("result")
+            if not isinstance(result, dict):
+                raise ValueError("native tool result must be an object")
+            return json.dumps(result, ensure_ascii=False)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
+
+def _tool_not_available(name: object) -> str:
+    tool = str(name or "").strip()
+    return json.dumps(
+        {
+            "ok": False,
+            "error": "TOOL_NOT_AVAILABLE",
+            "error_code": "tool_not_available",
+            "tool_name": tool,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _guard_native_tool_refresh() -> None:
+    """Keep Core refreshes intact except for an Iris-native-authority agent."""
+    import importlib
+
     try:
-        reply = json.loads(line)
-        if not isinstance(reply, dict) or reply.get("t") != "tool_result":
-            raise ValueError("unexpected native tool response")
-        if str(reply.get("id") or "") != request_id:
-            raise ValueError("native tool response id mismatch")
-        result = reply.get("result")
-        if not isinstance(result, dict):
-            raise ValueError("native tool result must be an object")
-        return json.dumps(result, ensure_ascii=False)
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+        module = importlib.import_module("tools.mcp_tool_agent")
+    except ModuleNotFoundError as exc:
+        if exc.name == "tools.mcp_tool_agent":
+            return
+        raise RuntimeError(f"TOOL_BINDING_ERROR: tool refresh import failed: {exc}") from exc
+    refresh = getattr(module, "refresh_agent_mcp_tools", None)
+    if not callable(refresh) or getattr(refresh, "_iris_native_guard", False):
+        return
+
+    def guarded(agent: object, *args: object, **kwargs: object):
+        if getattr(agent, "_iris_native_tool_bindings", None) is not None:
+            return set()
+        return refresh(agent, *args, **kwargs)
+
+    guarded._iris_native_guard = True  # type: ignore[attr-defined]
+    module.refresh_agent_mcp_tools = guarded
+
+
+def _guard_hermes_registry_dispatch() -> None:
+    """Disable original registry execution for the product sidecar process."""
+    try:
+        module = importlib.import_module("tools.registry")
+    except ModuleNotFoundError as exc:
+        if exc.name in {"tools", "tools.registry"}:
+            return
+        raise RuntimeError(f"TOOL_BINDING_ERROR: registry import failed: {exc}") from exc
+    registry = getattr(module, "registry", None)
+    if registry is None:
+        return
+    original = getattr(registry, "dispatch", None)
+    if not callable(original) or getattr(original, "_iris_native_dispatch_guard", False):
+        return
+    def guarded(name: object, *_args: object, **_kwargs: object) -> str:
+        return _tool_not_available(name)
+
+    guarded._iris_native_dispatch_guard = True  # type: ignore[attr-defined]
+    registry.dispatch = guarded
 
 
 def _install_iris_engine_tools(
-    agent: object, *, surface: object = "home"
+    agent: object,
+    *,
+    surface: object = "home",
+    bridge_context: dict | None = None,
 ) -> tuple[str, ...]:
-    """Register Iris schemas under visible names; replace agent.tools with Iris only."""
-    from iris.infrastructure.absorbed_tool_aliases import model_names, resolve_action
+    """Install the Iris snapshot and direct native dispatcher for one product agent."""
+    from types import MappingProxyType
+
     from iris.infrastructure.speak_capability import (
-        engine_tool_action,
-        engine_tool_schemas,
+        engine_tool_bindings,
         normalize_speak_surface,
     )
-    from tools.registry import registry
-
     surf = normalize_speak_surface(surface)
-    schemas = engine_tool_schemas(surface=surf)
-    absorbed = model_names()
+    contract_rows = engine_tool_bindings(surface=surf)
     iris_tools: list[dict] = []
-    for schema in schemas:
-        name = str(schema["name"])
-        if name in absorbed:
-            action = resolve_action(name, surf)
-            if not action:
-                continue
-        else:
-            action = engine_tool_action(name)
-        registry.register(
-            name=name,
-            toolset="iris",
-            schema={
-                "description": schema["description"],
-                "parameters": schema["parameters"],
-            },
-            handler=lambda args, _action=action, **_kwargs: _request_native_tool(
-                _action, dict(args or {})
-            ),
+    bindings = {row.model_name: row for row in contract_rows}
+    for row in contract_rows:
+        iris_tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": row.model_name,
+                    "description": row.description,
+                    "parameters": dict(row.input_schema),
+                },
+            }
         )
-        iris_tools.append({"type": "function", "function": dict(schema)})
-    # Drop Hermes builtins AIAgent preloaded — model sees Iris SpeakTools only.
+        logging.getLogger(__name__).info(
+            "TOOL_BIND name=%s owner=iris action=%s fingerprint=%s",
+            row.model_name,
+            row.canonical_action,
+            row.fingerprint,
+        )
+
+    snapshot = MappingProxyType(dict(bindings))
+    trusted = dict(bridge_context or {})
+
+    def dispatch(name: str, args: dict | None = None, *_a: object, **_kw: object) -> str:
+        binding = snapshot.get(str(name or "").strip())
+        if binding is None:
+            return _tool_not_available(name)
+        logging.getLogger(__name__).info(
+            "TOOL_ROUTE model_tool_name=%s action=%s owner=iris",
+            binding.model_name,
+            binding.canonical_action,
+        )
+        return _request_native_tool(
+            binding.canonical_action,
+            dict(args or {}),
+            model_tool_name=binding.model_name,
+            schema_fingerprint=binding.fingerprint,
+            tool_call_id=str(_kw.get("tool_call_id") or ""),
+            turn_id=str(trusted.get("turn_id") or _kw.get("turn_id") or ""),
+            session_id=str(trusted.get("session_id") or _kw.get("session_id") or ""),
+            workspace_id=str(trusted.get("workspace_id") or ""),
+        )
+
+    # The Core's sequential and concurrent paths both resolve this facade at call
+    # time. Product dispatch therefore bypasses registry handler selection.
+    model_tools = importlib.import_module("model_tools")
+    model_tools.handle_function_call = dispatch
+    agent._iris_native_tool_bindings = snapshot
+    agent._skip_mcp_refresh = True
+    _guard_native_tool_refresh()
+    _guard_hermes_registry_dispatch()
+
+    # Drop Core schemas preloaded during construction; providers see Iris only.
     agent.tools = iris_tools
-    agent.valid_tool_names = {
-        str(row.get("function", {}).get("name") or "")
-        for row in iris_tools
-        if isinstance(row, dict) and isinstance(row.get("function"), dict)
-    }
-    return tuple(str(schema["name"]) for schema in schemas)
+    agent.valid_tool_names = set(snapshot)
+    return tuple(snapshot)
 
 
 _AGENT_CLS: type | None = None
@@ -318,6 +441,12 @@ def _import_agent_class() -> type:
     cls = getattr(module, "AIAgent", None)
     if cls is None:
         raise ImportError("AIAgent is missing")
+    owner = inspect.getmodule(cls)
+    logging.getLogger(__name__).info(
+        "ENGINE source=agent_core python=%s module=%s",
+        sys.executable,
+        getattr(owner, "__file__", "") or "",
+    )
     return cls
 
 
@@ -781,7 +910,11 @@ def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
         wanted["api_key"] = api_key
     agent = cls(**_init_kwargs(cls, wanted))
     agent_ref["agent"] = agent
-    _install_iris_engine_tools(agent, surface=raw.get("speak_surface"))
+    _install_iris_engine_tools(
+        agent,
+        surface=raw.get("speak_surface"),
+        bridge_context=raw,
+    )
     agent._persist_disabled = True
     handler = _TurnEndedLogHandler(on_turn_ended)
     # turn_finalizer logs via agent.conversation_loop; also watch parent.

@@ -61,7 +61,13 @@ def mail_row_time_label(date_str: str) -> str:
 
 
 class _ComposeDialog(QDialog):
-    def __init__(self, account: EmailAccount, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        account: EmailAccount,
+        parent: QWidget | None = None,
+        *,
+        draft: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("메일 작성")
         self.setMinimumWidth(520)
@@ -72,6 +78,10 @@ class _ComposeDialog(QDialog):
         self._from_label = QLabel(account.address)
         self._to = QLineEdit()
         self._to.setPlaceholderText("받는 사람")
+        self._cc = QLineEdit()
+        self._cc.setPlaceholderText("참조 (선택)")
+        self._bcc = QLineEdit()
+        self._bcc.setPlaceholderText("숨은참조 (선택)")
         self._subject = QLineEdit()
         self._subject.setPlaceholderText("제목")
         self._body = QPlainTextEdit()
@@ -79,6 +89,8 @@ class _ComposeDialog(QDialog):
         self._body.setMinimumHeight(180)
         form.addRow("보내는 사람", self._from_label)
         form.addRow("받는 사람", self._to)
+        form.addRow("참조", self._cc)
+        form.addRow("숨은참조", self._bcc)
         form.addRow("제목", self._subject)
         form.addRow("본문", self._body)
         lay.addLayout(form)
@@ -91,8 +103,30 @@ class _ComposeDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
+        if draft:
+            self.apply_draft(draft)
+
+    def apply_draft(self, draft: dict[str, str] | None) -> None:
+        """Prefill compose fields. Does not send mail."""
+        if not draft:
+            return
+        self._to.setText(str(draft.get("to") or ""))
+        self._cc.setText(str(draft.get("cc") or ""))
+        self._bcc.setText(str(draft.get("bcc") or ""))
+        self._subject.setText(str(draft.get("subject") or ""))
+        self._body.setPlainText(str(draft.get("body") or ""))
+
+    def draft_fields(self) -> dict[str, str]:
+        return {
+            "to": self._to.text().strip(),
+            "cc": self._cc.text().strip(),
+            "bcc": self._bcc.text().strip(),
+            "subject": self._subject.text().strip(),
+            "body": self._body.toPlainText(),
+        }
 
     def payload(self) -> tuple[str, str, str]:
+        # Ok→보내기 still queues to/subject/body (cc/bcc are draft UI only for now).
         return (
             self._to.text().strip(),
             self._subject.text().strip(),
@@ -234,6 +268,7 @@ class EmailWorkspacePage(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._compose_dialog: _ComposeDialog | None = None
         self.setObjectName("EmailWorkspacePage")
         self._mails: list[MailSummary] = []
         self._current_account: EmailAccount | None = None
@@ -528,25 +563,37 @@ class EmailWorkspacePage(QWidget):
         if self._body is not None:
             self._body.setHtml("")
 
-    def open_compose(self, account: EmailAccount) -> bool:
-        """Show compose. False only when the dialog could not be constructed."""
+    def open_compose(
+        self,
+        account: EmailAccount,
+        draft: dict[str, str] | None = None,
+    ) -> bool:
+        """Show a draft and let the caller return while the user edits it."""
+        if self._compose_dialog is not None:
+            self._compose_dialog.raise_()
+            self._compose_dialog.activateWindow()
+            return False
         # parent=None: frameless MainWindow modal child → 0xC0000409
         try:
-            dlg = _ComposeDialog(account, None)
+            dlg = _ComposeDialog(account, None, draft=draft)
         except Exception as exc:  # noqa: BLE001 — surface construction errors
             self._status.setText(f"작성 창 오류: {exc}"[:200])
             return False
-        try:
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                return True  # opened; user cancelled
-            to, subject, body = dlg.payload()
-            if not to:
-                self._status.setText("받는 사람을 입력하세요.")
-                return True
-            self.compose_requested.emit(to, subject, body)
-            return True
-        finally:
+        def finished(result: int) -> None:
+            self._compose_dialog = None
+            if result == QDialog.DialogCode.Accepted:
+                to, subject, body = dlg.payload()
+                if to:
+                    self.compose_requested.emit(to, subject, body)
+                else:
+                    self._status.setText("받는 사람을 입력하세요.")
             dlg.deleteLater()
+
+        self._compose_dialog = dlg
+        dlg.finished.connect(finished)
+        dlg.setModal(True)
+        dlg.show()
+        return True
 
     # ---- 내부 이벤트 ----
     def _on_item_clicked(self, item: QListWidgetItem) -> None:

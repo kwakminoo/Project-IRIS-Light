@@ -102,10 +102,11 @@ def main() -> None:
     )
     assert [m.runtime for m in local] == ["llama3.2:latest"]
     assert [m.runtime for m in ollama] == ["a:cloud"]
-    assert list(brands) == ["oa", "gm"], brands
+    # Brand folder only when count ≥ BRAND_MIN_MODELS; single OpenAI stays in singles.
+    assert list(brands) == ["gm"], brands
     assert len(brands["gm"]) == BRAND_MIN_MODELS
-    assert [m.provider_name for m in brands["oa"]] == ["OpenAI"]
-    assert singles == []
+    assert [m.runtime for m in singles] == ["api:oa:gpt-4o"]
+    assert [m.provider_name for m in singles] == ["OpenAI"]
     print("model picker tiers self-check ok")
 
 

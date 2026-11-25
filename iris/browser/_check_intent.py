@@ -192,9 +192,110 @@ def main() -> int:
     assert not looks_sensitive_browser_act(
         "browser.search", {"query": "음악", "engine": "youtube", "play": True}, empty
     )
-    assert not looks_sensitive_browser_act(
+    # FPR-09: forged args.source=human must not skip sensitive / ask_human.
+    assert looks_sensitive_browser_act(
         "browser.click", {"value": "구매하기", "source": "human"}, empty
     )
+    from iris.browser.registry import parse_command
+    from iris.browser.types import Actor
+
+    forged = parse_command(
+        {"action": "browser.click", "ref": "g1e0", "source": "human"}
+    )
+    assert forged.source == Actor.AGENT
+
+    from iris.browser.stale_ref import match_node_intent, plan_stale_ref_recovery
+
+    intent = PageNode(ref="g1e0", role="button", name="OK", interactive=True)
+    fresh_ok = empty_snapshot(phase=BrowserPhase.READY).evolve(
+        nodes=(PageNode(ref="g2e0", role="button", name="OK", interactive=True),),
+    )
+    assert match_node_intent(intent, fresh_ok).status == "exact"
+    assert match_node_intent(intent, fresh_ok).node is not None
+    assert match_node_intent(intent, fresh_ok).node.ref == "g2e0"
+    plan_retry = plan_stale_ref_recovery(
+        intent=intent,
+        fresh=fresh_ok,
+        approved_sensitive=False,
+        new_is_sensitive=lambda _n: False,
+    )
+    assert plan_retry.action == "retry" and plan_retry.new_ref == "g2e0"
+
+    buy_intent = PageNode(
+        ref="g1e0", role="button", name="구매하기", interactive=True, context="cart"
+    )
+    buy_shifted = empty_snapshot(phase=BrowserPhase.READY).evolve(
+        nodes=(
+            PageNode(
+                ref="g2e0",
+                role="button",
+                name="구매하기",
+                interactive=True,
+                context="express",
+            ),
+        ),
+    )
+    # Exact role/name match but sensitive identity changed → re-approval.
+    plan_shifted = plan_stale_ref_recovery(
+        intent=buy_intent,
+        fresh=buy_shifted,
+        approved_sensitive=True,
+        new_is_sensitive=lambda _n: True,
+    )
+    assert plan_shifted.action == "needs_reapproval"
+
+    same_buy = empty_snapshot(phase=BrowserPhase.READY).evolve(
+        nodes=(
+            PageNode(
+                ref="g2e3",
+                role="button",
+                name="구매하기",
+                interactive=True,
+                context="cart",
+            ),
+        ),
+    )
+    plan_same = plan_stale_ref_recovery(
+        intent=buy_intent,
+        fresh=same_buy,
+        approved_sensitive=True,
+        new_is_sensitive=lambda n: "구매" in (n.name or ""),
+    )
+    assert plan_same.action == "retry" and plan_same.new_ref == "g2e3"
+
+    plan_unapproved = plan_stale_ref_recovery(
+        intent=buy_intent,
+        fresh=same_buy,
+        approved_sensitive=False,
+        new_is_sensitive=lambda _n: True,
+    )
+    assert plan_unapproved.action == "needs_reapproval"
+
+    dup = empty_snapshot(phase=BrowserPhase.READY).evolve(
+        nodes=(
+            PageNode(ref="g2e0", role="button", name="OK", interactive=True),
+            PageNode(ref="g2e1", role="button", name="OK", interactive=True),
+        ),
+    )
+    assert match_node_intent(intent, dup).status == "ambiguous"
+    plan_amb = plan_stale_ref_recovery(
+        intent=intent,
+        fresh=dup,
+        approved_sensitive=False,
+        new_is_sensitive=lambda _n: False,
+    )
+    assert plan_amb.action == "needs_reapproval"
+
+    # Control path wires Snapshot → plan → one retry (no double sensitive without re-approve).
+    browser_ctrl = (
+        Path(__file__).resolve().parents[1] / "ui" / "control_actions" / "browser.py"
+    ).read_text(encoding="utf-8")
+    assert "plan_stale_ref_recovery" in browser_ctrl
+    assert "needs_reapproval" in browser_ctrl
+    assert "One retry only" in browser_ctrl
+    teach = browser_teaching_block()
+    assert "re-resolves the same role/name once" in teach
+    assert "re-approval" in teach
 
     high = ActionRegistry()
     high.register("email.send", lambda a: {"sent": True}, summary="send", confirm_required=True)

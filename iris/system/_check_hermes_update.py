@@ -1,64 +1,28 @@
-"""Hermes 업데이트 감지 자검. 실제 hermes update 는 호출하지 않는다."""
+"""Check engine updates against the packaged manifest without a Git checkout."""
 
 from __future__ import annotations
 
-import subprocess
+import json
 import tempfile
 from pathlib import Path
 
-from iris.system.iris_agent_update import (
-    check_iris_agent_update,
-    iris_agent_update_argv,
-)
-from iris.system.win_subprocess import no_window_kwargs
-
-
-def _git(repo: Path, *args: str) -> None:
-    proc = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-        **no_window_kwargs(),
-    )
-    if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout or "git failed")[:240])
+from iris.system.iris_agent_install import vendor_iris_agent_core_root, verify_owned_core_source
+from iris.system.iris_agent_update import check_iris_agent_update
 
 
 def _main() -> None:
-    assert iris_agent_update_argv(r"C:\hermes.exe")[-2:] == ["update", "--yes"]
-
-    with tempfile.TemporaryDirectory(prefix="iris-hermes-upd-") as tmp:
-        repo = Path(tmp) / "hermes-agent"
-        repo.mkdir()
-        (repo / "hermes_cli").mkdir()
-        _git(repo, "init")
-        _git(repo, "config", "user.email", "iris@example.com")
-        _git(repo, "config", "user.name", "iris")
-        (repo / "README").write_text("x\n", encoding="utf-8")
-        _git(repo, "add", "README")
-        _git(repo, "commit", "-m", "init")
-        local = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-            **no_window_kwargs(),
-        ).stdout.strip()
-
-        same = check_iris_agent_update(repo=repo, remote_sha=local)
-        assert not same.available, same
-        assert same.detail == "최신"
-
-        behind = check_iris_agent_update(repo=repo, remote_sha="f" * 40)
-        assert behind.available, behind
-        assert behind.local_sha == local
-        assert "→" in behind.detail
-
-        missing = check_iris_agent_update(repo=Path(tmp) / "nope", remote_sha="abc")
-        assert not missing.available
-
-    print("hermes_update check ok")
+    bundle = vendor_iris_agent_core_root()
+    current = check_iris_agent_update(repo=bundle)
+    assert not current.available and current.local_sha == current.remote_sha, current
+    with tempfile.TemporaryDirectory(prefix="iris-owned-update-") as tmp:
+        legacy = Path(tmp) / "hermes-agent"
+        legacy.mkdir()
+        status = check_iris_agent_update(repo=legacy)
+        assert status.available == verify_owned_core_source(bundle)["legacy_migration_approved"]
+        (legacy / "SOURCE_MANIFEST.json").write_text(json.dumps({"package": "broken"}), encoding="utf-8")
+        assert check_iris_agent_update(repo=legacy).available
+        assert not check_iris_agent_update(repo=Path(tmp) / "missing").available
+    print("iris_agent_update check ok")
 
 
 if __name__ == "__main__":

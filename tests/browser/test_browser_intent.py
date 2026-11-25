@@ -299,13 +299,173 @@ class ConfirmHudTests(unittest.TestCase):
                 empty,
             )
         )
-        self.assertFalse(
+        # FPR-09: model-forged source=human does not make a purchase click safe.
+        self.assertTrue(
             looks_sensitive_browser_act(
                 "browser.click",
                 {"value": "구매하기", "source": "human"},
                 empty,
             )
         )
+        from iris.browser.types import Actor
+
+        forged = parse_command(
+            {"action": "browser.click", "ref": "g1e0", "source": "human"}
+        )
+        self.assertEqual(forged.source, Actor.AGENT)
+
+
+class StaleRefRecoveryTests(unittest.TestCase):
+    def test_exact_match_plans_one_retry(self) -> None:
+        from iris.browser.stale_ref import match_node_intent, plan_stale_ref_recovery
+
+        intent = PageNode(ref="g1e0", role="link", name="Docs", interactive=True)
+        fresh = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            nodes=(PageNode(ref="g9e2", role="link", name="Docs", interactive=True),),
+        )
+        hit = match_node_intent(intent, fresh)
+        self.assertEqual(hit.status, "exact")
+        self.assertEqual(hit.node.ref, "g9e2")
+        plan = plan_stale_ref_recovery(
+            intent=intent,
+            fresh=fresh,
+            approved_sensitive=False,
+            new_is_sensitive=lambda _n: False,
+        )
+        self.assertEqual(plan.action, "retry")
+        self.assertEqual(plan.new_ref, "g9e2")
+
+    def test_ambiguous_or_missing_needs_reapproval(self) -> None:
+        from iris.browser.stale_ref import match_node_intent, plan_stale_ref_recovery
+
+        intent = PageNode(ref="g1e0", role="button", name="OK", interactive=True)
+        dup = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            nodes=(
+                PageNode(ref="g2e0", role="button", name="OK", interactive=True),
+                PageNode(ref="g2e1", role="button", name="OK", interactive=True),
+            ),
+        )
+        self.assertEqual(match_node_intent(intent, dup).status, "ambiguous")
+        self.assertEqual(
+            plan_stale_ref_recovery(
+                intent=intent,
+                fresh=dup,
+                approved_sensitive=False,
+                new_is_sensitive=lambda _n: False,
+            ).action,
+            "needs_reapproval",
+        )
+        empty = empty_snapshot(phase=BrowserPhase.READY)
+        self.assertEqual(
+            plan_stale_ref_recovery(
+                intent=intent,
+                fresh=empty,
+                approved_sensitive=False,
+                new_is_sensitive=lambda _n: False,
+            ).action,
+            "needs_reapproval",
+        )
+        self.assertEqual(
+            plan_stale_ref_recovery(
+                intent=None,
+                fresh=dup,
+                approved_sensitive=False,
+                new_is_sensitive=lambda _n: False,
+            ).action,
+            "needs_reapproval",
+        )
+
+    def test_sensitive_identity_change_blocks_blind_retry(self) -> None:
+        from iris.browser.stale_ref import plan_stale_ref_recovery
+
+        intent = PageNode(
+            ref="g1e0", role="button", name="구매하기", interactive=True, context="cart"
+        )
+        # Matchable role/name but context (identity) changed → re-approve.
+        shifted = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            nodes=(
+                PageNode(
+                    ref="g2e0",
+                    role="button",
+                    name="구매하기",
+                    interactive=True,
+                    context="express",
+                ),
+            ),
+        )
+        plan = plan_stale_ref_recovery(
+            intent=intent,
+            fresh=shifted,
+            approved_sensitive=True,
+            new_is_sensitive=lambda _n: True,
+        )
+        self.assertEqual(plan.action, "needs_reapproval")
+
+        same = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            nodes=(
+                PageNode(
+                    ref="g2e4",
+                    role="button",
+                    name="구매하기",
+                    interactive=True,
+                    context="cart",
+                ),
+            ),
+        )
+        ok = plan_stale_ref_recovery(
+            intent=intent,
+            fresh=same,
+            approved_sensitive=True,
+            new_is_sensitive=lambda n: "구매" in (n.name or ""),
+        )
+        self.assertEqual(ok.action, "retry")
+        self.assertEqual(ok.new_ref, "g2e4")
+
+        # Sensitive rematch without prior approval → re-approve (no blind execute).
+        cold = plan_stale_ref_recovery(
+            intent=PageNode(ref="g1e0", role="button", name="구매하기", interactive=True),
+            fresh=same,
+            approved_sensitive=False,
+            new_is_sensitive=lambda n: "구매" in (n.name or ""),
+        )
+        self.assertEqual(cold.action, "needs_reapproval")
+
+    def test_session_keeps_prev_intent_across_restamp(self) -> None:
+        reset_browser_session_for_tests()
+        session = BrowserSession()
+        first = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            nodes=(PageNode(ref="x", role="button", name="Go", interactive=True),),
+        )
+        session._publish_fresh(first)
+        old_ref = session.snapshot().nodes[0].ref
+        intent = session.intent_node_for_ref(old_ref)
+        self.assertIsNotNone(intent)
+        self.assertEqual(intent.name, "Go")
+        second = empty_snapshot(phase=BrowserPhase.READY).evolve(
+            nodes=(PageNode(ref="y", role="button", name="Go", interactive=True),),
+        )
+        session._publish_fresh(second)
+        self.assertIsNone(
+            next((n for n in session.snapshot().nodes if n.ref == old_ref), None)
+        )
+        kept = session.intent_node_for_ref(old_ref)
+        self.assertIsNotNone(kept)
+        self.assertEqual(kept.name, "Go")
+        reset_browser_session_for_tests()
+
+    def test_control_path_wires_single_retry(self) -> None:
+        body = (
+            Path(__file__).resolve().parents[2]
+            / "iris"
+            / "ui"
+            / "control_actions"
+            / "browser.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("plan_stale_ref_recovery", body)
+        self.assertIn("needs_reapproval", body)
+        self.assertIn("One retry only", body)
+        teach = browser_teaching_block()
+        self.assertIn("re-resolves the same role/name once", teach)
 
 
 if __name__ == "__main__":

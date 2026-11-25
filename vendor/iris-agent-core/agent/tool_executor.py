@@ -1687,33 +1687,34 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     function_name, function_args, effective_task_id, tool_call_id, middleware_trace = (
         ref.name, ref.args, ref.task_id, ref.call_id, ref.trace,
     )
-    if function_name != "delegate_task" and function_name in INLINE_TOOL_EXECUTORS:
-        # Agent-level tools that need live AIAgent state; table shared with invoke_tool.
-        inline_executor = INLINE_TOOL_EXECUTORS[function_name]
-        inline_ctx = InlineToolContext(effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages)
-        return _SequentialDispatch(lambda next_args: inline_executor(agent, next_args, inline_ctx), finish_in_finally=False)
-    if function_name == "delegate_task":
-        spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
-        agent._delegate_spinner = spinner
-        return _SequentialDispatch(agent._dispatch_delegate_task, spinner=spinner, is_delegate=True)
-    if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
-        return _SequentialDispatch(
-            execute=lambda next_args: agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages),
-            spinner=_start_quiet_tool_spinner(agent, function_name, function_args, gate=False),
-            error_result=lambda e: json.dumps({"error": f"Context engine tool '{function_name}' failed: {e}"}),
-            error_log="context_engine.handle_tool_call raised for %s: %s",
-        )
-    if agent._memory_manager and agent._memory_manager.has_tool(function_name):
-        # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
-        return _SequentialDispatch(
-            execute=lambda next_args: agent._memory_manager.handle_tool_call(
-                function_name, next_args,
-                caller_gsk=(getattr(agent, "_gateway_session_key", "") or ""),
-            ),
-            spinner=_start_quiet_tool_spinner(agent, function_name, function_args),
-            error_result=lambda e: json.dumps({"error": f"Memory tool '{function_name}' failed: {e}"}),
-            error_log="memory_manager.handle_tool_call raised for %s: %s",
-        )
+    if getattr(agent, "_iris_native_tool_bindings", None) is None:
+        if function_name != "delegate_task" and function_name in INLINE_TOOL_EXECUTORS:
+            # Agent-level tools that need live AIAgent state; table shared with invoke_tool.
+            inline_executor = INLINE_TOOL_EXECUTORS[function_name]
+            inline_ctx = InlineToolContext(effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages)
+            return _SequentialDispatch(lambda next_args: inline_executor(agent, next_args, inline_ctx), finish_in_finally=False)
+        if function_name == "delegate_task":
+            spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
+            agent._delegate_spinner = spinner
+            return _SequentialDispatch(agent._dispatch_delegate_task, spinner=spinner, is_delegate=True)
+        if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
+            return _SequentialDispatch(
+                execute=lambda next_args: agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages),
+                spinner=_start_quiet_tool_spinner(agent, function_name, function_args, gate=False),
+                error_result=lambda e: json.dumps({"error": f"Context engine tool '{function_name}' failed: {e}"}),
+                error_log="context_engine.handle_tool_call raised for %s: %s",
+            )
+        if agent._memory_manager and agent._memory_manager.has_tool(function_name):
+            # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
+            return _SequentialDispatch(
+                execute=lambda next_args: agent._memory_manager.handle_tool_call(
+                    function_name, next_args,
+                    caller_gsk=(getattr(agent, "_gateway_session_key", "") or ""),
+                ),
+                spinner=_start_quiet_tool_spinner(agent, function_name, function_args),
+                error_result=lambda e: json.dumps({"error": f"Memory tool '{function_name}' failed: {e}"}),
+                error_log="memory_manager.handle_tool_call raised for %s: %s",
+            )
 
     # Registry tools: post hook is owned by this executor (inner observer suppressed).
     def _execute(next_args: dict) -> Any:

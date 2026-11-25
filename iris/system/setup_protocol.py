@@ -10,7 +10,6 @@ import json
 import os
 import queue
 import re
-import secrets
 import shutil
 import subprocess
 import sys
@@ -24,15 +23,10 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from iris.agent import ensure_iris_agent_runtime
-from iris.infrastructure.iris_agent_credentials import is_weak_iris_agent_api_key
 from iris.system.iris_agent_gateway import (
     ensure_iris_agent_provider_config,
-    iris_agent_executable,
     iris_agent_home,
-    load_iris_agent_dotenv,
-    probe_iris_agent_runtime,
     resolve_iris_agent_api_key,
-    verify_iris_mcp_tools,
 )
 from iris.system.iris_agent_control_sync import (
     iris_state_dir,
@@ -64,6 +58,22 @@ _INSTALL_IDLE_SEC = 600.0
 _INSTALL_HARD_SEC = 3600.0
 _HERMES_IDLE_SEC = 900.0
 _HERMES_HARD_SEC = 3600.0
+
+
+def iris_agent_executable(command: str = "iris-agent") -> str | None:
+    from iris.engine._home import engine_python
+    from iris.engine.types import _default_engine_home
+
+    python = engine_python(_default_engine_home())
+    return str(python) if python is not None else None
+
+
+def probe_iris_agent_runtime(*, command: str = "iris-agent") -> tuple[bool, str]:
+    from iris.engine._home import probe_engine_python
+    from iris.engine.types import _default_engine_home
+
+    error = probe_engine_python(_default_engine_home())
+    return (False, error.detail) if error is not None else (True, "Iris Agent Python ready")
 
 
 def is_setup_demo() -> bool:
@@ -145,7 +155,7 @@ CORE_STEP_LABELS: dict[str, str] = {
     "ollama_install": "Ollama 설치·기동",
     "ollama_model": "추론 모델 준비",
     "iris_agent_install": "Iris Agent 설치",
-    "iris_agent_env": "Iris Agent API 키·서버 설정",
+    "iris_agent_env": "Iris Agent 내부 연결",
     "iris_agent_provider": "Iris Agent ↔ Ollama 연결",
     "iris_control_sync": "SpeakTools·스킬·mobile-mcp",
     "iris_agent_engine": "Iris Agent 엔진 준비",
@@ -862,7 +872,7 @@ class SetupProtocol:
         # ponytail: Iris Agent 런타임 자동 재설치는 세션당 1회 — 무한 루프 천장
         self._hermes_runtime_repaired = False
         self._iris_agent_official_failed = False
-        # NeedsUser「우회로 다시 설치」— 공식 스크립트 루프 탈출
+        # NeedsUser「다시 설치」— 공식 스크립트 루프 탈출
         self._iris_agent_prefer_bypass = False
         # iris_agent_env 가 키를 바꿨으면 gateway 가 already-running 이어도 restart
         self._hermes_key_rotated = False
@@ -1282,11 +1292,7 @@ class SetupProtocol:
         return True, detail
 
     def verify_core(self) -> tuple[bool, str]:
-        """전체 검증 — quick 헬스체크 + 채팅 401 + MCP stdio 핸드셰이크.
-
-        설정「검사」·core_smoke 경로. Ready 플래그보다 엄격 — MCP 실패 시
-        core_ready 여부와 무관하게 채팅이 실패할 수 있다.
-        """
+        """Check the sidecar and run an actual turn using the setup model."""
         if self.simulate or self.dry_run:
             detail = "Ollama·Iris Agent·MCP 정상"
             self._record_last_verify("full", True, detail)
@@ -1333,30 +1339,20 @@ class SetupProtocol:
             )
             self._record_last_verify("full", False, detail)
             return False, detail
-        from iris.infrastructure.iris_agent_client import IrisAgentClient
+        from iris.engine.runtime import verify_engine_model
+        from iris.infrastructure.agent_runtime import iris_agent_repo_dir
+        from iris.infrastructure.iris_agent_client import resolve_iris_agent_inference
 
-        key = resolve_iris_agent_api_key()
-        auth = IrisAgentClient(self.agent_base_url, api_key=key).probe_chat_auth()
-        if auth == "unauthorized":
-            detail = (
-                "[API_KEY] Iris Agent 게이트웨이 채팅 401 Unauthorized "
-                "(gateway /health 생존과는 별개).\n"
-                "API 키가 게이트웨이(.env API_SERVER_KEY)와 다릅니다.\n"
-                + report
-            )
+        local = list(info.get("local_models") or [])
+        model = selected or (local[0] if local else str(info.get("min_model") or ""))
+        try:
+            target = resolve_iris_agent_inference(model, ollama_base_url=self.ollama_base_url)
+            verify_engine_model(iris_agent_repo_dir(iris_agent_home()), target)
+        except (OSError, RuntimeError, ValueError) as exc:
+            detail = f"Iris Agent 모델 연결 실패: {exc}\n{report}"
             self._record_last_verify("full", False, detail)
             return False, detail
-        if auth == "unreachable":
-            detail = "Iris Agent 채팅 엔드포인트에 연결할 수 없습니다\n" + report
-            self._record_last_verify("full", False, detail)
-            return False, detail
-        mcp_ok, mcp_detail = verify_iris_mcp_tools(command=self.agent_command)
-        if not mcp_ok:
-            detail = f"MCP 검증 실패: {mcp_detail}\n{report}"
-            self._record_last_verify("full", False, detail)
-            return False, detail
-        kind = "로컬 모델" if info.get("has_local") else "클라우드 로그인"
-        detail = f"Ollama·Iris Agent·MCP 정상 ({kind})\n{report}"
+        detail = f"Ollama·Iris Agent 모델 호출 정상 ({model})\n{report}"
         self._record_last_verify("full", True, detail)
         return True, detail
 
@@ -1957,8 +1953,6 @@ class SetupProtocol:
         if step_id == "ollama_install":
             return self._install_ollama()
         if step_id == "iris_agent_install":
-            if self._iris_agent_prefer_bypass:
-                return self._install_iris_agent_bypass()
             return self._install_iris_agent()
         if step_id == "emulator":
             return self._install_emulator()
@@ -2055,7 +2049,7 @@ class SetupProtocol:
         return SetupStepResult(
             step_id="ollama_install",
             status="needs_user",
-            message="Ollama가 없습니다. 공식 설치 스크립트를 자동 실행합니다.",
+            message="Ollama가 없습니다. 동봉된 Iris Agent 엔진을 설치합니다.",
             action_url=OLLAMA_DOWNLOAD_URL,
             action_hint="UAC가 뜨면 허용하세요. 실패 시에만 수동 「열기」/「완료했어요」가 필요합니다.",
             label=CORE_STEP_LABELS["ollama_install"],
@@ -2442,7 +2436,7 @@ class SetupProtocol:
         return SetupStepResult(
             step_id="iris_agent_install",
             status="needs_user",
-            message="Iris Agent가 없습니다. 공식 설치 스크립트를 자동 실행합니다.",
+            message="Iris Agent가 없습니다. 동봉된 Iris Agent 엔진을 설치합니다.",
             action_url="",
             action_hint="설치에 수 분이 걸릴 수 있습니다. 실패 시에만 수동 「열기」/「완료했어요」가 필요합니다.",
             label=CORE_STEP_LABELS["iris_agent_install"],
@@ -2534,14 +2528,14 @@ class SetupProtocol:
             status="needs_user",
             message=message,
             action_url="",
-            action_hint="「로그 열기」로 전체 로그를 보고, 「우회로 다시 설치」로 재시도하세요.",
+            action_hint="「로그 열기」로 전체 로그를 보고, 「다시 설치」로 재시도하세요.",
             can_install=True,
-            install_label="우회로 다시 설치",
+            install_label="다시 설치",
             log_path=log_path,
         )
 
-    def _install_iris_agent_bypass(self) -> SetupStepResult:
-        """공식 설치가 끝났거나 실패했을 때 1회. 호출당 우회 한 번."""
+    def _install_iris_agent(self) -> SetupStepResult:
+        """Use the same owned-core installer for first install and repair."""
         from iris.system.iris_agent_install import (
             error_log_tail,
             install_iris_agent_with_system_python,
@@ -2550,9 +2544,8 @@ class SetupProtocol:
 
         if self._abort:
             return self._hermes_cancelled()
-        self._iris_agent_prefer_bypass = True
         self._emit_stream(
-            "시스템 Python으로 Iris Agent 우회 설치 (staging)…",
+            "동봉된 Iris Agent 엔진 설치 (staging)…",
             None,
             replace=False,
         )
@@ -2579,124 +2572,8 @@ class SetupProtocol:
             error_log_tail(result.message),
         )
 
-    def _install_iris_agent(self) -> SetupStepResult:
-        from iris.system.iris_agent_install import (
-            error_log_tail,
-            should_skip_official_installer,
-            write_install_log,
-        )
-
-        if self._abort:
-            return self._hermes_cancelled()
-        ok, detail = probe_iris_agent_runtime(command=self.agent_command)
-        if ok:
-            return self._hermes_done(f"Iris Agent 이미 사용 가능 ({detail})")
-        if sys.platform != "win32":
-            return SetupStepResult(
-                step_id="iris_agent_install",
-                status="needs_user",
-                message=(
-                    "Windows 외에서는 Iris Agent 수동 설치가 필요합니다. "
-                    "Iris 설정·설치 마법사 안내를 확인한 뒤 「완료했어요」."
-                ),
-                action_url="",
-                action_hint="설치 후 「완료했어요」.",
-                label=CORE_STEP_LABELS["iris_agent_install"],
-                can_install=False,
-            )
-        if should_skip_official_installer(
-            prefer_bypass=self._iris_agent_prefer_bypass or self._iris_agent_official_failed,
-            last_error=self._state.get("last_error"),
-        ):
-            self._emit_stream(
-                "이전 우회/448 상태 — 공식 설치 생략, 우회 직행…",
-                None,
-                replace=False,
-            )
-            return self._install_iris_agent_bypass()
-        from iris.infrastructure.agent_runtime import iris_agent_repo_dir
-
-        if iris_agent_repo_dir(iris_agent_home()).is_dir() or iris_agent_executable(
-            self.agent_command
-        ):
-            wipe_msg = self._wipe_hermes_agent_runtime()
-            self._emit_stream(f"깨진 Iris Agent 런타임 정리… {wipe_msg}", None, replace=False)
-            self._hermes_runtime_repaired = True
-
-        self._emit_stream("Iris Agent 공식 설치 스크립트 실행 중…", None, replace=False)
-        proc: subprocess.CompletedProcess[str] | None = None
-        try:
-            proc = self._run_hermes_official_installer()
-        except UserCancelled:
-            return self._hermes_cancelled()
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            refresh_process_path()
-            ok_after, detail_after = probe_iris_agent_runtime(command=self.agent_command)
-            if ok_after:
-                return self._hermes_done(f"시간 초과 후 Iris Agent 사용 가능 ({detail_after})")
-            kind = getattr(exc, "kind", "") or "exit"
-            if kind not in ("idle", "hard"):
-                kind = "hard" if isinstance(exc, subprocess.TimeoutExpired) else "exit"
-            blob = f"{kind}\n{exc}"
-            log_path = write_install_log(blob, prefix="iris-official")
-            self._iris_agent_official_failed = True
-            self._iris_agent_prefer_bypass = True
-            self._emit_stream(
-                f"공식 설치 실패 ({kind}). 로그: {log_path}\n우회 설치 1회…",
-                None,
-                replace=False,
-            )
-            return self._install_iris_agent_bypass()
-        refresh_process_path()
-        ok_after, detail_after = probe_iris_agent_runtime(command=self.agent_command)
-        if ok_after:
-            _guard_fresh_hermes_tree()
-            return self._hermes_done(f"Iris Agent 설치됨 ({detail_after})")
-        official_out = (proc.stdout or "") if proc is not None else ""
-        blob = "\n".join(
-            p
-            for p in (official_out, (proc.stderr or "") if proc else "", detail_after)
-            if p
-        )
-        write_install_log(blob, prefix="iris-official")
-        self._iris_agent_official_failed = True
-        rc = proc.returncode if proc is not None else -1
-        self._emit_stream(
-            f"공식 설치 rc={rc}, probe 실패 — 우회 1회…\n" + error_log_tail(blob),
-            None,
-            replace=False,
-        )
-        return self._install_iris_agent_bypass()
-
-    def _step_iris_agent_env(self, *, force_rotate: bool = False) -> SetupStepResult:
-        home = iris_agent_home()
-        home.mkdir(parents=True, exist_ok=True)
-        env_path = home / ".env"
-        existing = load_iris_agent_dotenv()
-        key = (existing.get("API_SERVER_KEY") or "").strip()
-        if not key:
-            key = (os.environ.get("IRIS_AGENT_API_KEY") or "").strip()
-        key_rotated = False
-        if force_rotate or is_weak_iris_agent_api_key(key):
-            key = secrets.token_urlsafe(32)
-            key_rotated = True
-        self._hermes_key_rotated = bool(self._hermes_key_rotated or key_rotated)
-        _upsert_dotenv(
-            env_path,
-            {
-                "API_SERVER_ENABLED": "true",
-                "API_SERVER_KEY": key,
-            },
-        )
-        _upsert_dotenv(_iris_env_path(), {"IRIS_AGENT_API_KEY": key})
-        os.environ["IRIS_AGENT_API_KEY"] = key
-        # 확인만 — 키 값은 메시지에 넣지 않음
-        if not resolve_iris_agent_api_key():
-            return self._record_step("iris_agent_env", "failed", "API 키 동기화 실패")
-        msg = "API_SERVER_ENABLED·키 동기화됨"
-        if key_rotated:
-            msg += " (재발급)"
-        return self._record_step("iris_agent_env", "done", msg)
+    def _step_iris_agent_env(self) -> SetupStepResult:
+        return self._record_step("iris_agent_env", "done", "Iris Agent 내부 연결 준비됨")
 
     def _step_iris_agent_provider(self) -> SetupStepResult:
         path = iris_agent_home() / "config.yaml"
@@ -2792,7 +2669,7 @@ class SetupProtocol:
         try:
             # 시작 프로토콜 중에는 Control Surface가 아직 없음 — 디스크 sync만.
             # 엔진 준비는 iris_agent_engine 단계(ensure_ready)에서 한다.
-            report = sync_iris_control(reconnect_gateway=False)
+            report = sync_iris_control(reconnect_gateway=False, audit_servers=False)
         except Exception as exc:  # noqa: BLE001
             return self._record_step("iris_control_sync", "failed", str(exc)[:240])
         if self._abort:
@@ -2836,7 +2713,7 @@ class SetupProtocol:
         self._hermes_key_rotated = False
         # Disk write for control config (no gateway reconnect).
         try:
-            report = sync_iris_control(reconnect_gateway=False)
+            report = sync_iris_control(reconnect_gateway=False, audit_servers=False)
             msg = report.summary_line()
         except Exception as sync_exc:  # noqa: BLE001
             msg = f"{result.summary or 'Iris Agent engine ready'} · sync skip: {sync_exc}"
@@ -2850,72 +2727,6 @@ class SetupProtocol:
         self._record_step("core_smoke", "verifying", "연결 검증 중…")
         ok, detail = self.verify_core()
         detail_s = detail or ""
-        # 게이트웨이 Bearer 실패만 키 rotate — [CLOUD] 미로그인은 키 재발급 금지
-        auth_fail = (not ok) and (
-            "[API_KEY]" in detail_s
-            or (
-                "401" in detail_s
-                and "[CLOUD]" not in detail_s
-                and "클라우드" not in detail_s
-            )
-        )
-        ready_fail = (not ok) and (
-            "[READY]" in detail_s or "gateway_ready" in detail_s
-        ) and "[CLOUD]" not in detail_s
-        if auth_fail and not self._abort:
-            self._emit_stream("채팅 401 — API 키 강제 재발급 후 gateway 재기동…", None, replace=False)
-            self._step_iris_agent_env(force_rotate=True)
-            self._step_iris_agent_engine(force_restart=True)
-            ok, detail = self.verify_core()
-            detail_s = detail or ""
-        elif ready_fail and not self._abort:
-            # health OK·models 실패 — 재시도가 no-op이 되지 않게 1회 restart
-            from iris.system.iris_agent_gateway import probe_gateway_ready
-            from iris.infrastructure.iris_agent_client import normalize_iris_agent_openai_base_url
-
-            ready = probe_gateway_ready(
-                self.agent_base_url, timeout_sec=3.0
-            )
-            # 404는 키 불일치가 아님 — base_url 정규화 + 강제 재기동만
-            is_404 = ready.code == "models_404" or ready.http_status == 404
-            is_401 = ready.http_status == 401 or (
-                ready.code == "models_http" and "401" in (ready.detail or "")
-            )
-            if is_404:
-                self.agent_base_url = normalize_iris_agent_openai_base_url(
-                    self.agent_base_url
-                )
-                os.environ["IRIS_AGENT_BASE_URL"] = self.agent_base_url
-                _upsert_dotenv(
-                    _iris_env_path(),
-                    {"IRIS_AGENT_BASE_URL": self.agent_base_url},
-                )
-                self._emit_stream(
-                    "gateway /v1/models 404 — base_url 정규화 후 gateway 재기동"
-                    " (키 재발급 없음)…",
-                    None,
-                    replace=False,
-                )
-                # API_SERVER_KEY는 유지하되 .env에 ENABLED·키가 없으면 보강
-                self._step_iris_agent_env(force_rotate=False)
-            elif is_401 or ready.key_weak or ready.code == "no_key":
-                self._emit_stream(
-                    "gateway ready 401/키 없음 — API 키 재발급 후 gateway 재기동…",
-                    None,
-                    replace=False,
-                )
-                self._step_iris_agent_env(force_rotate=True)
-            else:
-                self._emit_stream(
-                    "gateway ready 실패 — 키 점검 후 gateway 재기동…",
-                    None,
-                    replace=False,
-                )
-                if ready.code == "models_http":
-                    self._step_iris_agent_env(force_rotate=False)
-            self._step_iris_agent_engine(force_restart=True)
-            ok, detail = self.verify_core()
-            detail_s = detail or ""
         if self._abort:
             return self._record_step("core_smoke", "failed", "사용자가 중단함")
         if not ok:

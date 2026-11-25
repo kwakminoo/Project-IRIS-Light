@@ -26,8 +26,40 @@ DEFAULT_TITLE = "새 채팅"
 # 중단됐다는 걸 알리는 용도라 저장은 하되, 제목을 만들 때는 뺀다 — 안 빼면 답이
 # 비어 있던 대화의 제목이 이 문장이 되고, 멀쩡하던 제목도 덮어써진다.
 INTERRUPTED_NOTE = "대화 전환으로 응답을 중단했습니다."
+CANCELLED_NOTE = "응답을 취소했습니다."
+# Fail/cancel land — assistant role + this prefix (not fake model prose).
+SYSTEM_ERROR_PREFIX = "[IRIS System Error]"
 _TITLE_LIMIT = 36
 _USER_TITLE_LIMIT = 48
+
+
+def format_turn_fail_land(summary: str, *, partial: str = "") -> str:
+    """DB land body for failed/partial turn. Prefix marks IRIS system error."""
+    note = f"{SYSTEM_ERROR_PREFIX} {(summary or '').strip() or '모델 응답 실패'}".rstrip()
+    body = (partial or "").strip()
+    if body:
+        return f"{body}\n\n{note}"
+    return note
+
+
+def format_turn_cancel_land(*, reason: str, partial: str = "") -> str:
+    """Cancel/interrupt land — same envelope as fail. Chat switch keeps INTERRUPTED_NOTE."""
+    summary = INTERRUPTED_NOTE if reason == "conversation_switch" else CANCELLED_NOTE
+    return format_turn_fail_land(summary, partial=partial)
+
+
+def strip_system_land_notes(text: str) -> str:
+    """Drop interrupt / system-error envelopes before title or echo use."""
+    body = (text or "").replace(INTERRUPTED_NOTE, "\n")
+    body = body.replace(CANCELLED_NOTE, "\n")
+    if SYSTEM_ERROR_PREFIX in body:
+        parts: list[str] = []
+        for line in body.splitlines():
+            if line.strip().startswith(SYSTEM_ERROR_PREFIX):
+                continue
+            parts.append(line)
+        body = "\n".join(parts)
+    return body.strip()
 
 # ponytail: 답변 첫 문장을 제목으로 자른다. 품질이 부족하면 LLM 요약으로 교체.
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
@@ -290,7 +322,7 @@ def _reply_texts(messages: list[ChatMessage] | list[dict[str, str]]) -> list[str
         role, content = _message_parts(msg)
         if role != "assistant":
             continue
-        body = (content or "").replace(INTERRUPTED_NOTE, "\n").strip()
+        body = strip_system_land_notes(content or "")
         if body:
             replies.append(body)
     return replies
@@ -322,7 +354,7 @@ def _first_reply_title(
             continue
         if not seen_user or role != "assistant":
             continue
-        body = (content or "").replace(INTERRUPTED_NOTE, "\n").strip()
+        body = strip_system_land_notes(content or "")
         if not body:
             continue
         title = summarize_reply(body)

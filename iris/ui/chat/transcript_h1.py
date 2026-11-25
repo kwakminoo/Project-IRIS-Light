@@ -528,10 +528,32 @@ class H1TranscriptHost(QWidget):
                             block_id=bid,
                             collapsed=bool(part.collapsed),
                             phase=(part.phase or "done").strip() or "done",
+                            allow_always=bool(getattr(part, "allow_always", True)),
                         )
                     )
                     self._patch_tool_shell_dom(bid, html_body)
                     return True
+        # Prefer active/last assistant turn over a fake shell-{bid} turn.
+        if self._turns:
+            last = self._turns[-1]
+            if str(last.role or "") == "assistant" and not str(
+                last.msg_id or ""
+            ).startswith("shell-"):
+                self._turns[-1] = replace(last, parts=tuple(last.parts) + (part,))
+                html_body = marked_tool_shell_to_html(
+                    ToolShellBlock(
+                        title=part.title or "Shell",
+                        command=part.command or "",
+                        output=part.output or "",
+                        status=part.status or "ok",
+                        block_id=bid,
+                        collapsed=bool(part.collapsed),
+                        phase=(part.phase or "done").strip() or "done",
+                        allow_always=bool(getattr(part, "allow_always", True)),
+                    )
+                )
+                self._patch_tool_shell_dom(bid, html_body)
+                return True
         self.append_turn("assistant", [part], msg_id=f"shell-{bid}")
         return True
 
@@ -849,7 +871,9 @@ class H1TranscriptHost(QWidget):
                 continue
             parts.append(self._stream_part_to_message(sp))
         turn = self._turns[-1]
-        self._turns[-1] = replace(turn, parts=tuple(parts))
+        # Keep mid-stream Shell Boxes attached to this turn (not in PartStream).
+        kept = [p for p in turn.parts if isinstance(p, ToolShellPart)]
+        self._turns[-1] = replace(turn, parts=tuple(parts) + tuple(kept))
 
     def _stream_part_to_message(self, sp: _StreamPart) -> MessagePart:
         if sp.type == "code":
@@ -1221,6 +1245,7 @@ class H1TranscriptHost(QWidget):
                 block_id=part.block_id or "tool",
                 collapsed=bool(part.collapsed),
                 phase=(part.phase or "done").strip() or "done",
+                allow_always=bool(getattr(part, "allow_always", True)),
             )
             return marked_tool_shell_to_html(block)
         if isinstance(part, ImagePart):

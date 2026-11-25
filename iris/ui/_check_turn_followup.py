@@ -90,8 +90,14 @@ def _check_window(app: QApplication) -> None:
     app.processEvents()
     assert not win._busy
     assert win._active_turn_id == ""
-    assert _texts(win._history) == ["첫 질문", "여기까지"], _texts(win._history)
-    assert "대화 전환으로" not in win._history[-1]["content"]
+    from iris.storage.conversations import CANCELLED_NOTE, SYSTEM_ERROR_PREFIX
+
+    texts_after_stop = _texts(win._history)
+    assert "첫 질문" in texts_after_stop, texts_after_stop
+    land_stop = next((t for t in texts_after_stop if SYSTEM_ERROR_PREFIX in t), "")
+    assert land_stop and "여기까지" in land_stop, texts_after_stop
+    assert CANCELLED_NOTE in land_stop, land_stop
+    assert "대화 전환으로" not in land_stop
 
     win._record_history("user", "중지 다음")
     win._turn_gate.begin("turn-2")
@@ -101,6 +107,7 @@ def _check_window(app: QApplication) -> None:
     win._on_chat_failed_for_turn("첫 턴의 늦은 오류", "turn-1")
     app.processEvents()
     assert win._history == before
+    assert "첫 턴의 늦은 완료" not in _texts(win._history)
     assert win._turn_gate.is_current("turn-2") and win._busy
     win._on_chat_finished_for_turn("둘째 답", "turn-2")
     app.processEvents()
@@ -113,7 +120,10 @@ def _check_window(app: QApplication) -> None:
     win._on_chat_failed_for_turn("연결 거절", "turn-3")
     app.processEvents()
     # 실패해도 user 유지 — 스트림 5xx→복구 레이스에서 pop이 성공 착지를 지운다.
-    assert _texts(win._history)[-1] == "실패할 질문"
+    # Fail도 system-error envelope를 DB/history에 착지한다 (가짜 모델 답 아님).
+    texts_after_fail = _texts(win._history)
+    assert "실패할 질문" in texts_after_fail, texts_after_fail
+    assert any(SYSTEM_ERROR_PREFIX in t for t in texts_after_fail), texts_after_fail
     assert not win._busy
     win._record_history("user", "오류 다음")
     win._turn_gate.begin("turn-4")

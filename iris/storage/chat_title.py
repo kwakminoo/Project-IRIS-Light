@@ -10,12 +10,14 @@ import re
 from iris.storage.conversations import (
     DEFAULT_TITLE,
     INTERRUPTED_NOTE,
+    SYSTEM_ERROR_PREFIX,
     TITLE_BASIS_FIRST,
     ChatMessage,
     _set_title,
     get_conversation,
     list_messages,
     load_title_basis,
+    strip_system_land_notes,
     suggest_title,
 )
 from iris.storage.database import Database
@@ -47,7 +49,7 @@ def _question_text(text: str) -> str:
 
 
 def _answer_text(text: str) -> str:
-    body = (text or "").replace(INTERRUPTED_NOTE, " ")
+    body = strip_system_land_notes(text or "")
     return " ".join(body.split())[:800]
 
 
@@ -105,7 +107,11 @@ def normalize_model_title(raw: str) -> str:
         if part:
             line = part
             break
-    if not line or line in (DEFAULT_TITLE, INTERRUPTED_NOTE):
+    if (
+        not line
+        or line in (DEFAULT_TITLE, INTERRUPTED_NOTE)
+        or line.startswith(SYSTEM_ERROR_PREFIX)
+    ):
         return ""
     if len(line) > _TITLE_LIMIT:
         line = line[: _TITLE_LIMIT - 1].rstrip() + "…"

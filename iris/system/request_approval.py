@@ -179,12 +179,18 @@ class RequestApprovalLedger:
         fingerprint: str,
         session_id: str,
         workspace_id: str = "",
+        tool_call_id: str = "",
     ) -> tuple[bool, str]:
-        """One-shot consume. Fingerprint / session / expiry / used must match."""
+        """One-shot consume. Fingerprint / session / expiry / used must match.
+
+        When the grant recorded ``tool_call_id``, the caller must match it
+        (empty caller does not skip). Existing callers omit the kwarg.
+        """
         rid = str(request_id or "").strip()
         fp = str(fingerprint or "").strip()
         sid = str(session_id or "").strip()
         wid = str(workspace_id or "").strip()
+        tid = str(tool_call_id or "").strip()
         if not rid:
             return False, "approval reference required"
         if not fp:
@@ -212,6 +218,12 @@ class RequestApprovalLedger:
                     return False, "workspace mismatch"
             elif wid and wid != rec.workspace_id:
                 return False, "workspace mismatch"
+            # Grant recorded a tool_call_id → caller must match (FPR-03).
+            if rec.tool_call_id:
+                if not tid or rec.tool_call_id != tid:
+                    return False, "tool_call_id mismatch"
+            elif tid and tid != rec.tool_call_id:
+                return False, "tool_call_id mismatch"
             if rec.fingerprint != fp:
                 return False, "execution fingerprint mismatch"
             self._entries[rid] = replace(rec, used=True)

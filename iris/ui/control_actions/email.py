@@ -218,17 +218,47 @@ def register_email_actions(window: EmailHost, reg: ActionRegistry) -> None:
         _log(window, "email.open_message", True)
         return ok_result("email.open_message", {"uid": uid})
 
-    def email_open_compose(_a: dict[str, Any]) -> dict[str, Any]:
+    def _compose_draft_from_args(args: dict[str, Any]) -> dict[str, str]:
+        return {
+            "to": str(args.get("to") or "").strip(),
+            "cc": str(args.get("cc") or "").strip(),
+            "bcc": str(args.get("bcc") or "").strip(),
+            "subject": str(args.get("subject") or ""),
+            "body": str(args.get("body") or ""),
+        }
+
+    def email_open_compose(args: dict[str, Any]) -> dict[str, Any]:
+        """Open compose UI. Optional to/cc/bcc/subject/body prefill. Never sends."""
+        draft = _compose_draft_from_args(args if isinstance(args, dict) else {})
+        has_draft = any(draft.values())
         if window._workspace_mode != "email":
             window._on_email_icon()
         try:
-            opened = window._open_email_compose()
+            opened = window._open_email_compose(draft=draft if has_draft else None)
         except Exception as exc:  # noqa: BLE001 — do not claim success / wedge UI
             return err_result("email.open_compose", str(exc)[:240])
         if not opened:
             return err_result("email.open_compose", "compose dialog not opened")
         _log(window, "email.open_compose", True)
-        return ok_result("email.open_compose", {})
+        return ok_result(
+            "email.open_compose",
+            {
+                "draft_applied": has_draft,
+                "to": draft["to"],
+                "cc": draft["cc"],
+                "bcc": draft["bcc"],
+                "subject": draft["subject"],
+                "body": draft["body"],
+                "sent": False,
+            },
+        )
+
+    def email_compose_draft(args: dict[str, Any]) -> dict[str, Any]:
+        """Alias: open compose with draft fields. Does not call email.send."""
+        out = email_open_compose(args)
+        if isinstance(out, dict):
+            return {**out, "action": "email.compose_draft"}
+        return out
 
     def email_send(args: dict[str, Any]) -> dict[str, Any]:
         to = str(args.get("to") or "").strip()
@@ -293,12 +323,22 @@ def register_email_actions(window: EmailHost, reg: ActionRegistry) -> None:
 
     reg.register("email.open_message", email_open_message, summary="Open email message by uid")
 
-    reg.register("email.open_compose", email_open_compose, summary="Open email compose UI")
+    reg.register(
+        "email.open_compose",
+        email_open_compose,
+        summary="Open email compose UI (optional to/cc/bcc/subject/body draft; does not send)",
+    )
+
+    reg.register(
+        "email.compose_draft",
+        email_compose_draft,
+        summary="Open compose with draft fields (to/cc/bcc/subject/body); does not send",
+    )
 
     reg.register(
         "email.send",
         email_send,
-        summary="Send email (to, subject, body) — requires confirm=true",
+        summary="Send email (to, subject, body) — requires in-chat card confirm",
         risk="high",
         confirm_required=True,
     )
@@ -306,7 +346,7 @@ def register_email_actions(window: EmailHost, reg: ActionRegistry) -> None:
     reg.register(
         "email.add_account",
         email_add_account,
-        summary="Add email account (address, password, label) — requires confirm=true",
+        summary="Add email account (address, password, label) — requires in-chat card confirm",
         risk="high",
         confirm_required=True,
     )
@@ -314,7 +354,7 @@ def register_email_actions(window: EmailHost, reg: ActionRegistry) -> None:
     reg.register(
         "email.remove_account",
         email_remove_account,
-        summary="Remove email account by id — requires confirm=true",
+        summary="Remove email account by id — requires in-chat card confirm",
         risk="high",
         confirm_required=True,
     )

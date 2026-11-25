@@ -111,7 +111,7 @@ def lockfile_names(root: str | Path) -> tuple[str, ...]:
 
 
 def system_python_on_path(*, exclude: Path | None = None) -> Path | None:
-    """PATH python/py — never invent Iris product sys.executable as project env."""
+    """PATH python/py — never invent Iris product or Agent Core venv as project env."""
     exclude_r = None
     if exclude is not None:
         try:
@@ -129,6 +129,8 @@ def system_python_on_path(*, exclude: Path | None = None) -> Path | None:
             continue
         if exclude_r is not None and resolved == exclude_r:
             continue
+        if _usable_project_python(resolved) is None:
+            continue
         if resolved.is_file():
             return resolved
     return None
@@ -139,6 +141,17 @@ def iris_product_python() -> Path | None:
         return Path(sys.executable).resolve()
     except OSError:
         return None
+
+
+def agent_core_home() -> Path:
+    """Agent Core home — Desktop product and User Workspace stay outside this tree.
+
+    Mirrors ``iris_agent_home`` / ``product_agent_home`` without importing engine.
+    """
+    override = (os.environ.get("IRIS_AGENT_HOME") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return (Path.home() / ".iris-light" / "agent").resolve()
 
 
 def _is_product_interpreter(py: Path | None) -> bool:
@@ -154,32 +167,52 @@ def _is_product_interpreter(py: Path | None) -> bool:
         return False
 
 
+def _is_agent_core_interpreter(py: Path | None) -> bool:
+    """True when py lives under Agent Home ``…/venv`` (Iris Agent / Hermes checkout).
+
+    User project runs must not silently inherit this; only explicit user_python may.
+    """
+    if py is None:
+        return False
+    try:
+        resolved = py.resolve()
+        home = agent_core_home()
+        rel = resolved.relative_to(home)
+    except (ValueError, OSError):
+        return False
+    return "venv" in {p.lower() for p in rel.parts}
+
+
+def _usable_project_python(py: Path | None) -> Path | None:
+    """Drop Desktop product and Agent Core interpreters from silent discovery."""
+    if py is None:
+        return None
+    if _is_product_interpreter(py) or _is_agent_core_interpreter(py):
+        return None
+    return py
+
+
 def active_virtual_env_python() -> Path | None:
     """VIRTUAL_ENV marker → runnable python, else None.
 
-    Skips Iris product VIRTUAL_ENV (pythonw -m iris often sets it to the app venv).
+    Skips Iris product VIRTUAL_ENV (pythonw -m iris often sets it to the app venv)
+    and Agent Core ``…/agent/*/venv`` (never a user project env unless user_python).
     """
     raw = (os.environ.get("VIRTUAL_ENV") or "").strip()
     if not raw:
         return None
-    py = python_in_prefix(raw)
-    if _is_product_interpreter(py):
-        return None
-    return py
+    return _usable_project_python(python_in_prefix(raw))
 
 
 def active_conda_python() -> Path | None:
     """CONDA_PREFIX marker → runnable python, else None.
 
-    Skips prefix whose interpreter is Iris product sys.executable.
+    Skips Iris product and Agent Core interpreters.
     """
     raw = (os.environ.get("CONDA_PREFIX") or "").strip()
     if not raw:
         return None
-    py = python_in_prefix(raw)
-    if _is_product_interpreter(py):
-        return None
-    return py
+    return _usable_project_python(python_in_prefix(raw))
 
 
 def _run_capture(argv: list[str], *, cwd: Path | None = None) -> str | None:
@@ -317,8 +350,10 @@ class WorkspaceEnvironmentResolver:
             )
 
         # Prefer bound root .venv, then walk-up from file (IDE parity).
+        # Reject Agent Core only — product sys.executable may equal this project's
+        # .venv when Iris itself was launched from it (thin launcher / -m iris).
         at_root = find_venv_python(root)
-        if at_root is not None:
+        if at_root is not None and not _is_agent_core_interpreter(at_root):
             return WorkspacePython(python=at_root, root=root, source=_SOURCE_VENV, locks=locks)
 
         start: Path | None = None
@@ -332,17 +367,20 @@ class WorkspaceEnvironmentResolver:
         walked = walk_up_venv_python(start)
         if walked is not None:
             py, venv_root = walked
-            return WorkspacePython(python=py, root=venv_root, source=_SOURCE_VENV, locks=locks)
+            if not _is_agent_core_interpreter(py):
+                return WorkspacePython(
+                    python=py, root=venv_root, source=_SOURCE_VENV, locks=locks
+                )
 
         # Tool discovery — runnable binary required; lockfiles already in locks.
         uv_py = discover_uv_python(root)
-        if uv_py is not None:
+        if uv_py is not None and not _is_agent_core_interpreter(uv_py):
             return WorkspacePython(python=uv_py, root=root, source=_SOURCE_UV, locks=locks)
         poetry_py = discover_poetry_python(root)
-        if poetry_py is not None:
+        if poetry_py is not None and not _is_agent_core_interpreter(poetry_py):
             return WorkspacePython(python=poetry_py, root=root, source=_SOURCE_POETRY, locks=locks)
         conda_disc = discover_conda_python(root)
-        if conda_disc is not None:
+        if conda_disc is not None and not _is_agent_core_interpreter(conda_disc):
             return WorkspacePython(python=conda_disc, root=root, source=_SOURCE_CONDA, locks=locks)
 
         if allow_create:

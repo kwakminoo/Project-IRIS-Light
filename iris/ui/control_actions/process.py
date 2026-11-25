@@ -142,6 +142,7 @@ def register_process_actions(window: Any, reg: ActionRegistry) -> None:
                 fingerprint=fp,
                 session_id=sid,
                 workspace_id=str(ctx.workspace_id or ""),
+                tool_call_id=str(ctx.tool_call_id or ""),
                 block_id=block_id,
             )
             shell_req = new_request(
@@ -202,8 +203,10 @@ def register_process_actions(window: Any, reg: ActionRegistry) -> None:
         process_manage,
         summary=(
             "Manage Iris Execution Runtime Local Subprocess runs "
-            "(list|status|read_output|wait|cancel; optional start / write_stdin stub). "
-            "Not a sandbox. start requires human confirm (shell.run risk class, no HUD); "
+            "(start|list|status|read_output|wait|cancel). "
+            "Not a sandbox. start requires exactly one of argv:list XOR shell:str "
+            "(command alias ok) and returns run_id; write_stdin unsupported. "
+            "start requires human confirm (shell.run risk class, no HUD); "
             "cwd under trusted workspace root or home. Required: action. "
             "run_id required except list|start. ACL from Control ExecutionContext."
         ),

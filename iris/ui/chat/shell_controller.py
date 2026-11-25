@@ -6,6 +6,7 @@ Shell Box only paints; it does not spawn processes itself.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -14,6 +15,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from iris.system.iris_shell import ShellJob, ShellOutcome, stream_shell_job
+
+_log = logging.getLogger(__name__)
 
 # Live card output budget (VisibilityCard stays at 400 for project.run summaries).
 # Full stdout/stderr remain on Execution Runtime per-run logs; UI is a ring view.
@@ -250,16 +253,36 @@ def run_shell_live(
             }
             if bid:
                 replace = getattr(chat, "replace_tool_block", None)
-                if callable(replace) and replace(bid, **kwargs):
-                    return
+                if callable(replace):
+                    try:
+                        if replace(bid, **kwargs):
+                            return
+                    except Exception:
+                        _log.exception(
+                            "shell_controller paint-fail block_id=%s phase=%s",
+                            bid,
+                            phase,
+                        )
+                        return
             insert = getattr(chat, "insert_tool_block", None)
             if callable(insert):
-                bid = str(insert(**kwargs) or "").strip() or bid
+                try:
+                    bid = str(insert(**kwargs) or "").strip() or bid
+                except Exception:
+                    _log.exception(
+                        "shell_controller insert-fail phase=%s command=%r",
+                        phase,
+                        command,
+                    )
 
         try:
             _ui(_do)
         except Exception:
-            pass
+            _log.exception(
+                "shell_controller paint-ui-fail phase=%s block_id=%s",
+                phase,
+                bid,
+            )
 
     def _snapshot() -> str:
         with lock:

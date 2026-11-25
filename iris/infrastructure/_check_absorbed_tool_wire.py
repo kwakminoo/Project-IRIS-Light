@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import sys
+import threading
+import time
 import types
 from types import SimpleNamespace
 
@@ -43,20 +46,34 @@ def _fake_registry() -> SimpleNamespace:
     def register(*, name: str, toolset: str, schema: dict, handler) -> None:
         registered.append(name)
 
-    return SimpleNamespace(register=register, registered=registered)
+    return SimpleNamespace(
+        register=register,
+        registered=registered,
+        dispatch=lambda *_args, **_kwargs: "HERMES",
+    )
 
 
 def _simulate_install(surface: str, preload: list[str]) -> set[str]:
-    """Call real _install_iris_engine_tools with a stub Hermes registry."""
+    """A hostile Hermes registry must not own schemas or dispatch after install."""
     fake = _fake_registry()
     tools_mod = types.ModuleType("tools")
     registry_mod = types.ModuleType("tools.registry")
     registry_mod.registry = fake
     tools_mod.registry = registry_mod
+    model_tools_mod = types.ModuleType("model_tools")
+    model_tools_mod.handle_function_call = lambda *_args, **_kwargs: "HERMES"
+    mcp_mod = types.ModuleType("tools.mcp_tool_agent")
+    mcp_mod.refresh_agent_mcp_tools = lambda agent, **_kwargs: setattr(
+        agent, "tools", [{"type": "function", "function": {"name": "memory"}}]
+    )
     prev_tools = sys.modules.get("tools")
     prev_reg = sys.modules.get("tools.registry")
+    prev_model_tools = sys.modules.get("model_tools")
+    prev_mcp = sys.modules.get("tools.mcp_tool_agent")
     sys.modules["tools"] = tools_mod
     sys.modules["tools.registry"] = registry_mod
+    sys.modules["model_tools"] = model_tools_mod
+    sys.modules["tools.mcp_tool_agent"] = mcp_mod
     agent = SimpleNamespace(
         tools=[
             {"type": "function", "function": {"name": n, "parameters": {}}}
@@ -64,9 +81,42 @@ def _simulate_install(surface: str, preload: list[str]) -> set[str]:
         ],
         valid_tool_names=set(preload),
     )
+    native_calls: list[tuple[str, dict, dict]] = []
+    original_request = sidecar._request_native_tool
+    sidecar._request_native_tool = lambda name, args, **_kwargs: (
+        native_calls.append((name, dict(args), dict(_kwargs))),
+        '{"ok": true}',
+    )[1]
     try:
-        installed = sidecar._install_iris_engine_tools(agent, surface=surface)
+        installed = sidecar._install_iris_engine_tools(
+            agent,
+            surface=surface,
+            bridge_context={
+                "turn_id": "turn-1",
+                "session_id": "session-1",
+                "workspace_id": "workspace-1",
+            },
+        )
+        calls = {
+            "terminal": {"command": "echo ok"},
+            "process_manage": {"action": "list"},
+            "write_file": {"path": "x", "content": "x"},
+            "read_file": {"path": "x"},
+            "search_files": {"query": "x"},
+            "apply_patch": {"patch": "x"},
+            "web_search": {"query": "x"},
+            "web_extract": {"url": "https://example.test"},
+        }
+        results = {
+            name: model_tools_mod.handle_function_call(
+                name, args, tool_call_id=f"call-{name}"
+            )
+            for name, args in calls.items()
+        }
+        unavailable = model_tools_mod.handle_function_call("skills_list", {})
+        mcp_mod.refresh_agent_mcp_tools(agent)
     finally:
+        sidecar._request_native_tool = original_request
         if prev_tools is None:
             sys.modules.pop("tools", None)
         else:
@@ -75,17 +125,97 @@ def _simulate_install(surface: str, preload: list[str]) -> set[str]:
             sys.modules.pop("tools.registry", None)
         else:
             sys.modules["tools.registry"] = prev_reg
+        if prev_model_tools is None:
+            sys.modules.pop("model_tools", None)
+        else:
+            sys.modules["model_tools"] = prev_model_tools
+        if prev_mcp is None:
+            sys.modules.pop("tools.mcp_tool_agent", None)
+        else:
+            sys.modules["tools.mcp_tool_agent"] = prev_mcp
     visible = {
         str(row.get("function", {}).get("name") or "")
         for row in (agent.tools or [])
         if isinstance(row, dict)
     }
     assert visible == set(installed) == set(agent.valid_tool_names)
-    assert visible == set(fake.registered)
+    assert fake.registered == [], "product install must not register into Hermes"
+    assert all(result == '{"ok": true}' for result in results.values()), results
+    expected_actions = {
+        "terminal": "shell.run" if surface == "home" else "project.run",
+        "process_manage": "process.manage",
+        "write_file": "project.write_file",
+        "read_file": "project.read_file",
+        "search_files": "local.search_files",
+        "apply_patch": "project.apply_patch",
+        "web_search": "web.run_search",
+        "web_extract": "web.run_extract",
+    }
+    assert [action for action, _args, _meta in native_calls] == [
+        expected_actions[name] for name in calls
+    ]
+    for model_name, (_action, _args, meta) in zip(calls, native_calls):
+        assert meta["model_tool_name"] == model_name, meta
+        assert meta["schema_fingerprint"], meta
+        assert meta["tool_call_id"] == f"call-{model_name}", meta
+        assert meta["turn_id"] == "turn-1", meta
+        assert meta["session_id"] == "session-1", meta
+        assert meta["workspace_id"] == "workspace-1", meta
+    assert "TOOL_NOT_AVAILABLE" in unavailable, unavailable
+    assert "skills_list" not in visible
+    assert "memory" not in visible, "late Hermes refresh replaced native snapshot"
+    assert getattr(agent, "_skip_mcp_refresh", False) is True
+    try:
+        agent._iris_native_tool_bindings["terminal"] = "HERMES"
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("native bindings must be immutable")
     return visible
 
 
+def _check_native_transport_serialized() -> None:
+    local = threading.local()
+    state = {"active": 0, "max_active": 0}
+    state_lock = threading.Lock()
+
+    class _Stdin:
+        def readline(self) -> str:
+            with state_lock:
+                state["active"] += 1
+                state["max_active"] = max(state["max_active"], state["active"])
+            time.sleep(0.02)
+            with state_lock:
+                state["active"] -= 1
+            return json.dumps(
+                {"t": "tool_result", "id": local.request_id, "result": {"ok": True}}
+            )
+
+    def emit(payload: dict) -> None:
+        local.request_id = payload["id"]
+
+    original_emit, original_stdin = sidecar._emit, sidecar.sys.stdin
+    sidecar._emit, sidecar.sys.stdin = emit, _Stdin()
+    results: list[str] = []
+    try:
+        threads = [
+            threading.Thread(
+                target=lambda: results.append(sidecar._request_native_tool("ping", {}))
+            )
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        sidecar._emit, sidecar.sys.stdin = original_emit, original_stdin
+    assert state["max_active"] == 1, state
+    assert len(results) == 2 and all(json.loads(result)["ok"] for result in results)
+
+
 def main() -> None:
+    _check_native_transport_serialized()
     set_speak_surface("home")
     home = _names("home")
     assert "terminal" in home, home

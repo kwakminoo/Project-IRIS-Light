@@ -42,7 +42,6 @@ MANAGE_ACTIONS = frozenset(
         "read_output",
         "wait",
         "cancel",
-        "write_stdin",
     }
 )
 
@@ -52,9 +51,60 @@ _SESSION_SCOPED_ACTIONS = frozenset(
         "read_output",
         "wait",
         "cancel",
-        "write_stdin",
     }
 )
+
+# Model/control start launch: exactly one of argv:list[str] XOR shell:str.
+_START_XOR_HINT = (
+    "Provide exactly one of argv (list of strings) or shell (string; command alias ok)"
+)
+_RUN_ID_HINT = "Pass run_id from a successful start (status|read_output|wait|cancel)"
+
+
+def normalize_process_start_args(
+    raw: Mapping[str, Any],
+) -> tuple[list[str] | None, str | None]:
+    """Boundary parse for process.manage start.
+
+    - list argv kept as argv
+    - non-list argv string → shell only when shell/command absent (never drop shell)
+    - other argv types ignored
+    - shell/command alias: first non-empty wins
+    Caller still enforces XOR before ExecutionRuntime.start.
+    """
+    shell_raw = raw.get("shell")
+    if shell_raw is None or not str(shell_raw).strip():
+        shell_raw = raw.get("command")
+    shell: str | None = str(shell_raw).strip() if shell_raw is not None and str(shell_raw).strip() else None
+
+    argv_raw = raw.get("argv")
+    argv: list[str] | None = None
+    if isinstance(argv_raw, list):
+        if argv_raw:
+            argv = [str(x) for x in argv_raw]
+    elif isinstance(argv_raw, str) and argv_raw.strip():
+        # Invalid type for argv — do not discard a valid shell; else treat as shell.
+        if shell is None:
+            shell = argv_raw.strip()
+    return argv, shell
+
+
+def _manage_err(
+    error: str,
+    *,
+    error_code: str,
+    hint: str,
+    data: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = dict(data or {})
+    payload.setdefault("error_code", error_code)
+    payload.setdefault("hint", hint)
+    return {
+        "ok": False,
+        "action": "process.manage",
+        "error": error,
+        "data": payload,
+    }
 
 _TERMINAL = frozenset(
     {
@@ -575,12 +625,12 @@ class ProcessRegistry:
         raw = strip_trust_fields(args)
         action = str(raw.get("action") or "").strip()
         if action not in MANAGE_ACTIONS:
-            return {
-                "ok": False,
-                "action": "process.manage",
-                "error": f"unknown or missing action: {action!r}",
-                "data": {"allowed": sorted(MANAGE_ACTIONS)},
-            }
+            return _manage_err(
+                f"unknown or missing action: {action!r}",
+                error_code="unknown_action",
+                hint="action must be one of: " + ", ".join(sorted(MANAGE_ACTIONS)),
+                data={"allowed": sorted(MANAGE_ACTIONS)},
+            )
         try:
             if action == "list":
                 if ctx is not None and ctx.is_admin():
@@ -619,6 +669,7 @@ class ProcessRegistry:
                     fingerprint=fingerprint_from_manage_args(raw),
                     session_id=ctx.effective_session_id() if ctx is not None else "",
                     workspace_id=str(getattr(ctx, "workspace_id", "") or ""),
+                    tool_call_id=str(getattr(ctx, "tool_call_id", "") or ""),
                 )
                 if not ok_c:
                     return {
@@ -647,9 +698,16 @@ class ProcessRegistry:
                         cwd_raw = str(Path(ws_root).expanduser().resolve())
                     else:
                         cwd_raw = str(Path.home().resolve())
-                argv = raw.get("argv")
-                shell = raw.get("shell") or raw.get("command")
-                bound_argv: list[str] | None = list(argv) if isinstance(argv, list) else None
+                bound_argv, shell = normalize_process_start_args(raw)
+                has_argv = bool(bound_argv)
+                has_shell = bool(shell)
+                if has_argv == has_shell:
+                    return _manage_err(
+                        "start requires exactly one of argv or shell",
+                        error_code="start_xor_required",
+                        hint=_START_XOR_HINT,
+                        data={"argv_present": has_argv, "shell_present": has_shell},
+                    )
                 # Bare python/py or leading .py → WorkspaceEnvironmentResolver (no create).
                 # Shell strings stay as-is; ACL / env scrub below unchanged.
                 if bound_argv:
@@ -667,8 +725,8 @@ class ProcessRegistry:
                 if ctx is not None:
                     owner = str(ctx.principal or ctx.surface or "").strip()
                 run_id = self.start(
-                    argv=bound_argv,
-                    shell=str(shell) if shell and not argv else None,
+                    argv=bound_argv if has_argv else None,
+                    shell=shell if has_shell else None,
                     cwd=cwd_raw,
                     env_id=str(raw.get("environment_id") or raw.get("env_id") or ""),
                     timeout_s=float(raw["timeout_s"]) if raw.get("timeout_s") is not None else None,
@@ -676,6 +734,12 @@ class ProcessRegistry:
                     workspace_id=workspace_id,
                     owner=owner,
                 )
+                if not str(run_id or "").strip():
+                    return _manage_err(
+                        "start did not return run_id",
+                        error_code="run_id_missing",
+                        hint=_RUN_ID_HINT,
+                    )
                 return {
                     "ok": True,
                     "action": "process.manage",
@@ -683,12 +747,11 @@ class ProcessRegistry:
                 }
             run_id = str(raw.get("run_id") or "").strip()
             if not run_id:
-                return {
-                    "ok": False,
-                    "action": "process.manage",
-                    "error": "run_id required",
-                    "data": {},
-                }
+                return _manage_err(
+                    "run_id required",
+                    error_code="run_id_required",
+                    hint=_RUN_ID_HINT,
+                )
             if action in _SESSION_SCOPED_ACTIONS:
                 slot = self._require(run_id)
                 with slot.lock:
@@ -729,20 +792,26 @@ class ProcessRegistry:
             if action == "cancel":
                 rec = self.cancel(run_id)
                 return {"ok": True, "action": "process.manage", "data": rec.as_dict()}
-            if action == "write_stdin":
-                stub = self.write_stdin(run_id, str(raw.get("data") or raw.get("text") or ""))
-                return {
-                    "ok": bool(stub.get("ok")),
-                    "action": "process.manage",
-                    "error": stub.get("error") or "",
-                    "data": stub,
-                }
         except KeyError as exc:
             return {
                 "ok": False,
                 "action": "process.manage",
                 "error": str(exc),
-                "data": {},
+                "data": {"error_code": "unknown_run_id", "hint": _RUN_ID_HINT},
+            }
+        except ValueError as exc:
+            msg = str(exc) or type(exc).__name__
+            if "exactly one of argv or shell" in msg:
+                return _manage_err(
+                    msg,
+                    error_code="start_xor_required",
+                    hint=_START_XOR_HINT,
+                )
+            return {
+                "ok": False,
+                "action": "process.manage",
+                "error": msg,
+                "data": {"error_code": "invalid_arguments", "hint": msg},
             }
         except Exception as exc:  # noqa: BLE001 — control boundary
             return {

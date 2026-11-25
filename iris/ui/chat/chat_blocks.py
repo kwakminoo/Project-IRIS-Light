@@ -105,6 +105,8 @@ class ToolShellBlock:
     block_id: str = ""
     collapsed: bool = False
     phase: str = "done"
+    # Sensitive/EXTERNAL cards: hide Always Allow (Run/Skip only).
+    allow_always: bool = True
 
 
 def apply_code_to_root(root: Path, rel: str, body: str) -> Path | None:
@@ -239,6 +241,10 @@ def handle_shell_approval_click(
         decide(block_id, "run")
         return True
     if action == "always":
+        if not bool(getattr(block, "allow_always", True)):
+            # Sensitive card: button should be hidden; never widen allowlist.
+            decide(block_id, "run")
+            return True
         try:
             save(choose(load(approval_path), "always", block.command or ""), approval_path)
         except OSError:

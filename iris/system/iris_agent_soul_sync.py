@@ -1,14 +1,7 @@
-"""Hermes SOUL.md에 Iris 페르소나를 동기화.
-
-Hermes는 제품 홈(iris_agent_home)/SOUL.md를 system prompt identity(slot #1)로 쓴다.
-레포 `integrations/hermes-soul/SOUL.md`를 원본으로 두고, sync·runtime ensure 때 반영한다.
-ponytail: 마커·내용이 같으면 쓰기 생략. 덮어쓰기 전 SOUL.md.bak-iris 1회 백업.
-천장: Hermes install이 업스트림 SOUL을 다시 심으면 runtime ensure가 재적용.
-"""
+"""Seed the default Iris identity when the Agent Home has no SOUL.md."""
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 from iris.system.iris_agent_control_sync import iris_agent_home, project_root
@@ -35,10 +28,6 @@ def load_iris_persona_text() -> str:
     return path.read_text(encoding="utf-8", errors="replace").strip()
 
 
-def _sha(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def ensure_soul(home: Path | None = None) -> str:
     src = repo_soul_path()
     if not src.is_file():
@@ -50,19 +39,12 @@ def ensure_soul(home: Path | None = None) -> str:
 
     dst = iris_agent_soul_path(home)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    existing = ""
-    if dst.is_file():
-        existing = dst.read_text(encoding="utf-8", errors="replace")
-        # 마커 없으면 업스트림 Hermes SOUL로 보고 강제 갱신 (SHA만으로 current 오인 금지).
-        if _MARKER in existing and _sha(existing.strip() + "\n") == _sha(desired_norm):
-            return "soul already current"
-
-    bak = dst.with_name("SOUL.md.bak-iris")
-    if existing.strip() and not bak.is_file():
-        bak.write_text(existing, encoding="utf-8")
-
-    dst.write_text(desired_norm, encoding="utf-8")
-    return "soul updated (Iris persona)"
+    try:
+        with dst.open("x", encoding="utf-8") as stream:
+            stream.write(desired_norm)
+    except FileExistsError:
+        return "soul preserved (existing identity)"
+    return "soul initialized (Iris persona)"
 
 
 if __name__ == "__main__":

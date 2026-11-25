@@ -356,6 +356,8 @@ class MainWindow(QMainWindow):
         self._bound_slot: ChatRunSlot | None = None
         # turn_id → conversation_id. owning이 비어도 finished_ok를 DB에 남긴다.
         self._turn_worker_meta: dict[str, int] = {}
+        # Cancel/interrupt land once per turn_id (late orphan must not double-append).
+        self._landed_turn_ids: set[str] = set()
         # turn_id → Trusted ExecutionContext frozen at turn begin (HF-03).
         self._turn_execution_meta: dict[str, ExecutionContext] = {}
         self._runs.slot(self._conversation_id)
@@ -1461,10 +1463,7 @@ class MainWindow(QMainWindow):
         self._iris_agent_update_check_cid = cid
         from iris.ui.workers.iris_agent_update_worker import IrisAgentUpdateCheckWorker
 
-        worker = IrisAgentUpdateCheckWorker(
-            command=self._settings.agent_command,
-            parent=self,
-        )
+        worker = IrisAgentUpdateCheckWorker(parent=self)
         self._iris_agent_update_check_worker = worker
         worker.finished_ok.connect(self._on_iris_agent_update_status)
         worker.failed.connect(self._on_iris_agent_update_check_failed)
@@ -1505,14 +1504,23 @@ class MainWindow(QMainWindow):
         ):
             return
         from iris.ui.workers.iris_agent_update_worker import IrisAgentUpdateApplyWorker
+        from iris.infrastructure.iris_agent_client import resolve_iris_agent_inference
+
+        try:
+            target = resolve_iris_agent_inference(
+                self._chat.current_model() or self._settings.ollama_model,
+                db=self._db,
+                ollama_base_url=self._settings.ollama_base_url,
+            )
+        except ValueError as exc:
+            self._on_iris_agent_update_apply_failed(str(exc))
+            return
 
         self._chat.dismiss_iris_agent_update_prompt(
-            "Iris Agent 업데이트를 적용하는 중… 끝나면 gateway를 다시 시작합니다."
+            "Iris Agent 업데이트를 검증하는 중… 진행 중인 작업은 계속됩니다."
         )
         worker = IrisAgentUpdateApplyWorker(
-            command=self._settings.agent_command,
-            base_url=self._settings.agent_base_url,
-            api_key=self._settings.agent_api_key,
+            target=target,
             parent=self,
         )
         self._iris_agent_update_apply_worker = worker
@@ -1530,7 +1538,7 @@ class MainWindow(QMainWindow):
         )
         self._chat.append_message_instant(
             "Iris",
-            (message or "Iris Agent 업데이트가 끝났고 gateway를 재시작했습니다.").strip(),
+            (message or "Iris Agent 업데이트가 완료되었습니다.").strip(),
         )
 
     def _on_iris_agent_update_apply_failed(self, message: str) -> None:
@@ -5803,15 +5811,6 @@ class MainWindow(QMainWindow):
                 pass
         self._on_chat_turn_finished(finish_cid)
 
-    @staticmethod
-    def _cancelled_assistant_text(partial: str, *, reason: str) -> str:
-        text = (partial or "").strip()
-        if reason != "conversation_switch":
-            return text
-        from iris.storage.conversations import INTERRUPTED_NOTE as note
-
-        return f"{text}\n\n{note}" if text else note
-
     def _tts_output_busy(self) -> bool:
         """자동/수동 TTS가 아직 나오거나 재생 중이면 True."""
         return bool(
@@ -5824,6 +5823,35 @@ class MainWindow(QMainWindow):
     def _sync_chat_stop_for_presentation(self) -> None:
         """생성 종료 후에도 타이핑 중이면 정지 버튼을 유지한다 (TTS만으로는 유지하지 않음)."""
         self._chat.set_presenting(self._chat.is_typing_active())
+
+    def _land_cancelled_turn(
+        self, turn_id: str, body: str, slot: ChatRunSlot
+    ) -> None:
+        """Cancel/interrupt → DB system-error envelope. Does not pop user. Idempotent by turn_id."""
+        text = (body or "").strip()
+        if not text:
+            return
+        if turn_id and turn_id in self._landed_turn_ids:
+            return
+        landed = self._land_assistant_db(
+            turn_id, text, cid=int(slot.conversation_id)
+        )
+        if landed is None:
+            return
+        if turn_id:
+            self._landed_turn_ids.add(turn_id)
+        if int(self._conversation_id) == int(landed):
+            hist = self._chat_session.history
+            last = hist[-1] if hist else None
+            if not (
+                last
+                and last.get("role") == "assistant"
+                and last.get("content") == text
+            ):
+                hist.append({"role": "assistant", "content": text})
+                self._refresh_chat_history_panel()
+            self._last_assistant_text = text
+            self._refresh_context_gauge()
 
     def _cancel_current_turn(self, *, reason: str, preserve_partial_response: bool) -> None:
         """생성 중 turn을 안전하게 끊고 다음 turn이 진행되게 한다."""
@@ -5843,17 +5871,20 @@ class MainWindow(QMainWindow):
             cancel = getattr(worker, "request_cancel", None)
             if callable(cancel):
                 cancel()
+        turn_id = str(self._turn_gate.active_id or "")
+        slot = self._runs.owning(turn_id) or self._slot_now()
         partial = (self._chat.typing_buffer_text or "").strip()
-        saved = self._cancelled_assistant_text(partial, reason=reason)
+        if not partial:
+            partial = (getattr(slot, "pending_partial", "") or "").strip()
+        from iris.storage.conversations import format_turn_cancel_land
+
+        saved = ""
+        if preserve_partial_response:
+            saved = format_turn_cancel_land(reason=reason, partial=partial)
+            self._land_cancelled_turn(turn_id, saved, slot)
+            slot.pending_partial = ""
         if getattr(self._chat, "_stream_active", False):
             self._chat.end_stream_message(saved or None)
-            if preserve_partial_response and saved:
-                self._record_history("assistant", saved)
-                self._last_assistant_text = saved
-                self._refresh_context_gauge()
-        elif reason == "conversation_switch" and saved:
-            self._record_history("assistant", saved)
-            self._last_assistant_text = saved
         # speech_sync 스트림은 end 후에도 타이핑이 남을 수 있음 → setHtml 전 확정
         self._chat.finish_typing()
         self._stop_tts_playback()
@@ -6063,6 +6094,9 @@ class MainWindow(QMainWindow):
         text = (content or "").strip()
         cid = self._turn_worker_meta.pop(turn_id, None)
         clear_turn_execution_context(self, turn_id)
+        # Cancel already wrote a system land for this turn_id — do not append model prose.
+        if turn_id and turn_id in self._landed_turn_ids:
+            return
         landed = self._land_assistant_db(turn_id, text, cid=cid)
         if landed is None:
             return
@@ -6104,10 +6138,38 @@ class MainWindow(QMainWindow):
             except Exception:
                 return
 
+    def _land_failed_turn(self, turn_id: str, err: str, slot: ChatRunSlot) -> None:
+        """Fail/partial → DB system-error envelope. Does not pop user. No retry."""
+        from iris.infrastructure.iris_agent_errors import explain_chat_error
+        from iris.storage.conversations import format_turn_fail_land
+
+        partial = (slot.pending_partial or "").strip()
+        if not partial and int(slot.conversation_id) == int(self._conversation_id):
+            partial = (getattr(self._chat, "typing_buffer_text", "") or "").strip()
+        body = format_turn_fail_land(explain_chat_error(err), partial=partial)
+        slot.pending_partial = ""
+        landed = self._land_assistant_db(
+            turn_id, body, cid=int(slot.conversation_id)
+        )
+        if landed is None:
+            return
+        if int(self._conversation_id) == int(landed):
+            hist = self._chat_session.history
+            last = hist[-1] if hist else None
+            if not (
+                last
+                and last.get("role") == "assistant"
+                and last.get("content") == body
+            ):
+                hist.append({"role": "assistant", "content": body})
+                self._refresh_chat_history_panel()
+
     def _on_chat_failed_for_turn(self, err: str, turn_id: str) -> None:
         slot = self._runs.owning(turn_id)
         if slot is None:
             return
+        # Land before gate finish (finish path already lands; fail must too).
+        self._land_failed_turn(turn_id, err, slot)
         if slot.conversation_id != int(self._conversation_id):
             self._fail_slot_away(slot, err)
             return
@@ -6141,6 +6203,7 @@ class MainWindow(QMainWindow):
             self._drop_followthrough()
             slot.gate.consume_ignored()
             # 유저 행은 유지. 스트림 5xx 후 Hermes 복구와 겹치면 pop이 성공 착지를 지운다.
+            # DB land already done in _on_chat_failed_for_turn (partial + system error).
             slot.pending_partial = ""
             slot.away_error = str(err or "모델 응답 실패")
             slot.worker = None
@@ -8888,12 +8951,12 @@ class MainWindow(QMainWindow):
         self._email_message_worker = None
         self._email_page.show_error(f"본문 오류: {err[:200]}")
 
-    def _open_email_compose(self) -> bool:
+    def _open_email_compose(self, draft: dict[str, str] | None = None) -> bool:
         account = self._current_email_account()
         if not account:
             self._left_sidebar.email_folder.set_status("먼저 이메일 계정을 추가하세요.")
             return False
-        return bool(self._email_page.open_compose(account))
+        return bool(self._email_page.open_compose(account, draft=draft))
 
     def _send_email(self, to: str, subject: str, body: str) -> None:
         account = self._current_email_account()

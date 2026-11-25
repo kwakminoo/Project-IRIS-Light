@@ -11,6 +11,7 @@ from unittest import TestCase
 
 from iris.engine import ContentDelta, EngineErrorCode, TurnFailed, TurnFinished
 from iris.engine._sidecar import encode_host_command, parse_turn_event
+from iris.engine.runtime import _readline_timeout
 from iris.system.win_subprocess import no_window_kwargs
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -39,7 +40,7 @@ def _spawn(env: dict[str, str]) -> subprocess.Popen[str]:
         [sys.executable, str(_SIDECAR_MAIN)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -60,7 +61,10 @@ def _read_hello(proc: subprocess.Popen[str]) -> int:
 
 def _read_event(proc: subprocess.Popen[str]):
     assert proc.stdout is not None
-    return parse_turn_event(json.loads(proc.stdout.readline()))
+    line = _readline_timeout(proc.stdout, 5.0)
+    if not line:
+        raise AssertionError("sidecar stream event timed out")
+    return parse_turn_event(json.loads(line))
 
 
 def _read_terminal(root: Path, pid: int):

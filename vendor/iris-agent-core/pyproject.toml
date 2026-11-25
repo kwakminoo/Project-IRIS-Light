@@ -4,7 +4,7 @@
 
 [project]
 name = "iris-agent-core"
-version = "0.1.0+iris.a382af23"
+version = "0.1.1+iris.a382af23"
 description = "IRIS-owned Agent Core (Hermes-derived MIT). Product install uses this tree; Nous clone is not the default path."
 readme = "README.md"
 # 3.14 is the newest python we know we have wheels for.
@@ -448,20 +448,20 @@ azure-identity = ["azure-identity==1.26.0"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
   "python-telegram-bot[webhooks]==22.8",
-  "iris-agent[cron]",
-  "iris-agent[mcp]",
-  "iris-agent[acp]",
+  "iris-agent-core[cron]",
+  "iris-agent-core[mcp]",
+  "iris-agent-core[acp]",
 ]
 termux-all = [
   # Best-effort "install all" profile for Termux. Same policy as [all]:
   # only includes extras that are not prepared on demand by PM.
   # Backends like telegram/slack/dingtalk/feishu lazy-install at
   # first use, so they're no longer eager-installed here.
-  "iris-agent[termux]",
-  "iris-agent[google]",
-  "iris-agent[sms]",
-  "iris-agent[web]",
-  "iris-agent[pty]",
+  "iris-agent-core[termux]",
+  "iris-agent-core[google]",
+  "iris-agent-core[sms]",
+  "iris-agent-core[web]",
+  "iris-agent-core[pty]",
 ]
 dingtalk = [
   "dingtalk-stream==0.24.3",
@@ -525,15 +525,15 @@ all = [
   # [all], `uv sync --locked` on Windows tried to build it from sdist
   # and failed on `make`. Lazy-install routes that build to first use,
   # where the user is expected to have a toolchain available.
-  "iris-agent[cron]",
-  "iris-agent[pty]",
-  "iris-agent[mcp]",
-  "iris-agent[uvloop]",
-  "iris-agent[sms]",
-  "iris-agent[acp]",
-  "iris-agent[google]",
-  "iris-agent[web]",
-  "iris-agent[youtube]",
+  "iris-agent-core[cron]",
+  "iris-agent-core[pty]",
+  "iris-agent-core[mcp]",
+  "iris-agent-core[uvloop]",
+  "iris-agent-core[sms]",
+  "iris-agent-core[acp]",
+  "iris-agent-core[google]",
+  "iris-agent-core[web]",
+  "iris-agent-core[youtube]",
 ]
 
 [dependency-groups]
@@ -562,15 +562,12 @@ test = [
 # PEP 517 isolated builds. Without wheel in
 # requires, the isolation sandbox only gets setuptools and the build
 # fails with ModuleNotFoundError: wheel.cli (#96488).
-requires = ["setuptools==83.0.0", "wheel"]
+requires = ["setuptools==83.0.0", "wheel==0.46.3"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
-hermes = "hermes_cli.main:main"
 iris-agent = "iris_agent_cli.main:main"
 iris = "iris_agent_cli.main:main"
-hermes-agent = "agent.legacy_cli:main"
-hermes-acp = "acp_adapter.entry:main"
 
 [tool.hermes]
 # Extras that only an explicit selection installs (setup, sync_venv). Bundles
@@ -615,7 +612,7 @@ default-groups = []
 # 3.11 is an install bridge for pre-PM updaters, never a runtime, so the lock
 # covers 3.14 only. Without this the lock must resolve every supported version,
 # where extras that only ever coexist on 3.14 (kittentts vs neutts) conflict.
-environments = ["python_version >= '3.14'"]
+environments = ["python_version >= '3.14' and (sys_platform == 'win32' or sys_platform == 'darwin' or sys_platform == 'linux')"]
 override-dependencies = [
   # discord.py's latest published version, 2.7.1, pins pynacl at <1.6. however, pynacl 1.5.0 has known vulnerabilities.
   # discord.py has updated pynacl to 1.6 on `main`, but has not yet published a patch release.

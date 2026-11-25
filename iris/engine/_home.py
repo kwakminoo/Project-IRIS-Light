@@ -39,7 +39,8 @@ _PROBE_IMPORT = (
     "    except ImportError:\n"
     "        pass\n"
     "assert cli is not None, 'neither iris_agent_cli nor hermes_cli'\n"
-    "import aiohttp, mcp, ruamel.yaml, dotenv\n"
+    "from run_agent import AIAgent\n"
+    "import mcp, ruamel.yaml, dotenv\n"
     "print('ok')\n"
 )
 
@@ -63,7 +64,11 @@ _POLLUTION_ENV_KEYS = (
 def engine_python(home: EngineHome) -> EnginePython | None:
     from iris.infrastructure.agent_runtime import iris_agent_repo_dir
 
-    venv = iris_agent_repo_dir(Path(home)) / "venv"
+    return checkout_python(iris_agent_repo_dir(Path(home)))
+
+
+def checkout_python(checkout: Path) -> EnginePython | None:
+    venv = checkout / "venv"
     if sys.platform == "win32":
         scripts = venv / "Scripts"
         for name in ("python.exe", "python.cmd", "python"):
@@ -81,6 +86,7 @@ def _stripped_probe_env(*, home: EngineHome | None, python: Path) -> dict[str, s
     env = os.environ.copy()
     for key in _POLLUTION_ENV_KEYS:
         env.pop(key, None)
+    env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     if home is not None:
         env["HERMES_HOME"] = str(home)
     venv = python.parent.parent
@@ -103,7 +109,7 @@ def _probe_imports(
         return EngineError(EngineErrorCode.NOT_INSTALLED, f"engine python missing: {python}")
     try:
         proc = subprocess.run(
-            [str(python), "-c", _PROBE_IMPORT],
+            [str(python), "-I", "-c", _PROBE_IMPORT],
             capture_output=True,
             text=True,
             encoding="utf-8",

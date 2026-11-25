@@ -1,18 +1,15 @@
-"""Iris Agent 런타임 기준선 — 홈·pin·install-time overlay (Phase 1+4).
+"""Resolve the Iris Agent Home, engine selection, and legacy migration state.
 
-기준선 선택: ``vendor/iris-agent-runtime`` (GitHub fork 아님).
-전체 Hermes 트리를 모노레포에 넣지 않고, pin SHA + Iris soft-patch 흡수
-계약만 제품이 소유한다. 설치는 업스트림을 pin 에만 checkout 한 뒤 overlay 를
-한 번 적용한다. gateway 기동 경로에서는 소스 문자열 치환을 하지 않는다.
-
-Phase 4: 활성 홈은 제품 경로만. 레거시 홈(legacy_agent_home)은
-마이그레이션 원본이며 더 이상 쓰이지 않는다.
+The runtime PIN identifies the source in vendor/iris-agent-core. The per-home
+selection file points to the installed engine and its recovery slot.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import shutil
 import threading
 from collections.abc import Callable
@@ -30,6 +27,8 @@ IRIS_AGENT_PIN_SHA = "a382af23f4c067d23463b5781958684c2cda82bc"
 IRIS_AGENT_UPSTREAM_URL = "https://github.com/NousResearch/hermes-agent.git"
 IRIS_AGENT_CHECKOUT_NAME = "iris-agent"
 LEGACY_AGENT_CHECKOUT_NAME = "hermes-agent"
+ENGINE_SELECTION_FILE = "iris-engine-selection.json"
+_OWNED_SLOT_NAME = re.compile(r"iris-agent\.slot-[0-9a-f]{16}")
 
 _MIGRATE_STAMP = ".iris-agent-migrated-from"
 # config / .env / memories only — agent checkout 은 pin 재설치.
@@ -87,9 +86,31 @@ def iris_agent_home() -> Path:
     return product_agent_home()
 
 
+def engine_slot_path(home: Path, name: str) -> Path:
+    if name not in (IRIS_AGENT_CHECKOUT_NAME, LEGACY_AGENT_CHECKOUT_NAME) and not _OWNED_SLOT_NAME.fullmatch(name):
+        raise ValueError(f"Invalid Iris Agent engine slot: {name!r}")
+    slot = home / name
+    if slot.resolve().parent != home.resolve():
+        raise ValueError(f"Iris Agent slot points outside the engine home: {name!r}")
+    return slot
+
+
+def read_engine_selection(home: Path) -> tuple[Path | None, Path | None]:
+    try:
+        saved = json.loads((home / ENGINE_SELECTION_FILE).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, None
+    active = engine_slot_path(home, saved["active"])
+    previous = saved.get("previous")
+    return active, engine_slot_path(home, previous) if previous else None
+
+
 def iris_agent_repo_dir(home: Path | None = None) -> Path:
     """제품 checkout 경로. iris-agent 우선, 없으면 레거시 hermes-agent, 둘 다 없으면 생성 목표(iris-agent)."""
     base = home or iris_agent_home()
+    active, _ = read_engine_selection(base)
+    if active is not None:
+        return active
     canonical = base / IRIS_AGENT_CHECKOUT_NAME
     legacy = base / LEGACY_AGENT_CHECKOUT_NAME
     if canonical.is_dir():

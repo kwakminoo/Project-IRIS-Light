@@ -1,0 +1,25 @@
+{
+  "version": "0.1.1+iris.a382af23",
+  "package": "iris-agent-core",
+  "upstream_revision": "a382af23f4c067d23463b5781958684c2cda82bc",
+  "entry_point": "iris_agent_cli.main:main",
+  "python": ">=3.14,<3.15",
+  "legacy_migration_approved": false,
+  "platforms": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "sha256": {
+    ".iris-agent-baseline": "65ac59775ed7368eb596850c92361f9c37f7aebbfc5bf0e8fbb00f006662e96b",
+    "LICENSE": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6",
+    "PROVENANCE.md": "055acb6aabb2ccda443787f0d65feb5ef95a8e546528daa0474189d4f81df14c",
+    "agent/inline_tool_executors.py": "ea7ef3906169984f51dddbfe3dfa7e871f4fc06f7e12805ee9c342495d911c29",
+    "agent/tool_executor.py": "09e80e07ae759281119bd7f39f75e167eb7473671582f141b3ed601cad62dcc8",
+    "iris_agent_cli/main.py": "5d3542c1e2c75c3ce434816167802cf80d9625469261b7b4d701304909f66d21",
+    "pyproject.toml": "292e3ac7e08e97ea0172d90729f6be6be6b0e72c8fa0625dd17f51c31c709b21",
+    "run_agent.py": "05b9bf47d71dd54b67d905fca20c329260b0447a21ab12227afe37653bfac4ff",
+    "setup.py": "23b2453c734661af9b4d9998171dc794e555c22f554d44cd4a625ea74d348d5d",
+    "uv.lock": "6d38e36127cff3c7720aa1da146fcf2a0011d15125a3447ed60326f5e4fc73f6"
+  }
+}

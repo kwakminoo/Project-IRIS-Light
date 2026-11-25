@@ -697,18 +697,97 @@ def _confirm_body(spec: Any, args: dict[str, Any]) -> str:
     return "\n".join(bits)[:800]
 
 
-# write/run: 채팅 카드 승인 가능하면 HUD 대신 (15s UI timeout·모달만 의존 금지)
+def _card_preview_command(name: str, args: dict[str, Any]) -> str:
+    """Pending-card body. Newlines keep allowlist_key empty (no Always Allow scope)."""
+    payload = args if isinstance(args, dict) else {}
+    if name == "email.send" or name.startswith("email."):
+        bits = [name]
+        # Never preview password / secrets on the card.
+        for key in ("to", "subject", "body", "address", "label", "account_id"):
+            val = str(payload.get(key) or "").strip()
+            if not val:
+                continue
+            if key == "body" and len(val) > 200:
+                val = val[:200] + "…"
+            bits.append(f"{key}={val}")
+        return "\n".join(bits)[:800]
+    if name.startswith("browser."):
+        bits = [name]
+        url = str(payload.get("url") or "").strip()
+        click = str(
+            payload.get("name")
+            or payload.get("text")
+            or payload.get("value")
+            or payload.get("ref")
+            or ""
+        ).strip()
+        if url:
+            bits.append(f"url={url}")
+        if click:
+            bits.append(f"click={click}")
+        risk = str(payload.get("risk") or "").strip()
+        if risk:
+            bits.append(f"risk={risk}")
+        return "\n".join(bits)[:800] if len(bits) > 1 else name
+    from iris.ui.chat.shell_approval import preview_command
+
+    return preview_command(payload)
+
+
+def _card_title(name: str, spec: Any) -> str:
+    if "write" in name:
+        base = "Write"
+    elif name.startswith("email."):
+        base = "Email"
+    elif name.startswith("browser."):
+        base = "Browser"
+    else:
+        base = "Shell"
+    risk = str(getattr(spec, "risk", "") or "").strip()
+    if risk in ("high", "critical"):
+        return f"{base} · {risk}"
+    return base
+
+
+def _uses_card_confirm(name: str) -> bool:
+    return name in _CARD_CONFIRM_ACTIONS or name.startswith("browser.")
+
+
+def _fail_closed_card(name: str) -> bool:
+    """No HUD fallback when card insert fails (EXTERNAL / SENSITIVE / shell)."""
+    return name in _SHELL_NO_HUD_ACTIONS or name.startswith("browser.")
+
+
+def _allow_card_auto(name: str) -> bool:
+    """Shell Run Everything must not auto-approve EXTERNAL_EFFECT / SENSITIVE."""
+    if name.startswith("email.") or name.startswith("browser."):
+        return False
+    return True
+
+
+# write/run/email: 채팅 카드 승인 가능하면 HUD 대신 (15s UI timeout·모달만 의존 금지)
 _CARD_CONFIRM_ACTIONS = frozenset(
     {
         "shell.run",
         "project.run",
         "local.write_file",
         "project.write_file",
+        "email.send",
+        "email.add_account",
+        "email.remove_account",
     }
 )
 
-# Shell/project.run: card only — never HUD auto-fallback (U06 fail-closed).
-_SHELL_NO_HUD_ACTIONS = frozenset({"shell.run", "project.run"})
+# Card-only fail-closed (no HUD). write may still HUD; email/shell never.
+_SHELL_NO_HUD_ACTIONS = frozenset(
+    {
+        "shell.run",
+        "project.run",
+        "email.send",
+        "email.add_account",
+        "email.remove_account",
+    }
+)
 
 
 def human_confirm_decision(
@@ -722,17 +801,17 @@ def human_confirm_decision(
     load_approval: Callable[[], Any] | None = None,
     on_attention: Callable[[], None] | None = None,
 ) -> bool:
-    """ConfirmPath: card gate for shell/run; write may HUD; shell never HUD-fallback."""
+    """ConfirmPath: card gate for shell/run/email/browser; write may HUD; fail-closed set never HUD."""
     name = str(getattr(spec, "name", "") or "")
-    if name in _CARD_CONFIRM_ACTIONS:
-        from iris.ui.chat.shell_approval import load, preview_command
+    if _uses_card_confirm(name):
+        from iris.ui.chat.shell_approval import load
         from iris.ui.chat.shell_gate import stash_shell_confirm_block, take, try_card_confirm
 
         approval_fn = load if load_approval is None else load_approval
         wait_fn = take if wait is None else wait
         payload = args if isinstance(args, dict) else {}
-        command = preview_command(payload)
-        title = "Write" if "write" in name else "Shell"
+        command = _card_preview_command(name, payload)
+        title = _card_title(name, spec)
         decided = try_card_confirm(
             chat=chat,
             command=command,
@@ -741,17 +820,18 @@ def human_confirm_decision(
             wait=wait_fn,
             on_ui=on_ui,
             on_attention=on_attention,
+            allow_auto=_allow_card_auto(name),
         )
         if decided.approved is not None:
-            if name in _SHELL_NO_HUD_ACTIONS and decided.approved:
+            if name in ("shell.run", "project.run") and decided.approved:
                 rid = stash_shell_confirm_block(
                     chat, decided.block_id, command=command
                 )
                 if isinstance(args, dict) and rid:
                     args["_iris_shell_request_id"] = rid
             return bool(decided.approved)
-        # Card unavailable: shell/project fail-closed (approval_ui_unavailable).
-        if name in _SHELL_NO_HUD_ACTIONS:
+        # Card unavailable: fail-closed actions never HUD.
+        if _fail_closed_card(name):
             if isinstance(args, dict):
                 args["_iris_confirm_deny"] = "approval_ui_unavailable"
             return False

@@ -6,6 +6,8 @@ No MCP stdio / Control HTTP on the product speak path.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -191,6 +193,17 @@ class IrisToolContract:
     headless_supported: bool = False
     side_effects: bool = False
     aliases: frozenset[str] = field(default_factory=frozenset)
+
+
+@dataclass(frozen=True)
+class EngineToolBinding:
+    """Read-only product projection used by both sides of the native bridge."""
+
+    model_name: str
+    canonical_action: str
+    description: str
+    input_schema: Mapping[str, Any]
+    fingerprint: str
 
 
 class ActionCatalogView(Protocol):
@@ -539,8 +552,11 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
             "process.manage",
             ExecKind.SURFACE,
             "Manage Iris Execution Runtime Local Subprocess runs (headless; not a sandbox). "
-            "Required: action (list|status|read_output|wait|cancel; optional start|write_stdin). "
-            "run_id required for status|read_output|wait|cancel|write_stdin. "
+            "Required: action (start|list|status|read_output|wait|cancel). "
+            "start: exactly one of argv (list of strings) XOR shell (string; command alias ok); "
+            "returns run_id on success (never ok without a started process). "
+            "run_id required for status|read_output|wait|cancel. "
+            "write_stdin is not supported. "
             "ACL/list scoped by trusted Control ExecutionContext (not model session_id). "
             "start needs human confirm + cwd under trusted workspace/home.",
             _params(
@@ -554,7 +570,6 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
                             "wait",
                             "cancel",
                             "start",
-                            "write_stdin",
                         ],
                     },
                     "run_id": {"type": "string"},
@@ -568,8 +583,6 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
                     "offset": {"type": "integer", "minimum": 0},
                     "limit": {"type": "integer", "minimum": 0},
                     "timeout_s": {"type": "number", "minimum": 0},
-                    "data": {"type": "string"},
-                    "text": {"type": "string"},
                 },
                 required=["action"],
             ),
@@ -1534,6 +1547,55 @@ def engine_tool_schemas(
     if len(names) != len(set(names)) or not all(_ENGINE_TOOL_NAME_RE.fullmatch(n) for n in names):
         raise AssertionError("engine tool names must be unique provider-safe identifiers")
     return schemas
+
+
+def engine_tool_bindings(
+    surface: SpeakSurface | str | None = None,
+) -> tuple[EngineToolBinding, ...]:
+    """Trusted model-name/action bindings derived from the engine schema projection."""
+    surf = (
+        current_speak_surface()
+        if surface is None
+        else normalize_speak_surface(surface)
+    )
+    absorbed = model_names()
+    rows: list[EngineToolBinding] = []
+    for schema in engine_tool_schemas(surf):
+        model_name = str(schema["name"])
+        canonical_action = (
+            resolve_action(model_name, surf)
+            if model_name in absorbed
+            else engine_tool_action(model_name)
+        )
+        if not canonical_action:
+            raise AssertionError(f"engine tool has no canonical action: {model_name}")
+        description = str(schema["description"])
+        input_schema = dict(schema["parameters"])
+        material = {
+            "contract": "iris-native-tool-v1",
+            "model_name": model_name,
+            "canonical_action": canonical_action,
+            "description": description,
+            "input_schema": input_schema,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                material,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        rows.append(
+            EngineToolBinding(
+                model_name=model_name,
+                canonical_action=canonical_action,
+                description=description,
+                input_schema=input_schema,
+                fingerprint=fingerprint,
+            )
+        )
+    return tuple(rows)
 
 
 def _live_control_surface() -> Any | None:

@@ -34,8 +34,9 @@ from iris.system import iris_agent_update as upd
 def _check_pin_contract() -> None:
     pin = load_pinned_sha()
     assert pin == (vendor_runtime_root() / "PIN").read_text(encoding="utf-8").strip().split()[0]
-    assert upd.fetch_hermes_remote_sha(Path(".")) == pin
-    assert "load_pinned_sha" in inspect.getsource(upd)
+    from iris.system.iris_agent_install import vendor_iris_agent_core_root, verify_owned_core_source
+
+    assert verify_owned_core_source(vendor_iris_agent_core_root(), bundled=True)["upstream_revision"] == pin
     assert "ls-remote" not in inspect.getsource(upd.check_iris_agent_update)
     assert "load_pinned_sha" in inspect.getsource(install)
 
@@ -123,8 +124,10 @@ def _check_repo_dir_resolve() -> None:
 
 
 def _check_baseline_keeps_absorbed_toolsets() -> None:
-    src = inspect.getsource(ar.apply_iris_agent_baseline_overlays)
-    assert "apply_absorbed_toolsets_overlay" in src
+    from iris.infrastructure.speak_capability import engine_tool_bindings
+
+    for surface in ("home", "ide"):
+        assert any(row.model_name == "terminal" for row in engine_tool_bindings(surface))
 
 
 def _main() -> None:

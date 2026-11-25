@@ -39,18 +39,22 @@ def _apply_footer(open_path: str, body: str = "") -> str:
     )
 
 
-def _pending_shell_footer(block_key: str) -> str:
+def _pending_shell_footer(block_key: str, *, allow_always: bool = True) -> str:
     t = TOKENS
     bid = html.escape(block_key, quote=True)
-    links = "".join(
-        f'<a href="{scheme}{bid}" style="color:{t.text_muted};text-decoration:none;'
-        f'font-size:{t.font_size_micro};font-weight:600;margin-right:8px;">{label}</a>'
-        for scheme, label in (
-            ("iris-run://", "Run"),
-            ("iris-always://", "Always Run"),
+    buttons: list[tuple[str, str]] = [("iris-run://", "Run")]
+    if allow_always:
+        buttons.append(("iris-always://", "Always Run"))
+    buttons.extend(
+        (
             ("iris-skip://", "Skip"),
             ("iris-mode://", "▼"),
         )
+    )
+    links = "".join(
+        f'<a href="{scheme}{bid}" style="color:{t.text_muted};text-decoration:none;'
+        f'font-size:{t.font_size_micro};font-weight:600;margin-right:8px;">{label}</a>'
+        for scheme, label in buttons
     )
     return (
         f'<span style="display:block;padding:6px 10px;'
@@ -183,7 +187,11 @@ def shell_card_to_html(card: ShellCardModel) -> str:
         f'<span style="display:{body_display};" data-iris-tool-body="{block_id}">'
         f"{command_block}{output_block}</span>"
     )
-    footer = _pending_shell_footer(block_key) if card.phase == "pending" else ""
+    footer = (
+        _pending_shell_footer(block_key, allow_always=bool(card.allow_always))
+        if card.phase == "pending"
+        else ""
+    )
     return (
         f'<pre style="display:block;margin:6px 0;padding:0;white-space:pre-wrap;'
         f"background-color:{t.chat_block_bg};"

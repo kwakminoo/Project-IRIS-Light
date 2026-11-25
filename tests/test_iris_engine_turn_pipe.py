@@ -117,6 +117,20 @@ def _safe_sidecar_env(home: EngineHome, python: Path) -> dict[str, str]:
 
 
 class SidecarTurnPipeTests(TestCase):
+    def test_native_tool_request_survives_unavailable_stdout(self) -> None:
+        from iris.engine import _sidecar_main as sidecar
+
+        request = {"t": "tool_request", "id": "tool-1", "name": "shell.run"}
+        with (
+            TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"IRIS_TERMINAL_DIR": tmp, "IRIS_TERMINAL_UDP_PORT": "12345"}),
+            patch.object(sidecar, "_write_host_bytes", side_effect=AssertionError("stdout is unavailable")),
+        ):
+            sidecar._emit(request)
+            actual = _read_terminal_file_impl(os.getpid(), extension="tool")
+            self.assertEqual(json.loads(actual), request)
+            self.assertEqual(_read_terminal_file_impl(os.getpid(), extension="tool"), "")
+
     def tearDown(self) -> None:
         proc = getattr(self, "_proc", None)
         if proc is None:

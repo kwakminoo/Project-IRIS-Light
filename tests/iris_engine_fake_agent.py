@@ -12,6 +12,7 @@ _registry = types.ModuleType("tools.registry")
 _registry.registry = types.SimpleNamespace(register=lambda **_kwargs: None)
 sys.modules.setdefault("tools", _tools)
 sys.modules.setdefault("tools.registry", _registry)
+sys.modules.setdefault("model_tools", types.ModuleType("model_tools"))
 
 _CTORS: list[dict] = []
 _RUNS: list[dict] = []

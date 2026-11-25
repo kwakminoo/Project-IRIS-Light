@@ -75,6 +75,58 @@ def main() -> None:
     )
     assert not ok_empty and "workspace" in reason_empty, reason_empty
 
+    # FPR-03: tool_call_id on grant → consume must match (empty ≠ skip)
+    rec_tc = led.grant(
+        fingerprint=fp, session_id="s1", tool_call_id="call-abc"
+    )
+    ok_tc_miss, reason_tc = led.consume(
+        request_id=rec_tc.request_id, fingerprint=fp, session_id="s1"
+    )
+    assert not ok_tc_miss and "tool_call" in reason_tc, reason_tc
+    ok_tc_ok, _ = led.consume(
+        request_id=rec_tc.request_id,
+        fingerprint=fp,
+        session_id="s1",
+        tool_call_id="call-abc",
+    )
+    assert ok_tc_ok
+
+    # Grant without tool_call_id → omit kwarg still consumes (compat)
+    rec_plain = led.grant(fingerprint=fp, session_id="s1")
+    ok_plain, reason_plain = led.consume(
+        request_id=rec_plain.request_id, fingerprint=fp, session_id="s1"
+    )
+    assert ok_plain, reason_plain
+
+    # Concurrent same fingerprint / different sessions never share (already above);
+    # same command string ≠ shared request_id.
+    same_cmd = fingerprint_from_manage_args({"command": "echo same", "cwd": "/x"})
+    g_a = led.grant(fingerprint=same_cmd, session_id="sess-1")
+    g_b = led.grant(fingerprint=same_cmd, session_id="sess-2")
+    assert g_a.request_id != g_b.request_id
+    ok_cross, reason_cross = led.consume(
+        request_id=g_a.request_id, fingerprint=same_cmd, session_id="sess-2"
+    )
+    assert not ok_cross and "session" in reason_cross, reason_cross
+    ok_own, _ = led.consume(
+        request_id=g_a.request_id, fingerprint=same_cmd, session_id="sess-1"
+    )
+    assert ok_own
+
+    # Fingerprint covers exe (argv[0]) — mutation after grant fails consume
+    fp_exe_a = fingerprint_from_manage_args(
+        {"argv": ["python", "-c", "pass"], "cwd": "/t"}
+    )
+    fp_exe_b = fingerprint_from_manage_args(
+        {"argv": ["pythonw", "-c", "pass"], "cwd": "/t"}
+    )
+    assert fp_exe_a != fp_exe_b
+    g_exe = led.grant(fingerprint=fp_exe_a, session_id="s1")
+    ok_mut, reason_mut = led.consume(
+        request_id=g_exe.request_id, fingerprint=fp_exe_b, session_id="s1"
+    )
+    assert not ok_mut and "fingerprint" in reason_mut, reason_mut
+
     # process.py must not use global True bypass / set_human_confirm (HF-04)
     from pathlib import Path
 
@@ -84,6 +136,7 @@ def main() -> None:
     assert "lambda _spec, _a: True" not in body
     assert "lambda _s, _a: True" not in body
     assert "rt.set_human_confirm(" not in body, "HF-04: process.manage must not mutate Runtime confirm"
+    assert "tool_call_id=" in body, "FPR-03: grant must bind tool_call_id from ctx"
 
     print("request_approval ok")
 

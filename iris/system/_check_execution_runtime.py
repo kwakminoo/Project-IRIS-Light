@@ -304,10 +304,16 @@ def _check_process_manage_schema() -> None:
     props = grant.parameters.get("properties") or {}
     action = props.get("action") or {}
     enum = set(action.get("enum") or [])
-    required = {"list", "status", "read_output", "wait", "cancel"}
+    required = {"list", "status", "read_output", "wait", "cancel", "start"}
     assert required <= enum, (enum, required)
+    assert "write_stdin" not in enum, enum
+    assert "write_stdin" not in MANAGE_ACTIONS
     assert "action" in (grant.parameters.get("required") or [])
     assert MANAGE_ACTIONS >= required
+    desc = str(grant.summary or "").lower()
+    assert "exactly one" in desc or "xor" in desc, grant.summary
+    assert "run_id" in desc, grant.summary
+    assert "write_stdin" in desc and "not supported" in desc, grant.summary
     # Trust fields must not be model-writable (forgery surface).
     for key in (
         "session_id",

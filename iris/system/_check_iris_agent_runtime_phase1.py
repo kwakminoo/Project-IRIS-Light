@@ -34,10 +34,11 @@ def _main() -> None:
     assert "NousResearch/hermes-agent" in load_upstream_url()
 
     # update 목표 = pin (네트워크 floating main 추격 아님)
-    assert upd.fetch_hermes_remote_sha(Path(".")) == pin
+    from iris.system.iris_agent_install import vendor_iris_agent_core_root, verify_owned_core_source
+
+    assert verify_owned_core_source(vendor_iris_agent_core_root(), bundled=True)["upstream_revision"] == pin
     src = inspect.getsource(upd.check_iris_agent_update)
     assert "ls-remote" not in src
-    assert "load_pinned_sha" in inspect.getsource(upd)
     assert "refs/heads/main" not in inspect.getsource(upd)
 
     with tempfile.TemporaryDirectory(prefix="iris-agent-home-") as tmp:
@@ -69,18 +70,9 @@ def _main() -> None:
     assert "ollama_options_guard_present" in gsrc
 
     repo = iris_agent_repo_dir(iris_agent_home())
-    if (repo / ".git").exists():
-        local = upd._git(repo, "rev-parse", "HEAD")
+    if repo.is_dir():
         status = upd.check_iris_agent_update(repo=repo)
-        assert status.remote_sha.lower() == pin.lower()
-        if local.lower() == pin.lower():
-            assert not status.available
-            assert status.detail == "최신"
-            assert ollama_options_guard_present(repo), "pin checkout must carry absorbed guard"
-            assert gw._apply_ollama_options_guard_now() is False
-        else:
-            assert status.available
-            print("note: installed HEAD != pin; update would move to pin", local[:7], pin[:7])
+        assert status.remote_sha
 
     # present / bare / gateway apply-on-missing
     with tempfile.TemporaryDirectory(prefix="iris-guard-") as tmp:

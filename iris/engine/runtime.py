@@ -15,14 +15,17 @@ import queue
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Timer
 from types import SimpleNamespace
 from typing import Callable, Iterator
 
 from iris.engine._home import (
+    _probe_imports,
     _stripped_probe_env,
     engine_python,
     install_into,
@@ -35,6 +38,7 @@ from iris.engine.types import (
     EngineErrorCode,
     EngineFailed,
     EngineHome,
+    EnginePython,
     EngineReady,
     EngineSource,
     CancelToken,
@@ -45,6 +49,7 @@ from iris.engine.types import (
     TurnFinished,
     parse_engine_source,
 )
+from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
 from iris.system.iris_agent_ollama_guard import (
     apply_ollama_options_guard,
     looks_like_ollama_endpoint,
@@ -61,19 +66,16 @@ _WATCH_LOG = Path.home() / ".iris-light" / "logs" / "turn_end_watch.log"
 
 
 def _agent_checkout_root(home: Path) -> Path:
-    """Prefer iris-agent when present; else hermes-agent (main repo_dir name)."""
-    base = Path(home)
-    preferred = base / "iris-agent"
-    if preferred.is_dir():
-        return preferred
-    return base / "hermes-agent"
+    from iris.infrastructure.agent_runtime import iris_agent_repo_dir
+
+    return iris_agent_repo_dir(home)
 
 
 def _apply_ollama_options_guard_now(home: Path) -> bool:
     """가드 부재 시 제품 checkout에 1회 적용. True면 파일이 바뀜(sidecar 재기동 신호)."""
     try:
         root = _agent_checkout_root(home)
-        if ollama_options_guard_present(root):
+        if (root / "SOURCE_MANIFEST.json").is_file() or ollama_options_guard_present(root):
             return False
         return bool(apply_ollama_options_guard(root))
     except Exception:
@@ -115,8 +117,8 @@ def _terminal_dir() -> Path:
     )
 
 
-def _read_terminal_file_impl(hello_pid: int | None) -> str:
-    """Sidecar writes done/fail here when the stdout pipe EINVAL.
+def _read_terminal_file_impl(hello_pid: int | None, *, extension: str = "ndjson") -> str:
+    """Read one complete sidecar record from the pipe-independent transport.
 
     Open-try only — Path.is_file()/stat can block under Windows Defender while
     the sidecar creates the file, and a timed wrapper that abandons the reader
@@ -124,7 +126,7 @@ def _read_terminal_file_impl(hello_pid: int | None) -> str:
     """
     if hello_pid is None or hello_pid <= 0:
         return ""
-    path = _terminal_dir() / f"{int(hello_pid)}.ndjson"
+    path = _terminal_dir() / f"{int(hello_pid)}.{extension}"
     try:
         with open(path, "r", encoding="utf-8") as fh:
             text = fh.read()
@@ -380,9 +382,9 @@ def _turn_api_key(turn: StatelessTurn) -> str:
 
 
 def _spawn_sidecar(
-    home: EngineHome,
+    home: EngineHome, *, python: EnginePython | None = None,
 ) -> EngineFailed | tuple[subprocess.Popen[str], int | None]:
-    python = engine_python(home)
+    python = python or engine_python(home)
     if python is None:
         return _failed(EngineErrorCode.NOT_INSTALLED, "engine python is not installed")
     python_path = Path(python)
@@ -424,8 +426,9 @@ def _spawn_sidecar(
 class Engine:
     """One sidecar, one lock, one home."""
 
-    def __init__(self, source: EngineSource) -> None:
+    def __init__(self, source: EngineSource, *, staged_python: EnginePython | None = None) -> None:
         self._source = source
+        self._staged_python = staged_python
         self._lock = Lock()
         self._child: subprocess.Popen[str] | None = None
         self._child_hello_pid: int | None = None
@@ -440,7 +443,7 @@ class Engine:
 
     def fork(self) -> Engine:
         """Return an independent sidecar owner for one concurrent chat worker."""
-        return Engine(self._source)
+        return Engine(self._source, staged_python=self._staged_python)
 
     def bind_tool_handler(
         self, handler: Callable[[str, dict[str, object]], dict[str, object]]
@@ -451,20 +454,27 @@ class Engine:
         try:
             with self._lock:
                 home = self._source.home
-                # Product chat never hits gateway ensure; soft-patch before spawn/reuse.
-                guard_changed = _apply_ollama_options_guard_now(home)
+                if self._turn_active and self._child is not None and self._child.poll() is None:
+                    return EngineReady(self._source, "engine turn is active")
+                selected = self._staged_python or engine_python(home)
+                guard_changed = self._staged_python is None and _apply_ollama_options_guard_now(home)
                 if self._child is not None:
                     if self._child.poll() is None:
-                        if not guard_changed:
+                        argv = getattr(self._child, "args", None)
+                        selection_changed = isinstance(argv, list) and bool(argv) and str(selected) != argv[0]
+                        if not guard_changed and not selection_changed:
                             return EngineReady(self._source, "engine is ready")
-                        # Patched custom provider must load in a fresh child.
+                        _send_stop(self._child)
                         self._forget_child()
                     else:
                         _close_pipes(self._child)
                         self._child = None
                         self._child_hello_pid = None
-                probe = probe_engine_python(home)
-                if probe is not None and probe.code in (
+                probe = (
+                    _probe_imports(Path(self._staged_python), home=home)
+                    if self._staged_python is not None else probe_engine_python(home)
+                )
+                if self._staged_python is None and probe is not None and probe.code in (
                     EngineErrorCode.NOT_INSTALLED,
                     EngineErrorCode.WRONG_PYTHON,
                 ):
@@ -474,7 +484,10 @@ class Engine:
                     probe = probe_engine_python(home)
                 if probe is not None:
                     return EngineFailed(probe)
-                spawned = _spawn_sidecar(home)
+                spawned = (
+                    _spawn_sidecar(home, python=self._staged_python)
+                    if self._staged_python is not None else _spawn_sidecar(home)
+                )
                 if isinstance(spawned, EngineFailed):
                     return spawned
                 self._child, self._child_hello_pid = spawned
@@ -528,6 +541,9 @@ class Engine:
         turn: StatelessTurn,
         *,
         terminal_udp_port: int | None = None,
+        turn_id: str = "",
+        session_id: str = "",
+        workspace_id: str = "",
     ) -> None:
         if child.stdin is None:
             raise OSError("sidecar stdin is missing")
@@ -539,6 +555,9 @@ class Engine:
             "model": turn.model.model,
             "provider": turn.model.provider,
             "speak_surface": turn.speak_surface,
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "workspace_id": workspace_id,
         }
         if turn.model.base_url:
             fields["base_url"] = turn.model.base_url
@@ -551,14 +570,54 @@ class Engine:
         child.stdin.flush()
 
     def _reply_to_tool_request(
-        self, child: subprocess.Popen[str], raw: dict[str, object]
+        self,
+        child: subprocess.Popen[str],
+        raw: dict[str, object],
+        *,
+        surface: object | None = None,
+        expected_turn_id: str = "",
+        expected_session_id: str = "",
+        expected_workspace_id: str = "",
     ) -> None:
         request_id = str(raw.get("id") or "").strip()
         name = str(raw.get("name") or "").strip()
         args = raw.get("args")
         if not isinstance(args, dict):
             args = {}
-        if not request_id or not name:
+        binding_error = ""
+        action = name
+        model_tool_name = str(raw.get("model_tool_name") or "").strip()
+        if surface is not None:
+            from iris.infrastructure.speak_capability import engine_tool_bindings
+
+            bindings = {
+                row.model_name: row for row in engine_tool_bindings(str(surface))
+            }
+            binding = bindings.get(model_tool_name)
+            if binding is None:
+                binding_error = f"unknown model tool binding: {model_tool_name or '<empty>'}"
+            elif str(raw.get("canonical_action") or "") != binding.canonical_action:
+                binding_error = "canonical action does not match trusted binding"
+            elif str(raw.get("schema_fingerprint") or "") != binding.fingerprint:
+                binding_error = "schema fingerprint does not match trusted binding"
+            elif expected_turn_id and str(raw.get("turn_id") or "") != expected_turn_id:
+                binding_error = "turn identity does not match trusted runtime"
+            elif expected_session_id and str(raw.get("session_id") or "") != expected_session_id:
+                binding_error = "session identity does not match trusted runtime"
+            elif expected_workspace_id and str(raw.get("workspace_id") or "") != expected_workspace_id:
+                binding_error = "workspace identity does not match trusted runtime"
+            else:
+                action = binding.canonical_action
+        if binding_error:
+            result = {
+                "ok": False,
+                "error": f"TOOL_BINDING_ERROR: {binding_error}",
+                "error_code": "tool_binding_error",
+            }
+            _watch_trace(
+                f"TOOL_ROUTE rejected request_id={request_id} model_tool_name={model_tool_name}"
+            )
+        elif not request_id or not action:
             result: dict[str, object] = {
                 "ok": False,
                 "error": "invalid native tool request",
@@ -567,7 +626,11 @@ class Engine:
             result = {"ok": False, "error": "native tool bridge is not bound"}
         else:
             try:
-                handled = self._tool_handler(name, args)
+                _watch_trace(
+                    f"TOOL_ROUTE request_id={request_id} model_tool_name={model_tool_name} "
+                    f"action={action} owner=iris"
+                )
+                handled = self._tool_handler(action, args)
                 result = handled if isinstance(handled, dict) else {
                     "ok": False,
                     "error": "native tool returned an invalid result",
@@ -588,6 +651,10 @@ class Engine:
         *,
         hello_pid: int | None = None,
         udp_sock: socket.socket | None = None,
+        surface: object | None = None,
+        turn_id: str = "",
+        session_id: str = "",
+        workspace_id: str = "",
     ) -> Iterator[TurnEvent]:
         # One reader thread only. Spawning a new readline every poll abandons
         # prior readers on the same Windows pipe and yields OSError 22 on write.
@@ -622,6 +689,7 @@ class Engine:
         reader.start()
         idle_deadline = time.monotonic() + _TURN_IDLE_SEC
         last_miss_log = 0.0
+        handled_tool_requests: set[str] = set()
         try:
             while True:
                 if cancel.cancelled():
@@ -652,7 +720,9 @@ class Engine:
                 if not line:
                     # UDP can miss on Windows localhost; sidecar also writes the
                     # terminal file. Poll it here so land does not depend on UI.
-                    file_line = _read_terminal_file_impl(hello_pid)
+                    file_line = _read_terminal_file_impl(hello_pid) or _read_terminal_file_impl(
+                        hello_pid, extension="tool"
+                    )
                     if file_line:
                         line = file_line
                     else:
@@ -691,8 +761,20 @@ class Engine:
                     )
                     continue
                 if isinstance(raw, dict) and raw.get("t") == "tool_request":
+                    request_id = str(raw.get("id") or "").strip()
+                    if request_id and request_id in handled_tool_requests:
+                        continue
+                    if request_id:
+                        handled_tool_requests.add(request_id)
                     try:
-                        self._reply_to_tool_request(child, raw)
+                        self._reply_to_tool_request(
+                            child,
+                            raw,
+                            surface=surface,
+                            expected_turn_id=turn_id,
+                            expected_session_id=session_id,
+                            expected_workspace_id=workspace_id,
+                        )
                     except (OSError, ValueError) as exc:
                         yield TurnFailed(
                             EngineError(
@@ -733,6 +815,9 @@ class Engine:
             if isinstance(ready, EngineFailed):
                 yield TurnFailed(ready.error)
                 return
+            turn_id = uuid.uuid4().hex
+            session_id = turn.session_id or turn_id
+            workspace_id = turn.workspace_id
             with self._lock:
                 if self._turn_active:
                     yield TurnFailed(
@@ -759,7 +844,14 @@ class Engine:
                     )
                     return
                 try:
-                    self._write_turn(child, turn, terminal_udp_port=udp_port)
+                    self._write_turn(
+                        child,
+                        turn,
+                        terminal_udp_port=udp_port,
+                        turn_id=turn_id,
+                        session_id=session_id,
+                        workspace_id=workspace_id,
+                    )
                 except (OSError, ValueError) as exc:
                     try:
                         udp_sock.close()
@@ -785,6 +877,10 @@ class Engine:
                     turn.cancel,
                     hello_pid=hello_pid,
                     udp_sock=udp_sock,
+                    surface=turn.speak_surface,
+                    turn_id=turn_id,
+                    session_id=session_id,
+                    workspace_id=workspace_id,
                 )
             finally:
                 with self._lock:
@@ -803,6 +899,32 @@ class Engine:
                     _terminate_child(child)
         except Exception:
             return
+
+
+def verify_engine_model(slot: Path, target: IrisAgentInferenceTarget) -> None:
+    from iris.engine._home import checkout_python
+    from iris.engine.types import ChatTranscript, InternalSidecar
+
+    python = checkout_python(slot)
+    if python is None:
+        raise RuntimeError("Iris Agent candidate has no Python")
+    with tempfile.TemporaryDirectory(prefix="iris-model-", dir=slot.parent) as tmp:
+        engine = Engine(InternalSidecar(EngineHome(Path(tmp))), staged_python=python)
+        cancel = CancelToken()
+        timeout = Timer(90, cancel.cancel)
+        marker = "IRIS-ENGINE-READY"
+        messages = ChatTranscript.parse([{"role": "user", "content": f"Reply with this exact text: {marker}"}])
+        timeout.start()
+        try:
+            for event in engine.run_turn(StatelessTurn(messages, target, cancel)):
+                if isinstance(event, TurnFinished) and marker in event.text:
+                    return
+                if isinstance(event, TurnFailed):
+                    raise RuntimeError(event.error.user_message)
+            raise RuntimeError("Iris Agent model compatibility turn did not return its marker")
+        finally:
+            timeout.cancel()
+            engine.shutdown()
 
 
 def shared_engine() -> Engine:

@@ -5,7 +5,8 @@
 # 기본으로 GitHub Releases 업로드까지 수행. 끄려면 -NoPublish 또는 IRIS_SETUP_NO_PUBLISH=1
 [CmdletBinding()]
 param(
-    [switch]$NoPublish
+    [switch]$NoPublish,
+    [switch]$PayloadOnly
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent
@@ -13,6 +14,7 @@ Set-Location $Root
 
 $InstallerDir = Join-Path $Root "installer"
 $Payload = Join-Path $InstallerDir "payload"
+if ($PayloadOnly) { $Payload = Join-Path $Root ".tmp\iris-setup-payload" }
 $Iss = Join-Path $InstallerDir "iris.iss"
 $Icon = Join-Path $Root "iris\assets\iris_icon.ico"
 $Exe = Join-Path $Root "dist\IRIS.exe"
@@ -94,9 +96,11 @@ if (-not (Test-Path $Exe)) {
     & (Join-Path $PSScriptRoot "build_iris_exe.ps1")
 }
 
-$Iscc = Find-ISCC
-if (-not $Iscc) {
-    throw "Inno Setup(ISCC.exe) 없음. winget install -e --id JRSoftware.InnoSetup"
+if (-not $PayloadOnly) {
+    $Iscc = Find-ISCC
+    if (-not $Iscc) {
+        throw "Inno Setup(ISCC.exe) 없음. winget install -e --id JRSoftware.InnoSetup"
+    }
 }
 
 $issText = Get-Content $Iss -Raw
@@ -105,7 +109,13 @@ if ($issText -match '#define\s+MyAppVersion\s+"([^"]+)"') { $Version = $Matches[
 
 Write-Host "Staging payload -> $Payload"
 if (Test-Path $Payload) {
-    Remove-Item -Recurse -Force $Payload
+    $existing = Get-Item -LiteralPath $Payload -Force
+    $rootPrefix = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    if (-not $existing.FullName.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Invalid installer staging directory: $($existing.FullName)"
+    }
+    Remove-Item -LiteralPath $existing.FullName -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $Payload | Out-Null
 
@@ -113,6 +123,14 @@ $copyDirs = @("iris", "docs", "scripts", "services", "assets", "obsidian-vault")
 foreach ($d in $copyDirs) {
     Invoke-Robocopy (Join-Path $Root $d) (Join-Path $Payload $d) @()
 }
+
+foreach ($entry in @("run_agent.py", "pyproject.toml", "uv.lock", "LICENSE", "PROVENANCE.md", "SOURCE_MANIFEST.json")) {
+    if (-not (Test-Path (Join-Path $Root "vendor/iris-agent-core/$entry") -PathType Leaf)) {
+        throw "Owned engine payload file missing: $entry"
+    }
+}
+Invoke-Robocopy (Join-Path $Root "vendor/iris-agent-core") (Join-Path $Payload "vendor/iris-agent-core") @("venv", "node_modules")
+Invoke-Robocopy (Join-Path $Root "vendor/iris-agent-runtime") (Join-Path $Payload "vendor/iris-agent-runtime") @()
 
 Invoke-Robocopy (Join-Path $Root "integrations") (Join-Path $Payload "integrations") @(
     "node_modules", "lib", "plugins", ".theia"
@@ -139,7 +157,7 @@ try {
 
 # .env 는 사용자 키가 들어간다. .env.example 만 넣는다.
 $rootFiles = @(
-    "IRIS_launcher.py", "IRIS.spec", "LICENSE", "LICENSE.md", "README.md",
+    "IRIS_launcher.py", "IRIS.spec", "LICENSE", "LICENSE.md", "README.md", "THIRD_PARTY_NOTICES.md",
     "requirements.txt", "run.bat", "run.sh", "setup.bat", "setup.ps1", "setup.sh",
     ".env.example", ".gitignore"
 )
@@ -152,6 +170,7 @@ foreach ($f in $rootFiles) {
 
 Write-Host "Verifying payload ..."
 Assert-PayloadClean $Payload
+if ($PayloadOnly) { return }
 
 Write-Host "Compiling Setup.exe (v$Version) ..."
 & $Iscc $Iss

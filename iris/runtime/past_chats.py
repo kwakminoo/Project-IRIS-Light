@@ -26,7 +26,7 @@ from difflib import SequenceMatcher
 
 from iris.knowledge.history_index import SearchHit, like_terms
 from iris.knowledge.history_store import HistoryEntry, get_entry
-from iris.storage.conversations import INTERRUPTED_NOTE
+from iris.storage.conversations import strip_system_land_notes
 
 # 이보다 짧은 말("응", "고마워")로는 찾지 않는다 — 키워드 검색이 잡음만 올린다.
 MIN_QUERY_CHARS = 4
@@ -196,7 +196,7 @@ def semantic_past_chats(
 
 
 def _clean_answer(text: str) -> str:
-    return (text or "").replace(INTERRUPTED_NOTE, "").strip()
+    return strip_system_land_notes(text or "")
 
 
 def _neighbor(db, entry: HistoryEntry, *, after: bool) -> HistoryEntry | None:

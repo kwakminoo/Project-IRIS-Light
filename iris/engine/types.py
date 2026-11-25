@@ -155,6 +155,8 @@ class StatelessTurn:
     model: IrisAgentInferenceTarget
     cancel: CancelToken
     speak_surface: SpeakSurface = "home"
+    session_id: str = ""
+    workspace_id: str = ""
 
 
 @dataclass(frozen=True)

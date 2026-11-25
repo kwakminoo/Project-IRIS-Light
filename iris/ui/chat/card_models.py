@@ -63,6 +63,7 @@ class ShellCardModel:
     show_command_copy: bool
     copy_payload: str
     phase: str = "done"
+    allow_always: bool = True
 
 
 class _CodeBlock(Protocol):
@@ -77,6 +78,7 @@ class _ShellBlock(Protocol):
     status: str
     block_id: str
     collapsed: bool
+    # optional allow_always via getattr in to_shell_card
 
 
 _LANG_DISPLAY_NAMES = {
@@ -240,6 +242,7 @@ def to_shell_card(block: _ShellBlock) -> ShellCardModel:
     else:
         label = "실패"
     command = block.command or ""
+    allow_always = bool(getattr(block, "allow_always", True))
     return ShellCardModel(
         title=block.title or "",
         command=command,
@@ -251,4 +254,5 @@ def to_shell_card(block: _ShellBlock) -> ShellCardModel:
         show_command_copy=bool(command),
         copy_payload=command,
         phase=phase,
+        allow_always=allow_always,
     )

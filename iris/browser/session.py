@@ -67,6 +67,7 @@ class BrowserSession:
         self._host_applier = host_applier
         self._view_host: ViewHost = PanelHost(site="dedicated")
         self._snap = empty_snapshot(phase=BrowserPhase.CLOSED)
+        self._prev_snap: BrowserSnapshot | None = None
         self._listeners: list[SnapshotListener] = []
         self._visible = False
         self._last_result: BrowserResult | None = None
@@ -272,9 +273,24 @@ class BrowserSession:
         return snap.evolve(gen=self._gen, nodes=nodes)
 
     def _publish_fresh(self, snap: BrowserSnapshot) -> BrowserSnapshot:
+        self._prev_snap = self._snap
         stamped = self._stamp(snap)
         self._publish(stamped)
         return self._snap
+
+    def intent_node_for_ref(self, ref: str) -> PageNode | None:
+        """Node that owned this ref in current or previous stamped snapshot."""
+        key = str(ref or "").strip()
+        if not key:
+            return None
+        with self._lock:
+            for snap in (self._snap, self._prev_snap):
+                if snap is None:
+                    continue
+                for node in snap.nodes:
+                    if node.ref == key:
+                        return node
+        return None
 
     def _resolve_ref(self, ref: str) -> PageNode:
         snap = self._snap

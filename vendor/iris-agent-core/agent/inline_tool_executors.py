@@ -324,6 +324,8 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
     Precedence: todo_list/session_search/memory, then memory-manager tools, then the
     remaining inline tools (``message_agent`` excluded).
     """
+    if getattr(agent, "_iris_native_tool_bindings", None) is not None:
+        return None
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
         return INLINE_TOOL_EXECUTORS[function_name]
     memory_manager = agent._memory_manager
