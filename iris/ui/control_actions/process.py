@@ -14,7 +14,13 @@ from iris.system.request_approval import (
     default_approval_ledger,
     fingerprint_from_manage_args,
 )
-from iris.ui.chat.shell_controller import bind_block, bind_run, new_request, set_status
+from iris.ui.chat.shell_controller import (
+    bind_block,
+    bind_run,
+    get_by_run,
+    new_request,
+    set_status,
+)
 
 
 def _start_preview(args: dict[str, Any]) -> str:
@@ -174,8 +180,6 @@ def register_process_actions(window: Any, reg: ActionRegistry) -> None:
                 set_status(shell_req.request_id, "running")
                 data = {**data, "request_id": shell_req.request_id}
             elif action == "cancel" and isinstance(data, dict):
-                from iris.ui.chat.shell_controller import get_by_run
-
                 rid = str(data.get("run_id") or raw.get("run_id") or "").strip()
                 mapped = get_by_run(rid) if rid else None
                 if mapped is not None:
