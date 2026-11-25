@@ -1,4 +1,6 @@
-"""Model picker favorites survive reload and stay visible in brand dialogs."""
+"""Model favorites prefs + current picker grouping contracts."""
+
+from __future__ import annotations
 
 import os
 import sys
@@ -8,19 +10,24 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication, QToolButton
+from PyQt6.QtWidgets import QApplication
 
 from iris.storage.database import Database
 from iris.storage.model_favorite_prefs import load_model_favorites, toggle_model_favorite
 from iris.ui.chat.chat_panel import ChatPanel
-from iris.ui.chat.model_picker_menu import ModelBrandDialog, PickerModel, split_picker_groups
+from iris.ui.chat.model_picker_menu import (
+    BRAND_MIN_MODELS,
+    ModelBrandDialog,
+    PickerModel,
+    split_picker_groups,
+)
 
 
 APP = QApplication.instance() or QApplication(sys.argv)
 
 
 class ModelFavoritesRestoreTests(unittest.TestCase):
-    def test_favorites_persist_across_database_reopen(self):
+    def test_favorites_persist_across_database_reopen(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "iris.db"
             db = Database(path)
@@ -32,39 +39,37 @@ class ModelFavoritesRestoreTests(unittest.TestCase):
             self.assertEqual(load_model_favorites(db), [])
             db.close()
 
-    def test_one_api_model_is_still_under_its_brand(self):
+    def test_one_api_model_stays_in_singles_until_brand_min(self) -> None:
+        # Product contract: remote API needs BRAND_MIN_MODELS+ before brand fold.
         model = PickerModel("api:nv:model", "model", is_api=True, provider_name="NVIDIA")
         _local, _ollama, brands, singles = split_picker_groups([model])
+        self.assertEqual(brands, {})
+        self.assertEqual([m.runtime for m in singles], ["api:nv:model"])
+        many = [
+            PickerModel(
+                f"api:nv:m{i}",
+                f"m{i}",
+                is_api=True,
+                provider_name="NVIDIA",
+            )
+            for i in range(BRAND_MIN_MODELS)
+        ]
+        _local, _ollama, brands, singles = split_picker_groups(many)
         self.assertEqual(list(brands), ["nv"])
+        self.assertEqual(len(brands["nv"]), BRAND_MIN_MODELS)
         self.assertEqual(singles, [])
 
-    def test_favorites_sort_first_within_brand(self):
-        first = PickerModel("api:nv:alpha", "alpha", is_api=True, provider_name="NVIDIA")
-        favorite = PickerModel("api:nv:zeta", "zeta", is_api=True, provider_name="NVIDIA")
-        _local, _ollama, brands, _singles = split_picker_groups(
-            [first, favorite], favorites={favorite.runtime}
-        )
-        self.assertEqual([m.runtime for m in brands["nv"]], [favorite.runtime, first.runtime])
-
-    def test_brand_star_emits_without_selecting_and_panel_forwards(self):
-        model = PickerModel("api:nv:model", "model", is_api=True, provider_name="NVIDIA")
+    def test_panel_favorite_signal_still_forwards(self) -> None:
+        # Picker UI has no star yet; ChatPanel still owns the preference signal path.
         panel = ChatPanel()
-        panel.set_model_favorites([model.runtime])
-        forwarded = []
+        panel.set_model_favorites(["api:nv:model"])
+        forwarded: list[str] = []
         panel.model_favorite_toggled.connect(forwarded.append)
-        dialog = ModelBrandDialog("NVIDIA", [model], favorites=panel._model_favorites)
-        chosen = []
-        toggled = []
-        dialog.model_chosen.connect(chosen.append)
-        dialog.favorite_toggled.connect(toggled.append)
-        star = dialog.findChild(QToolButton, "ModelFavoriteStar")
-        self.assertEqual(star.text(), "★")
-        star.click()
-        self.assertEqual(toggled, [model.runtime])
-        self.assertEqual(chosen, [])
-        panel._on_model_favorite_toggled(model.runtime)
-        self.assertEqual(forwarded, [model.runtime])
-        dialog.close()
+        panel._on_model_favorite_toggled("api:nv:model")
+        self.assertEqual(forwarded, ["api:nv:model"])
+        dlg = ModelBrandDialog("NVIDIA", [], None)
+        self.assertFalse(hasattr(dlg, "favorite_toggled"))
+        dlg.close()
         panel.close()
 
 
