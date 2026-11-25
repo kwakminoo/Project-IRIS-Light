@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -69,22 +70,58 @@ def _roster_aware(m: PickerModel) -> bool:
     )
 
 
-def picker_sort_key(m: PickerModel) -> tuple:
+def picker_sort_key(m: PickerModel, *, favorites: set[str] | None = None) -> tuple:
     """Homogeneous picker order key: (retired, unavailable, tier|rank, id)."""
     from iris.infrastructure.model_roster import sort_key as roster_sort_key
     from iris.infrastructure.ollama_client import model_list_tier
 
     if _roster_aware(m):
-        return roster_sort_key(picker_entry_from_model(m))
-    tool = m.tool_support or ("no" if not m.supports_tools else "")
-    rank, _ = model_list_tier(m.runtime, state=m.availability, tool=tool)
-    retired = 0
-    unavailable = 0
-    return (retired, unavailable, rank, m.label.lower())
+        key = roster_sort_key(picker_entry_from_model(m))
+    else:
+        tool = m.tool_support or ("no" if not m.supports_tools else "")
+        rank, _ = model_list_tier(m.runtime, state=m.availability, tool=tool)
+        key = (0, 0, rank, m.label.lower())
+    # Empty favorites set must match None so roster checks and UI agree.
+    if favorites:
+        return ((0 if m.runtime in favorites else 1), *key)
+    return key
 
 
-def sorted_picker_models(models: list[PickerModel]) -> list[PickerModel]:
-    return sorted(models, key=picker_sort_key)
+def _favorite_button(runtime: str, favorites: set[str], toggle) -> QToolButton:
+    button = QToolButton()
+    button.setObjectName("ModelFavoriteStar")
+    button.setAccessibleName(f"{runtime} 즐겨찾기")
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.setFixedSize(24, 24)
+
+    def clicked() -> None:
+        if runtime in favorites:
+            favorites.remove(runtime)
+        else:
+            favorites.add(runtime)
+        paint()
+        toggle(runtime)
+
+    def paint() -> None:
+        active = runtime in favorites
+        button.setText("★" if active else "☆")
+        button.setAccessibleDescription("즐겨찾기 해제" if active else "즐겨찾기 추가")
+        button.setStyleSheet(
+            "border: none; background: transparent; font-size: 14px; "
+            + ("color: #fbbf24;" if active else "color: #64748b;")
+        )
+
+    paint()
+    button.clicked.connect(clicked)
+    return button
+
+
+def sorted_picker_models(
+    models: list[PickerModel],
+    *,
+    favorites: set[str] | None = None,
+) -> list[PickerModel]:
+    return sorted(models, key=lambda m: picker_sort_key(m, favorites=favorites))
 
 
 def picker_entry_from_model(m: PickerModel):
@@ -196,6 +233,7 @@ class ModelBrandDialog(QDialog):
     """Ollama / NVIDIA 등 브랜드 하위 모델 카드 목록."""
 
     model_chosen = pyqtSignal(str)  # runtime
+    favorite_toggled = pyqtSignal(str)
 
     def __init__(
         self,
@@ -204,8 +242,10 @@ class ModelBrandDialog(QDialog):
         parent: QWidget | None = None,
         *,
         hint: str = "",
+        favorites: set[str] | None = None,
     ) -> None:
         super().__init__(parent)
+        self._favorites = set(favorites or ())
         configure_hud_dialog(
             self,
             title=title,
@@ -229,7 +269,7 @@ class ModelBrandDialog(QDialog):
             empty.setObjectName("HudDialogHint")
             self._list_lay.addWidget(empty)
         else:
-            for m in sorted_picker_models(models):
+            for m in sorted_picker_models(models, favorites=self._favorites):
                 self._add_card(m)
         self._list_lay.addStretch(1)
 
@@ -242,7 +282,14 @@ class ModelBrandDialog(QDialog):
             blurb = _ollama_blurb(m)
         card = _ItemCard(m.label, blurb, title_color=picker_tier_color(m))
         card.use_clicked.connect(lambda _n, rt=m.runtime: self._pick(rt))
-        self._list_lay.addWidget(card)
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(
+            _favorite_button(m.runtime, self._favorites, self.favorite_toggled.emit)
+        )
+        layout.addWidget(card, 1)
+        self._list_lay.addWidget(row)
 
     def _pick(self, runtime: str) -> None:
         self.model_chosen.emit(runtime)
@@ -270,6 +317,7 @@ class ModelPickerMenu(QFrame):
     open_ollama = pyqtSignal()
     open_brand = pyqtSignal(str)  # provider id
     model_chosen = pyqtSignal(str)
+    favorite_toggled = pyqtSignal(str)
 
     def __init__(
         self,
@@ -278,12 +326,14 @@ class ModelPickerMenu(QFrame):
         has_ollama: bool,
         brands: list[tuple[str, str, int]] | None = None,  # (provider_id, 표시명, 모델수)
         singles: list[PickerModel] | None = None,
+        favorites: set[str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(
             parent,
             Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint,
         )
+        self._favorites = set(favorites or ())
         self.setObjectName("ComposerPlusMenu")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setStyleSheet(
@@ -344,7 +394,10 @@ class ModelPickerMenu(QFrame):
             row.clicked.connect(lambda _=False, bid=brand_id: self._on_brand(bid))
             root.addWidget(row)
 
-        singles = list(singles or [])
+        singles = sorted(
+            singles or [],
+            key=lambda m: picker_sort_key(m, favorites=self._favorites),
+        )
         if singles:
             sep = QFrame()
             sep.setObjectName("ComposerPlusSep")
@@ -365,7 +418,17 @@ class ModelPickerMenu(QFrame):
                     title_color=picker_tier_color(m),
                 )
                 row.clicked.connect(lambda _=False, rt=m.runtime: self._pick(rt))
-                root.addWidget(row)
+                wrap = QWidget()
+                layout = QHBoxLayout(wrap)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(0)
+                layout.addWidget(
+                    _favorite_button(
+                        m.runtime, self._favorites, self.favorite_toggled.emit
+                    )
+                )
+                layout.addWidget(row, 1)
+                root.addWidget(wrap)
 
         if not local and not has_ollama and not (brands or []) and not singles:
             empty = _MenuRow("—", "모델 없음", "설정에서 API/Ollama 확인")
@@ -407,6 +470,8 @@ def brand_label(items: list[PickerModel], fallback: str = "API") -> str:
 
 def split_picker_groups(
     models: list[PickerModel],
+    *,
+    favorites: set[str] | None = None,
 ) -> tuple[list[PickerModel], list[PickerModel], dict[str, list[PickerModel]], list[PickerModel]]:
     """(local, ollama, api_brands_by_provider_id, singles).
 
@@ -431,13 +496,13 @@ def split_picker_groups(
     singles: list[PickerModel] = []
     for pid, items in by_pid.items():
         if len(items) >= BRAND_MIN_MODELS:
-            brands[pid] = sorted_picker_models(items)
+            brands[pid] = sorted_picker_models(items, favorites=favorites)
         else:
             singles.extend(items)
 
-    local = sorted_picker_models(local)
-    ollama = sorted_picker_models(ollama)
-    singles = sorted_picker_models(singles)
+    local = sorted_picker_models(local, favorites=favorites)
+    ollama = sorted_picker_models(ollama, favorites=favorites)
+    singles = sorted_picker_models(singles, favorites=favorites)
     return local, ollama, brands, singles
 
 

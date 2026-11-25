@@ -1871,6 +1871,16 @@ class ChatPanel(QWidget):
         # Hermes X-Hermes-Model 헤더가 latin-1로 터진다. data 없으면 미선택.
         return ""
 
+    def current_supports_tools(self) -> bool:
+        """현재 콤보 선택이 도구 호출을 지원하는지. 없으면 True."""
+        idx = self._model_combo.currentIndex()
+        if idx < 0:
+            return True
+        value = self._model_combo.itemData(idx, _ROLE_SUPPORTS_TOOLS)
+        if value is None:
+            return True
+        return bool(value)
+
     def current_input_text(self) -> str:
         return self._input.text()
 
@@ -2461,7 +2471,9 @@ class ChatPanel(QWidget):
             self._model_picker_menu.hide()
             self._model_picker_menu.deleteLater()
             self._model_picker_menu = None
-        local, ollama, brands, singles = split_picker_groups(self._picker_models)
+        local, ollama, brands, singles = split_picker_groups(
+            self._picker_models, favorites=self._model_favorites
+        )
         brand_rows = [
             (pid, brand_label(items, pid), len(items)) for pid, items in brands.items()
         ]
@@ -2470,6 +2482,7 @@ class ChatPanel(QWidget):
             has_ollama=bool(ollama),
             brands=brand_rows,
             singles=singles,
+            favorites=self._model_favorites,
             parent=self,
         )
         menu.open_local.connect(
@@ -2487,11 +2500,14 @@ class ChatPanel(QWidget):
         )
         menu.open_brand.connect(self._on_open_brand)
         menu.model_chosen.connect(self._select_model_runtime)
+        menu.favorite_toggled.connect(self._on_model_favorite_toggled)
         self._model_picker_menu = menu
         menu.popup_above(self._input_area.input_bar._model_shell)
 
     def _on_open_brand(self, brand_id: str) -> None:
-        _local, _ollama, brands, _singles = split_picker_groups(self._picker_models)
+        _local, _ollama, brands, _singles = split_picker_groups(
+            self._picker_models, favorites=self._model_favorites
+        )
         items = brands.get(brand_id) or []
         title = brand_label(items, brand_id)
         QTimer.singleShot(0, lambda: self._show_brand_dialog(title, items))
@@ -2508,8 +2524,10 @@ class ChatPanel(QWidget):
                 "시안=무료 · 주황=임베딩/이미지 등 · 붉음=유료 · 회색=가격 미확정 순. "
                 "모델을 고른 뒤 「사용」을 누르세요."
             ),
+            favorites=self._model_favorites,
         )
         dlg.model_chosen.connect(self._select_model_runtime)
+        dlg.favorite_toggled.connect(self._on_model_favorite_toggled)
         dlg.exec()
 
     def _select_model_runtime(self, runtime: str) -> None:

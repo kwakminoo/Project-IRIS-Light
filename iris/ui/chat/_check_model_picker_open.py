@@ -1,4 +1,4 @@
-"""Model picker open path must match real APIs (no crash kwargs / frameless parent)."""
+"""Model picker open path must pass favorites and keep frameless-safe parent."""
 
 from __future__ import annotations
 
@@ -17,10 +17,12 @@ from iris.ui.chat.model_picker_menu import (
 )
 
 
-def _assert_no_favorites_kw(src: str, name: str) -> None:
-    # Call sites must not pass favorites= into these APIs (TypeError → 0xC0000409).
-    pattern = rf"{re.escape(name)}\s*\([^)]*favorites\s*="
-    assert not re.search(pattern, src, flags=re.DOTALL), f"{name} still gets favorites="
+def _assert_favorites_kw(src: str, name: str) -> None:
+    # Nested ) in kwargs (e.g. bool(ollama)) breaks [^)]* — scan a window after the call.
+    match = re.search(rf"{re.escape(name)}\s*\(", src)
+    assert match, f"{name} not called"
+    window = src[match.start() : match.start() + 500]
+    assert "favorites=" in window, f"{name} missing favorites="
 
 
 def main() -> None:
@@ -30,10 +32,10 @@ def main() -> None:
     combined = "\n".join((open_src, brand_src, on_brand_src))
 
     for name in ("split_picker_groups", "ModelPickerMenu", "ModelBrandDialog"):
-        _assert_no_favorites_kw(combined, name)
+        _assert_favorites_kw(combined, name)
 
-    assert "favorite_toggled.connect" not in open_src
-    assert "favorite_toggled.connect" not in brand_src
+    assert "favorite_toggled.connect" in open_src
+    assert "favorite_toggled.connect" in brand_src
 
     # Modal dialog must not parent frameless MainWindow (same class as QFileDialog abort).
     assert "parent=None" in brand_src or re.search(
@@ -52,7 +54,8 @@ def main() -> None:
             provider_name="NVIDIA",
         ),
     ]
-    local, ollama, brands, singles = split_picker_groups(models)
+    fav = {"api:nv:meta/llama-3.1-8b-instruct"}
+    local, ollama, brands, singles = split_picker_groups(models, favorites=fav)
     brand_rows = [
         (pid, next((m.provider_name for m in items if m.provider_name), pid), len(items))
         for pid, items in brands.items()
@@ -64,11 +67,12 @@ def main() -> None:
         has_ollama=bool(ollama),
         brands=brand_rows,
         singles=singles,
+        favorites=fav,
         parent=None,
     )
-    assert not hasattr(menu, "favorite_toggled")
-    dlg = ModelBrandDialog("LOCAL MODEL", local, None, hint="test")
-    assert not hasattr(dlg, "favorite_toggled")
+    assert hasattr(menu, "favorite_toggled")
+    dlg = ModelBrandDialog("LOCAL MODEL", local, None, hint="test", favorites=fav)
+    assert hasattr(dlg, "favorite_toggled")
     dlg.close()
     menu.close()
     _ = app

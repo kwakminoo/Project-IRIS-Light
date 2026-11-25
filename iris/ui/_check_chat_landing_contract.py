@@ -266,11 +266,29 @@ def _check_soft_sse_recovers_content() -> None:
     assert evs[-1].get("done") is True
 
 
+def _check_current_supports_tools() -> None:
+    """Hermes finish path reads ChatPanel.current_supports_tools — must exist."""
+    import inspect
+
+    from iris.ui.chat.chat_panel import ChatPanel
+    from iris.ui.window.main_window import MainWindow
+
+    panel = ChatPanel()
+    assert callable(getattr(panel, "current_supports_tools", None)), (
+        "ChatPanel.current_supports_tools missing — UI land swallows AttributeError"
+    )
+    assert isinstance(panel.current_supports_tools(), bool)
+    src = inspect.getsource(MainWindow._on_chat_finished)
+    assert "current_supports_tools()" in src
+    panel.close()
+
+
 def main() -> None:
     _check_soft_sse_recovers_content()
     _check_worker_done_after_stream_fail_shape()
     _check_hanging_native_invoke_cannot_block_finished_ok()
     app = QApplication.instance() or QApplication(sys.argv)
+    _check_current_supports_tools()
     _check_fail_keeps_user(app)
     _check_finished_records_assistant(app)
     _check_orphan_without_meta_still_lands(app)

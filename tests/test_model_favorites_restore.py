@@ -1,4 +1,4 @@
-"""Model favorites prefs + current picker grouping contracts."""
+"""Model picker favorites survive reload and stay visible in brand dialogs."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QToolButton
 
 from iris.storage.database import Database
 from iris.storage.model_favorite_prefs import load_model_favorites, toggle_model_favorite
@@ -59,17 +59,44 @@ class ModelFavoritesRestoreTests(unittest.TestCase):
         self.assertEqual(len(brands["nv"]), BRAND_MIN_MODELS)
         self.assertEqual(singles, [])
 
-    def test_panel_favorite_signal_still_forwards(self) -> None:
-        # Picker UI has no star yet; ChatPanel still owns the preference signal path.
+    def test_favorites_sort_first_within_brand(self) -> None:
+        many = [
+            PickerModel(
+                f"api:nv:m{i}",
+                f"m{i:02d}",
+                is_api=True,
+                provider_name="NVIDIA",
+            )
+            for i in range(BRAND_MIN_MODELS)
+        ]
+        favorite = many[-1]
+        _local, _ollama, brands, _singles = split_picker_groups(
+            many, favorites={favorite.runtime}
+        )
+        self.assertEqual(brands["nv"][0].runtime, favorite.runtime)
+
+    def test_brand_star_emits_without_selecting_and_panel_forwards(self) -> None:
+        model = PickerModel("api:nv:model", "model", is_api=True, provider_name="NVIDIA")
         panel = ChatPanel()
-        panel.set_model_favorites(["api:nv:model"])
+        panel.set_model_favorites([model.runtime])
         forwarded: list[str] = []
         panel.model_favorite_toggled.connect(forwarded.append)
-        panel._on_model_favorite_toggled("api:nv:model")
-        self.assertEqual(forwarded, ["api:nv:model"])
-        dlg = ModelBrandDialog("NVIDIA", [], None)
-        self.assertFalse(hasattr(dlg, "favorite_toggled"))
-        dlg.close()
+        dialog = ModelBrandDialog(
+            "NVIDIA", [model], None, favorites=panel._model_favorites
+        )
+        chosen: list[str] = []
+        toggled: list[str] = []
+        dialog.model_chosen.connect(chosen.append)
+        dialog.favorite_toggled.connect(toggled.append)
+        star = dialog.findChild(QToolButton, "ModelFavoriteStar")
+        self.assertIsNotNone(star)
+        self.assertEqual(star.text(), "★")
+        star.click()
+        self.assertEqual(toggled, [model.runtime])
+        self.assertEqual(chosen, [])
+        panel._on_model_favorite_toggled(model.runtime)
+        self.assertEqual(forwarded, [model.runtime])
+        dialog.close()
         panel.close()
 
 
