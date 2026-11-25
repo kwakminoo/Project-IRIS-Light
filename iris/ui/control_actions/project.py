@@ -346,7 +346,6 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
     )
     import time
 
-    from iris.automation.ide_input import run_command_in_ide_terminal
     from iris.system.execution_runtime import default_runtime
     from iris.system.project_ops import (
         bind_python_argv,
@@ -361,6 +360,7 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
         summarize_run,
         wait_managed_run,
     )
+    from iris.system.terminal_output_mirror import advance_output_cursor, format_run_banner
 
     root, root_err = resolve_bound_work_root(window, args)
     if root_err:
@@ -431,16 +431,27 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return err_result("project.run", str(exc))
 
-    session_id = str(
-        args.get("session_id")
-        or getattr(window, "_conversation_id", "")
-        or ""
+    # Trusted Control context — never model session_id / workspace_id args.
+    session_id = str(getattr(window, "_conversation_id", "") or "")
+    workspace_id = str(getattr(session, "workspace_root", "") or root_s)
+    from iris.ui.chat.shell_controller import bind_block, bind_run, new_request, set_status
+    from iris.ui.chat.shell_gate import take_shell_confirm_block
+
+    cmd_preview = (
+        start_kwargs.get("shell")
+        if start_kwargs.get("shell")
+        else " ".join(str(a) for a in argv)
     )
-    workspace_id = str(
-        args.get("workspace_id")
-        or getattr(session, "workspace_root", "")
-        or root_s
+    block_id = take_shell_confirm_block(getattr(window, "_chat", None))
+    req = new_request(
+        session_id=session_id,
+        workspace_id=workspace_id,
+        command=str(cmd_preview or ""),
+        block_id=block_id,
     )
+    if block_id:
+        bind_block(req.request_id, block_id)
+    set_status(req.request_id, "approved")
 
     t0 = time.monotonic()
     try:
@@ -449,57 +460,95 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
             timeout_s=timeout_sec,
             session_id=session_id,
             workspace_id=workspace_id,
-            owner="project.run",
+            owner="project.run",  # telemetry label only; ACL uses session_id
             **start_kwargs,
         )
     except Exception as exc:  # noqa: BLE001
+        set_status(req.request_id, "failed")
         return err_result("project.run", str(exc))
+    bind_run(req.request_id, run_id)
 
-    # IDE visualization only — Runtime owns the real process / completion.
+    # IDE mirror only — Runtime owns the process; Theia never re-executes the command.
     ide_terminal = "skipped"
     via = "execution_runtime"
     revealed = False
     shell_used = ""
-    viz_cmd = f"echo IRIS_RUN_ID={run_id}"
+    ide_client = None
+    mirror_stop = False
+    out_off = 0
+    err_off = 0
+    rt = default_runtime()
+
+    def _append_mirror(text: str, *, stream: str = "") -> None:
+        nonlocal ide_terminal, revealed, mirror_stop, ide_client, via
+        if mirror_stop or ide_client is None or not text:
+            return
+        try:
+            term = _bridge_call_pumping(
+                lambda: ide_client.append_terminal_output(
+                    text, cwd=root_s, run_id=run_id, stream=stream
+                ),
+                timeout=8.0,
+            )
+            via_m = str(term.get("via") or "theia_terminal")
+            if via_m == "bridge_fallback" or term.get("appended") is False:
+                if ide_terminal != "ok":
+                    ide_terminal = "failed"
+                mirror_stop = True
+                ide_client = None
+                return
+            ide_terminal = "ok"
+            revealed = bool(term.get("revealed", True))
+            via = "theia_terminal"
+        except Exception:  # noqa: BLE001 — bridge fail ≠ process fail
+            if ide_terminal != "ok":
+                ide_terminal = "failed"
+            mirror_stop = True
+            ide_client = None
+
+    def _flush_stream(stream: str) -> None:
+        nonlocal out_off, err_off
+        if mirror_stop or ide_client is None:
+            return
+        off = out_off if stream == "stdout" else err_off
+        data = rt.read_output(run_id, stream=stream, offset=off)
+        text, nxt = advance_output_cursor(data, offset=off)
+        if not text:
+            return
+        _append_mirror(text, stream=stream)
+        if mirror_stop:
+            return
+        if stream == "stdout":
+            out_off = nxt
+        else:
+            err_off = nxt
+
+    def _mirror_pump() -> None:
+        _qt_pump()
+        if mirror_stop or ide_client is None:
+            return
+        _flush_stream("stdout")
+        _flush_stream("stderr")
+
     if reveal and session is not None and session.ide_id == "iris_ide":
         try:
-            client = window._iris_ide_bridge_client()
-            term = _bridge_call_pumping(
-                lambda: client.run_terminal_command(viz_cmd, cwd=root_s),
-                timeout=18.0,
-            )
-            via = str(term.get("via") or "iris_ide_bridge")
-            if via == "bridge_fallback":
-                ide_terminal = "failed"
-            elif term.get("revealed") is False:
-                ide_terminal = "failed"
-            elif bool(term.get("queued")) or via == "theia_terminal":
-                ide_terminal = "ok"
-                revealed = bool(term.get("revealed", True))
-                shell_used = str(term.get("shell") or "")
-            else:
-                ide_terminal = "failed"
-        except Exception:  # noqa: BLE001
+            ide_client = window._iris_ide_bridge_client()
+            _append_mirror(format_run_banner(run_id), stream="banner")
+        except Exception:  # noqa: BLE001 — bridge fail ≠ process fail
             ide_terminal = "failed"
-    elif reveal and session is not None:
-        hwnd = int(session.hwnd) if session.hwnd else None
-        pid = session.pid
-        if hwnd:
-            try:
-                ok_viz = run_command_in_ide_terminal(
-                    hwnd, viz_cmd, pump=_qt_pump, pid=pid
-                )
-                ide_terminal = "ok" if ok_viz else "failed"
-                revealed = bool(ok_viz)
-                via = "ide_terminal_echo"
-            except Exception:  # noqa: BLE001
-                ide_terminal = "failed"
+            ide_client = None
+            mirror_stop = True
+    # Non-Theia IDE: no echo-only viz (User direct terminal unchanged; Iris mirrors Theia only).
 
     rec = wait_managed_run(
-        run_id, timeout_s=timeout_sec, pump=_qt_pump
+        run_id,
+        timeout_s=timeout_sec,
+        pump=_mirror_pump if ide_client is not None else _qt_pump,
     )
+    if ide_client is not None and not mirror_stop:
+        _flush_stream("stdout")
+        _flush_stream("stderr")
     elapsed = time.monotonic() - t0
-    rt = default_runtime()
     stdout_text = str(
         (rt.read_output(run_id, stream="stdout").get("text") or "")
     )
@@ -515,7 +564,9 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
         stderr=stderr_text,
         via=via,
     )
+    result["request_id"] = req.request_id
     if not result.get("confirmed") and not result.get("timed_out"):
+        set_status(req.request_id, "failed")
         return err_result(
             "project.run",
             "run started but Runtime did not confirm an exit code",
@@ -523,6 +574,7 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
                 "delivered": True,
                 "executed": False,
                 "run_id": run_id,
+                "request_id": req.request_id,
                 "status": result.get("status"),
                 "exit_code": None,
                 "via": via,
@@ -556,6 +608,7 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
         "delivered": True,
         "executed": True,
         "run_id": run_id,
+        "request_id": req.request_id,
         "ide_terminal": ide_terminal,
         "revealed": revealed,
         "shell": shell_used or None,
@@ -571,6 +624,12 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
     ok = bool(result.get("ok")) if "ok" in result else (
         result.get("exit_code") == 0 and not result.get("timed_out")
     )
+    if result.get("timed_out"):
+        set_status(req.request_id, "timed_out")
+    elif str(result.get("status") or "") in ("cancelled", "interrupted"):
+        set_status(req.request_id, str(result.get("status")))
+    else:
+        set_status(req.request_id, "completed" if ok else "failed")
     _log(window, "project.run", ok)
     if ok:
         return ok_result("project.run", payload)
@@ -1167,7 +1226,8 @@ def register_project_actions(window: ProjectHost, reg: ActionRegistry) -> None:
         _with_run_visibility(window, "project.run", lambda args: project_run(window, args)),
         summary=(
             "Run a command via the shared Execution Runtime (run_id + status). "
-            "When reveal_terminal, also echo the run_id in the bound IDE integrated terminal."
+            "When reveal_terminal, mirror Runtime stdout/stderr into the bound IDE terminal "
+            "(same run_id; does not re-execute)."
         ),
         risk="medium",
         confirm_required=True,

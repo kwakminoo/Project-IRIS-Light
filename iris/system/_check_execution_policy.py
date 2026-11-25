@@ -4,6 +4,7 @@ Fails when:
 - model confirm:true alone can approve a confirm_required / high-risk action
 - path with .. or outside workspace root is allowed
 - untrusted / injection tool payload is not flagged or left unwrapped for the model
+- trust fields (session_id / owner / workspace_root) remain Speak-writable or ACL tokens
 
 Run:
   .venv\\Scripts\\python.exe -m iris.system._check_execution_policy
@@ -14,7 +15,15 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from iris.infrastructure.speak_capability import PHASE4_ALLOWLIST
 from iris.system.control_surface import ActionRegistry, ActionSpec
+from iris.system.execution_context import (
+    SURFACE_OWNER_LABELS,
+    TRUST_FIELD_KEYS,
+    make_execution_context,
+    owner_is_acl_token,
+    strip_trust_fields,
+)
 from iris.system.execution_policy import (
     TOOL_OUTPUT_BEGIN,
     WAIT_MAX_TIMEOUT_S,
@@ -158,11 +167,54 @@ def _check_process_start_policy() -> None:
     assert 1.0 <= cap_wait_timeout(1.5) <= WAIT_MAX_TIMEOUT_S
 
 
+def _check_trusted_execution_context_policy() -> None:
+    """U02 — model trust fields stripped; surface owners are not ACL tokens."""
+    forged = {
+        "action": "status",
+        "run_id": "x",
+        "session_id": "victim",
+        "owner": "project.run",
+        "owner_token": "shell.run",
+        "workspace_root": "C:\\evil",
+        "principal": "admin",
+        "permission_scope": "admin",
+    }
+    cleaned = strip_trust_fields(forged)
+    assert cleaned.get("action") == "status"
+    assert cleaned.get("run_id") == "x"
+    for key in TRUST_FIELD_KEYS:
+        assert key not in cleaned, key
+
+    for label in SURFACE_OWNER_LABELS:
+        assert owner_is_acl_token(label) is False, label
+    assert owner_is_acl_token("alice") is True
+
+    ctx = make_execution_context(session_id="s1", workspace_root="/ws")
+    assert ctx.effective_session_id() == "s1"
+    assert ctx.is_admin() is False
+    admin = make_execution_context(session_id="ops", permission_scope="admin")
+    assert admin.is_admin() is True
+
+    grant = PHASE4_ALLOWLIST.grant("process.manage")
+    assert grant is not None and grant.parameters is not None
+    props = grant.parameters.get("properties") or {}
+    for key in ("session_id", "workspace_root", "owner", "owner_token"):
+        assert key not in props, key
+
+    # project.run must not invite forged session/workspace ACL args either.
+    pr = PHASE4_ALLOWLIST.grant("project.run")
+    assert pr is not None and pr.parameters is not None
+    pr_props = pr.parameters.get("properties") or {}
+    for key in ("session_id", "workspace_id"):
+        assert key not in pr_props, key
+
+
 def main() -> None:
     _check_confirm_blocks_self_approval()
     _check_path_denied_outside_root()
     _check_untrusted_tool_payload()
     _check_process_start_policy()
+    _check_trusted_execution_context_policy()
     print("execution_policy ok")
 
 

@@ -1,8 +1,0 @@
-{
-  "http": 400,
-  "ok": false,
-  "action": "browser.mini_player",
-  "status": "failed",
-  "result": {},
-  "error": "on required"
-}

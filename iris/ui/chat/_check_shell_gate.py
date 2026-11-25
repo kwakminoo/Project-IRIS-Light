@@ -230,7 +230,7 @@ def main() -> int:
     assert gate_attn == []
 
     calls.clear()
-    gate_project_run(
+    denied = gate_project_run(
         {"command": "git status"},
         _action,
         chat=None,
@@ -238,11 +238,12 @@ def main() -> int:
         approval=ApprovalState(),
         wait=_boom,
     )
-    assert calls == [{"command": "git status"}]
+    assert calls == []
+    assert denied.get("error") == "approval_ui_unavailable"
 
     calls.clear()
     asking = _Chat()
-    gate_project_run(
+    denied_ui = gate_project_run(
         {"command": "git status"},
         _action,
         chat=asking,
@@ -250,9 +251,9 @@ def main() -> int:
         approval=ApprovalState(),
         wait=_boom,
     )
-    assert calls == [{"command": "git status"}]
-    assert len(asking.inserts) == 1
-    assert asking.inserts[0].get("phase", "done") != "pending"
+    assert calls == []
+    assert denied_ui.get("error") == "approval_ui_unavailable"
+    assert len(asking.inserts) == 0
 
     pending_html = render_tool_shell("Shell", "git status", "", "ok", "bid", phase="pending")
     assert "iris-run://bid" in pending_html
@@ -274,8 +275,17 @@ def main() -> int:
         status="ok",
         phase="pending",
     )
-    assert panel._log._tool_blocks[stored_id].phase == "pending"
-    assert "iris-run://" in panel._log.toHtml()
+    assert panel._shell_tool_blocks[stored_id].phase == "pending"
+    # Visible surface is H1 (legacy `_log` stays hidden).
+    h1_blob = "".join(
+        getattr(p, "command", "") + getattr(p, "phase", "") + getattr(p, "block_id", "")
+        for t in panel.transcript()._turns
+        for p in t.parts
+    )
+    assert stored_id in h1_blob
+    assert panel._shell_tool_blocks[stored_id].phase == "pending"
+    assert panel.replace_tool_block(stored_id, phase="running", output="hi")
+    assert panel._shell_tool_blocks[stored_id].phase == "running"
 
     card_html = code_card_to_html(
         CodeCardModel(

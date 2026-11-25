@@ -342,11 +342,15 @@ class ActionRegistry:
 
             decision = check_action_approval(spec, args, self._human_confirm)
             if not decision.allowed:
-                return err_result(
-                    name,
-                    decision.reason or "human confirm required",
-                    {"confirm_required": True, "risk": spec.risk},
-                )
+                deny = {
+                    "confirm_required": True,
+                    "risk": spec.risk,
+                    "approval_required": True,
+                }
+                reason = str(decision.reason or "human confirm required")
+                if reason == "approval_ui_unavailable":
+                    deny["approval_ui_unavailable"] = True
+                return err_result(name, reason, deny)
         handler = self._handlers[name]
         try:
             out = handler(args)

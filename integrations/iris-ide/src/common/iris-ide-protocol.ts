@@ -14,6 +14,10 @@ export interface IrisIdeEditorInfo {
     languageId: string;
     line: number;
     column: number;
+    /** True when the Monaco/Theia buffer has unsaved edits. */
+    dirty?: boolean;
+    /** Monaco model getVersionId when available. */
+    version?: number;
     selection: { start: { line: number; column: number }; end: { line: number; column: number } } | null;
 }
 
@@ -38,6 +42,7 @@ export const IRIS_BRIDGE_COMMANDS = [
     'openFile',
     'saveFile',
     'saveAll',
+    'reloadFromDisk',
     'createFile',
     'deleteFile',
     'renameFile',
@@ -53,6 +58,7 @@ export const IRIS_BRIDGE_COMMANDS = [
     'gotoDefinition',
     'createTerminal',
     'runTerminalCommand',
+    'appendTerminalOutput',
     'getTerminalState',
     'runTask',
     'getTaskState',

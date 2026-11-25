@@ -9,13 +9,13 @@ from typing import Any, Callable
 from iris.ui.chat.run_visibility import card_from_control_result, insert_visibility_card
 from iris.ui.chat.shell_approval import ApprovalState, preview_command, should_auto_run
 
-# Chat attr: confirm→action handoff for shell.run live paint (one card lifecycle).
-SHELL_CONFIRM_BLOCK_ATTR = "_shell_confirm_block_id"
+# Chat attr: FIFO queue of confirm→action block ids (concurrent cards).
+SHELL_CONFIRM_BLOCK_ATTR = "_shell_confirm_block_ids"
 
 
 @dataclass(frozen=True)
 class CardConfirmResult:
-    """Card gate outcome. approved=None means caller should fall back (HUD)."""
+    """Card gate outcome. approved=None → UI unavailable (fail-closed for shell)."""
 
     approved: bool | None
     block_id: str = ""
@@ -61,15 +61,28 @@ def take(block_id: str) -> str:
 def stash_shell_confirm_block(chat: Any | None, block_id: str) -> None:
     if chat is None:
         return
-    setattr(chat, SHELL_CONFIRM_BLOCK_ATTR, (block_id or "").strip())
+    bid = (block_id or "").strip()
+    if not bid:
+        return
+    q = getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, None)
+    if not isinstance(q, list):
+        q = []
+        setattr(chat, SHELL_CONFIRM_BLOCK_ATTR, q)
+    q.append(bid)
 
 
 def take_shell_confirm_block(chat: Any | None) -> str:
     if chat is None:
         return ""
-    bid = str(getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, "") or "").strip()
-    setattr(chat, SHELL_CONFIRM_BLOCK_ATTR, "")
-    return bid
+    q = getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, None)
+    if isinstance(q, list) and q:
+        return str(q.pop(0) or "").strip()
+    # Legacy single-attr migration
+    legacy = str(getattr(chat, "_shell_confirm_block_id", "") or "").strip()
+    if legacy:
+        setattr(chat, "_shell_confirm_block_id", "")
+        return legacy
+    return ""
 
 
 def _raise_attention(window: Any) -> None:
@@ -97,9 +110,10 @@ def try_card_confirm(
     on_ui: Callable[[Callable[[], Any]], Any] | None = None,
     on_attention: Callable[[], None] | None = None,
 ) -> CardConfirmResult:
-    """채팅 pending 카드로 승인. approved=None이면 호출자가 HUD 등으로 폴백.
+    """채팅 pending 카드로 승인.
 
-    True/False는 승인·거절. insert 불가·실패만 approved=None.
+    True/False는 승인·거절. insert 불가·실패만 approved=None
+    (shell/project/process는 HUD 폴백 금지 — approval_ui_unavailable).
     block_id is set when a pending card was inserted (empty on auto_run).
     """
     can_insert = chat is not None and callable(getattr(chat, "insert_tool_block", None))
@@ -207,8 +221,19 @@ def gate_project_run(
         return _finish(action(payload), block_id)
 
     can_insert = chat is not None and callable(getattr(chat, "insert_tool_block", None))
-    if on_ui_thread or not can_insert or should_auto_run(approval, command):
+    if should_auto_run(approval, command):
         return _run()
+    # U06: UI thread / missing card → fail-closed (never silent auto-run).
+    if on_ui_thread or not can_insert:
+        return {
+            "ok": False,
+            "action": "project.run",
+            "error": "approval_ui_unavailable",
+            "result": {
+                "approval_required": True,
+                "approval_ui_unavailable": True,
+            },
+        }
 
     def _post() -> str:
         block_id = str(
@@ -230,7 +255,15 @@ def gate_project_run(
     except Exception:
         block_id = ""
     if not block_id:
-        return _run()
+        return {
+            "ok": False,
+            "action": "project.run",
+            "error": "approval_ui_unavailable",
+            "result": {
+                "approval_required": True,
+                "approval_ui_unavailable": True,
+            },
+        }
     if on_attention is not None:
         try:
             _ui(on_attention)

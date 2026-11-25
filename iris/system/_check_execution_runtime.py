@@ -22,6 +22,11 @@ import time
 from pathlib import Path
 
 from iris.infrastructure.speak_capability import PHASE4_ALLOWLIST
+from iris.system.execution_context import (
+    TRUST_FIELD_KEYS,
+    execution_context_from_control,
+    make_execution_context,
+)
 from iris.system.execution_runtime import (
     MANAGE_ACTIONS,
     WAIT_MAX_TIMEOUT_S,
@@ -274,13 +279,24 @@ def _check_process_manage_schema() -> None:
     assert required <= enum, (enum, required)
     assert "action" in (grant.parameters.get("required") or [])
     assert MANAGE_ACTIONS >= required
-    for key in ("session_id", "workspace_id", "owner"):
-        assert key in props, f"SpeakGrant process.manage missing {key}"
-    # Control-facing manage via default runtime + action dispatch shape
+    # Trust fields must not be model-writable (forgery surface).
+    for key in (
+        "session_id",
+        "workspace_id",
+        "workspace_root",
+        "owner",
+        "owner_token",
+        "principal",
+        "permission_scope",
+    ):
+        assert key not in props, f"SpeakGrant process.manage must not expose {key}"
+        assert key in TRUST_FIELD_KEYS
+    # Unscoped list without trusted admin context is blocked.
     rt = default_runtime()
     listed = rt.manage({"action": "list"})
-    assert listed.get("ok") is True
-    assert "runs" in listed.get("data", listed)
+    assert listed.get("ok") is False, listed
+    err = str(listed.get("error") or "").lower()
+    assert "session" in err or "admin" in err or "denied" in err or "scope" in err, listed
 
 
 def _fresh_rt(tmp: Path) -> ExecutionRuntime:
@@ -290,13 +306,14 @@ def _fresh_rt(tmp: Path) -> ExecutionRuntime:
 def _check_start_requires_approval() -> None:
     with tempfile.TemporaryDirectory() as td:
         rt = _fresh_rt(Path(td))
+        ctx = make_execution_context(session_id="sess-a")
         denied = rt.manage(
             {
                 "action": "start",
                 "argv": [sys.executable, "-c", "pass"],
                 "cwd": str(Path.home()),
-                "session_id": "sess-a",
-            }
+            },
+            ctx=ctx,
         )
         assert denied.get("ok") is False, denied
         err = str(denied.get("error") or "").lower()
@@ -308,8 +325,8 @@ def _check_start_requires_approval() -> None:
                 "action": "start",
                 "argv": [sys.executable, "-c", "import sys; sys.exit(0)"],
                 "cwd": str(Path.home()),
-                "session_id": "sess-a",
-            }
+            },
+            ctx=ctx,
         )
         assert ok.get("ok") is True, ok
         run_id = (ok.get("data") or {}).get("run_id")
@@ -320,19 +337,25 @@ def _check_start_requires_approval() -> None:
 def _check_start_cwd_outside_denied() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td).resolve()
+        (root / "ws").mkdir(exist_ok=True)
         outside = root.parent / "iris-proc-cwd-outside"
         outside.mkdir(exist_ok=True)
         try:
             rt = _fresh_rt(root)
             rt.set_human_confirm(lambda _s, _a: True)
+            ctx = make_execution_context(
+                session_id="sess-a",
+                workspace_root=str(root / "ws"),
+            )
             denied = rt.manage(
                 {
                     "action": "start",
                     "argv": [sys.executable, "-c", "pass"],
                     "cwd": str(outside),
-                    "workspace_root": str(root / "ws"),
-                    "session_id": "sess-a",
-                }
+                    # Forged — must be ignored; trusted ctx workspace_root wins.
+                    "workspace_root": str(outside),
+                },
+                ctx=ctx,
             )
             assert denied.get("ok") is False, denied
             assert "cwd" in str(denied.get("error") or "").lower() or "path" in str(
@@ -345,35 +368,115 @@ def _check_start_cwd_outside_denied() -> None:
                 pass
 
 
-def _check_cross_session_acl() -> None:
+def _check_same_session_status_ok() -> None:
     with tempfile.TemporaryDirectory() as td:
         rt = _fresh_rt(Path(td))
         rt.set_human_confirm(lambda _s, _a: True)
+        ctx = make_execution_context(session_id="session_a", principal="alice")
         started = rt.manage(
             {
                 "action": "start",
                 "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
                 "cwd": str(Path.home()),
-                "session_id": "session_a",
-                "workspace_id": "ws1",
-                "owner": "alice",
-            }
+            },
+            ctx=ctx,
+        )
+        assert started.get("ok") is True, started
+        run_id = (started.get("data") or {}).get("run_id")
+        assert run_id
+        data = started.get("data") or {}
+        assert data.get("session_id") == "session_a", data
+        # Ownership comes from trusted context, not model owner args.
+        assert data.get("owner") != "forged-owner"
+        st = rt.manage({"action": "status", "run_id": run_id}, ctx=ctx)
+        assert st.get("ok") is True, st
+        cancelled = rt.manage({"action": "cancel", "run_id": run_id}, ctx=ctx)
+        assert cancelled.get("ok") is True, cancelled
+
+
+def _check_cross_session_acl() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        rt = _fresh_rt(Path(td))
+        rt.set_human_confirm(lambda _s, _a: True)
+        ctx_a = make_execution_context(
+            session_id="session_a",
+            workspace_id="ws1",
+            principal="alice",
+        )
+        ctx_b = make_execution_context(session_id="session_b")
+        started = rt.manage(
+            {
+                "action": "start",
+                "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
+                "cwd": str(Path.home()),
+            },
+            ctx=ctx_a,
         )
         assert started.get("ok") is True, started
         run_id = (started.get("data") or {}).get("run_id")
         assert run_id
         for action in ("status", "cancel", "read_output"):
-            denied = rt.manage(
-                {"action": action, "run_id": run_id, "session_id": "session_b"}
-            )
+            denied = rt.manage({"action": action, "run_id": run_id}, ctx=ctx_b)
             assert denied.get("ok") is False, (action, denied)
             assert "session" in str(denied.get("error") or "").lower() or "denied" in str(
                 denied.get("error") or ""
             ).lower(), (action, denied)
-        # Matching session may cancel (cleanup).
-        cancelled = rt.manage(
-            {"action": "cancel", "run_id": run_id, "session_id": "session_a"}
+        cancelled = rt.manage({"action": "cancel", "run_id": run_id}, ctx=ctx_a)
+        assert cancelled.get("ok") is True, cancelled
+
+
+def _check_forged_trust_fields_denied() -> None:
+    """Model-forged session_id / owner / workspace_root must not grant privilege."""
+    with tempfile.TemporaryDirectory() as td:
+        rt = _fresh_rt(Path(td))
+        rt.set_human_confirm(lambda _s, _a: True)
+        ctx_a = make_execution_context(session_id="session_a", principal="alice")
+        started = rt.manage(
+            {
+                "action": "start",
+                "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
+                "cwd": str(Path.home()),
+                # Forged ownership args — ignored for ProcessRecord ACL fields.
+                "session_id": "session_evil",
+                "owner": "project.run",
+                "owner_token": "project.run",
+            },
+            ctx=ctx_a,
         )
+        assert started.get("ok") is True, started
+        run_id = (started.get("data") or {}).get("run_id")
+        assert run_id
+        data = started.get("data") or {}
+        assert data.get("session_id") == "session_a", data
+        assert data.get("owner") != "project.run" or data.get("session_id") == "session_a"
+
+        ctx_b = make_execution_context(session_id="session_b")
+        # Forge victim session_id / surface owner in args while ctx is wrong session.
+        for action in ("status", "cancel", "read_output"):
+            denied = rt.manage(
+                {
+                    "action": action,
+                    "run_id": run_id,
+                    "session_id": "session_a",
+                    "owner": "project.run",
+                    "owner_token": "alice",
+                },
+                ctx=ctx_b,
+            )
+            assert denied.get("ok") is False, (action, denied)
+
+        # Surface owner label must not ACL-match across sessions.
+        forged_owner_ctx = make_execution_context(
+            session_id="session_b",
+            principal="project.run",
+        )
+        denied_owner = rt.manage(
+            {"action": "status", "run_id": run_id},
+            ctx=forged_owner_ctx,
+        )
+        assert denied_owner.get("ok") is False, denied_owner
+
+        cancelled = rt.manage({"action": "cancel", "run_id": run_id}, ctx=ctx_a)
         assert cancelled.get("ok") is True, cancelled
 
 
@@ -387,18 +490,47 @@ def _check_list_filters_own_session() -> None:
                     "action": "start",
                     "argv": [sys.executable, "-c", f"print({tag!r})"],
                     "cwd": str(Path.home()),
-                    "session_id": sid,
-                }
+                },
+                ctx=make_execution_context(session_id=sid),
             )
             assert out.get("ok") is True, out
             rid = (out.get("data") or {}).get("run_id")
             rt.wait(str(rid), timeout_s=15.0)
-        listed = rt.manage({"action": "list", "session_id": "session_a"})
+
+        # List without trusted session must not dump all runs.
+        unscoped = rt.manage({"action": "list"})
+        assert unscoped.get("ok") is False, unscoped
+        forged_list = rt.manage(
+            {"action": "list", "session_id": "session_a"},
+            ctx=make_execution_context(session_id="session_b"),
+        )
+        assert forged_list.get("ok") is True, forged_list
+        forged_runs = (forged_list.get("data") or {}).get("runs") or []
+        assert all(r.get("session_id") == "session_b" for r in forged_runs), forged_runs
+        assert not any(r.get("session_id") == "session_a" for r in forged_runs), forged_runs
+
+        listed = rt.manage(
+            {"action": "list"},
+            ctx=make_execution_context(session_id="session_a"),
+        )
         assert listed.get("ok") is True, listed
         runs = (listed.get("data") or {}).get("runs") or []
         assert runs, listed
         assert all(r.get("session_id") == "session_a" for r in runs), runs
         assert not any(r.get("session_id") == "session_b" for r in runs), runs
+
+        # Admin policy may list all.
+        admin = rt.manage(
+            {"action": "list"},
+            ctx=execution_context_from_control(
+                session_id="ops",
+                permission_scope="admin",
+            ),
+        )
+        assert admin.get("ok") is True, admin
+        admin_runs = (admin.get("data") or {}).get("runs") or []
+        sids = {r.get("session_id") for r in admin_runs}
+        assert "session_a" in sids and "session_b" in sids, admin_runs
 
 
 def _check_wait_timeout_capped() -> None:
@@ -435,13 +567,14 @@ def _check_wait_timeout_capped() -> None:
 
             rt2 = _fresh_rt(Path(td) / "w2")
             rt2.set_human_confirm(lambda _s, _a: True)
+            ctx_w = make_execution_context(session_id="sess-wait2")
             started = rt2.manage(
                 {
                     "action": "start",
                     "argv": [sys.executable, "-c", "import time; time.sleep(60)"],
                     "cwd": str(Path.home()),
-                    "session_id": "sess-wait2",
-                }
+                },
+                ctx=ctx_w,
             )
             assert started.get("ok") is True, started
             rid2 = (started.get("data") or {}).get("run_id")
@@ -449,15 +582,16 @@ def _check_wait_timeout_capped() -> None:
                 {
                     "action": "wait",
                     "run_id": rid2,
-                    "session_id": "sess-wait2",
                     "timeout_s": 9999,
-                }
+                },
+                ctx=ctx_w,
             )
             assert waited.get("ok") is True, waited
             # Capped soft-wait returns while still running; cancel must work.
             assert (waited.get("data") or {}).get("status") == ProcessStatus.RUNNING.value
             out = rt2.manage(
-                {"action": "cancel", "run_id": rid2, "session_id": "sess-wait2"}
+                {"action": "cancel", "run_id": rid2},
+                ctx=ctx_w,
             )
             assert out.get("ok") is True, out
     finally:
@@ -476,7 +610,9 @@ def main() -> None:
     _check_process_manage_schema()
     _check_start_requires_approval()
     _check_start_cwd_outside_denied()
+    _check_same_session_status_ok()
     _check_cross_session_acl()
+    _check_forged_trust_fields_denied()
     _check_list_filters_own_session()
     _check_wait_timeout_capped()
     print("execution_runtime ok")

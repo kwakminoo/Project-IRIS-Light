@@ -63,6 +63,7 @@ from iris.core.chat_block_parser import (
 )
 from iris.ui.chat.chat_blocks import (
     ToolShellBlock,
+    handle_shell_approval_click,
     handle_tool_collapse_click,
 )
 from iris.ui.chat.chat_renderer import (
@@ -71,7 +72,7 @@ from iris.ui.chat.chat_renderer import (
     render_user_message,
 )
 from iris.ui.chat.transcript_h1 import H1TranscriptHost
-from iris.core.message_parts import DiagramPart, TextPart
+from iris.core.message_parts import DiagramPart, TextPart, ToolShellPart
 from iris.core.part_contract import parts_from_assistant_payload
 from iris.core.part_stream import PartStreamBuffer
 from iris.storage.conversations import message_parts as conversation_message_parts
@@ -1595,7 +1596,9 @@ class ChatPanel(QWidget):
             self.iris_agent_update_action_clicked.emit
         )
         self._transcript_h1.ollama_login_clicked.connect(self.ollama_login_clicked.emit)
+        self._transcript_h1.shell_approval_clicked.connect(self._on_h1_shell_approval)
         self._transcript_h1.setMinimumHeight(80)
+        self._shell_tool_blocks: dict[str, ToolShellBlock] = {}
 
         self._height_handle = _ChatHeightHandle()
         self._height_handle.drag_started.connect(self._begin_height_drag)
@@ -2746,6 +2749,7 @@ class ChatPanel(QWidget):
         self._tool_seq = 0
         self._block_buffer.reset()
         self._part_stream_buf = None
+        self._shell_tool_blocks.clear()
         self._log._tool_blocks.clear()
         self._log._error_details.clear()
         self._log.clear()
@@ -3173,7 +3177,7 @@ class ChatPanel(QWidget):
         phase: str | None = None,
         **_kwargs,
     ) -> str:
-        """Cursor식 도구/셸 실행 카드를 채팅 로그에 인라인 삽입."""
+        """Cursor식 도구/셸 실행 카드를 H1 transcript에 인라인 삽입."""
         self.finish_typing()
         self._tool_seq += 1
         bid = (block_id or f"tool{self._tool_seq}").strip() or f"tool{self._tool_seq}"
@@ -3186,22 +3190,87 @@ class ChatPanel(QWidget):
             collapsed=False,
             phase=(phase or "done").strip() or "done",
         )
+        self._shell_tool_blocks[bid] = block
         self._log._tool_blocks[bid] = block
-        cursor = self._log.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertHtml(
-            render_tool_shell(
-                block.title,
-                block.command,
-                block.output,
-                block.status,
-                block.block_id,
+        part = ToolShellPart(
+            title=block.title,
+            command=block.command,
+            output=block.output,
+            status=block.status,
+            block_id=bid,
+            collapsed=block.collapsed,
+            phase=block.phase,
+        )
+        self.transcript().upsert_tool_shell_part(part)
+        return bid
+
+    def replace_tool_block(
+        self,
+        block_id: str,
+        *,
+        title: str | None = None,
+        command: str | None = None,
+        output: str | None = None,
+        status: str | None = None,
+        phase: str | None = None,
+        **_kwargs,
+    ) -> bool:
+        """Same block_id partial update on H1 (no full transcript rewrite when DOM patch works)."""
+        bid = (block_id or "").strip()
+        if not bid:
+            return False
+        prev = self._shell_tool_blocks.get(bid) or self._log._tool_blocks.get(bid)
+        if prev is None:
+            return False
+        block = ToolShellBlock(
+            title=prev.title if title is None else (title or "Shell"),
+            command=prev.command if command is None else (command or ""),
+            output=prev.output if output is None else (output or ""),
+            status=prev.status if status is None else (status or "ok"),
+            block_id=bid,
+            collapsed=prev.collapsed,
+            phase=(
+                prev.phase
+                if phase is None
+                else ((phase or "done").strip() or "done")
+            ),
+        )
+        self._shell_tool_blocks[bid] = block
+        self._log._tool_blocks[bid] = block
+        part = ToolShellPart(
+            title=block.title,
+            command=block.command,
+            output=block.output,
+            status=block.status,
+            block_id=bid,
+            collapsed=block.collapsed,
+            phase=block.phase,
+        )
+        return bool(self.transcript().upsert_tool_shell_part(part))
+
+    def _on_h1_shell_approval(self, anchor: str) -> None:
+        """H1 iris-run/always/skip/mode → shell_gate.decide (+ allowlist)."""
+        handle_shell_approval_click(
+            self._log,
+            self._shell_tool_blocks,
+            anchor or "",
+        )
+        # Keep H1 card in sync after skip / status mutations.
+        bid = ""
+        for scheme in ("iris-run://", "iris-always://", "iris-skip://", "iris-mode://"):
+            if (anchor or "").startswith(scheme):
+                bid = (anchor or "").removeprefix(scheme).strip()
+                break
+        block = self._shell_tool_blocks.get(bid)
+        if block is not None:
+            self.replace_tool_block(
+                bid,
+                title=block.title,
+                command=block.command,
+                output=block.output,
+                status=block.status,
                 phase=block.phase,
             )
-        )
-        self._log.setTextCursor(cursor)
-        self._scroll_log_to_bottom()
-        return bid
 
     def begin_stream_message(
         self,

@@ -11,13 +11,42 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlparse
 
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtGui import QAction
+from PyQt6.QtWidgets import QMenu, QWidget
 
+from iris.ui.chat.card_models import RUN_MODES
 from iris.ui.chat.chat_syntax import highlight_code
 from iris.ui.chat.typography import TOKENS
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QTextEdit
+
+
+def build_run_mode_menu(parent: QWidget | None = None) -> QMenu:
+    """Cursor-style approval mode menu (Ask / Allowlist / Run Everything)."""
+    menu = QMenu(parent)
+    for mode_id, label, description in RUN_MODES:
+        action = QAction(label, menu)
+        action.setToolTip(description)
+        action.setData(mode_id)
+        menu.addAction(action)
+    return menu
+
+
+def wire_run_mode_menu(menu: QMenu, approval_path: Path | None = None) -> None:
+    """Persist mode_id from menu clicks into shell_approval.json."""
+    from iris.ui.chat.shell_approval import choose, load, save
+
+    def _on_triggered(action: QAction) -> None:
+        mode_id = action.data()
+        if not isinstance(mode_id, str) or not mode_id:
+            return
+        try:
+            save(choose(load(approval_path), mode_id, ""), approval_path)
+        except OSError:
+            pass
+
+    menu.triggered.connect(_on_triggered)
 
 _SHELL_APPROVAL_SCHEMES = (
     ("iris-run://", "run"),
@@ -220,7 +249,20 @@ def handle_shell_approval_click(
         skipped = replace(block, phase="done", status="skipped")
         blocks[block_id] = skipped
         decide(block_id, "skip")
-        return _rerender_tool_block(text_edit, block_id, skipped)
+        # Markers may live on H1 only; QTextEdit rerender is best-effort.
+        _rerender_tool_block(text_edit, block_id, skipped)
+        return True
+    if action == "mode":
+        menu = build_run_mode_menu(text_edit)
+        wire_run_mode_menu(menu, approval_path)
+        # Anchor click: show at cursor; headless tests may only assert False on missing block.
+        try:
+            from PyQt6.QtGui import QCursor
+
+            menu.exec(QCursor.pos())
+        except Exception:
+            pass
+        return True
     return False
 
 

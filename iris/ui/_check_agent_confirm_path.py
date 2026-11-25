@@ -106,8 +106,24 @@ def main() -> int:
     assert mail is True
     assert hud_calls == ["hud"]
 
+    # U06: shell/project.run fail-closed — no chat card ⇒ deny, never HUD.
+    deny_args: dict = {"command": "git status"}
     no_chat = human_confirm_decision(
         run_spec,
+        deny_args,
+        chat=None,
+        ask_hud=_hud,
+        on_ui=lambda fn: fn(),
+        wait=lambda _bid: (_ for _ in ()).throw(AssertionError("no insert")),
+        load_approval=lambda: ApprovalState(),
+    )
+    assert no_chat is False
+    assert hud_calls == ["hud"]  # only email.send above
+    assert deny_args.get("_iris_confirm_deny") == "approval_ui_unavailable"
+
+    shell_spec = SimpleNamespace(name="shell.run", summary="shell")
+    no_chat_shell = human_confirm_decision(
+        shell_spec,
         {"command": "git status"},
         chat=None,
         ask_hud=_hud,
@@ -115,16 +131,55 @@ def main() -> int:
         wait=lambda _bid: (_ for _ in ()).throw(AssertionError("no insert")),
         load_approval=lambda: ApprovalState(),
     )
-    assert no_chat is True
+    assert no_chat_shell is False
+    assert hud_calls == ["hud"]
+
+    # write_file may still HUD when card unavailable
+    write_spec = SimpleNamespace(name="project.write_file", summary="write")
+    write_ok = human_confirm_decision(
+        write_spec,
+        {"file": "a.py"},
+        chat=None,
+        ask_hud=_hud,
+        on_ui=lambda fn: fn(),
+        wait=lambda _bid: (_ for _ in ()).throw(AssertionError("no write card")),
+        load_approval=lambda: ApprovalState(),
+    )
+    assert write_ok is True
     assert hud_calls == ["hud", "hud"]
 
     assert "shell.run" in _CARD_CONFIRM_ACTIONS
     assert "project.write_file" in _CARD_CONFIRM_ACTIONS
     assert "email.send" not in _CARD_CONFIRM_ACTIONS
+    from iris.ui.control_bindings import _SHELL_NO_HUD_ACTIONS
+
+    assert "shell.run" in _SHELL_NO_HUD_ACTIONS
+    assert "project.run" in _SHELL_NO_HUD_ACTIONS
 
     bindings_src = Path(control_bindings.__file__).read_text(encoding="utf-8")
     assert "on_attention=" in bindings_src
     assert "_raise_attention(window)" in bindings_src
+    assert "approval_ui_unavailable" in bindings_src
+
+    from iris.system.control_surface import ActionSpec
+    from iris.system.execution_policy import check_action_approval
+
+    tagged: dict = {"command": "x"}
+    policy = check_action_approval(
+        ActionSpec(name="project.run", summary="r", risk="medium", confirm_required=True),
+        tagged,
+        lambda _s, a: human_confirm_decision(
+            run_spec,
+            a,
+            chat=None,
+            ask_hud=lambda: True,
+            on_ui=lambda fn: fn(),
+            wait=lambda _b: "run",
+            load_approval=lambda: ApprovalState(),
+        ),
+    )
+    assert policy.allowed is False
+    assert policy.reason == "approval_ui_unavailable"
 
     print("agent confirm path ok")
     return 0

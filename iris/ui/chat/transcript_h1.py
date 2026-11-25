@@ -37,10 +37,12 @@ from iris.core.message_parts import (
     MessagePart,
     TextPart,
     ToolPart,
+    ToolShellPart,
     WritingPart,
     parts_display_md,
 )
 from iris.core.part_stream import PartClose, PartDelta, PartOpen, PartStreamEvent
+from iris.ui.chat.chat_blocks import ToolShellBlock, marked_tool_shell_to_html
 from iris.ui.chat.chat_renderer import (
     _ATTACH_TOKEN,
     _swap_local_attachments,
@@ -377,6 +379,7 @@ class H1TranscriptHost(QWidget):
     update_action_clicked = pyqtSignal(str)  # iris-update:// apply | later
     iris_agent_update_action_clicked = pyqtSignal(str)  # iris-agent-update:// apply | later
     ollama_login_clicked = pyqtSignal()
+    shell_approval_clicked = pyqtSignal(str)  # iris-run|always|skip|mode://block_id
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -449,6 +452,72 @@ class H1TranscriptHost(QWidget):
             _Turn(role=str(role or ""), parts=tuple(parts), msg_id=str(msg_id or ""))
         )
         self._render()
+
+    def upsert_tool_shell_part(self, part: ToolShellPart) -> bool:
+        """Insert or replace a ToolShellPart by block_id without full-page rebuild when possible."""
+        bid = str(part.block_id or "").strip()
+        if not bid:
+            return False
+        for ti, turn in enumerate(self._turns):
+            for pi, existing in enumerate(turn.parts):
+                if isinstance(existing, ToolShellPart) and str(existing.block_id) == bid:
+                    new_parts = list(turn.parts)
+                    new_parts[pi] = part
+                    self._turns[ti] = replace(turn, parts=tuple(new_parts))
+                    html_body = marked_tool_shell_to_html(
+                        ToolShellBlock(
+                            title=part.title or "Shell",
+                            command=part.command or "",
+                            output=part.output or "",
+                            status=part.status or "ok",
+                            block_id=bid,
+                            collapsed=bool(part.collapsed),
+                            phase=(part.phase or "done").strip() or "done",
+                        )
+                    )
+                    self._patch_tool_shell_dom(bid, html_body)
+                    return True
+        self.append_turn("assistant", [part], msg_id=f"shell-{bid}")
+        return True
+
+    def _patch_tool_shell_dom(self, block_id: str, html_body: str) -> None:
+        """Replace one marked shell card in #transcript; fall back to full patch."""
+        view = self._view
+        if view is None or not self._page_ready:
+            self._render()
+            return
+        start = f"IRIS_TOOL_{block_id}_START"
+        end = f"IRIS_TOOL_{block_id}_END"
+        script = (
+            "(function(){"
+            "var t=document.getElementById('transcript');"
+            "if(!t)return false;"
+            f"var s={json.dumps(start)}, e={json.dumps(end)};"
+            "var html=" + json.dumps(html_body) + ";"
+            "var spans=t.querySelectorAll('span');"
+            "var a=null,b=null;"
+            "for(var i=0;i<spans.length;i++){"
+            " var tx=(spans[i].textContent||'').trim();"
+            " if(tx===s)a=spans[i];"
+            " if(tx===e){b=spans[i]; if(a)break;}"
+            "}"
+            "if(!a||!b||!a.parentNode)return false;"
+            "var range=document.createRange();"
+            "range.setStartBefore(a); range.setEndAfter(b);"
+            "range.deleteContents();"
+            "var tmp=document.createElement('div'); tmp.innerHTML=html;"
+            "var frag=document.createDocumentFragment();"
+            "while(tmp.firstChild) frag.appendChild(tmp.firstChild);"
+            "range.insertNode(frag);"
+            "return true;"
+            "})();"
+        )
+
+        def _cb(ok: Any) -> None:
+            if not ok:
+                self._render()
+
+        view.page().runJavaScript(script, _cb)
 
     def begin_part_stream(self, role: str = "assistant", msg_id: str = "") -> None:
         """Start one assistant/user turn shell for card-stable part streaming.
@@ -736,6 +805,11 @@ class H1TranscriptHost(QWidget):
                 if "iris-ollama-login" in text:
                     host.ollama_login_clicked.emit()
                     return False
+                if text.startswith(
+                    ("iris-run://", "iris-always://", "iris-skip://", "iris-mode://")
+                ):
+                    host.shell_approval_clicked.emit(text)
+                    return False
                 return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
         view = QWebEngineView(self)
@@ -908,6 +982,17 @@ class H1TranscriptHost(QWidget):
             )
         if isinstance(part, ExecutionPart):
             return render_execution_part_html(part)
+        if isinstance(part, ToolShellPart):
+            block = ToolShellBlock(
+                title=part.title or "Shell",
+                command=part.command or "",
+                output=part.output or "",
+                status=part.status or "ok",
+                block_id=part.block_id or "tool",
+                collapsed=bool(part.collapsed),
+                phase=(part.phase or "done").strip() or "done",
+            )
+            return marked_tool_shell_to_html(block)
         if isinstance(part, ImagePart):
             return render_image_part_html(part)
         if isinstance(part, AppPart):

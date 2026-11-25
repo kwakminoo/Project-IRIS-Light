@@ -14,7 +14,12 @@ from typing import Any, Literal
 
 from iris.runtime.attachment_context import EXCLUDED, _is_link
 from iris.system.execution_policy import check_path_allowed
-from iris.system.patch_buffer_sync import notify_files_patched
+from iris.system.patch_buffer_sync import (
+    collect_open_buffer_conflicts,
+    get_patch_buffer_sync,
+    idle_ide_refresh,
+    notify_files_patched,
+)
 
 SearchMode = Literal["content", "name"]
 
@@ -439,19 +444,17 @@ def apply_patch(
     if not base.is_dir():
         raise NotADirectoryError(str(base))
     ops = parse_patch(patch_text)
-    stub_note = (
-        "disk updated; IDE buffer hook notified when registered — "
-        "Theia sync is stub (no in-repo notify API)"
+    idle_refresh = idle_ide_refresh()
+    ok_note_stub = (
+        "disk updated; IDE buffer hook absent — editor buffers not synced"
     )
-    conflict_note = (
-        "IDE buffer sync is stub; disk not updated on conflict"
-    )
+    conflict_note = "disk not updated on conflict"
     if not ops:
         return {
             "ok": False,
             "conflicts": [{"path": "", "reason": "empty or unparseable patch"}],
             "files_changed": [],
-            "ide_refresh": "stub",
+            "ide_refresh": idle_refresh,
             "note": conflict_note,
         }
 
@@ -556,7 +559,18 @@ def apply_patch(
             "ok": False,
             "conflicts": conflicts,
             "files_changed": [],
-            "ide_refresh": "stub",
+            "ide_refresh": idle_refresh,
+            "note": conflict_note,
+        }
+
+    target_paths = [item.op.path for item in prepared]
+    buffer_conflicts = collect_open_buffer_conflicts(str(base), target_paths)
+    if buffer_conflicts:
+        return {
+            "ok": False,
+            "conflicts": buffer_conflicts,
+            "files_changed": [],
+            "ide_refresh": "conflict" if get_patch_buffer_sync() is not None else "stub",
             "note": conflict_note,
         }
 
@@ -600,7 +614,7 @@ def apply_patch(
                 "ok": False,
                 "conflicts": [{"path": "", "reason": f"apply failed: {exc}"}],
                 "files_changed": [],
-                "ide_refresh": "stub",
+                "ide_refresh": idle_refresh,
                 "note": conflict_note,
             }
     except OSError as exc:
@@ -610,7 +624,7 @@ def apply_patch(
             "ok": False,
             "conflicts": [{"path": "", "reason": f"stage failed: {exc}"}],
             "files_changed": [],
-            "ide_refresh": "stub",
+            "ide_refresh": idle_refresh,
             "note": conflict_note,
         }
 
@@ -618,11 +632,22 @@ def apply_patch(
         _cleanup_tmp(tmp)
 
     changed = [item.op.path for item in prepared]
-    notify_files_patched(str(base), changed)
+    refresh = notify_files_patched(str(base), changed)
+    if refresh is None:
+        ide_refresh = idle_ide_refresh()
+        note = ok_note_stub
+    else:
+        ide_refresh = refresh
+        note = {
+            "ok": "disk updated; IDE buffers reloaded from disk",
+            "conflict": "disk updated; IDE refused reload (dirty open buffer)",
+            "unavailable": "disk updated; IDE buffer sync unavailable",
+            "stub": ok_note_stub,
+        }.get(ide_refresh, "disk updated; IDE buffer sync status unknown")
     return {
         "ok": True,
         "conflicts": [],
         "files_changed": changed,
-        "ide_refresh": "stub",
-        "note": stub_note,
+        "ide_refresh": ide_refresh,
+        "note": note,
     }

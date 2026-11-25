@@ -155,6 +155,65 @@ export async function saveEvery(manager: EditorManager): Promise<Record<string, 
     return { saved: true, via: 'editor', count };
 }
 
+/**
+ * Reload open editor buffers from disk. Dirty buffers are refused (no save/discard).
+ * Paths not open are skipped — not a failure.
+ */
+export async function reloadFromDisk(
+    manager: EditorManager,
+    args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+    const raw = args.paths ?? args.path;
+    const paths = Array.isArray(raw)
+        ? raw.map(item => String(item || '').trim()).filter(Boolean)
+        : String(raw || '').trim()
+            ? [String(raw).trim()]
+            : [];
+    if (!paths.length) {
+        return { results: [], reloaded: 0, refused: 0 };
+    }
+    const results: Record<string, unknown>[] = [];
+    let reloaded = 0;
+    let refused = 0;
+    for (const path of paths) {
+        const widget = widgetFor(manager, { path, abs: path });
+        if (!widget?.editor?.document) {
+            results.push({ path, skipped: true, reason: 'not open' });
+            continue;
+        }
+        const doc = widget.editor.document as {
+            dirty?: boolean;
+            revert?: (options?: { force?: boolean }) => Promise<void>;
+        };
+        if (doc.dirty) {
+            refused += 1;
+            results.push({
+                path: FileUri.fsPath(widget.editor.uri),
+                reloaded: false,
+                reason: 'dirty',
+            });
+            continue;
+        }
+        if (typeof doc.revert !== 'function') {
+            refused += 1;
+            results.push({
+                path: FileUri.fsPath(widget.editor.uri),
+                reloaded: false,
+                reason: 'revert unavailable',
+            });
+            continue;
+        }
+        await doc.revert();
+        reloaded += 1;
+        results.push({
+            path: FileUri.fsPath(widget.editor.uri),
+            reloaded: true,
+            via: 'editor',
+        });
+    }
+    return { results, reloaded, refused, via: 'editor' };
+}
+
 export async function editBuffer(
     manager: EditorManager,
     cmd: string,

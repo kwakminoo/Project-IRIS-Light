@@ -68,6 +68,13 @@ def main() -> None:
     text = bundle.read_text(encoding="utf-8", errors="ignore")
     assert "pollPendingCommands" in text
     assert "runTerminalCommand" in text
+    assert "appendTerminalOutput" in text, "bundle missing appendTerminalOutput mirror cmd"
+
+    project = (
+        Path(__file__).resolve().parents[1] / "ui" / "control_actions" / "project.py"
+    ).read_text(encoding="utf-8")
+    assert "append_terminal_output" in project
+    assert "echo IRIS_RUN_ID=" not in project
 
     # install backend contribution compiled
     lib = runtime_install_dir() / "lib/node/iris-ide-backend-contribution.js"

@@ -22,6 +22,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
+from iris.system.execution_context import (
+    ExecutionContext,
+    strip_trust_fields,
+)
 from iris.system.execution_policy import (
     WAIT_MAX_TIMEOUT_S,
     cap_wait_timeout,
@@ -537,23 +541,40 @@ class ProcessRegistry:
             "error": "write_stdin not supported on local_subprocess (stdin closed)",
         }
 
-    def _session_acl_allows(self, record: ProcessRecord, raw: Mapping[str, Any]) -> bool:
-        """Matching session_id, or explicit owner token; legacy unscoped runs allowed."""
+    def _session_acl_allows(
+        self,
+        record: ProcessRecord,
+        ctx: ExecutionContext | None,
+    ) -> bool:
+        """Compare trusted ExecutionContext vs record. Model args never consulted.
+
+        Legacy runs with empty session_id remain readable (pre-U02). Surface labels
+        like project.run / shell.run are telemetry only — not ACL tokens.
+        """
         rec_sid = str(record.session_id or "").strip()
-        rec_owner = str(record.owner or "").strip()
-        if not rec_sid and not rec_owner:
+        if not rec_sid:
             return True
-        caller_sid = str(raw.get("session_id") or "").strip()
-        caller_owner = str(raw.get("owner") or raw.get("owner_token") or "").strip()
-        if rec_sid and caller_sid == rec_sid:
+        if ctx is None:
+            return False
+        if ctx.is_admin():
             return True
-        if rec_owner and caller_owner and caller_owner == rec_owner:
+        caller_sid = ctx.effective_session_id()
+        if caller_sid and caller_sid == rec_sid:
             return True
         return False
 
-    def manage(self, args: Mapping[str, Any] | None) -> dict[str, Any]:
-        """process.manage / process_manage dispatcher."""
-        raw = dict(args or {})
+    def manage(
+        self,
+        args: Mapping[str, Any] | None,
+        *,
+        ctx: ExecutionContext | None = None,
+    ) -> dict[str, Any]:
+        """process.manage / process_manage dispatcher.
+
+        Ownership / ACL / workspace_root come from ``ctx`` only. Trust fields in
+        ``args`` are stripped so Speak payloads cannot forge privilege.
+        """
+        raw = strip_trust_fields(args)
         action = str(raw.get("action") or "").strip()
         if action not in MANAGE_ACTIONS:
             return {
@@ -564,7 +585,17 @@ class ProcessRegistry:
             }
         try:
             if action == "list":
-                sid = str(raw.get("session_id") or "").strip() or None
+                if ctx is not None and ctx.is_admin():
+                    runs = [r.as_dict() for r in self.list_runs(session_id=None)]
+                    return {"ok": True, "action": "process.manage", "data": {"runs": runs}}
+                sid = ctx.effective_session_id() if ctx is not None else ""
+                if not sid:
+                    return {
+                        "ok": False,
+                        "action": "process.manage",
+                        "error": "session scope required (admin policy for unscoped list)",
+                        "data": {"runs": []},
+                    }
                 runs = [r.as_dict() for r in self.list_runs(session_id=sid)]
                 return {"ok": True, "action": "process.manage", "data": {"runs": runs}}
             if action == "start":
@@ -580,10 +611,12 @@ class ProcessRegistry:
                         "error": approval.reason or "human confirm required",
                         "data": {"confirm_required": True, "risk": "high"},
                     }
-                ws_root = raw.get("workspace_root")
+                ws_root = ""
+                if ctx is not None and str(ctx.workspace_root or "").strip():
+                    ws_root = str(ctx.workspace_root).strip()
                 cwd_decision = check_process_start_cwd(
                     raw.get("cwd"),
-                    workspace_root=ws_root if ws_root not in (None, "") else None,
+                    workspace_root=ws_root if ws_root else None,
                 )
                 if not cwd_decision.allowed:
                     return {
@@ -594,8 +627,8 @@ class ProcessRegistry:
                     }
                 cwd_raw = raw.get("cwd")
                 if not str(cwd_raw or "").strip():
-                    if ws_root not in (None, ""):
-                        cwd_raw = str(Path(str(ws_root)).expanduser().resolve())
+                    if ws_root:
+                        cwd_raw = str(Path(ws_root).expanduser().resolve())
                     else:
                         cwd_raw = str(Path.home().resolve())
                 argv = raw.get("argv")
@@ -611,15 +644,21 @@ class ProcessRegistry:
                         project_root=cwd_raw,
                         allow_create=False,
                     )
+                session_id = ctx.effective_session_id() if ctx is not None else ""
+                workspace_id = str(ctx.workspace_id or "") if ctx is not None else ""
+                # Telemetry owner from trusted principal/surface — never model args.
+                owner = ""
+                if ctx is not None:
+                    owner = str(ctx.principal or ctx.surface or "").strip()
                 run_id = self.start(
                     argv=bound_argv,
                     shell=str(shell) if shell and not argv else None,
                     cwd=cwd_raw,
                     env_id=str(raw.get("environment_id") or raw.get("env_id") or ""),
                     timeout_s=float(raw["timeout_s"]) if raw.get("timeout_s") is not None else None,
-                    session_id=str(raw.get("session_id") or ""),
-                    workspace_id=str(raw.get("workspace_id") or ""),
-                    owner=str(raw.get("owner") or ""),
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    owner=owner,
                 )
                 return {
                     "ok": True,
@@ -643,7 +682,7 @@ class ProcessRegistry:
                             "status": ProcessStatus(slot.record.status),
                         }
                     )
-                if not self._session_acl_allows(rec_snap, raw):
+                if not self._session_acl_allows(rec_snap, ctx):
                     return {
                         "ok": False,
                         "action": "process.manage",

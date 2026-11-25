@@ -223,6 +223,8 @@ export class IrisIdeBridgeServer {
             case 'saveFile':
             case 'saveAll':
                 throw new Error('save goes through the standalone bridge frontend');
+            case 'reloadFromDisk':
+                throw new Error('reloadFromDisk goes through the standalone bridge frontend');
             case 'createFile': {
                 const rel = String(args.path || '');
                 const abs = this.resolvePath(rel);
@@ -256,11 +258,10 @@ export class IrisIdeBridgeServer {
             case 'gotoDefinition':
                 throw new Error(`${cmd} goes through the standalone bridge frontend`);
             case 'createTerminal':
-            case 'runTerminalCommand': {
-                const command = String(args.command || args.cmd || 'echo IRIS_IDE_TEST');
-                const cwd = args.cwd ? this.resolvePath(String(args.cwd)) : this.workspaceRoot;
+            case 'runTerminalCommand':
+            case 'appendTerminalOutput': {
                 throw new Error(
-                    'runTerminalCommand must go through standalone-bridge frontend queue (IRIS IDE integrated terminal)',
+                    `${cmd} must go through standalone-bridge frontend queue (IRIS IDE integrated terminal)`,
                 );
             }
             case 'getTerminalState':

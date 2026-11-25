@@ -144,6 +144,14 @@ class IrisIdeClient:
     def save_all(self) -> dict[str, Any]:
         return self._request("saveAll")
 
+    def reload_from_disk(self, paths: list[str] | str) -> dict[str, Any]:
+        """Reload clean open buffers from disk. Dirty buffers are refused by the IDE."""
+        if isinstance(paths, str):
+            payload_paths = [paths] if paths.strip() else []
+        else:
+            payload_paths = [str(p).strip() for p in (paths or []) if str(p).strip()]
+        return self._request("reloadFromDisk", {"paths": payload_paths})
+
     def create_file(self, path: str, content: str = "") -> dict[str, Any]:
         return self._request("createFile", {"path": path, "content": content})
 
@@ -206,6 +214,17 @@ class IrisIdeClient:
         if argv:
             payload["argv"] = [str(a) for a in argv]
         return self._request("runTerminalCommand", payload)
+
+    def append_terminal_output(
+        self, text: str, *, cwd: str = "", run_id: str = "", stream: str = ""
+    ) -> dict[str, Any]:
+        """Mirror Runtime stdout/stderr into Theia (does not re-execute)."""
+        payload: dict[str, Any] = {"text": str(text or ""), "cwd": cwd}
+        if run_id:
+            payload["run_id"] = str(run_id)
+        if stream:
+            payload["stream"] = str(stream)
+        return self._request("appendTerminalOutput", payload)
 
     def get_terminal_state(self) -> dict[str, Any]:
         return self._request("getTerminalState")

@@ -171,6 +171,7 @@ def render_tool_shell(
     block_id: str = "",
     *,
     collapsed: bool = False,
+    phase: str = "done",
 ) -> str:
     block = ToolShellBlock(
         title=title or "Shell",
@@ -179,6 +180,7 @@ def render_tool_shell(
         status=status or "ok",
         block_id=block_id or "tool",
         collapsed=collapsed,
+        phase=(phase or "done").strip() or "done",
     )
     return wrap_document_html(marked_tool_shell_to_html(block))
 
@@ -484,6 +486,8 @@ _ALLOWED_URL_PREFIXES = (
     "iris-tts://", "iris-error://", "iris-update://", "iris-agent-update://",
     "iris-stt://", "iris-diagram://", "iris-app://", "iris-ollama-login://",
     "iris-image:",
+    "iris-run://", "iris-always://", "iris-skip://", "iris-mode://",
+    "iris-apply://",
 )
 
 

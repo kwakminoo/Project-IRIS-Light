@@ -22,7 +22,15 @@ from iris.ui.chat.chat_blocks import (
     wire_run_mode_menu,
 )
 from iris.ui.chat.chat_renderer import _chat_url_ok
-from iris.ui.chat.shell_approval import ApprovalState, choose, command_prefix, load, save
+from iris.ui.chat.shell_approval import (
+    ApprovalState,
+    allowlist_key,
+    choose,
+    command_prefix,
+    load,
+    save,
+    should_auto_run,
+)
 
 
 def main() -> int:
@@ -33,9 +41,25 @@ def main() -> int:
     assert command_prefix("git status") == "git"
     assert command_prefix('"git" status') == "git"
 
+    assert allowlist_key("git status") == "git"
+    assert allowlist_key("python -m pytest") == "python -m pytest"
+    assert allowlist_key("python evil.py") == "python evil.py"
+    assert allowlist_key("python -c print(1)") == ""
+    assert allowlist_key("git status && rm -rf /") == ""
+    assert allowlist_key("echo hi | cat") == ""
+    # Bare interpreter on allowlist must not auto-run arbitrary code.
+    bare_py = ApprovalState(mode_id="use_allowlist", allowlist=("python",))
+    assert should_auto_run(bare_py, "python evil.py") is False
+    scoped = ApprovalState(mode_id="use_allowlist", allowlist=("python -m pytest",))
+    assert should_auto_run(scoped, "python -m pytest -q") is True
+    assert should_auto_run(scoped, "python evil.py") is False
+    # Always Allow on unsafe/compound does not widen allowlist.
+    assert choose(ApprovalState(), "always", "python -c pass") == ApprovalState()
+    assert choose(ApprovalState(), "always", "git status && echo x") == ApprovalState()
+
     once = choose(ApprovalState(), "always", "git status")
     twice = choose(once, "always", "git status")
-    assert once.mode_id == "ask_every_time"
+    assert once.mode_id == "use_allowlist"
     assert once.allowlist == ("git",)
     assert twice.allowlist == ("git",)
 

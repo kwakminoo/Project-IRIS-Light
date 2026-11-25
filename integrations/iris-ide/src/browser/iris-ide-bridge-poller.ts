@@ -19,6 +19,7 @@ import {
     pluginLoaded,
     queryLocations,
     querySymbols,
+    reloadFromDisk,
     runNamedTask,
     saveEvery,
     saveOne,
@@ -236,6 +237,8 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
                 return this.createTerminal(args);
             case 'runTerminalCommand':
                 return this.runInTerminal(args);
+            case 'appendTerminalOutput':
+                return this.appendTerminalOutput(args);
             case 'getTerminalState':
                 return {
                     active: Boolean(this.terminalService.currentTerminal || this.terminalService.lastUsedTerminal),
@@ -245,6 +248,8 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
                 return saveOne(this.editorManager, args);
             case 'saveAll':
                 return saveEvery(this.editorManager);
+            case 'reloadFromDisk':
+                return reloadFromDisk(this.editorManager, args);
             case 'insertText':
             case 'replaceSelection':
             case 'replaceRange':
@@ -314,6 +319,39 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
         await this.withTimeout(terminal.start(), 10000, 'terminal.start');
         this.revealTerminal(terminal);
         return { name, created: true };
+    }
+
+    /**
+     * Mirror Runtime output into Theia without re-executing (display write).
+     * Prefer xterm write; fall back to sendText without trailing CR when possible.
+     */
+    protected async appendTerminalOutput(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+        const text = String(args.text ?? args.chunk ?? '');
+        const cwd = String(args.cwd || '').trim();
+        const runId = String(args.run_id || '').trim();
+        const stream = String(args.stream || '').trim();
+        const terminal = await this.ensureTerminal(cwd);
+        const anyTerm = terminal as unknown as {
+            write?: (s: string) => void;
+            sendText?: (s: string) => void;
+        };
+        if (typeof anyTerm.write === 'function') {
+            anyTerm.write(text);
+        } else if (typeof anyTerm.sendText === 'function') {
+            // Avoid submitting as a shell command — no trailing CR.
+            anyTerm.sendText(text.endsWith('\n') ? text.slice(0, -1) : text);
+        } else {
+            throw new Error('appendTerminalOutput: terminal has no write/sendText');
+        }
+        this.revealTerminal(terminal);
+        return {
+            appended: true,
+            via: 'theia_terminal',
+            bytes: text.length,
+            revealed: true,
+            run_id: runId || undefined,
+            stream: stream || undefined,
+        };
     }
 
     protected async runInTerminal(args: Record<string, unknown>): Promise<Record<string, unknown>> {

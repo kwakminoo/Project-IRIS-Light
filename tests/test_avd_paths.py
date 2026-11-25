@@ -130,18 +130,56 @@ class ForeignRuntimeArtifactTests(TestCase):
 class GitHygieneTests(TestCase):
     """런타임 산출물이 다시 커밋되지 않도록 .gitignore 를 지킨다."""
 
+    _IGNORE_PATTERNS = (
+        "android-emulator/avd/**/hardware-qemu.ini",
+        "android-emulator/avd/**/emulator-user.ini",
+        "android-emulator/avd/*.ini",
+        ".worktrees/",
+        ".tmp/",
+        "_tmp_*",
+        ".iris/",
+        "graphify-out/",
+        ".github/context-mode/",
+        "ide-folder-native.log",
+        "android-emulator/avd/**/*.img",
+    )
+
+    _TRACKED_MUST_BE_EMPTY = (
+        ".worktrees/",
+        ".tmp/",
+        ".iris/",
+        "graphify-out/",
+        ".github/context-mode/",
+        "ide-folder-native.log",
+    )
+
     def test_runtime_artifacts_are_ignored(self) -> None:
         root = Path(__file__).resolve().parents[1]
         gitignore = root / ".gitignore"
         if not gitignore.is_file():
             self.skipTest(".gitignore 없음")
         body = gitignore.read_text(encoding="utf-8")
-        for pattern in (
-            "android-emulator/avd/**/hardware-qemu.ini",
-            "android-emulator/avd/**/emulator-user.ini",
-            "android-emulator/avd/*.ini",
-        ):
+        for pattern in self._IGNORE_PATTERNS:
             self.assertIn(pattern, body, f"{pattern} 가 .gitignore 에 없다")
+
+    def test_junk_paths_not_tracked(self) -> None:
+        import subprocess
+
+        root = Path(__file__).resolve().parents[1]
+        proc = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=root,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            self.skipTest("git ls-files unavailable")
+        tracked = [p.decode("utf-8", "replace") for p in proc.stdout.split(b"\0") if p]
+        for prefix in self._TRACKED_MUST_BE_EMPTY:
+            hits = [p for p in tracked if p.replace("\\", "/").startswith(prefix.rstrip("/")) or p.replace("\\", "/") == prefix.rstrip("/")]
+            if prefix.endswith(".log"):
+                hits = [p for p in tracked if p.replace("\\", "/").endswith(prefix) or p.replace("\\", "/") == prefix]
+            self.assertEqual(hits, [], f"tracked junk under {prefix}: {hits[:5]}")
 
 
 class EmulatorNoConsoleWindowTests(TestCase):

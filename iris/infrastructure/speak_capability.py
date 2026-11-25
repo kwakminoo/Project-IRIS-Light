@@ -514,7 +514,8 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
             "project.run",
             ExecKind.SURFACE,
             "Run in the bound IDE terminal. Required: command and/or file (rel_path). "
-            "Optional timeout_sec, open_browser, reveal_terminal. Home surface uses shell.run.",
+            "Optional timeout_sec, open_browser, reveal_terminal. Home surface uses shell.run. "
+            "Session/workspace ACL come from Control context (not tool args).",
             _params(
                 {
                     "command": {"type": "string"},
@@ -526,8 +527,6 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
                     "timeout_s": {"type": "number", "minimum": 1},
                     "open_browser": {"type": "boolean"},
                     "reveal_terminal": {"type": "boolean"},
-                    "session_id": {"type": "string"},
-                    "workspace_id": {"type": "string"},
                 },
                 any_of=[
                     {"required": ["command"]},
@@ -542,7 +541,8 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
             "Manage Iris Execution Runtime Local Subprocess runs (headless; not a sandbox). "
             "Required: action (list|status|read_output|wait|cancel; optional start|write_stdin). "
             "run_id required for status|read_output|wait|cancel|write_stdin. "
-            "session_id scopes ACL/list; start needs human confirm + cwd under workspace/home.",
+            "ACL/list scoped by trusted Control ExecutionContext (not model session_id). "
+            "start needs human confirm + cwd under trusted workspace/home.",
             _params(
                 {
                     "action": {
@@ -570,10 +570,6 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
                     "timeout_s": {"type": "number", "minimum": 0},
                     "data": {"type": "string"},
                     "text": {"type": "string"},
-                    "session_id": {"type": "string"},
-                    "workspace_id": {"type": "string"},
-                    "workspace_root": {"type": "string"},
-                    "owner": {"type": "string"},
                 },
                 required=["action"],
             ),

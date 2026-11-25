@@ -629,7 +629,14 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         }
     }
 
-    protected infoFromWidget(widget: { editor?: { uri: URI; document?: { languageId?: string }; cursor?: { line: number; character: number }; selection?: { start: { line: number; character: number }; end: { line: number; character: number } } | null } } | undefined): IrisIdeEditorInfo | null {
+    protected infoFromWidget(widget: {
+        editor?: {
+            uri: URI;
+            document?: { languageId?: string; dirty?: boolean };
+            cursor?: { line: number; character: number };
+            selection?: { start: { line: number; character: number }; end: { line: number; character: number } } | null;
+        };
+    } | undefined): IrisIdeEditorInfo | null {
         const editor = widget?.editor;
         if (!editor?.uri) {
             return null;
@@ -637,12 +644,24 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
         const rel = editor.uri.path.toString();
         const sel = editor.selection;
         const pos = editor.cursor;
-        return {
+        const doc = editor.document;
+        let version: number | undefined;
+        try {
+            const model = (editor as unknown as { getControl?: () => { getModel?: () => { getVersionId?: () => number } | null } }).getControl?.()?.getModel?.();
+            const vid = model?.getVersionId?.();
+            if (typeof vid === 'number') {
+                version = vid;
+            }
+        } catch {
+            version = undefined;
+        }
+        const info: IrisIdeEditorInfo = {
             uri: editor.uri.toString(),
-            path: rel.replace(/^\/([A-Za-z]:)/, '$1').replace(/^\//, ''),
-            languageId: editor.document?.languageId || 'plaintext',
+            path: FileUri.fsPath(editor.uri),
+            languageId: doc?.languageId || 'plaintext',
             line: (pos?.line ?? 0) + 1,
             column: (pos?.character ?? 0) + 1,
+            dirty: Boolean(doc?.dirty),
             selection: sel
                 ? {
                     start: { line: sel.start.line + 1, column: sel.start.character + 1 },
@@ -650,6 +669,10 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
                 }
                 : null,
         };
+        if (version !== undefined) {
+            info.version = version;
+        }
+        return info;
     }
 
     protected editorInfos(): IrisIdeEditorInfo[] {

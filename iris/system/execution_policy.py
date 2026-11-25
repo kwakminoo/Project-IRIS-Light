@@ -106,7 +106,12 @@ def check_action_approval(
     if human_confirm is None:
         return PolicyDecision(False, "human confirm required")
     if not bool(human_confirm(spec, args)):
-        return PolicyDecision(False, "cancelled")
+        reason = "cancelled"
+        if isinstance(args, dict):
+            tagged = str(args.pop("_iris_confirm_deny", "") or "").strip()
+            if tagged:
+                reason = tagged
+        return PolicyDecision(False, reason)
     return PolicyDecision(True)
 
 

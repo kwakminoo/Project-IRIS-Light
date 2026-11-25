@@ -43,6 +43,20 @@ class ToolPart:
 
 
 @dataclass(frozen=True)
+class ToolShellPart:
+    """Cursor-style shell / process card on the H1 transcript."""
+
+    title: str
+    command: str = ""
+    output: str = ""
+    status: str = "ok"
+    block_id: str = ""
+    collapsed: bool = False
+    phase: str = "done"
+    type: Literal["tool_shell"] = "tool_shell"
+
+
+@dataclass(frozen=True)
 class ImagePart:
     alt: str = ""
     path: str = ""
@@ -90,6 +104,7 @@ MessagePart = (
     | WritingPart
     | CodePart
     | ToolPart
+    | ToolShellPart
     | ImagePart
     | ExecutionPart
     | AppPart
@@ -159,6 +174,16 @@ def parse_part(data: Mapping[str, Any]) -> MessagePart:
             name=_require_str(data, "name"),
             detail=_require_str(data, "detail", default=""),
         )
+    if kind == "tool_shell":
+        return ToolShellPart(
+            title=_require_str(data, "title"),
+            command=_require_str(data, "command", default=""),
+            output=_require_str(data, "output", default=""),
+            status=_require_str(data, "status", default="ok"),
+            block_id=_require_str(data, "block_id", default=""),
+            collapsed=_require_bool(data, "collapsed", default=False),
+            phase=_require_str(data, "phase", default="done"),
+        )
     if kind == "image":
         return ImagePart(
             alt=_require_str(data, "alt", default=""),
@@ -213,6 +238,17 @@ def part_to_dict(part: MessagePart) -> dict[str, Any]:
         }
     if isinstance(part, ToolPart):
         return {"type": "tool", "name": part.name, "detail": part.detail}
+    if isinstance(part, ToolShellPart):
+        return {
+            "type": "tool_shell",
+            "title": part.title,
+            "command": part.command,
+            "output": part.output,
+            "status": part.status,
+            "block_id": part.block_id,
+            "collapsed": part.collapsed,
+            "phase": part.phase,
+        }
     if isinstance(part, ImagePart):
         return {"type": "image", "alt": part.alt, "path": part.path}
     if isinstance(part, ExecutionPart):
@@ -261,6 +297,9 @@ def _one_display_md(part: MessagePart) -> str:
         if part.detail:
             line = f"{line} {part.detail}"
         return line
+    if isinstance(part, ToolShellPart):
+        cmd = (part.command or "").strip()
+        return f"[shell: {part.title}] {cmd}".rstrip()
     if isinstance(part, ImagePart):
         if part.alt and part.path:
             return f"[image: {part.alt}] {part.path}"

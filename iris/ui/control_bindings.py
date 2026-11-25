@@ -28,6 +28,7 @@ from iris.system.control_surface import (
     resolve_control_token,
 )
 from iris.system.ide_launcher import ide_catalog, is_ide_installed
+from iris.system.patch_buffer_sync import IdePatchBufferSync, set_patch_buffer_sync
 from iris.learning.permission import policy_for
 from iris.ui.chat.run_visibility import card_from_control_result, insert_visibility_card
 
@@ -641,6 +642,9 @@ _CARD_CONFIRM_ACTIONS = frozenset(
     }
 )
 
+# Shell/project.run: card only — never HUD auto-fallback (U06 fail-closed).
+_SHELL_NO_HUD_ACTIONS = frozenset({"shell.run", "project.run"})
+
 
 def human_confirm_decision(
     spec: Any,
@@ -653,7 +657,7 @@ def human_confirm_decision(
     load_approval: Callable[[], Any] | None = None,
     on_attention: Callable[[], None] | None = None,
 ) -> bool:
-    """ConfirmPath: card gate(가능 시) → 아니면 HUD."""
+    """ConfirmPath: card gate for shell/run; write may HUD; shell never HUD-fallback."""
     name = str(getattr(spec, "name", "") or "")
     if name in _CARD_CONFIRM_ACTIONS:
         from iris.ui.chat.shell_approval import load, preview_command
@@ -674,9 +678,14 @@ def human_confirm_decision(
             on_attention=on_attention,
         )
         if decided.approved is not None:
-            if name == "shell.run" and decided.approved:
+            if name in _SHELL_NO_HUD_ACTIONS and decided.approved:
                 stash_shell_confirm_block(chat, decided.block_id)
             return bool(decided.approved)
+        # Card unavailable: shell/project fail-closed (approval_ui_unavailable).
+        if name in _SHELL_NO_HUD_ACTIONS:
+            if isinstance(args, dict):
+                args["_iris_confirm_deny"] = "approval_ui_unavailable"
+            return False
     return bool(ask_hud())
 
 
@@ -712,6 +721,8 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     register_web_actions(window, reg)
     register_ide_actions(window, reg)
     register_project_actions(window, reg)
+    # Wave 1.2 U10 — wire Theia buffer reload to apply_patch (dirty refuse + post-commit sync).
+    set_patch_buffer_sync(IdePatchBufferSync(lambda: _iris_ide_client(window)))
     register_profile_actions(window, reg)
     register_workspace_actions(window, reg)
     register_emulator_actions(window, reg)

@@ -30,8 +30,10 @@ from iris.infrastructure.absorbed_tool_aliases import (
 from iris.infrastructure.speak_capability import PHASE4_ALLOWLIST
 from iris.system.file_patch import apply_patch, read_text_range, search_files
 from iris.system.patch_buffer_sync import (
+    IdePatchBufferSync,
     get_patch_buffer_sync,
     notify_files_patched,
+    path_matches_editor,
     set_patch_buffer_sync,
 )
 
@@ -331,19 +333,23 @@ def _check_delete_fingerprint_guard() -> None:
 
 
 def _check_buffer_sync_hook_stub() -> None:
-    """Disk-side notify hook exists; Theia path is stub until real notify API is wired."""
+    """Hook notify on success; ide_refresh is never a false success."""
     seen: list[tuple[str, list[str]]] = []
 
     class _Capture:
-        def on_files_patched(self, root: str, paths: list[str]) -> None:
+        def open_buffer_conflicts(self, root: str, paths: list[str]) -> list[dict]:
+            return []
+
+        def on_files_patched(self, root: str, paths: list[str]) -> str:
             seen.append((root, list(paths)))
+            return "ok"
 
     prev = get_patch_buffer_sync()
     set_patch_buffer_sync(_Capture())
     try:
-        notify_files_patched("/tmp/proj", ["a.txt"])
+        status = notify_files_patched("/tmp/proj", ["a.txt"])
+        assert status == "ok", status
         assert seen == [("/tmp/proj", ["a.txt"])], seen
-        # apply_patch must call the hook only on success — and never claim Theia synced.
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             _write_lf(root / "x.txt", "1\n")
@@ -361,11 +367,169 @@ def _check_buffer_sync_hook_stub() -> None:
             )
             assert out["ok"] is True, out
             assert seen and seen[0][1] == ["x.txt"], seen
-            assert out.get("ide_refresh") in ("hook", "stub", "follow-up"), out
-            note = str(out.get("note") or "").lower()
-            assert "synced" not in note or "not" in note or "stub" in note or "follow" in note, out
+            assert out.get("ide_refresh") == "ok", out
     finally:
         set_patch_buffer_sync(prev)
+
+    # No hook → stub only (never claim sync).
+    set_patch_buffer_sync(None)
+    try:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _write_lf(root / "y.txt", "a\n")
+            out = apply_patch(
+                root,
+                (
+                    "*** Begin Patch\n"
+                    "*** Update File: y.txt\n"
+                    "@@\n"
+                    "-a\n"
+                    "+b\n"
+                    "*** End Patch\n"
+                ),
+            )
+            assert out["ok"] is True, out
+            assert out.get("ide_refresh") == "stub", out
+            note = str(out.get("note") or "").lower()
+            assert "not synced" in note or "absent" in note or "stub" in note, out
+    finally:
+        set_patch_buffer_sync(prev)
+
+
+def _check_dirty_buffer_conflict() -> None:
+    """Dirty open buffer for a target path refuses disk overwrite."""
+
+    class _DirtyHook:
+        def open_buffer_conflicts(self, root: str, paths: list[str]) -> list[dict]:
+            return [{"path": "dirty.txt", "reason": "open editor buffer is dirty"}]
+
+        def on_files_patched(self, root: str, paths: list[str]) -> str:
+            raise AssertionError("must not notify after dirty refuse")
+
+    prev = get_patch_buffer_sync()
+    set_patch_buffer_sync(_DirtyHook())
+    try:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / "dirty.txt"
+            _write_lf(target, "keep\n")
+            out = apply_patch(
+                root,
+                (
+                    "*** Begin Patch\n"
+                    "*** Update File: dirty.txt\n"
+                    "@@\n"
+                    "-keep\n"
+                    "+gone\n"
+                    "*** End Patch\n"
+                ),
+            )
+            assert out["ok"] is False, out
+            assert out["conflicts"], out
+            assert out["conflicts"][0]["path"] == "dirty.txt"
+            assert "dirty" in str(out["conflicts"][0]["reason"]).lower()
+            assert out.get("ide_refresh") == "conflict", out
+            assert out.get("files_changed") == []
+            assert target.read_text(encoding="utf-8") == "keep\n"
+    finally:
+        set_patch_buffer_sync(prev)
+
+
+def _check_ide_refresh_semantics() -> None:
+    """Mock IdePatchBufferSync: dirty→conflict, reload ok→ok, dead client→unavailable."""
+
+    class _Client:
+        def __init__(self, *, editors=None, reload=None, fail=False) -> None:
+            self._editors = editors if editors is not None else {"editors": []}
+            self._reload = reload if reload is not None else {"results": [], "reloaded": 0, "refused": 0}
+            self._fail = fail
+
+        def get_open_editors(self) -> dict:
+            if self._fail:
+                raise ConnectionError("bridge down")
+            return self._editors
+
+        def reload_from_disk(self, paths: list[str]) -> dict:
+            if self._fail:
+                raise ConnectionError("bridge down")
+            return self._reload
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        target = root / "app.py"
+        _write_lf(target, "x = 1\n")
+        abs_path = str(target.resolve())
+
+        dirty_client = _Client(
+            editors={"editors": [{"path": abs_path, "dirty": True, "version": 3}]}
+        )
+        hook = IdePatchBufferSync(lambda: dirty_client)
+        conflicts = hook.open_buffer_conflicts(str(root), ["app.py"])
+        assert conflicts and conflicts[0]["path"] == "app.py", conflicts
+        assert path_matches_editor(str(root), "app.py", abs_path)
+
+        prev = get_patch_buffer_sync()
+        set_patch_buffer_sync(hook)
+        try:
+            refused = apply_patch(
+                root,
+                (
+                    "*** Begin Patch\n"
+                    "*** Update File: app.py\n"
+                    "@@\n"
+                    "-x = 1\n"
+                    "+x = 2\n"
+                    "*** End Patch\n"
+                ),
+            )
+            assert refused["ok"] is False, refused
+            assert refused.get("ide_refresh") == "conflict", refused
+            assert target.read_text(encoding="utf-8") == "x = 1\n"
+        finally:
+            set_patch_buffer_sync(prev)
+
+        ok_client = _Client(
+            editors={"editors": [{"path": abs_path, "dirty": False}]},
+            reload={"results": [{"path": abs_path, "reloaded": True}], "reloaded": 1, "refused": 0},
+        )
+        set_patch_buffer_sync(IdePatchBufferSync(lambda: ok_client))
+        try:
+            good = apply_patch(
+                root,
+                (
+                    "*** Begin Patch\n"
+                    "*** Update File: app.py\n"
+                    "@@\n"
+                    "-x = 1\n"
+                    "+x = 2\n"
+                    "*** End Patch\n"
+                ),
+            )
+            assert good["ok"] is True, good
+            assert good.get("ide_refresh") == "ok", good
+            assert target.read_text(encoding="utf-8") == "x = 2\n"
+        finally:
+            set_patch_buffer_sync(prev)
+
+        _write_lf(target, "x = 2\n")
+        dead = IdePatchBufferSync(lambda: None)
+        set_patch_buffer_sync(dead)
+        try:
+            soft = apply_patch(
+                root,
+                (
+                    "*** Begin Patch\n"
+                    "*** Update File: app.py\n"
+                    "@@\n"
+                    "-x = 2\n"
+                    "+x = 3\n"
+                    "*** End Patch\n"
+                ),
+            )
+            assert soft["ok"] is True, soft
+            assert soft.get("ide_refresh") == "unavailable", soft
+        finally:
+            set_patch_buffer_sync(prev)
 
 
 def main() -> None:
@@ -380,6 +544,8 @@ def main() -> None:
     _check_encoding_preserved()
     _check_delete_fingerprint_guard()
     _check_buffer_sync_hook_stub()
+    _check_dirty_buffer_conflict()
+    _check_ide_refresh_semantics()
     print("file_patch_engine ok")
 
 

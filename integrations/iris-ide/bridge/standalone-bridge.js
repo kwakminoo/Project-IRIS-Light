@@ -281,6 +281,10 @@ async function dispatch(cmd, args) {
             }
             return front;
         }
+        case 'reloadFromDisk': {
+            // Dirty open buffers must refuse; clean buffers reload via Theia document.revert.
+            return await enqueueFrontend('reloadFromDisk', args, 8000);
+        }
         case 'createFile': {
             const rel = String(args.path || '');
             const abs = resolvePath(rel);
@@ -331,6 +335,26 @@ async function dispatch(cmd, args) {
             return await enqueueFrontend(cmd, args, 8000);
         case 'createTerminal':
             return await enqueueFrontend('createTerminal', { name: String(args.name || 'IRIS') }, 3500);
+        case 'appendTerminalOutput': {
+            // Display-only — never spawns or re-runs the process (Runtime owns it).
+            const text = String(args.text ?? args.chunk ?? '');
+            const cwd = args.cwd ? String(args.cwd) : workspaceRoot;
+            const runId = args.run_id == null ? '' : String(args.run_id);
+            const stream = args.stream == null ? '' : String(args.stream);
+            const sent = await enqueueFrontend(
+                'appendTerminalOutput',
+                { text, cwd, run_id: runId, stream },
+                8000,
+            );
+            return {
+                appended: true,
+                via: 'theia_terminal',
+                bytes: text.length,
+                run_id: runId || undefined,
+                stream: stream || undefined,
+                ...sent,
+            };
+        }
         case 'runTerminalCommand': {
             const command = String(args.command || args.cmd || '').trim();
             const argv = Array.isArray(args.argv) ? args.argv.map(item => String(item)) : [];

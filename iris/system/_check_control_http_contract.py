@@ -6,13 +6,13 @@ import json
 import os
 import urllib.error
 import urllib.request
-from pathlib import Path
 
 os.environ["IRIS_CONTROL_TOKEN"] = "contract-check-token"
 os.environ.pop("IRIS_CONTROL_URL", None)
 
 import iris.system.control_surface as cs
 from iris.system.control_http_client import _http, _tool_result
+from iris.system.control_surface import invoke_http_timeout
 
 cs.write_control_endpoint = lambda **_k: None  # type: ignore[assignment]
 cs.clear_control_endpoint = lambda: None  # type: ignore[assignment]
@@ -151,10 +151,9 @@ def main() -> None:
     finally:
         surface.stop()
 
-    src = Path(cs.__file__).read_text(encoding="utf-8")
-    pick = src[src.index("elif action in (\"ide.pick_open_file\"") : src.index("elif action == \"project.write_file\"")]
-    assert "ide.pick_open_folder" in pick
-    assert "timeout = None" in pick
+    # pick_open_* must never use the 15s UI marshal cut (ide-file-attach-hang).
+    assert invoke_http_timeout("ide.pick_open_file") is None
+    assert invoke_http_timeout("ide.pick_open_folder") is None
     print("control http contract ok")
 
 

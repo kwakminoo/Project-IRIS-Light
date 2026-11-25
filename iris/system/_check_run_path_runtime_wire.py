@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 from iris.system import execution_runtime as rtmod
+from iris.system.execution_context import make_execution_context
 from iris.system.execution_runtime import (
     ExecutionRuntime,
     ProcessStatus,
@@ -53,13 +54,12 @@ def _check_manage_sees_started_run() -> None:
                 workspace_id=str(root),
                 owner="project.run",
             )
-            listed = rt.manage({"action": "list", "session_id": "sess-w11c"})
+            ctx = make_execution_context(session_id="sess-w11c")
+            listed = rt.manage({"action": "list"}, ctx=ctx)
             assert listed.get("ok") is True, listed
             runs = (listed.get("data") or {}).get("runs") or []
             assert any(r.get("run_id") == run_id for r in runs), (run_id, runs)
-            st = rt.manage(
-                {"action": "status", "run_id": run_id, "session_id": "sess-w11c"}
-            )
+            st = rt.manage({"action": "status", "run_id": run_id}, ctx=ctx)
             assert st.get("ok") is True, st
             data = st.get("data") or {}
             assert data.get("run_id") == run_id, data
@@ -120,11 +120,8 @@ def _check_shell_registers_runtime() -> None:
             assert outcome.exit_code == 0, outcome
             assert outcome.stdout_ref and Path(outcome.stdout_ref).is_file(), outcome
             st = rt.manage(
-                {
-                    "action": "status",
-                    "run_id": outcome.run_id,
-                    "session_id": "sess-shell",
-                }
+                {"action": "status", "run_id": outcome.run_id},
+                ctx=make_execution_context(session_id="sess-shell"),
             )
             assert st.get("ok") is True, st
             assert (st.get("data") or {}).get("run_id") == outcome.run_id

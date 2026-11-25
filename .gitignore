@@ -27,6 +27,15 @@ ENV/
 # Test / runtime artifacts
 .iris_light_test_tmp/
 .iris-setup-tmp/
+.iris/
+.tmp/
+.worktrees/
+_tmp_*/
+_tmp_*
+graphify-out/
+.github/context-mode/
+docs/code-review/.tmp-codex-handoff/
+ide-folder-native.log
 _iris_setup_check.py
 *.db
 *.db-shm
@@ -64,6 +73,12 @@ android-emulator/avd/**/read-snapshot.txt
 android-emulator/avd/**/version_num.cache
 # 포인터 .ini 도 절대경로를 담는다. ensure_avd() 가 이 PC 기준으로 생성한다.
 android-emulator/avd/*.ini
+# AVD disk images / qemu state (large; regenerate locally)
+android-emulator/avd/**/*.img
+android-emulator/avd/**/*.qcow2
+android-emulator/avd/**/pstore.bin
+android-emulator/avd/**/config.ini
+android-emulator/avd/**/bootcompleted.ini
 
 # Voice data / generated assets
 voice_recordings/

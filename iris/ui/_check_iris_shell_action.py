@@ -9,7 +9,9 @@ from iris.infrastructure.speak_capability import (
 )
 from iris.system.iris_shell import ShellJob, ShellOutcome, parse_shell_job, run_shell_job
 from iris.ui.chat.run_visibility import card_from_control_result
-from iris.ui.control_actions.shell import _ide_companion_active, run_shell_live
+from iris.ui.chat.shell_controller import clip_live as _clip_live
+from iris.ui.chat.shell_controller import run_shell_live
+from iris.ui.control_actions.shell import _ide_companion_active
 
 
 def _check_live_stream_paints_running() -> None:
@@ -127,6 +129,13 @@ def main() -> None:
     set_speak_surface("home")
 
     _check_live_stream_paints_running()
+    # UI ring: long output keeps head + newest tail (full log stays on run record).
+    long = "HEAD-" + ("x" * 20000) + "-TAIL"
+    clipped = _clip_live(long, limit=2000)
+    assert clipped.startswith("HEAD-")
+    assert clipped.endswith("-TAIL")
+    assert "truncated" in clipped
+    assert len(clipped) <= 2000
     print("iris_shell_action ok")
 
 
