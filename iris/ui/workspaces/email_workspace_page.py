@@ -83,10 +83,11 @@ class _ComposeDialog(QDialog):
         form.addRow("본문", self._body)
         lay.addLayout(form)
 
+        # PyQt6 has no StandardButton.Send — Ok + Korean label.
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Send | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Send).setText("보내기")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("보내기")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
@@ -527,15 +528,25 @@ class EmailWorkspacePage(QWidget):
         if self._body is not None:
             self._body.setHtml("")
 
-    def open_compose(self, account: EmailAccount) -> None:
-        dlg = _ComposeDialog(account, self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        to, subject, body = dlg.payload()
-        if not to:
-            self._status.setText("받는 사람을 입력하세요.")
-            return
-        self.compose_requested.emit(to, subject, body)
+    def open_compose(self, account: EmailAccount) -> bool:
+        """Show compose. False only when the dialog could not be constructed."""
+        # parent=None: frameless MainWindow modal child → 0xC0000409
+        try:
+            dlg = _ComposeDialog(account, None)
+        except Exception as exc:  # noqa: BLE001 — surface construction errors
+            self._status.setText(f"작성 창 오류: {exc}"[:200])
+            return False
+        try:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return True  # opened; user cancelled
+            to, subject, body = dlg.payload()
+            if not to:
+                self._status.setText("받는 사람을 입력하세요.")
+                return True
+            self.compose_requested.emit(to, subject, body)
+            return True
+        finally:
+            dlg.deleteLater()
 
     # ---- 내부 이벤트 ----
     def _on_item_clicked(self, item: QListWidgetItem) -> None:

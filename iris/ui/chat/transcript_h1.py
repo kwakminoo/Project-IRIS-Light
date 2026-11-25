@@ -499,12 +499,14 @@ class H1TranscriptHost(QWidget):
         parts: Sequence[MessagePart],
         *,
         msg_id: str = "",
+        re_render: bool = True,
     ) -> None:
         self._reset_stream_state()
         self._turns.append(
             _Turn(role=str(role or ""), parts=tuple(parts), msg_id=str(msg_id or ""))
         )
-        self._render()
+        if re_render:
+            self._render()
 
     def upsert_tool_shell_part(self, part: ToolShellPart) -> bool:
         """Insert or replace a ToolShellPart by block_id without full-page rebuild when possible."""
@@ -638,12 +640,13 @@ class H1TranscriptHost(QWidget):
         return y
 
     def set_scroll_y(self, value: int) -> None:
-        """Programmatic body.scrollTop (mutes user-scroll notify)."""
+        """Programmatic body.scrollTop (mutes user-scroll notify). Async — no QEventLoop."""
         v = max(0, int(value))
         self._scroll_y_cache = v
-        if self._view is None:
+        view = self._view
+        if view is None:
             return
-        self._run_js_sync(
+        view.page().runJavaScript(
             "(function(){"
             "var b=document.body;if(!b)return;"
             "b.__irisScrollMute=true;"
@@ -678,10 +681,19 @@ class H1TranscriptHost(QWidget):
         return super().eventFilter(watched, event)
 
     def scroll_to_bottom(self) -> None:
-        """Scroll body to max (mutes user-scroll notify)."""
-        if self._view is None:
+        """Scroll body to max (mutes user-scroll notify). Async — no QEventLoop."""
+        view = self._view
+        if view is None:
             return
-        raw = self._run_js_sync(
+
+        def _cb(raw: Any) -> None:
+            try:
+                self._scroll_max_cache = int(raw or 0)
+                self._scroll_y_cache = self._scroll_max_cache
+            except (TypeError, ValueError):
+                pass
+
+        view.page().runJavaScript(
             "(function(){"
             "var b=document.body;if(!b)return 0;"
             "b.__irisScrollMute=true;"
@@ -690,13 +702,9 @@ class H1TranscriptHost(QWidget):
             "b.classList.toggle('is-scrolled',(b.scrollTop||0)>0);"
             "b.__irisScrollMute=false;"
             "return Math.round(max);"
-            "})();"
+            "})();",
+            _cb,
         )
-        try:
-            self._scroll_max_cache = int(raw or 0)
-            self._scroll_y_cache = self._scroll_max_cache
-        except (TypeError, ValueError):
-            pass
 
     def at_bottom(self, threshold: int = 2) -> bool:
         """True when body scrollTop is within threshold of max."""

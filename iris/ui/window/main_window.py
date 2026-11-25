@@ -8888,12 +8888,12 @@ class MainWindow(QMainWindow):
         self._email_message_worker = None
         self._email_page.show_error(f"본문 오류: {err[:200]}")
 
-    def _open_email_compose(self) -> None:
+    def _open_email_compose(self) -> bool:
         account = self._current_email_account()
         if not account:
             self._left_sidebar.email_folder.set_status("먼저 이메일 계정을 추가하세요.")
-            return
-        self._email_page.open_compose(account)
+            return False
+        return bool(self._email_page.open_compose(account))
 
     def _send_email(self, to: str, subject: str, body: str) -> None:
         account = self._current_email_account()

@@ -1639,7 +1639,15 @@ class ChatPanel(QWidget):
     def _role_for_who(self, who: str) -> str:
         return "user" if who.strip().lower() in ("you", "user") else "assistant"
 
-    def _land_turn_on_h1(self, who: str, text: str, *, msg_id: str = "") -> str:
+    def _land_turn_on_h1(
+        self,
+        who: str,
+        text: str,
+        *,
+        msg_id: str = "",
+        re_render: bool = True,
+        scroll: bool = True,
+    ) -> str:
         """Finished user/assistant turn → typed parts on H1 (primary surface)."""
         body = normalize_chat_body(who, prepare_chat_text(text))
         if not body:
@@ -1657,8 +1665,9 @@ class ChatPanel(QWidget):
             self._store_message_body(mid, body)
         else:
             parts = [TextPart(markdown=mask_unnecessary_chat_paths(body))]
-        self.transcript().append_turn(role, parts, msg_id=mid)
-        self._scroll_log_to_bottom(deferred=True)
+        self.transcript().append_turn(role, parts, msg_id=mid, re_render=re_render)
+        if scroll:
+            self._scroll_log_to_bottom(deferred=True)
         return mid
 
     def load_transcript_messages(self, messages) -> None:
@@ -1668,7 +1677,14 @@ class ChatPanel(QWidget):
         for msg in messages or ():
             role = getattr(msg, "role", "") or ""
             mid = getattr(msg, "id", "") or ""
-            host.append_turn(str(role), conversation_message_parts(msg), msg_id=str(mid))
+            host.append_turn(
+                str(role),
+                conversation_message_parts(msg),
+                msg_id=str(mid),
+                re_render=False,
+            )
+        if messages:
+            host._render()
 
     def begin_transcript_stream(self, role: str = "assistant", msg_id: str = "") -> None:
         """Start H1 part stream (canonical parts path). Does not touch `_log`."""
@@ -2788,17 +2804,30 @@ class ChatPanel(QWidget):
         self.transcript().clear()
 
     def restore_messages(self, messages: list[dict[str, str]]) -> None:
-        """저장된 세션을 타이핑 없이 다시 그린다."""
+        """저장된 세션을 타이핑 없이 다시 그린다.
+
+        Batch land: one clear + per-turn append without re_render/scroll, then
+        a single DOM paint and one deferred scroll. Per-message scroll used to
+        call `_run_js_sync` → nested QEventLoop and freeze the chat surface.
+        """
         self.clear_transcript()
+        landed = 0
         for item in messages:
             role = str(item.get("role") or "").strip().lower()
             content = str(item.get("content") or "")
             if not content.strip():
                 continue
             if role == "user":
-                self.append_message_instant("You", content)
+                who = "You"
             elif role == "assistant":
-                self.append_message_instant("Iris", content)
+                who = "Iris"
+            else:
+                continue
+            if self._land_turn_on_h1(who, content, re_render=False, scroll=False):
+                landed += 1
+        if landed:
+            self.transcript()._render()
+            self._scroll_log_to_bottom(deferred=True)
 
     def append_message(self, who: str, text: str) -> None:
         """Iris 등 — 타이핑 효과로 출력 (TTS 동기화 없음)."""

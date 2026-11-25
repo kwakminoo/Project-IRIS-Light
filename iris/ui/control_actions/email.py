@@ -221,7 +221,12 @@ def register_email_actions(window: EmailHost, reg: ActionRegistry) -> None:
     def email_open_compose(_a: dict[str, Any]) -> dict[str, Any]:
         if window._workspace_mode != "email":
             window._on_email_icon()
-        window._open_email_compose()
+        try:
+            opened = window._open_email_compose()
+        except Exception as exc:  # noqa: BLE001 — do not claim success / wedge UI
+            return err_result("email.open_compose", str(exc)[:240])
+        if not opened:
+            return err_result("email.open_compose", "compose dialog not opened")
         _log(window, "email.open_compose", True)
         return ok_result("email.open_compose", {})
 
