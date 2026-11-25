@@ -8238,6 +8238,7 @@ class MainWindow(QMainWindow):
             self._set_workspace_icon_active(None)
             self._ui_mode = "normal"
             self._drag.set_ide_companion_active(False)
+            self._chat.transcript().reset_page_zoom()
         finally:
             self.setUpdatesEnabled(painted)
 
@@ -8357,9 +8358,12 @@ class MainWindow(QMainWindow):
                 ide.return_from_browser()
             self._workspace_mode = "assistant"
             self._set_workspace_icon_active("ide")
+            # Companion chat stayed visible beside browser — pin H1 zoom.
+            self._chat.transcript().reset_page_zoom()
             return
         self._maybe_detach_browser_to_mini()
         self._enter_ide_companion(source="browser")
+        self._chat.transcript().reset_page_zoom()
 
     def _maybe_detach_browser_to_mini(self) -> None:
         from iris.browser.session import get_browser_session

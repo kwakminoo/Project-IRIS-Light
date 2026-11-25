@@ -255,6 +255,12 @@ body {{
 # Mute flag suppresses notify during set_scroll_y / scroll_to_bottom / DOM patch.
 _SCROLL_BRIDGE_JS = """
 (function() {
+  if (!document.__irisZoomWheelBound) {
+    document.__irisZoomWheelBound = true;
+    document.addEventListener('wheel', function(e) {
+      if (e.ctrlKey) e.preventDefault();
+    }, { passive: false });
+  }
   var b = document.body;
   if (!b || b.__irisScrollBound) return;
   b.__irisScrollBound = true;
@@ -435,6 +441,19 @@ class H1TranscriptHost(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(self._slot, 1)
+
+    _PAGE_ZOOM = 1.0
+
+    def reset_page_zoom(self) -> None:
+        """Pin Chromium paint zoom; chat typography stays in CSS tokens."""
+        view = self._view
+        if view is None:
+            return
+        view.setZoomFactor(float(self._PAGE_ZOOM))
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.reset_page_zoom()
 
     def widget(self) -> QWidget:
         return self
@@ -974,6 +993,7 @@ class H1TranscriptHost(QWidget):
         self._slot = None
         self._view = view
         self._page_ready = False
+        view.setZoomFactor(self._PAGE_ZOOM)
         view.loadFinished.connect(self._on_page_load_finished)
         return view
 
@@ -987,6 +1007,7 @@ class H1TranscriptHost(QWidget):
         if not ok:
             return
         self._page_ready = True
+        self.reset_page_zoom()
 
     def _transcript_inner_html(self) -> str:
         self._code_seq = 0
