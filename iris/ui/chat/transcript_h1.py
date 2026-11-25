@@ -24,8 +24,8 @@ from dataclasses import dataclass, replace
 from typing import Any, Sequence
 from urllib.parse import quote
 
-from PyQt6.QtCore import QCoreApplication, QEventLoop, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import QCoreApplication, QEvent, QEventLoop, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QWheelEvent
 from PyQt6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from iris.core.message_parts import (
@@ -653,6 +653,30 @@ class H1TranscriptHost(QWidget):
             "})();"
         )
 
+    def _apply_wrapper_wheel(self, event: QWheelEvent) -> bool:
+        """Scroll H1 body when wheel hits host/view wrappers (Chromium child already scrolls)."""
+        pixel = event.pixelDelta()
+        dy = int(pixel.y()) if not pixel.isNull() else int(event.angleDelta().y())
+        if dy == 0:
+            return False
+        self.set_scroll_y(int(self._scroll_y_cache) - dy)
+        self.scrolled_by_user.emit()
+        return True
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        if self._apply_wrapper_wheel(event):
+            event.accept()
+            return
+        event.ignore()
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
+        if watched is self._view and event.type() == QEvent.Type.Wheel:
+            wheel = event
+            if isinstance(wheel, QWheelEvent) and self._apply_wrapper_wheel(wheel):
+                wheel.accept()
+                return True
+        return super().eventFilter(watched, event)
+
     def scroll_to_bottom(self) -> None:
         """Scroll body to max (mutes user-scroll notify)."""
         if self._view is None:
@@ -994,6 +1018,7 @@ class H1TranscriptHost(QWidget):
         self._view = view
         self._page_ready = False
         view.setZoomFactor(self._PAGE_ZOOM)
+        view.installEventFilter(self)
         view.loadFinished.connect(self._on_page_load_finished)
         return view
 
