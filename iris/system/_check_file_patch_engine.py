@@ -30,6 +30,7 @@ from iris.infrastructure.absorbed_tool_aliases import (
 from iris.infrastructure.speak_capability import PHASE4_ALLOWLIST
 from iris.system.file_patch import apply_patch, read_text_range, search_files
 from iris.system.patch_buffer_sync import (
+    BufferProbeResult,
     IdePatchBufferSync,
     get_patch_buffer_sync,
     notify_files_patched,
@@ -436,18 +437,35 @@ def _check_dirty_buffer_conflict() -> None:
 
 
 def _check_ide_refresh_semantics() -> None:
-    """Mock IdePatchBufferSync: dirty→conflict, reload ok→ok, dead client→unavailable."""
+    """Mock IdePatchBufferSync: dirty→conflict, reload ok→ok, dead/query fail→refuse."""
 
     class _Client:
-        def __init__(self, *, editors=None, reload=None, fail=False) -> None:
+        def __init__(
+            self,
+            *,
+            editors=None,
+            reload=None,
+            fail=False,
+            workspace=None,
+        ) -> None:
             self._editors = editors if editors is not None else {"editors": []}
-            self._reload = reload if reload is not None else {"results": [], "reloaded": 0, "refused": 0}
+            self._reload = (
+                reload
+                if reload is not None
+                else {"results": [], "reloaded": 0, "refused": 0}
+            )
             self._fail = fail
+            self._workspace = workspace
 
         def get_open_editors(self) -> dict:
             if self._fail:
                 raise ConnectionError("bridge down")
             return self._editors
+
+        def get_workspace(self) -> dict:
+            if self._workspace is None:
+                raise AttributeError("no workspace")
+            return self._workspace
 
         def reload_from_disk(self, paths: list[str]) -> dict:
             if self._fail:
@@ -460,13 +478,20 @@ def _check_ide_refresh_semantics() -> None:
         _write_lf(target, "x = 1\n")
         abs_path = str(target.resolve())
 
+        # Cross-workspace suffix must not match.
+        other = Path(raw).parent / ("other-" + root.name) / "app.py"
+        assert not path_matches_editor(str(root), "app.py", str(other))
+        assert path_matches_editor(str(root), "app.py", abs_path)
+        assert not path_matches_editor(str(root), "app.py", str(root / "notapp.py"))
+
         dirty_client = _Client(
             editors={"editors": [{"path": abs_path, "dirty": True, "version": 3}]}
         )
         hook = IdePatchBufferSync(lambda: dirty_client)
-        conflicts = hook.open_buffer_conflicts(str(root), ["app.py"])
-        assert conflicts and conflicts[0]["path"] == "app.py", conflicts
-        assert path_matches_editor(str(root), "app.py", abs_path)
+        probe = hook.open_buffer_conflicts(str(root), ["app.py"])
+        assert isinstance(probe, BufferProbeResult), probe
+        assert probe.status == "dirty", probe
+        assert probe.conflicts and probe.conflicts[0]["path"] == "app.py", probe
 
         prev = get_patch_buffer_sync()
         set_patch_buffer_sync(hook)
@@ -484,13 +509,18 @@ def _check_ide_refresh_semantics() -> None:
             )
             assert refused["ok"] is False, refused
             assert refused.get("ide_refresh") == "conflict", refused
+            assert refused.get("buffer_probe") == "dirty", refused
             assert target.read_text(encoding="utf-8") == "x = 1\n"
         finally:
             set_patch_buffer_sync(prev)
 
         ok_client = _Client(
             editors={"editors": [{"path": abs_path, "dirty": False}]},
-            reload={"results": [{"path": abs_path, "reloaded": True}], "reloaded": 1, "refused": 0},
+            reload={
+                "results": [{"path": abs_path, "reloaded": True}],
+                "reloaded": 1,
+                "refused": 0,
+            },
         )
         set_patch_buffer_sync(IdePatchBufferSync(lambda: ok_client))
         try:
@@ -511,8 +541,12 @@ def _check_ide_refresh_semantics() -> None:
         finally:
             set_patch_buffer_sync(prev)
 
+        # Fail-closed: disconnected client must not look like empty conflicts.
         _write_lf(target, "x = 2\n")
         dead = IdePatchBufferSync(lambda: None)
+        dead_probe = dead.open_buffer_conflicts(str(root), ["app.py"])
+        assert dead_probe.status == "ide_disconnected", dead_probe
+        assert dead_probe.conflicts, dead_probe
         set_patch_buffer_sync(dead)
         try:
             soft = apply_patch(
@@ -526,8 +560,35 @@ def _check_ide_refresh_semantics() -> None:
                     "*** End Patch\n"
                 ),
             )
-            assert soft["ok"] is True, soft
+            assert soft["ok"] is False, soft
+            assert soft.get("buffer_probe") == "ide_disconnected", soft
             assert soft.get("ide_refresh") == "unavailable", soft
+            assert soft["conflicts"], soft
+            assert target.read_text(encoding="utf-8") == "x = 2\n"
+        finally:
+            set_patch_buffer_sync(prev)
+
+        # Fail-closed: query exception.
+        fail_hook = IdePatchBufferSync(lambda: _Client(fail=True))
+        fail_probe = fail_hook.open_buffer_conflicts(str(root), ["app.py"])
+        assert fail_probe.status == "ide_query_failed", fail_probe
+        set_patch_buffer_sync(fail_hook)
+        try:
+            qfail = apply_patch(
+                root,
+                (
+                    "*** Begin Patch\n"
+                    "*** Update File: app.py\n"
+                    "@@\n"
+                    "-x = 2\n"
+                    "+x = 4\n"
+                    "*** End Patch\n"
+                ),
+            )
+            assert qfail["ok"] is False, qfail
+            assert qfail.get("buffer_probe") == "ide_query_failed", qfail
+            assert qfail.get("ide_refresh") == "unavailable", qfail
+            assert target.read_text(encoding="utf-8") == "x = 2\n"
         finally:
             set_patch_buffer_sync(prev)
 

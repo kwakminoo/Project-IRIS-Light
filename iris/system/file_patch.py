@@ -15,10 +15,10 @@ from typing import Any, Literal
 from iris.runtime.attachment_context import EXCLUDED, _is_link
 from iris.system.execution_policy import check_path_allowed
 from iris.system.patch_buffer_sync import (
-    collect_open_buffer_conflicts,
     get_patch_buffer_sync,
     idle_ide_refresh,
     notify_files_patched,
+    probe_open_buffers,
 )
 
 SearchMode = Literal["content", "name"]
@@ -564,13 +564,21 @@ def apply_patch(
         }
 
     target_paths = [item.op.path for item in prepared]
-    buffer_conflicts = collect_open_buffer_conflicts(str(base), target_paths)
-    if buffer_conflicts:
+    buffer_probe = probe_open_buffers(str(base), target_paths)
+    if buffer_probe.refuse_apply:
+        fail_refresh = "unavailable"
+        if buffer_probe.status == "dirty":
+            fail_refresh = (
+                "conflict" if get_patch_buffer_sync() is not None else "stub"
+            )
+        elif buffer_probe.status == "version_mismatch":
+            fail_refresh = "conflict"
         return {
             "ok": False,
-            "conflicts": buffer_conflicts,
+            "conflicts": [dict(row) for row in buffer_probe.conflicts],
             "files_changed": [],
-            "ide_refresh": "conflict" if get_patch_buffer_sync() is not None else "stub",
+            "ide_refresh": fail_refresh,
+            "buffer_probe": buffer_probe.status,
             "note": conflict_note,
         }
 

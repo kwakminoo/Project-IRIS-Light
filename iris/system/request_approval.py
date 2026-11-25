@@ -206,7 +206,11 @@ class RequestApprovalLedger:
                 return False, "approval expired"
             if rec.session_id != sid:
                 return False, "session mismatch"
-            if wid and rec.workspace_id and rec.workspace_id != wid:
+            # Grant recorded a workspace → caller must match (empty caller ≠ skip).
+            if rec.workspace_id:
+                if not wid or rec.workspace_id != wid:
+                    return False, "workspace mismatch"
+            elif wid and wid != rec.workspace_id:
                 return False, "workspace mismatch"
             if rec.fingerprint != fp:
                 return False, "execution fingerprint mismatch"

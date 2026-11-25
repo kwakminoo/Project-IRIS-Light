@@ -1,4 +1,4 @@
-"""Stream end must idle typing; mid-stream may drip to H1 via plain typing."""
+"""Plain stream end keeps typing drip until caught up; then idle + H1 land."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import QApplication
 
 _APP = QApplication.instance() or QApplication(sys.argv)
 
+from iris.core.message_parts import TextPart
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.chat.composer_plus_menu import ComposerSendButton
 
@@ -38,6 +39,19 @@ def _h1_stream_raw(panel: ChatPanel) -> str:
     return str(getattr(buf, "_raw", "") or "")
 
 
+def _assistant_turn_text(panel: ChatPanel) -> str:
+    host = panel.transcript()
+    for turn in reversed(host._turns):
+        if turn.role != "assistant":
+            continue
+        chunks: list[str] = []
+        for part in turn.parts:
+            if isinstance(part, TextPart):
+                chunks.append(part.markdown or "")
+        return "".join(chunks)
+    return ""
+
+
 def main() -> int:
     panel = ChatPanel()
     panel.resize(640, 480)
@@ -50,8 +64,6 @@ def main() -> int:
     panel.set_generating(True)
     panel.begin_stream_message("Iris", speech_sync=False)
     panel.append_stream_chunk("Hermes PDF turn landed on H1 already. ")
-    # Mid-stream: plain typing MAY be armed; H1 text must be a prefix of the buffer
-    # (not necessarily the full chunk yet if the timer has not ticked).
     h1 = _h1_stream_raw(panel)
     assert panel._typing_text.startswith(h1), (
         f"H1 stream must be a prefix of buffer, h1={h1!r} buf={panel._typing_text!r}"
@@ -69,15 +81,24 @@ def main() -> int:
         "second chunk must not dump the full buffer to H1 immediately"
     )
 
+    h1_before_end = len(_h1_stream_raw(panel))
+    assert len(_FINAL) > h1_before_end, (
+        f"fixture: final text must exceed dripped H1 before end "
+        f"(final={len(_FINAL)} h1={h1_before_end})"
+    )
+
     panel.end_stream_message(_FINAL)
     _settle(20)
 
-    assert not panel.is_typing_active(), (
-        f"after H1 land, typing must be inactive "
-        f"(index={panel._typing_index} text_len={len(panel._typing_text)})"
+    buf_len = len(panel._typing_text)
+    assert panel.is_typing_active(), (
+        f"right after stream end with drip behind, typing must stay active "
+        f"(timer={panel._typing_timer.isActive()} idx={panel._typing_index} "
+        f"buf_len={buf_len} h1_len={len(h1)})"
     )
-    assert not panel._typing_timer.isActive(), "typing timer must be stopped after stream end"
-    assert panel._typing_text == "", f"typing buffer must be cleared, got {panel._typing_text!r}"
+    assert panel._typing_index < buf_len or panel._typing_timer.isActive(), (
+        "typing index or timer must reflect unfinished drip after stream end"
+    )
 
     scrolls: list[int] = []
     panel._scroll_log_to_bottom = lambda *a, **k: scrolls.append(1)  # type: ignore[method-assign]
@@ -87,6 +108,24 @@ def main() -> int:
         panel._type_next_chunk()
     assert scrolls == [], (
         f"paint-no-op typing ticks must not scroll after stream end, got {len(scrolls)} scrolls"
+    )
+
+    for _ in range(5000):
+        if not panel.is_typing_active():
+            break
+        panel._type_next_chunk()
+    _settle(20)
+
+    assert not panel.is_typing_active(), (
+        f"after drip catch-up, typing must be inactive "
+        f"(index={panel._typing_index} text_len={len(panel._typing_text)})"
+    )
+    assert not panel._typing_timer.isActive(), "typing timer must stop after drip completes"
+    assert panel._typing_text == "", f"typing buffer must be cleared, got {panel._typing_text!r}"
+
+    landed = _assistant_turn_text(panel)
+    assert _FINAL in landed or landed.strip() == _FINAL.strip(), (
+        f"H1 assistant turn must match final text, got {landed!r}"
     )
 
     panel.set_generating(False)

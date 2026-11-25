@@ -223,6 +223,7 @@ def stream_shell_job(
     on_chunk: Callable[[str], None],
     *,
     cancel_event: threading.Event | None = None,
+    on_started: Callable[[str], None] | None = None,
     session_id: str = "",
     workspace_id: str = "",
     owner: str = "shell.run",
@@ -230,6 +231,7 @@ def stream_shell_job(
     """Stream one Runtime-backed command; paint live output via on_chunk.
 
     Chunks are stdout text for chat. ``on_chunk`` may be called from this thread.
+    ``on_started(run_id)`` fires immediately after Runtime.start succeeds.
     """
     rt = default_runtime()
     argv = _shell_argv(job.command)
@@ -252,6 +254,11 @@ def stream_shell_job(
             stderr=str(exc),
             summary="spawn failed",
         )
+    if callable(on_started):
+        try:
+            on_started(str(run_id))
+        except Exception:
+            pass
 
     parts: list[str] = []
     parts_len = 0

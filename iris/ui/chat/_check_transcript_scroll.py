@@ -1,7 +1,8 @@
-"""H1 DOM patch must keep body.scrollTop (mute+restore); hold flags must not flip."""
+"""H1 DOM follow-tail / hold (not hidden `_log` QScrollBar)."""
 
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 
@@ -110,6 +111,95 @@ def _check_failed_load_keeps_ready(app: QApplication) -> None:
     panel.close()
 
 
+def _check_scroll_hold_follow(app: QApplication) -> None:
+    """follow-tail must move H1 body.scrollTop; hold must keep it (not `_log` bar)."""
+    del app
+    panel = ChatPanel()
+    panel.resize(640, 420)
+    panel.show()
+    _settle(50)
+
+    assert not panel._log.isVisible(), "legacy `_log` must stay hidden"
+
+    host = panel.transcript()
+    view = host.view()
+    assert view is not None
+
+    for i in range(6):
+        host.append_turn(
+            "assistant",
+            [TextPart(markdown=_TALL)],
+            msg_id=f"scroll-tall-{i}",
+        )
+    _wait_load(view)
+    _settle(300)
+
+    assert hasattr(host, "scroll_to_bottom"), "H1 must expose scroll_to_bottom"
+    assert hasattr(host, "scroll_y"), "H1 must expose scroll_y"
+    assert hasattr(host, "set_scroll_y"), "H1 must expose set_scroll_y"
+    assert hasattr(host, "at_bottom"), "H1 must expose at_bottom"
+
+    # Prove `_scroll_log_to_bottom` targets H1 DOM, not only the hidden QScrollBar.
+    src = inspect.getsource(panel._scroll_log_to_bottom)
+    assert "scroll_to_bottom" in src or "set_scroll_y" in src, (
+        "_scroll_log_to_bottom must call H1 DOM scroll helpers"
+    )
+    assert "verticalScrollBar" not in src, (
+        "_scroll_log_to_bottom must not drive hidden `_log` QScrollBar"
+    )
+
+    host.scroll_to_bottom()
+    _settle(100)
+    assert host.at_bottom(threshold=2), f"expected at bottom y={host.scroll_y()}"
+
+    max_y = 0
+    for _ in range(8):
+        host.scroll_to_bottom()
+        _settle(50)
+        max_y = max(max_y, host.scroll_y())
+        if max_y > 40:
+            break
+    assert max_y > 40, f"content not tall enough to hold scroll: max_y={max_y}"
+
+    hold = max(0, max_y // 3)
+    host.set_scroll_y(hold)
+    _settle(80)
+    panel._note_user_log_scroll(hold)
+    assert panel._scroll_user_hold, "hold flag not set after mid scroll"
+    assert panel._scroll_hold_value == hold
+    assert not panel._scroll_follow_tail
+
+    before = host.scroll_y()
+    panel._scroll_log_to_bottom()
+    _settle(80)
+    after = host.scroll_y()
+    assert abs(after - hold) <= 4, (
+        f"hold must keep Y near {hold}, before={before} after={after}"
+    )
+    assert not host.at_bottom(threshold=2), f"hold must stay off bottom: y={after}"
+
+    host.scroll_to_bottom()
+    _settle(80)
+    panel._note_user_log_scroll(host.scroll_y())
+    assert panel._scroll_follow_tail
+    assert not panel._scroll_user_hold
+
+    host.append_turn(
+        "assistant",
+        [TextPart(markdown=_TALL)],
+        msg_id="scroll-tall-follow",
+    )
+    _settle(200)
+    panel._scroll_log_to_bottom()
+    _settle(100)
+    assert host.at_bottom(threshold=2), (
+        f"follow_tail must move H1 body to bottom: y={host.scroll_y()}"
+    )
+
+    print("transcript_scroll hold/follow ok", {"hold": hold, "max_y": max_y})
+    panel.close()
+
+
 def _check_dom_patch_preserves_hold(app: QApplication) -> None:
     """After page-ready innerHTML patch, held Y and hold flags must survive."""
     del app
@@ -139,14 +229,24 @@ def _check_dom_patch_preserves_hold(app: QApplication) -> None:
         )
     _settle(300)
 
-    state = _scroll_state(view)
-    max_y = int(state.get("max") or 0)
-    assert max_y > 40, f"content not tall enough: max_y={max_y}"
-    _set_scroll_y(view, max_y)
+    if hasattr(host, "scroll_to_bottom"):
+        host.scroll_to_bottom()
+    else:
+        state = _scroll_state(view)
+        _set_scroll_y(view, int(state.get("max") or 0))
     _settle(80)
 
+    state = _scroll_state(view)
+    max_y = int(state.get("max") or 0)
+    if hasattr(host, "scroll_y"):
+        max_y = max(max_y, host.scroll_y())
+    assert max_y > 40, f"content not tall enough: max_y={max_y}"
+
     hold = max(0, max_y // 3)
-    _set_scroll_y(view, hold)
+    if hasattr(host, "set_scroll_y"):
+        host.set_scroll_y(hold)
+    else:
+        _set_scroll_y(view, hold)
     _settle(80)
     before = _scroll_state(view)
     assert abs(int(before.get("y") or 0) - hold) <= 8, before
@@ -172,8 +272,9 @@ def _check_dom_patch_preserves_hold(app: QApplication) -> None:
     assert panel._scroll_hold_value == hold, (
         f"hold value must stay {hold}, got {panel._scroll_hold_value}"
     )
-    after = _scroll_state(view)
-    after_y = int(after.get("y") or 0)
+    after_y = host.scroll_y() if hasattr(host, "scroll_y") else int(
+        _scroll_state(view).get("y") or 0
+    )
     assert abs(after_y - hold) <= 8, (
         f"held Y must survive DOM patch: want~{hold} after={after_y}"
     )
@@ -188,6 +289,7 @@ def _check_dom_patch_preserves_hold(app: QApplication) -> None:
 def main() -> int:
     app = QApplication.instance() or _APP
     _check_failed_load_keeps_ready(app)
+    _check_scroll_hold_follow(app)
     _check_dom_patch_preserves_hold(app)
     print("transcript_scroll ok")
     return 0

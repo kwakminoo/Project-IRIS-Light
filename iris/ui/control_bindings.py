@@ -27,6 +27,13 @@ from iris.system.control_surface import (
     ok_result,
     resolve_control_token,
 )
+from iris.system.execution_context import (
+    ExecutionContext,
+    active_turn_id,
+    execution_context_from_control,
+    frozen_turn_execution_context,
+    store_turn_execution_context,
+)
 from iris.system.ide_launcher import ide_catalog, is_ide_installed
 from iris.system.patch_buffer_sync import IdePatchBufferSync, set_patch_buffer_sync
 from iris.learning.permission import policy_for
@@ -282,6 +289,64 @@ def _bound_session(window: MainWindow, *, require_workspace: bool = False) -> tu
     if require_workspace and (session.mode != "workspace" or not session.workspace_root):
         return None, "bound IDE workspace session required"
     return session, ""
+
+
+def _session_workspace_for_capture(window: Any) -> tuple[str, str]:
+    """Best-effort workspace_root/id for Trusted ExecutionContext (no model args)."""
+    workspace_root = ""
+    session = None
+    getter = getattr(window, "_get_bound_ide_session", None)
+    if callable(getter):
+        try:
+            session = getter(refresh=False)
+        except TypeError:
+            try:
+                session = getter()
+            except Exception:  # noqa: BLE001 — offline / tests
+                session = None
+        except Exception:  # noqa: BLE001
+            session = None
+    if session is None:
+        try:
+            session, _err = _bound_session(window, require_workspace=False)
+        except Exception:  # noqa: BLE001 — offline / no IDE
+            session = None
+    if session is not None:
+        workspace_root = str(getattr(session, "workspace_root", "") or "")
+    return workspace_root, workspace_root
+
+
+def capture_execution_context(
+    window: Any, *, turn_id: str = ""
+) -> ExecutionContext:
+    """Snapshot live Control window bind into ExecutionContext (not from Speak args)."""
+    sid = str(getattr(window, "_conversation_id", "") or "")
+    workspace_root, workspace_id = _session_workspace_for_capture(window)
+    return execution_context_from_control(
+        session_id=sid,
+        conversation_id=sid,
+        turn_id=str(turn_id or ""),
+        workspace_id=workspace_id,
+        workspace_root=workspace_root,
+        surface="control",
+        principal="iris.control",
+        permission_scope="session",
+    )
+
+
+def freeze_turn_execution_context(window: Any, turn_id: str) -> ExecutionContext:
+    """HF-03: freeze Trusted ExecutionContext at Agent Turn begin."""
+    tid = str(turn_id or "").strip()
+    ctx = capture_execution_context(window, turn_id=tid)
+    return store_turn_execution_context(window, tid, ctx)
+
+
+def trusted_execution_context(window: Any) -> ExecutionContext:
+    """Handlers: prefer turn-frozen ctx; else live capture (legacy unscoped)."""
+    frozen = frozen_turn_execution_context(window)
+    if frozen is not None:
+        return frozen
+    return capture_execution_context(window, turn_id=active_turn_id(window))
 
 
 def resolve_bound_work_root(
@@ -679,7 +744,9 @@ def human_confirm_decision(
         )
         if decided.approved is not None:
             if name in _SHELL_NO_HUD_ACTIONS and decided.approved:
-                stash_shell_confirm_block(chat, decided.block_id)
+                stash_shell_confirm_block(
+                    chat, decided.block_id, command=command
+                )
             return bool(decided.approved)
         # Card unavailable: shell/project fail-closed (approval_ui_unavailable).
         if name in _SHELL_NO_HUD_ACTIONS:

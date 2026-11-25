@@ -68,7 +68,14 @@ def main() -> None:
     assert led.cleanup_session("kill-me") >= 1
     assert led.get(kept.request_id) is None
 
-    # process.py must not use global True bypass
+    # Grant with workspace → empty caller workspace must not skip match
+    rec_ws = led.grant(fingerprint=fp, session_id="s1", workspace_id="ws-strict")
+    ok_empty, reason_empty = led.consume(
+        request_id=rec_ws.request_id, fingerprint=fp, session_id="s1", workspace_id=""
+    )
+    assert not ok_empty and "workspace" in reason_empty, reason_empty
+
+    # process.py must not use global True bypass / set_human_confirm (HF-04)
     from pathlib import Path
 
     src = Path(__file__).resolve().parents[1] / "ui" / "control_actions" / "process.py"
@@ -76,6 +83,7 @@ def main() -> None:
     assert "default_approval_ledger" in body
     assert "lambda _spec, _a: True" not in body
     assert "lambda _s, _a: True" not in body
+    assert "rt.set_human_confirm(" not in body, "HF-04: process.manage must not mutate Runtime confirm"
 
     print("request_approval ok")
 

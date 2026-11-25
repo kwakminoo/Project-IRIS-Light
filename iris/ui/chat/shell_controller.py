@@ -88,6 +88,10 @@ def bind_run(request_id: str, run_id: str) -> None:
         if old and old != run:
             _by_run.pop(old, None)
         req.run_id = run
+        # Keep cancelled; still bind run_id so Runtime.cancel can finish.
+        if req.status == "cancelled":
+            _by_run[run] = rid
+            return
         if req.status in ("awaiting_approval", "approved", "queued", ""):
             req.status = "running"
         _by_run[run] = rid
@@ -95,11 +99,15 @@ def bind_run(request_id: str, run_id: str) -> None:
 
 def set_status(request_id: str, status: str) -> None:
     rid = str(request_id or "").strip()
+    next_status = str(status or "").strip()
     with _lock:
         req = _by_request.get(rid)
         if req is None:
             return
-        req.status = str(status or req.status)
+        # Terminal cancel wins over late "running" paints.
+        if req.status == "cancelled" and next_status == "running":
+            return
+        req.status = next_status or req.status
 
 
 def get_by_request(request_id: str) -> ShellRequest | None:
@@ -187,6 +195,25 @@ def clip_live(text: str, limit: int = _MAX_LIVE_OUTPUT) -> str:
     return raw[:head] + marker + raw[-tail:]
 
 
+class LiveOutputRing:
+    """Bounded UI buffer. Full stdout/stderr stay on Runtime per-run logs."""
+
+    __slots__ = ("_buf", "_limit")
+
+    def __init__(self, limit: int = _MAX_LIVE_OUTPUT) -> None:
+        self._buf = ""
+        self._limit = int(limit)
+
+    def append(self, chunk: str) -> None:
+        piece = chunk or ""
+        if not piece:
+            return
+        self._buf = clip_live(self._buf + piece, self._limit)
+
+    def snapshot(self) -> str:
+        return self._buf
+
+
 def run_shell_live(
     *,
     chat: Any | None,
@@ -201,7 +228,7 @@ def run_shell_live(
     bid = (block_id or "").strip()
     rid = str(request_id or "").strip()
     command = job.command
-    parts: list[str] = []
+    ring = LiveOutputRing()
     lock = threading.Lock()
     last_paint = 0.0
 
@@ -237,7 +264,7 @@ def run_shell_live(
 
     def _snapshot() -> str:
         with lock:
-            return clip_live("".join(parts))
+            return ring.snapshot()
 
     def _maybe_paint_running() -> None:
         nonlocal last_paint
@@ -250,15 +277,58 @@ def run_shell_live(
 
     def on_chunk(chunk: str) -> None:
         with lock:
-            parts.append(chunk or "")
+            ring.append(chunk or "")
         _maybe_paint_running()
 
+    cancel_event = threading.Event()
     if rid:
-        set_status(rid, "running")
+        cur = get_by_request(rid)
+        if cur is not None and cur.status == "cancelled":
+            cancel_event.set()
+        else:
+            set_status(rid, "running")
         if bid:
             bind_block(rid, bid)
+
+    def _on_started(run_id: str) -> None:
+        if rid and run_id:
+            bind_run(rid, run_id)
+
+    def _stream_with_hooks(job_: ShellJob, chunk_cb: Callable[[str], None]) -> ShellOutcome:
+        # Prefer stream_fn that already accepts cancel/on_started when it is stream_shell_job.
+        try:
+            return stream_fn(  # type: ignore[misc]
+                job_,
+                chunk_cb,
+                cancel_event=cancel_event,
+                on_started=_on_started,
+            )
+        except TypeError:
+            return stream_fn(job_, chunk_cb)
+
+    # Poll cancel_request → Event for Home stream path.
+    def _watch_cancel() -> None:
+        if not rid:
+            return
+        while not cancel_event.is_set():
+            req = get_by_request(rid)
+            if req is not None and req.status == "cancelled":
+                cancel_event.set()
+                return
+            if req is not None and req.run_id and req.status in (
+                "completed",
+                "failed",
+                "timed_out",
+                "interrupted",
+            ):
+                return
+            time.sleep(0.05)
+
+    watcher = threading.Thread(target=_watch_cancel, name="shell-cancel-watch", daemon=True)
+    watcher.start()
     _paint("running", "", status="ok")
-    outcome = stream_fn(job, on_chunk)
+    outcome = _stream_with_hooks(job, on_chunk)
+    cancel_event.set()
     # Final flush always (coalesced mid-stream paints may have been skipped).
     card_status = "ok" if outcome.ok else "error"
     body = outcome.stdout or ""
@@ -279,5 +349,7 @@ def run_shell_live(
         elif life == "completed" and outcome.ok:
             set_status(rid, "completed")
         else:
-            set_status(rid, "completed" if outcome.ok else "failed")
+            cur = get_by_request(rid)
+            if cur is None or cur.status != "cancelled":
+                set_status(rid, "completed" if outcome.ok else "failed")
     return outcome, bid

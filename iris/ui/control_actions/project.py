@@ -343,6 +343,7 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
         err_result,
         ok_result,
         resolve_bound_work_root,
+        trusted_execution_context,
     )
     import time
 
@@ -431,9 +432,10 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return err_result("project.run", str(exc))
 
-    # Trusted Control context — never model session_id / workspace_id args.
-    session_id = str(getattr(window, "_conversation_id", "") or "")
-    workspace_id = str(getattr(session, "workspace_root", "") or root_s)
+    # Trusted Control context — prefer turn-frozen; never model session/workspace args.
+    ctx = trusted_execution_context(window)
+    session_id = str(ctx.effective_session_id() or "")
+    workspace_id = str(ctx.workspace_id or ctx.workspace_root or root_s)
     from iris.ui.chat.shell_controller import bind_block, bind_run, new_request, set_status
     from iris.ui.chat.shell_gate import take_shell_confirm_block
 

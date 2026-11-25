@@ -251,6 +251,37 @@ body {{
     return base + CODE_CARD_CSS + WRITING_CARD_CSS + APP_CARD_CSS + EXEC_CARD_CSS
 
 
+# Top fade + scroll notify (iris-scroll://y/max) when body scrolls.
+# Mute flag suppresses notify during set_scroll_y / scroll_to_bottom / DOM patch.
+_SCROLL_BRIDGE_JS = """
+(function() {
+  var b = document.body;
+  if (!b || b.__irisScrollBound) return;
+  b.__irisScrollBound = true;
+  var pending = null;
+  function syncFade() {
+    b.classList.toggle('is-scrolled', (b.scrollTop || 0) > 0);
+  }
+  function notify() {
+    syncFade();
+    if (b.__irisScrollMute) return;
+    if (pending != null) return;
+    pending = requestAnimationFrame(function() {
+      pending = null;
+      if (b.__irisScrollMute) return;
+      var y = Math.round(b.scrollTop || 0);
+      var max = Math.max(0, (b.scrollHeight || 0) - (b.clientHeight || 0));
+      var a = document.createElement('a');
+      a.href = 'iris-scroll://' + y + '/' + max;
+      a.click();
+    });
+  }
+  b.addEventListener('scroll', notify, { passive: true });
+  syncFade();
+})();
+"""
+
+
 def _speaker_label(role: str) -> tuple[str, str]:
     """Return (display name, css class) matching legacy ChatLog speaker prefixes."""
     key = (role or "").strip().lower()
@@ -380,6 +411,7 @@ class H1TranscriptHost(QWidget):
     iris_agent_update_action_clicked = pyqtSignal(str)  # iris-agent-update:// apply | later
     ollama_login_clicked = pyqtSignal()
     shell_approval_clicked = pyqtSignal(str)  # iris-run|always|skip|mode://block_id
+    scrolled_by_user = pyqtSignal()  # body scroll → ChatPanel hold/follow
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -396,6 +428,8 @@ class H1TranscriptHost(QWidget):
         self._stream_parts: dict[str, _StreamPart] = {}
         self._stream_order: list[str] = []
         self._page_ready = False
+        self._scroll_y_cache = 0
+        self._scroll_max_cache = 0
         self._slot = QWidget(self)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -550,6 +584,96 @@ class H1TranscriptHost(QWidget):
     def view(self):
         """QWebEngineView once created (checks / probes)."""
         return self._ensure_view()
+
+    def _run_js_sync(self, script: str, *, timeout_ms: int = 3000) -> Any:
+        """runJavaScript with a short event-loop wait (scroll probes)."""
+        view = self._view
+        if view is None:
+            return None
+        box: dict[str, Any] = {"raw": None, "done": False}
+        loop = QEventLoop()
+
+        def _cb(raw: Any) -> None:
+            box["raw"] = raw
+            box["done"] = True
+            loop.quit()
+
+        view.page().runJavaScript(script, _cb)
+        QTimer.singleShot(timeout_ms, loop.quit)
+        if not box["done"]:
+            loop.exec()
+        return box["raw"]
+
+    def scroll_y(self) -> int:
+        """Current body.scrollTop (cache, else probe)."""
+        raw = self._run_js_sync(
+            "(function(){var b=document.body;return Math.round((b&&b.scrollTop)||0);})()"
+        )
+        if raw is None:
+            return int(self._scroll_y_cache)
+        try:
+            y = int(raw)
+        except (TypeError, ValueError):
+            y = int(self._scroll_y_cache)
+        self._scroll_y_cache = y
+        return y
+
+    def set_scroll_y(self, value: int) -> None:
+        """Programmatic body.scrollTop (mutes user-scroll notify)."""
+        v = max(0, int(value))
+        self._scroll_y_cache = v
+        if self._view is None:
+            return
+        self._run_js_sync(
+            "(function(){"
+            "var b=document.body;if(!b)return;"
+            "b.__irisScrollMute=true;"
+            f"b.scrollTop={v};"
+            "b.classList.toggle('is-scrolled',(b.scrollTop||0)>0);"
+            "b.__irisScrollMute=false;"
+            "})();"
+        )
+
+    def scroll_to_bottom(self) -> None:
+        """Scroll body to max (mutes user-scroll notify)."""
+        if self._view is None:
+            return
+        raw = self._run_js_sync(
+            "(function(){"
+            "var b=document.body;if(!b)return 0;"
+            "b.__irisScrollMute=true;"
+            "var max=Math.max(0,(b.scrollHeight||0)-(b.clientHeight||0));"
+            "b.scrollTop=max;"
+            "b.classList.toggle('is-scrolled',(b.scrollTop||0)>0);"
+            "b.__irisScrollMute=false;"
+            "return Math.round(max);"
+            "})();"
+        )
+        try:
+            self._scroll_max_cache = int(raw or 0)
+            self._scroll_y_cache = self._scroll_max_cache
+        except (TypeError, ValueError):
+            pass
+
+    def at_bottom(self, threshold: int = 2) -> bool:
+        """True when body scrollTop is within threshold of max."""
+        thr = max(0, int(threshold))
+        raw = self._run_js_sync(
+            "(function(){"
+            "var b=document.body;if(!b)return true;"
+            "var max=Math.max(0,(b.scrollHeight||0)-(b.clientHeight||0));"
+            f"return ((b.scrollTop||0)>=max-{thr});"
+            "})();"
+        )
+        return bool(raw) if raw is not None else (
+            self._scroll_y_cache >= max(0, self._scroll_max_cache - thr)
+        )
+
+    def _on_body_scroll_notify(self, y: int, max_y: int) -> None:
+        """JS iris-scroll:// bridge → cache + scrolled_by_user."""
+        self._scroll_y_cache = max(0, int(y))
+        self._scroll_max_cache = max(0, int(max_y))
+        self.scrolled_by_user.emit()
 
     def take_writing_updates(self, *, timeout_ms: int = 5000) -> list[dict[str, Any]]:
         """Drain Save events from the page JS queue (runJavaScript poll)."""
@@ -780,6 +904,30 @@ class H1TranscriptHost(QWidget):
         class _TranscriptPage(QWebEnginePage):
             def acceptNavigationRequest(self, url, nav_type, is_main_frame):  # noqa: N802
                 text = url.toString() if url is not None else ""
+                scheme = ((url.scheme() or "") if url is not None else "").lower()
+                if scheme == "iris-scroll" or text.startswith("iris-scroll:"):
+                    # iris-scroll://y/max — body scroll bridge (not a chat anchor).
+                    y, max_y = 0, 0
+                    try:
+                        host_part = ""
+                        if url is not None:
+                            host_part = (url.authority() or url.host() or "").strip()
+                            path = (url.path() or "").strip("/")
+                            if host_part and path:
+                                host_part = f"{host_part}/{path}"
+                            elif path and not host_part:
+                                host_part = path
+                        if not host_part and "://" in text:
+                            host_part = text.split("://", 1)[1]
+                        bits = [p for p in host_part.replace("\\", "/").split("/") if p]
+                        if bits:
+                            y = int(float(bits[0]))
+                        if len(bits) >= 2:
+                            max_y = int(float(bits[1]))
+                    except (TypeError, ValueError):
+                        y, max_y = 0, 0
+                    host._on_body_scroll_notify(y, max_y)
+                    return False
                 if text.startswith("iris-diagram://"):
                     from iris.ui.chat.diagram_card import parse_diagram_href
 
@@ -830,23 +978,50 @@ class H1TranscriptHost(QWidget):
         return view
 
     def _on_page_load_finished(self, ok: bool) -> None:
-        """First successful setHtml paint; later lands patch #transcript via JS."""
-        self._page_ready = bool(ok)
+        """First successful setHtml paint; later lands patch #transcript via JS.
+
+        Ignore failed loadFinished — iris-scroll:// clicks (and other aborted
+        navigations) must not clear _page_ready or the next land uses setHtml
+        and yanks scroll.
+        """
+        if not ok:
+            return
+        self._page_ready = True
 
     def _transcript_inner_html(self) -> str:
         self._code_seq = 0
         return "\n".join(self._turn_html(turn) for turn in self._turns)
 
     def _patch_transcript_dom(self, view) -> None:
-        """Replace #transcript only — keeps page scripts (__irisPartStream, cards)."""
+        """Replace #transcript only — keeps page scripts (__irisPartStream, cards).
+
+        Mute iris-scroll notify and restore body.scrollTop so a full innerHTML
+        land does not yank the viewport or look like a user scroll to hold/follow.
+        """
         inner = self._transcript_inner_html()
         script = (
             "(function(){"
             "var t=document.getElementById('transcript');"
             "if(!t)return false;"
+            "var b=document.body;"
+            "var y=0,max=0,follow=false;"
+            "if(b){"
+            "b.__irisScrollMute=true;"
+            "y=Math.round(b.scrollTop||0);"
+            "max=Math.max(0,(b.scrollHeight||0)-(b.clientHeight||0));"
+            "follow=y>=Math.max(0,max-2);"
+            "}"
             f"t.innerHTML={json.dumps(inner)};"
             "if(!window.__irisPartStream){"
             f"{_PART_STREAM_JS}"
+            "}"
+            f"{_SCROLL_BRIDGE_JS}"
+            "if(b){"
+            "void t.offsetHeight;"
+            "var max2=Math.max(0,(b.scrollHeight||0)-(b.clientHeight||0));"
+            "b.scrollTop=follow?max2:Math.min(y,max2);"
+            "b.classList.toggle('is-scrolled',(b.scrollTop||0)>0);"
+            "requestAnimationFrame(function(){b.__irisScrollMute=false;});"
             "}"
             "return true;"
             "})();"
@@ -876,6 +1051,7 @@ class H1TranscriptHost(QWidget):
             f"<script>{CODE_CARD_JS}</script>"
             f"<script>{WRITING_CARD_JS}</script>"
             f"<script>{_PART_STREAM_JS}</script>"
+            f"<script>{_SCROLL_BRIDGE_JS}</script>"
             "</body></html>"
         )
 

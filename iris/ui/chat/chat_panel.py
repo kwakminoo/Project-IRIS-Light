@@ -1510,6 +1510,8 @@ class ChatPanel(QWidget):
         self._typing_speech_start: float | None = None
         self._stream_active = False
         self._stream_who = "Iris"
+        # ponytail: (who, body, msg_id) — plain stream end while H1 drip still running.
+        self._pending_stream_land: tuple[str, str, str] | None = None
         self._stream_block_start: int | None = None
         self._typing_body_start: int | None = None
         self._typing_render_markdown = False
@@ -1580,6 +1582,7 @@ class ChatPanel(QWidget):
         )
         self._log.ollama_login_clicked.connect(self.ollama_login_clicked.emit)
         self._log.files_attached.connect(self._on_composer_drop_paths)
+        # Legacy `_log` scroll wiring kept harmless (widget hidden); H1 owns hold/follow.
         self._log.scrolled_by_user.connect(self._note_user_log_scroll)
         self._log.verticalScrollBar().actionTriggered.connect(self._on_log_scroll_action)
         self._log.verticalScrollBar().sliderMoved.connect(self._on_log_slider_moved)
@@ -1596,6 +1599,7 @@ class ChatPanel(QWidget):
         )
         self._transcript_h1.ollama_login_clicked.connect(self.ollama_login_clicked.emit)
         self._transcript_h1.shell_approval_clicked.connect(self._on_h1_shell_approval)
+        self._transcript_h1.scrolled_by_user.connect(self._note_user_log_scroll)
         self._transcript_h1.setMinimumHeight(80)
         self._shell_tool_blocks: dict[str, ToolShellBlock] = {}
 
@@ -1654,6 +1658,7 @@ class ChatPanel(QWidget):
         else:
             parts = [TextPart(markdown=mask_unnecessary_chat_paths(body))]
         self.transcript().append_turn(role, parts, msg_id=mid)
+        self._scroll_log_to_bottom(deferred=True)
         return mid
 
     def load_transcript_messages(self, messages) -> None:
@@ -1679,6 +1684,7 @@ class ChatPanel(QWidget):
         assert isinstance(buf, PartStreamBuffer)
         events = buf.push(chunk)
         self.transcript().apply_part_events(events)
+        self._scroll_log_to_bottom(deferred=True)
 
     def finish_transcript_stream(self) -> None:
         """Close open parts (incomplete fence → code) on the H1 host."""
@@ -1688,6 +1694,7 @@ class ChatPanel(QWidget):
         assert isinstance(buf, PartStreamBuffer)
         events = buf.finish()
         self.transcript().apply_part_events(events)
+        self._scroll_log_to_bottom(deferred=True)
 
     def writing_context_for_next_turn(self, msg_id: str = "") -> str:
         """Edited WritingPart snippets from the H1 host (next prompt injection)."""
@@ -2573,15 +2580,15 @@ class ChatPanel(QWidget):
         self.model_changed.emit(self.current_model())
 
     def _scroll_log_to_bottom(self, *, deferred: bool = False) -> None:
-        """Follow new output only while the user is at the tail."""
+        """Follow new output only while the user is at the H1 body tail."""
         def _do_scroll() -> None:
-            bar = self._log.verticalScrollBar()
+            host = self._transcript_h1
             self._scroll_programmatic += 1
             try:
                 if self._scroll_user_hold and self._scroll_hold_value is not None:
-                    bar.setValue(min(self._scroll_hold_value, bar.maximum()))
+                    host.set_scroll_y(max(0, int(self._scroll_hold_value)))
                 elif self._scroll_follow_tail:
-                    bar.setValue(bar.maximum())
+                    host.scroll_to_bottom()
             finally:
                 self._scroll_programmatic -= 1
 
@@ -2591,7 +2598,7 @@ class ChatPanel(QWidget):
             _do_scroll()
 
     def _on_log_scroll_action(self, _action: int) -> None:
-        # actionTriggered precedes valueChanged: sliderPosition is the new value.
+        # Dead path while `_log` is hidden; kept for leftover helpers.
         self._note_user_log_scroll(self._log.verticalScrollBar().sliderPosition())
 
     def _on_log_slider_moved(self, value: int) -> None:
@@ -2600,24 +2607,39 @@ class ChatPanel(QWidget):
     def _note_user_log_scroll(self, value: int | None = None) -> None:
         if self._scroll_programmatic:
             return
-        bar = self._log.verticalScrollBar()
+        host = self._transcript_h1
         if value is None:
-            value = bar.value()
-        self._scroll_follow_tail = value >= bar.maximum() - 2
+            # Prefer iris-scroll:// cache from the same user gesture.
+            value = int(host._scroll_y_cache)
+            max_y = int(host._scroll_max_cache)
+            if max_y <= 0 and host._view is not None:
+                value = host.scroll_y()
+                follow = host.at_bottom(threshold=2)
+            else:
+                follow = value >= max(0, max_y - 2)
+        else:
+            value = int(value)
+            follow = host.at_bottom(threshold=2)
+        self._scroll_follow_tail = bool(follow)
         self._scroll_user_hold = not self._scroll_follow_tail
         self._scroll_hold_value = value if self._scroll_user_hold else None
 
-    def _reapply_held_log_scroll(self, _minimum: int, maximum: int) -> None:
+    def _reapply_held_log_scroll(self, _minimum: int = 0, maximum: int = 0) -> None:
+        """Restore H1 hold / chase tail after content height changes."""
         if self._scroll_programmatic or self._applying_held_scroll:
             return
-        bar = self._log.verticalScrollBar()
+        host = self._transcript_h1
         self._applying_held_scroll = True
         self._scroll_programmatic += 1
         try:
             if self._scroll_user_hold and self._scroll_hold_value is not None:
-                bar.setValue(min(self._scroll_hold_value, maximum))
+                cap = int(maximum) if maximum > 0 else None
+                y = int(self._scroll_hold_value)
+                if cap is not None:
+                    y = min(y, cap)
+                host.set_scroll_y(max(0, y))
             elif self._scroll_follow_tail:
-                bar.setValue(maximum)
+                host.scroll_to_bottom()
         finally:
             self._scroll_programmatic -= 1
             self._applying_held_scroll = False
@@ -2737,6 +2759,7 @@ class ChatPanel(QWidget):
 
     def clear_transcript(self) -> None:
         """세션 전환 — 로그·스트림·도구 카드를 비운다 (입력창은 유지)."""
+        self._pending_stream_land = None
         self.finish_typing()
         self.cancel_user_listening()
         self.cancel_stt_pending()
@@ -3330,6 +3353,30 @@ class ChatPanel(QWidget):
         """Legacy `_log` paint no-op — H1 stream updates via typing drip / PartStream."""
         return
 
+    def _plain_typing_behind(self) -> bool:
+        if self._typing_speech_sync:
+            return False
+        raw = self._typing_text or ""
+        if not raw:
+            return False
+        return self._typing_index < self._typing_reveal_limit()
+
+    def _apply_deferred_stream_land(self) -> None:
+        pending = self._pending_stream_land
+        if not pending:
+            return
+        who, body, mid = pending
+        self._pending_stream_land = None
+        self.finish_transcript_stream()
+        host = self.transcript()
+        if host._turns:
+            last = host._turns[-1]
+            if (not mid) or last.msg_id == mid or not last.parts:
+                host._turns.pop()
+                host._reset_stream_state()
+        if body:
+            self._land_turn_on_h1(who, body, msg_id=mid)
+
     def end_stream_message(self, final_text: str | None = None) -> None:
         """스트림 종료 — H1에 정규화 본문을 parts로 재착지 (matrix/templates)."""
         if final_text is not None:
@@ -3343,11 +3390,18 @@ class ChatPanel(QWidget):
             who, final_text if final_text is not None else self._typing_text
         )
         self._block_buffer.set_final(self._typing_text)
+        mid = self._pending_iris_msg_id or ""
+        if not self._typing_speech_sync and self._plain_typing_behind():
+            self._pending_stream_land = (who, self._typing_text, mid)
+            self._stream_active = False
+            self._stream_block_start = None
+            self._start_plain_typing_timer()
+            return
+        self._pending_stream_land = None
         # Catch up any unpushed drip once, then land (stop-button clear after land).
         if not self._typing_speech_sync:
             self._flush_typing_h1_remainder()
         self.finish_transcript_stream()
-        mid = self._pending_iris_msg_id or ""
         host = self.transcript()
         if host._turns:
             last = host._turns[-1]
@@ -3375,26 +3429,47 @@ class ChatPanel(QWidget):
         """완성 턴을 H1에 착지. speech_sync면 TTS 타이머만 유지 (표시는 H1)."""
         self.finish_typing()
         body = normalize_chat_body(who, prepare_chat_text(text))
+        if not body:
+            return
+        role = self._role_for_who(who)
+        is_assistant = role == "assistant"
+        if is_assistant and not assistant_visible_text(body, streaming=False).strip():
+            return
+        if not speech_sync:
+            if not is_assistant:
+                self.append_message_instant(who, text)
+                return
+            mid = self._allocate_message_id()
+            self._stream_active = False
+            self._stream_who = who
+            self._pending_iris_msg_id = mid
+            self._stream_block_start = None
+            self._typing_body_start = None
+            self._typing_render_markdown = True
+            self._typing_text = body
+            self._typing_index = 0
+            self._typing_h1_pushed = 0
+            self._typing_speech_sync = False
+            self._typing_speech_duration_ms = None
+            self._typing_speech_start = None
+            self._typing_timer.stop()
+            self._block_buffer.reset()
+            self._block_buffer.set_final(body)
+            self.begin_transcript_stream(role=role, msg_id=mid)
+            self._pending_stream_land = (who, body, mid)
+            self._start_plain_typing_timer()
+            return
         mid = self._land_turn_on_h1(who, body)
         self._pending_iris_msg_id = mid if who.strip().lower() == "iris" else ""
         self._typing_body_start = None
-        self._typing_render_markdown = who.strip().lower() == "iris"
+        self._typing_render_markdown = is_assistant
         self._typing_text = body
-        self._typing_index = prose_char_count(body) if not speech_sync else 0
-        # Instant land already painted full body on H1.
-        self._typing_h1_pushed = len(body) if not speech_sync else 0
-        self._typing_speech_sync = speech_sync
+        self._typing_index = 0
+        self._typing_h1_pushed = 0
+        self._typing_speech_sync = True
         self._typing_speech_duration_ms = None
         self._typing_speech_start = None
-        if speech_sync:
-            self._typing_timer.stop()
-        else:
-            # Already landed on H1 — no per-char paint; clear typing state.
-            self._typing_text = ""
-            self._typing_index = 0
-            self._typing_h1_pushed = 0
-            self._pending_iris_msg_id = ""
-            self.typing_finished.emit()
+        self._typing_timer.stop()
 
     def sync_typing_to_speech(
         self,
@@ -3469,6 +3544,8 @@ class ChatPanel(QWidget):
 
     def is_typing_active(self) -> bool:
         """타이핑 효과가 아직 끝나지 않았으면 True (TTS 대기 포함)."""
+        if self._pending_stream_land is not None:
+            return True
         if self._typing_wait_for_tts_completion and bool(self._typing_text):
             return True
         if self._typing_timer.isActive():
@@ -3480,9 +3557,15 @@ class ChatPanel(QWidget):
 
     def finish_typing(self) -> None:
         """진행 중인 타이핑 효과를 즉시 완료한다."""
-        if not self._typing_timer.isActive() and not self._typing_text:
+        if not self._typing_timer.isActive() and not self._typing_text and not self._pending_stream_land:
             return
         self._typing_timer.stop()
+        if self._pending_stream_land is not None:
+            if not self._typing_speech_sync:
+                self._flush_typing_h1_remainder()
+            self._apply_deferred_stream_land()
+            self._stream_active = False
+            self._stream_block_start = None
         if self._typing_render_markdown and self._typing_body_start is not None:
             self._render_markdown_body()
         elif self._typing_index < self._typing_reveal_limit():
@@ -3676,6 +3759,9 @@ class ChatPanel(QWidget):
             self._typing_timer.stop()
             if self._stream_active:
                 return
+            if self._pending_stream_land is not None:
+                self._apply_deferred_stream_land()
+                self._stream_block_start = None
             if self._typing_render_markdown and self._typing_body_start is not None:
                 self._render_markdown_body()
             had_body = bool(self._typing_text) or self._typing_body_start is not None

@@ -153,9 +153,14 @@ from iris.ui.monitor.live_activity_panel import LiveActivityPanel, UiActivityRel
 from iris.ui.notification.notification_panel import NotificationPanel
 from iris.ui.workers.boot_checks_worker import BootChecksWorker, EmulatorLaunchWorker, IrisIdeLaunchWorker
 from iris.ui.control_bindings import (
+    freeze_turn_execution_context,
     mark_control_ready,
     start_control_surface,
     stop_control_surface,
+)
+from iris.system.execution_context import (
+    ExecutionContext,
+    clear_turn_execution_context,
 )
 from iris.ui.workers.email_workers import (
     EmailIdleWorker,
@@ -351,6 +356,8 @@ class MainWindow(QMainWindow):
         self._bound_slot: ChatRunSlot | None = None
         # turn_id → conversation_id. owning이 비어도 finished_ok를 DB에 남긴다.
         self._turn_worker_meta: dict[str, int] = {}
+        # turn_id → Trusted ExecutionContext frozen at turn begin (HF-03).
+        self._turn_execution_meta: dict[str, ExecutionContext] = {}
         self._runs.slot(self._conversation_id)
         self._chat_activity = ChatActivityMap()
         self._new_chat_shortcut = None
@@ -4966,6 +4973,8 @@ class MainWindow(QMainWindow):
             else:
                 self._file_verify_failover_used = False
         self._turn_gate.begin(turn.id)
+        # HF-03: ACL ownership frozen here — mid-turn session/workspace switch must not rebind.
+        freeze_turn_execution_context(self, turn.id)
         self._ai_analytics_t0 = time.monotonic()
         self._turn_usage = TokenUsage()
         cid = int(turn.session_id) if turn.session_id is not None else int(self._conversation_id)
@@ -5728,6 +5737,7 @@ class MainWindow(QMainWindow):
         current_id = self._turn_gate.finish(turn_id)
         if current_id:
             self._turn_worker_meta.pop(current_id, None)
+            clear_turn_execution_context(self, current_id)
         showing = self._showing_bound()
         # 인수인계문은 전환 직후 한 턴만 얹는다. 그 뒤로는 새 모델이 스스로 쌓은
         # 대화가 맥락이 되므로, 계속 붙여두면 토큰만 먹는다.
@@ -6052,6 +6062,7 @@ class MainWindow(QMainWindow):
         self._stop_agent_log_activity()
         text = (content or "").strip()
         cid = self._turn_worker_meta.pop(turn_id, None)
+        clear_turn_execution_context(self, turn_id)
         landed = self._land_assistant_db(turn_id, text, cid=cid)
         if landed is None:
             return
@@ -6077,10 +6088,12 @@ class MainWindow(QMainWindow):
                 return
             if slot.conversation_id != int(self._conversation_id):
                 self._turn_worker_meta.pop(turn_id, None)
+                clear_turn_execution_context(self, turn_id)
                 self._finish_slot_away(slot, content)
                 return
             self._land_assistant_db(turn_id, content, cid=int(slot.conversation_id))
             self._turn_worker_meta.pop(turn_id, None)
+            clear_turn_execution_context(self, turn_id)
             self._relay_foreground_turn(
                 turn_id, lambda: self._on_chat_finished(content, already_landed=True)
             )

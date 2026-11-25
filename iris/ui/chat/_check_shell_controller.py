@@ -91,11 +91,22 @@ def _check_cancel_without_run() -> None:
     assert sc.get_by_request(req.request_id).status == "cancelled"
 
 
+def _check_live_ring_bounded() -> None:
+    ring = sc.LiveOutputRing(limit=200)
+    ring.append("H" * 80)
+    ring.append("T" * 5000)
+    snap = ring.snapshot()
+    assert len(snap) <= 200 + 40, f"ring grew unbounded: {len(snap)}"
+    assert "truncated" in snap or snap.endswith("T")
+    assert "H" in snap
+
+
 def main() -> None:
     _check_identity_and_phase()
     _check_concurrent_isolation()
     _check_run_shell_live_one_box()
     _check_cancel_without_run()
+    _check_live_ring_bounded()
     print("shell_controller ok")
 
 

@@ -68,7 +68,55 @@ def main() -> int:
     assert panel._part_stream_buf is not None
     assert panel._part_stream_buf._raw == _h1_stream_raw(panel)
 
-    print("h1_typing_drip ok", lengths)
+    print("h1_stream_typing_drip ok", lengths)
+
+    panel2 = ChatPanel()
+    panel2.resize(640, 480)
+    panel2.show()
+    _settle(30)
+
+    _FINISH_ONLY = (
+        "Finish-only Iris turn without content_chunk must drip on H1 "
+        "before the final typed parts land."
+    )
+    panel2.append_message("Iris", _FINISH_ONLY)
+    panel2._typing_timer.stop()
+
+    assert panel2._pending_stream_land is not None, "finish-only must defer H1 land"
+    assert _h1_stream_raw(panel2) == "", (
+        f"finish-only must not instant-land on H1, got {_h1_stream_raw(panel2)!r}"
+    )
+
+    lengths2: list[int] = [len(_h1_stream_raw(panel2))]
+    for _ in range(12):
+        if not panel2.is_typing_active():
+            break
+        panel2._type_next_chunk()
+        raw = _h1_stream_raw(panel2)
+        assert _FINISH_ONLY.startswith(raw), f"H1 must stay a prefix, got {raw!r}"
+        lengths2.append(len(raw))
+
+    assert lengths2[0] == 0, (
+        f"finish-only must start from empty H1 stream, lengths={lengths2}"
+    )
+    assert any(a < b for a, b in zip(lengths2, lengths2[1:])), (
+        f"finish-only prefix must grow across ticks, lengths={lengths2}"
+    )
+
+    for _ in range(5000):
+        if panel2._pending_stream_land is None and not panel2.is_typing_active():
+            break
+        panel2._type_next_chunk()
+
+    assert panel2._pending_stream_land is None
+    landed = "".join(
+        getattr(p, "markdown", "")
+        for t in panel2.transcript()._turns
+        for p in t.parts
+    )
+    assert _FINISH_ONLY in landed, landed
+
+    print("h1_typing_drip ok", lengths, lengths2)
     return 0
 
 

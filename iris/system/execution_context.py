@@ -109,6 +109,64 @@ def strip_trust_fields(args: Mapping[str, Any] | None) -> dict[str, Any]:
     return raw
 
 
+def active_turn_id(window: Any) -> str:
+    """Turn id from ChatTurnGate when present."""
+    gate = getattr(window, "_turn_gate", None)
+    if gate is None:
+        return ""
+    return str(getattr(gate, "active_id", "") or "").strip()
+
+
+def frozen_turn_execution_context(window: Any) -> ExecutionContext | None:
+    """Prefer turn-scoped snapshot on window._turn_execution_meta[active_id]."""
+    tid = active_turn_id(window)
+    if not tid:
+        return None
+    meta = getattr(window, "_turn_execution_meta", None)
+    if not isinstance(meta, dict):
+        return None
+    ctx = meta.get(tid)
+    return ctx if isinstance(ctx, ExecutionContext) else None
+
+
+def store_turn_execution_context(
+    window: Any, turn_id: str, ctx: ExecutionContext
+) -> ExecutionContext:
+    """Freeze ctx for this turn_id (fills turn_id when blank/mismatched)."""
+    tid = str(turn_id or "").strip()
+    if not tid:
+        raise ValueError("turn_id required to freeze ExecutionContext")
+    if str(ctx.turn_id or "").strip() != tid:
+        ctx = make_execution_context(
+            session_id=ctx.session_id,
+            conversation_id=ctx.conversation_id,
+            turn_id=tid,
+            tool_call_id=ctx.tool_call_id,
+            request_id=ctx.request_id,
+            workspace_id=ctx.workspace_id,
+            workspace_root=ctx.workspace_root,
+            surface=ctx.surface,
+            principal=ctx.principal,
+            permission_scope=ctx.permission_scope,
+            approval_reference=ctx.approval_reference,
+        )
+    meta = getattr(window, "_turn_execution_meta", None)
+    if not isinstance(meta, dict):
+        meta = {}
+        setattr(window, "_turn_execution_meta", meta)
+    meta[tid] = ctx
+    return ctx
+
+
+def clear_turn_execution_context(window: Any, turn_id: str | None) -> None:
+    tid = str(turn_id or "").strip()
+    if not tid:
+        return
+    meta = getattr(window, "_turn_execution_meta", None)
+    if isinstance(meta, dict):
+        meta.pop(tid, None)
+
+
 def owner_is_acl_token(owner: str) -> bool:
     """False for surface telemetry labels; True only for real principal tokens."""
     text = str(owner or "").strip()

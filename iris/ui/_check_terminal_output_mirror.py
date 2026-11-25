@@ -40,6 +40,13 @@ def main() -> None:
     assert "appendTerminalOutput" in poller
     assert "anyTerm.write" in poller or "write === 'function'" in poller
     assert "revealed: true" in poller
+    # HF-08: mirror must not call sendText (shell-input risk).
+    mirror_fn = poller.split(
+        "protected async appendTerminalOutput(args"
+    )[1].split("protected async runInTerminal(args")[0]
+    assert "sendText(" not in mirror_fn, "appendTerminalOutput must not fall back to sendText("
+    assert "terminal_write_missing" in mirror_fn
+    assert "theia_terminal_write" in mirror_fn
 
     protocol = (runtime_source_dir() / "src/common/iris-ide-protocol.ts").read_text(
         encoding="utf-8"

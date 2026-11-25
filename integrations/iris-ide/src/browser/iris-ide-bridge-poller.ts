@@ -322,8 +322,8 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
     }
 
     /**
-     * Mirror Runtime output into Theia without re-executing (display write).
-     * Prefer xterm write; fall back to sendText without trailing CR when possible.
+     * Mirror Runtime output into Theia without re-executing (display write only).
+     * Do not use the shell-input API for mirror. Missing write → mirror unavailable.
      */
     protected async appendTerminalOutput(args: Record<string, unknown>): Promise<Record<string, unknown>> {
         const text = String(args.text ?? args.chunk ?? '');
@@ -333,21 +333,26 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
         const terminal = await this.ensureTerminal(cwd);
         const anyTerm = terminal as unknown as {
             write?: (s: string) => void;
-            sendText?: (s: string) => void;
         };
-        if (typeof anyTerm.write === 'function') {
-            anyTerm.write(text);
-        } else if (typeof anyTerm.sendText === 'function') {
-            // Avoid submitting as a shell command — no trailing CR.
-            anyTerm.sendText(text.endsWith('\n') ? text.slice(0, -1) : text);
-        } else {
-            throw new Error('appendTerminalOutput: terminal has no write/sendText');
+        if (typeof anyTerm.write !== 'function') {
+            return {
+                appended: false,
+                via: 'unavailable',
+                reason: 'terminal_write_missing',
+                bytes: 0,
+                revealed: false,
+                run_id: runId || undefined,
+                stream: stream || undefined,
+            };
         }
+        // Strip ESC CSI / OSC that could confuse a display adapter; keep printable text.
+        const safe = text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, '');
+        anyTerm.write(safe);
         this.revealTerminal(terminal);
         return {
             appended: true,
-            via: 'theia_terminal',
-            bytes: text.length,
+            via: 'theia_terminal_write',
+            bytes: safe.length,
             revealed: true,
             run_id: runId || undefined,
             stream: stream || undefined,

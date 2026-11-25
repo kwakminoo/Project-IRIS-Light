@@ -9,8 +9,10 @@ from typing import Any, Callable
 from iris.ui.chat.run_visibility import card_from_control_result, insert_visibility_card
 from iris.ui.chat.shell_approval import ApprovalState, preview_command, should_auto_run
 
-# Chat attr: FIFO queue of confirm→action block ids (concurrent cards).
-SHELL_CONFIRM_BLOCK_ATTR = "_shell_confirm_block_ids"
+# Chat attr: block_id → command preview (request-bound; not FIFO-only).
+SHELL_CONFIRM_BLOCK_ATTR = "_shell_confirm_block_ids"  # legacy list name kept
+SHELL_CONFIRM_MAP_ATTR = "_shell_confirm_by_command"
+DEFAULT_APPROVAL_WAIT_S = 300.0
 
 
 @dataclass(frozen=True)
@@ -45,39 +47,72 @@ def decide(block_id: str, decision: str) -> None:
         slot.event.set()
 
 
-def take(block_id: str) -> str:
+def take(block_id: str, timeout: float | None = DEFAULT_APPROVAL_WAIT_S) -> str:
     with _lock:
         slot = _waits.get(block_id)
     if slot is None:
         # Nothing was armed. Waiting here would leave the worker blocked.
         return ""
-    slot.event.wait()
+    wait_s = None if timeout is None else max(0.05, float(timeout))
+    if wait_s is None:
+        slot.event.wait()
+        fired = True
+    else:
+        fired = bool(slot.event.wait(timeout=wait_s))
     with _lock:
         if _waits.get(block_id) is slot:
             _waits.pop(block_id, None)
+    if not fired:
+        return "timeout"
     return slot.decision
 
 
-def stash_shell_confirm_block(chat: Any | None, block_id: str) -> None:
+def stash_shell_confirm_block(
+    chat: Any | None, block_id: str, command: str = ""
+) -> None:
     if chat is None:
         return
     bid = (block_id or "").strip()
     if not bid:
         return
+    cmd = str(command or "").strip()
+    m = getattr(chat, SHELL_CONFIRM_MAP_ATTR, None)
+    if not isinstance(m, dict):
+        m = {}
+        setattr(chat, SHELL_CONFIRM_MAP_ATTR, m)
+    m[bid] = cmd
+    # Keep legacy list for old readers (migration).
     q = getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, None)
     if not isinstance(q, list):
         q = []
         setattr(chat, SHELL_CONFIRM_BLOCK_ATTR, q)
-    q.append(bid)
+    if bid not in q:
+        q.append(bid)
 
 
-def take_shell_confirm_block(chat: Any | None) -> str:
+def take_shell_confirm_block(chat: Any | None, command: str = "") -> str:
     if chat is None:
         return ""
+    cmd = str(command or "").strip()
+    m = getattr(chat, SHELL_CONFIRM_MAP_ATTR, None)
+    if isinstance(m, dict) and m:
+        if cmd:
+            for bid, preview in list(m.items()):
+                if str(preview or "").strip() == cmd:
+                    m.pop(bid, None)
+                    q = getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, None)
+                    if isinstance(q, list) and bid in q:
+                        q.remove(bid)
+                    return str(bid)
+        # LIFO fallback when command unknown — last approved wins over FIFO mismatch.
+        bid, _preview = m.popitem()
+        q = getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, None)
+        if isinstance(q, list) and bid in q:
+            q.remove(bid)
+        return str(bid)
     q = getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, None)
     if isinstance(q, list) and q:
         return str(q.pop(0) or "").strip()
-    # Legacy single-attr migration
     legacy = str(getattr(chat, "_shell_confirm_block_id", "") or "").strip()
     if legacy:
         setattr(chat, "_shell_confirm_block_id", "")

@@ -9,6 +9,7 @@ from iris.system.execution_context import (
     execution_context_from_control,
     strip_trust_fields,
 )
+from iris.ui.control_bindings import trusted_execution_context
 from iris.system.execution_runtime import default_runtime
 from iris.system.request_approval import (
     default_approval_ledger,
@@ -17,6 +18,7 @@ from iris.system.request_approval import (
 from iris.ui.chat.shell_controller import (
     bind_block,
     bind_run,
+    get_by_request,
     get_by_run,
     new_request,
     set_status,
@@ -70,28 +72,8 @@ def _approve_start_nonblocking(
 
 
 def _trusted_ctx(window: Any) -> Any:
-    """Build ExecutionContext from Control window — never from model args."""
-    from iris.ui.control_bindings import _bound_session
-
-    sid = str(getattr(window, "_conversation_id", "") or "")
-    workspace_root = ""
-    workspace_id = ""
-    try:
-        session, _err = _bound_session(window, require_workspace=False)
-    except Exception:  # noqa: BLE001 — offline / no IDE
-        session = None
-    if session is not None:
-        workspace_root = str(getattr(session, "workspace_root", "") or "")
-        workspace_id = workspace_root
-    return execution_context_from_control(
-        session_id=sid,
-        conversation_id=sid,
-        workspace_id=workspace_id,
-        workspace_root=workspace_root,
-        surface="control",
-        principal="iris.control",
-        permission_scope="session",
-    )
+    """Trusted ExecutionContext — prefer turn-frozen snapshot (HF-03)."""
+    return trusted_execution_context(window)
 
 
 def register_process_actions(window: Any, reg: ActionRegistry) -> None:
@@ -149,6 +131,8 @@ def register_process_actions(window: Any, reg: ActionRegistry) -> None:
             ctx = execution_context_from_control(
                 session_id=ctx.session_id,
                 conversation_id=ctx.conversation_id,
+                turn_id=ctx.turn_id,
+                tool_call_id=ctx.tool_call_id,
                 workspace_id=ctx.workspace_id,
                 workspace_root=ctx.workspace_root,
                 surface=ctx.surface,
@@ -156,19 +140,8 @@ def register_process_actions(window: Any, reg: ActionRegistry) -> None:
                 permission_scope=ctx.permission_scope,
                 approval_reference=rec.request_id,
             )
-
-            def _confirm(_spec: Any, args: dict[str, Any]) -> bool:
-                ok, _reason = default_approval_ledger().consume(
-                    request_id=rec.request_id,
-                    fingerprint=fingerprint_from_manage_args(args),
-                    session_id=sid,
-                    workspace_id=str(ctx.workspace_id or ""),
-                )
-                return bool(ok)
-
-            rt.set_human_confirm(_confirm)
-        else:
-            rt.set_human_confirm(None)
+            # HF-04: ledger consume via ctx.approval_reference inside Runtime.manage.
+            # Do not mutate rt.set_human_confirm (shared singleton race).
 
         out = rt.manage(raw, ctx=ctx)
         if out.get("ok"):
@@ -177,7 +150,10 @@ def register_process_actions(window: Any, reg: ActionRegistry) -> None:
                 run_id = str(data.get("run_id") or "").strip()
                 if run_id:
                     bind_run(shell_req.request_id, run_id)
-                set_status(shell_req.request_id, "running")
+                # HF-06: never overwrite cancelled with running.
+                cur = get_by_request(shell_req.request_id)
+                if cur is None or cur.status != "cancelled":
+                    set_status(shell_req.request_id, "running")
                 data = {**data, "request_id": shell_req.request_id}
             elif action == "cancel" and isinstance(data, dict):
                 rid = str(data.get("run_id") or raw.get("run_id") or "").strip()

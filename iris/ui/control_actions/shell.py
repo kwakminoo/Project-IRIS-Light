@@ -19,6 +19,7 @@ from iris.ui.chat.shell_controller import (
     run_shell_live,
 )
 from iris.ui.chat.shell_gate import take_shell_confirm_block
+from iris.ui.control_bindings import trusted_execution_context
 
 # Re-exports for checks / callers that imported from this module.
 _clip_live = clip_live
@@ -51,10 +52,11 @@ def register_shell_actions(window: Any, reg: ActionRegistry) -> None:
             return err_result("shell.run", str(exc))
 
         chat = getattr(window, "_chat", None)
-        block_id = take_shell_confirm_block(chat)
-        # Trusted Control context — ignore model session_id / workspace_id.
-        session_id = str(getattr(window, "_conversation_id", "") or "")
-        workspace_id = ""
+        block_id = take_shell_confirm_block(chat, command=job.command)
+        # Trusted Control context — prefer turn-frozen ctx; ignore model trust fields.
+        ctx = trusted_execution_context(window)
+        session_id = str(ctx.effective_session_id() or "")
+        workspace_id = str(ctx.workspace_id or "")
 
         req = new_request(
             session_id=session_id,
@@ -65,10 +67,17 @@ def register_shell_actions(window: Any, reg: ActionRegistry) -> None:
         if block_id:
             bind_block(req.request_id, block_id)
 
-        def _stream(job_: ShellJob, on_chunk: Any) -> ShellOutcome:
+        def _stream(
+            job_: ShellJob,
+            on_chunk: Any,
+            cancel_event: Any = None,
+            on_started: Any = None,
+        ) -> ShellOutcome:
             return stream_shell_job(
                 job_,
                 on_chunk,
+                cancel_event=cancel_event,
+                on_started=on_started,
                 session_id=session_id,
                 workspace_id=workspace_id,
                 owner="shell.run",  # telemetry label only; ACL uses session_id

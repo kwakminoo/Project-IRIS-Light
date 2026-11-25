@@ -28,6 +28,7 @@ from iris.system.execution_context import (
 )
 from iris.system.execution_policy import (
     WAIT_MAX_TIMEOUT_S,
+    PolicyDecision,
     cap_wait_timeout,
     check_action_approval,
     check_process_start_cwd,
@@ -599,11 +600,37 @@ class ProcessRegistry:
                 runs = [r.as_dict() for r in self.list_runs(session_id=sid)]
                 return {"ok": True, "action": "process.manage", "data": {"runs": runs}}
             if action == "start":
-                approval = check_action_approval(
-                    process_start_action_spec(),
-                    dict(raw),
-                    self._human_confirm,
-                )
+                # Prefer request-scoped ledger via ctx.approval_reference (HF-04).
+                # Do not require mutating self._human_confirm for product path.
+                approval_ref = ""
+                if ctx is not None:
+                    approval_ref = str(getattr(ctx, "approval_reference", "") or "").strip()
+                if approval_ref:
+                    from iris.system.request_approval import (
+                        default_approval_ledger,
+                        fingerprint_from_manage_args,
+                    )
+
+                    ok_c, reason_c = default_approval_ledger().consume(
+                        request_id=approval_ref,
+                        fingerprint=fingerprint_from_manage_args(raw),
+                        session_id=ctx.effective_session_id() if ctx is not None else "",
+                        workspace_id=str(getattr(ctx, "workspace_id", "") or ""),
+                    )
+                    if not ok_c:
+                        return {
+                            "ok": False,
+                            "action": "process.manage",
+                            "error": reason_c or "approval required",
+                            "data": {"confirm_required": True, "risk": "high"},
+                        }
+                    approval = PolicyDecision(True)
+                else:
+                    approval = check_action_approval(
+                        process_start_action_spec(),
+                        dict(raw),
+                        self._human_confirm,
+                    )
                 if not approval.allowed:
                     return {
                         "ok": False,
