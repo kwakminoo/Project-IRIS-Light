@@ -5,6 +5,7 @@ Nous ``origin/main`` 을 추격하지 않는다. 목표 SHA 는 ``vendor/iris-ag
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ from iris.infrastructure.agent_runtime import (
     load_upstream_url,
 )
 from iris.infrastructure.iris_agent_credentials import iris_agent_home
+from iris.system.iris_agent_install import vendor_iris_agent_core_root
 from iris.system.win_subprocess import no_window_kwargs
 
 _UPDATE_TIMEOUT_SEC = 2400.0
@@ -182,24 +184,63 @@ def apply_iris_agent_update(
     if not exe:
         raise RuntimeError("Iris Agent 실행 파일이 없습니다")
     repo = iris_agent_repo_dir(iris_agent_home())
-    if not (repo / ".git").exists():
-        raise RuntimeError("Iris Agent git 설치 없음 — pin checkout 불가")
-
     pin = load_pinned_sha()
     _note(on_progress, "Iris Agent gateway 중지(파일 잠금 해제)…")
     stop_hermes_gateway(command, wait_sec=20.0)
 
-    _note(on_progress, f"Iris Agent pin {pin[:7]} checkout…")
+    vendor = vendor_iris_agent_core_root()
     try:
-        _checkout_pin(repo, pin)
-        apply_iris_agent_baseline_overlays(repo)
+        if vendor.is_dir() and (vendor / "run_agent.py").is_file():
+            _note(on_progress, f"Iris Agent owned core sync ({pin[:7]})…")
+            # Preserve live venv; refresh sources from vendor.
+            for name in ("run_agent.py", "pyproject.toml", "uv.lock", "LICENSE"):
+                src = vendor / name
+                if src.is_file():
+                    shutil.copy2(src, repo / name)
+            for pkg in (
+                "agent",
+                "tools",
+                "providers",
+                "hermes_cli",
+                "iris_agent_cli",
+                "iris_cli",
+                "gateway",
+                "plugins",
+                "hermes_platform",
+                "pm",
+                "cron",
+                "acp_adapter",
+            ):
+                src_dir = vendor / pkg
+                dst_dir = repo / pkg
+                if not src_dir.is_dir():
+                    continue
+                if dst_dir.exists():
+                    shutil.rmtree(dst_dir, ignore_errors=True)
+                shutil.copytree(
+                    src_dir,
+                    dst_dir,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                )
+            stamp = vendor / ".iris-agent-baseline"
+            if stamp.is_file():
+                shutil.copy2(stamp, repo / ".iris-agent-baseline")
+            apply_iris_agent_baseline_overlays(repo)
+        else:
+            if not (repo / ".git").exists():
+                raise RuntimeError(
+                    "owned core 없음 및 git 설치 없음 — 업데이트 불가"
+                )
+            _note(on_progress, f"Iris Agent pin {pin[:7]} checkout…")
+            _checkout_pin(repo, pin)
+            apply_iris_agent_baseline_overlays(repo)
     except Exception as exc:
         _ensure_engine_after(on_progress)
         raise RuntimeError(str(exc)) from exc
 
     _ensure_engine_after(on_progress)
     return (
-        "Iris Agent 런타임이 pin에 맞춰졌습니다. "
+        "Iris Agent 런타임이 owned core/pin에 맞춰졌습니다. "
         "(HTTP gateway 재시작은 사용하지 않음)"
     )
 

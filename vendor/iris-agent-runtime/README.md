@@ -2,13 +2,14 @@
 
 ## Choice
 
-**`vendor/iris-agent-runtime`** (not a public GitHub fork).
+**`vendor/iris-agent-runtime`** remains the pin/overlay *contract*.  
+**ACO (2026-11-25):** frozen owned sources live in **`vendor/iris-agent-core/`**. Default install materializes that tree (no Nous clone).
 
 | Option | Decision |
 |---|---|
-| GitHub fork | Deferred. No Iris-owned remote fork yet. Revisit when CVE chase needs a public rebase surface. |
-| Full in-tree Hermes copy | Rejected for Phase 1. Inflates the Iris repo without owning the loop yet. |
-| This vendor pin + overlays | **Chosen.** Product owns pin SHA + Iris soft-patches. Install clones upstream at pin only. |
+| GitHub fork | Deferred. No Iris-owned remote fork yet. |
+| Full in-tree Hermes copy | **Adopted under ACO** as `vendor/iris-agent-core` (pin + baked overlays). |
+| This vendor pin + overlays | Kept for SHA/CVE procedure and legacy soft-patch helpers. |
 
 ## Contract
 

@@ -4,11 +4,12 @@
 interpreter 만 받는다. OneDrive/필터 등으로 minor-version junction 생성이
 실패하면(os error 448) 설치가 멈춘다.
 
-우회: staging clone 후 검증에 성공하면 교체한다.
+우회: vendor/iris-agent-core 를 staging 에 복사한 뒤 검증에 성공하면 live(iris-agent) 와 교체한다.
+레거시 ~/.iris-light/agent/hermes-agent(Reference) 는 건드리지 않는다.
 의존성은 uv.lock 이 있으면 uv sync --frozen 이 우선이고, 없을 때만 pip.
 pip 는 uv.lock pin 을 재현하지 않으며 requirements.txt 는 쓰지 않는다.
 
-Python: 처음엔 3.11 → 3.12 → 3.13 을 고르고, clone 한 뒤 그 저장소의 uv.lock·pyproject 가
+Python: 처음엔 3.11 → 3.12 → 3.13 을 고르고, materialize 한 뒤 그 저장소의 uv.lock·pyproject 가
 요구하는 범위(iris_agent_python_range)를 벗어나면 다시 고른다. 2026-10-02 upstream 은
 requires-python 이 >=3.11,<3.15 인데 의존성이 전부 `python_version >= '3.14'` 로 묶여
 3.11 로는 핵심 패키지가 하나도 깔리지 않았다 (ruamel 없음, 실제 사례).
@@ -29,6 +30,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from iris.infrastructure.agent_runtime import (
+    IRIS_AGENT_CHECKOUT_NAME,
     apply_iris_agent_baseline_overlays,
     ensure_iris_agent_home,
     load_pinned_sha,
@@ -71,6 +73,70 @@ def looks_like_uv_python_mount_failure(text: str) -> bool:
     if not t:
         return False
     return any(m in t for m in _UV_MOUNT_MARKERS)
+
+
+def vendor_iris_agent_core_root() -> Path:
+    """워크스페이스 vendor/iris-agent-core (owned frozen tree)."""
+    return Path(__file__).resolve().parents[2] / "vendor" / "iris-agent-core"
+
+
+def _vendor_baseline_sha(vendor: Path) -> str:
+    """`.iris-agent-baseline` 또는 PROVENANCE 에서 pin SHA."""
+    bas = vendor / ".iris-agent-baseline"
+    if bas.is_file():
+        try:
+            lines = bas.read_text(encoding="utf-8").strip().splitlines()
+        except OSError:
+            lines = []
+        if lines:
+            sha = lines[0].strip().split()[0]
+            if len(sha) >= 7 and all(c in "0123456789abcdefABCDEF" for c in sha):
+                return sha
+    prov = vendor / "PROVENANCE.md"
+    if prov.is_file():
+        try:
+            text = prov.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        m = re.search(r"(?i)Pin SHA\s*[|:]\s*`?([0-9a-fA-F]{7,})`?", text)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def _materialize_owned_core(staging: Path) -> subprocess.CompletedProcess[str]:
+    """vendor/iris-agent-core → staging 복사. git/Nous fetch 불필요."""
+    src = vendor_iris_agent_core_root()
+    cmd = ["materialize", str(src), str(staging)]
+    if not src.is_dir():
+        return subprocess.CompletedProcess(cmd, 1, "", f"vendor missing: {src}")
+    if not (src / "run_agent.py").is_file():
+        return subprocess.CompletedProcess(cmd, 1, "", "run_agent.py missing in vendor")
+    if not ((src / "iris_agent_cli").is_dir() or (src / "hermes_cli").is_dir()):
+        return subprocess.CompletedProcess(
+            cmd, 1, "", "neither iris_agent_cli nor hermes_cli in vendor"
+        )
+    pin = load_pinned_sha()
+    bas = _vendor_baseline_sha(src)
+    if bas and bas.lower() != pin.lower():
+        return subprocess.CompletedProcess(
+            cmd, 1, "", f"baseline stamp mismatch want={pin} got={bas}"
+        )
+    try:
+        if staging.exists():
+            shutil.rmtree(staging)
+        shutil.copytree(
+            src,
+            staging,
+            ignore=shutil.ignore_patterns(
+                "venv", ".git", "__pycache__", "*.pyc", ".pytest_cache"
+            ),
+        )
+    except OSError as exc:
+        return subprocess.CompletedProcess(cmd, 1, "", str(exc))
+    return subprocess.CompletedProcess(
+        cmd, 0, f"materialized from vendor_iris_agent_core ({src}) pin={pin}", ""
+    )
 
 
 def _no_window() -> dict:
@@ -304,14 +370,27 @@ def _kill_hermes_tree_holders(agent: Path) -> None:
     time.sleep(0.4)
 
 
+def _checkout_artifact_prefix(name: str, *, keep_staging: str | None) -> bool:
+    """iris-agent / hermes-agent 의 broken·trash·staging 잔존 여부 (live hermes-agent 제외)."""
+    for base in (IRIS_AGENT_CHECKOUT_NAME, "hermes-agent"):
+        if name.startswith(f"{base}.broken-") or name.startswith(f"{base}.trash-"):
+            return True
+        if name.startswith(f"{base}.staging-") and name != (keep_staging or ""):
+            return True
+        if name.startswith(f"{base}.prev-") or name.startswith(f"{base}.failed-"):
+            return True
+    return False
+
+
 def force_retire_iris_agent(
     *,
     command: str = "hermes",
     keep_staging: str | None = None,
 ) -> str:
-    """잠긴 hermes-agent / .broken-* / staging-* 를 rename 으로 치우고 삭제 시도.
+    """잠긴 iris-agent / .broken-* / staging-* 를 rename 으로 치우고 삭제 시도.
 
-    keep_staging: 진행 중 clone 디렉터리명(예: hermes-agent.staging-…)만 보존.
+    keep_staging: 진행 중 staging 디렉터리명(예: iris-agent.staging-…)만 보존.
+    레거시 hermes-agent live(Reference) 는 삭제하지 않는다.
     """
     home = gw.iris_agent_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -322,21 +401,14 @@ def force_retire_iris_agent(
 
     notes: list[str] = []
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    targets = [home / "hermes-agent"]
+    # live 는 제품 checkout(iris-agent)만. hermes-agent Reference 유지.
+    targets = [home / IRIS_AGENT_CHECKOUT_NAME]
     try:
         targets.extend(
             sorted(
                 p
                 for p in home.iterdir()
-                if p.is_dir()
-                and (
-                    p.name.startswith("hermes-agent.broken-")
-                    or p.name.startswith("hermes-agent.trash-")
-                    or (
-                        p.name.startswith("hermes-agent.staging-")
-                        and p.name != (keep_staging or "")
-                    )
-                )
+                if p.is_dir() and _checkout_artifact_prefix(p.name, keep_staging=keep_staging)
             )
         )
     except OSError:
@@ -346,7 +418,7 @@ def force_retire_iris_agent(
         if not path.exists():
             continue
         _kill_hermes_tree_holders(path)
-        trash = home / f"hermes-agent.trash-{stamp}-{path.name[-8:]}"
+        trash = home / f"{IRIS_AGENT_CHECKOUT_NAME}.trash-{stamp}-{path.name[-8:]}"
         try:
             path.rename(trash)
             notes.append(f"치움→{trash.name}")
@@ -395,20 +467,26 @@ def force_retire_iris_agent(
     # 오래된 trash 최대 N개 · 남은 staging(보존분 제외) 전부 삭제
     try:
         trashes = sorted(
-            p for p in home.iterdir() if p.is_dir() and p.name.startswith("hermes-agent.trash-")
+            p
+            for p in home.iterdir()
+            if p.is_dir()
+            and (
+                p.name.startswith(f"{IRIS_AGENT_CHECKOUT_NAME}.trash-")
+                or p.name.startswith("hermes-agent.trash-")
+            )
         )
         for old in trashes[:-_MAX_TRASH_KEEP]:
             shutil.rmtree(old, ignore_errors=True)
         for st in home.iterdir():
-            if (
-                st.is_dir()
-                and st.name.startswith("hermes-agent.staging-")
-                and st.name != (keep_staging or "")
+            if not st.is_dir() or st.name == (keep_staging or ""):
+                continue
+            if st.name.startswith(f"{IRIS_AGENT_CHECKOUT_NAME}.staging-") or st.name.startswith(
+                "hermes-agent.staging-"
             ):
                 shutil.rmtree(st, ignore_errors=True)
     except OSError:
         pass
-    return "; ".join(notes) if notes else "정리할 hermes-agent 없음"
+    return "; ".join(notes) if notes else f"정리할 {IRIS_AGENT_CHECKOUT_NAME} 없음"
 
 
 def _user_path_prepend(scripts: Path) -> None:
@@ -579,9 +657,21 @@ def _boost_probe_deps(venv_py: Path) -> subprocess.CompletedProcess[str]:
 
 
 def _probe_venv(venv_py: Path) -> tuple[bool, str]:
+    probe = (
+        "import importlib\n"
+        "cli=None\n"
+        "for _n in ('iris_agent_cli','hermes_cli'):\n"
+        "    try:\n"
+        "        cli=importlib.import_module(_n); break\n"
+        "    except ImportError:\n"
+        "        pass\n"
+        "assert cli is not None\n"
+        "import aiohttp, mcp\n"
+        "print('ok')\n"
+    )
     try:
         proc = _run(
-            [str(venv_py), "-c", "import hermes_cli, aiohttp, mcp; print('ok')"],
+            [str(venv_py), "-c", probe],
             timeout=60.0,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -598,9 +688,9 @@ def _discard_tree(path: Path) -> None:
 
 
 def _restore_backup(home: Path, stamp: str) -> None:
-    live = home / "hermes-agent"
-    backup = home / f"hermes-agent.prev-{stamp}"
-    failed = home / f"hermes-agent.failed-{stamp}"
+    live = home / IRIS_AGENT_CHECKOUT_NAME
+    backup = home / f"{IRIS_AGENT_CHECKOUT_NAME}.prev-{stamp}"
+    failed = home / f"{IRIS_AGENT_CHECKOUT_NAME}.failed-{stamp}"
     if live.exists():
         try:
             _discard_tree(failed)
@@ -669,7 +759,7 @@ def _activate_staged(
     swapped, note = _swap_in_staging(home, staging, stamp)
     if not swapped:
         return False, note
-    live = home / "hermes-agent"
+    live = home / IRIS_AGENT_CHECKOUT_NAME
     _retarget_moved_tree(live, old, live)
     if probe_gateway:
         ok, detail = gw.probe_iris_agent_runtime(command=command, timeout_sec=30.0)
@@ -683,8 +773,8 @@ def _activate_staged(
 
 
 def _swap_in_staging(home: Path, staging: Path, stamp: str) -> tuple[bool, str]:
-    live = home / "hermes-agent"
-    backup = home / f"hermes-agent.prev-{stamp}"
+    live = home / IRIS_AGENT_CHECKOUT_NAME
+    backup = home / f"{IRIS_AGENT_CHECKOUT_NAME}.prev-{stamp}"
     moved = False
     if live.exists():
         try:
@@ -899,7 +989,9 @@ def _finish_staged_install(
     if not runtime_ok:
         log.append(runtime_detail)
         return fail("probe", "최종 경로 실행 검증 실패", "\n".join(log))
-    live_scripts = (home / "hermes-agent" / "venv" / ("Scripts" if sys.platform == "win32" else "bin"))
+    live_scripts = (
+        home / IRIS_AGENT_CHECKOUT_NAME / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
+    )
     _user_path_prepend(live_scripts)
     return InstallResult(True, f"우회 설치 성공 ({runtime_detail})", "ok")
 
@@ -1074,15 +1166,15 @@ def _checkout_pinned_sha(git: str, staging: Path, pin: str) -> subprocess.Comple
 
 
 def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | None:
-    """staging → hermes-agent rename. 실패 시 메시지."""
+    """staging → iris-agent rename. 실패 시 메시지."""
     if agent.exists():
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        trash = home / f"hermes-agent.trash-{stamp}-swap"
+        trash = home / f"{IRIS_AGENT_CHECKOUT_NAME}.trash-{stamp}-swap"
         try:
             agent.rename(trash)
             shutil.rmtree(trash, ignore_errors=True)
         except OSError as exc:
-            return f"기존 hermes-agent 교체 실패: {exc}"
+            return f"기존 {IRIS_AGENT_CHECKOUT_NAME} 교체 실패: {exc}"
     try:
         staging.rename(agent)
     except OSError as exc:
@@ -1099,9 +1191,10 @@ def install_iris_agent_with_system_python(
     home: Path | None = None,
     sha: str | None = None,
 ) -> InstallResult:
-    """staging 에 설치하고 import probe 통과 후에만 live 와 교체.
+    """staging 에 vendor core 를 복사·설치하고 import probe 통과 후에만 live 와 교체.
 
     home 기본은 제품 Iris Agent 홈. Engine 경로면 EngineHome Path 를 넘긴다.
+    기본 경로는 vendor/iris-agent-core materialize (git 불필요).
     """
 
     def _emit(msg: str) -> None:
@@ -1141,40 +1234,30 @@ def install_iris_agent_with_system_python(
                 return _fail("python", "베이스 Python 없음", "py -3.11..3.13 / winget 3.11 실패")
             _emit(f"우회 설치: 베이스 Python = {py} ({python_version(py)})")
             log = [f"python={py} version={python_version(py)}", f"uv={shutil.which('uv') or '없음'}"]
-            git = shutil.which("git")
-            if not git:
-                return _fail("clone", "git 없음", "git 이 PATH 에 없습니다")
+            vendor = vendor_iris_agent_core_root()
+            if not vendor.is_dir():
+                return _fail("clone", "vendor iris-agent-core 없음", f"expected {vendor}")
             if should_abort and should_abort():
                 return InstallResult(False, "사용자가 중단함", "cancel")
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            staging = home / f"hermes-agent.staging-{stamp}"
+            staging = home / f"{IRIS_AGENT_CHECKOUT_NAME}.staging-{stamp}"
             _discard_tree(staging)
             pin = (sha or "").strip() or load_pinned_sha()
-            _emit(f"Iris Agent 런타임 pin checkout ({pin[:7]})…")
+            _emit(f"Iris Agent owned core materialize ({pin[:7]})…")
             started = time.monotonic()
-            staging.mkdir(parents=True, exist_ok=True)
-            clone = _checkout_pinned_sha(git, staging, pin)
+            materialize = _materialize_owned_core(staging)
             log.append(
-                f"pin={pin} checkout rc={clone.returncode} "
+                f"pin={pin} materialize rc={materialize.returncode} "
                 f"elapsed={time.monotonic() - started:.1f}s"
             )
-            log.append(clone.stdout or "")
-            log.append(clone.stderr or "")
-            if clone.returncode != 0 or not (staging / "hermes_cli").is_dir():
+            log.append(materialize.stdout or "")
+            log.append(materialize.stderr or "")
+            cli_ok = (staging / "iris_agent_cli").is_dir() or (
+                staging / "hermes_cli"
+            ).is_dir()
+            if materialize.returncode != 0 or not cli_ok:
                 _discard_tree(staging)
-                return _fail("clone", "git pin checkout 실패", "\n".join(log))
-            head = _run(
-                [git, "-C", str(staging), "rev-parse", "HEAD"], timeout=30.0
-            )
-            got = (head.stdout or "").strip()
-            log.append(f"rev-parse={got}")
-            if got.lower() != pin.lower():
-                _discard_tree(staging)
-                return _fail(
-                    "clone",
-                    "pin SHA 불일치",
-                    f"want={pin} got={got}\n" + "\n".join(log),
-                )
+                return _fail("clone", "vendor core materialize 실패", "\n".join(log))
             want = iris_agent_python_range(staging)
             have = python_version(py)
             log.append(f"repo python range={want} chosen={have}")
