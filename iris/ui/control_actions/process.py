@@ -36,6 +36,32 @@ def _start_preview(args: dict[str, Any]) -> str:
     return "process.manage start"
 
 
+def _insert_process_shell_box(window: Any, preview: str, *, phase: str = "pending") -> str:
+    """HF-06: auto-approved process.start still gets a Shell Box."""
+    from iris.ui.control_bindings import _call_on_ui
+
+    chat = getattr(window, "_chat", None)
+    if chat is None or not callable(getattr(chat, "insert_tool_block", None)):
+        return ""
+
+    def _post() -> str:
+        return str(
+            chat.insert_tool_block(
+                title="Process",
+                command=preview,
+                output="",
+                status="ok",
+                phase=phase,
+            )
+            or ""
+        ).strip()
+
+    try:
+        return str(_call_on_ui(window, _post) or "").strip()
+    except Exception:
+        return ""
+
+
 def _approve_start_nonblocking(
     window: Any, args: dict[str, Any]
 ) -> tuple[bool | None, str]:
@@ -51,7 +77,7 @@ def _approve_start_nonblocking(
     preview = _start_preview(args)
     approval = load()
     if should_auto_run(approval, preview):
-        return True, ""
+        return True, _insert_process_shell_box(window, preview, phase="pending")
 
     chat = getattr(window, "_chat", None)
     if chat is None or not callable(getattr(chat, "insert_tool_block", None)):
