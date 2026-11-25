@@ -1431,6 +1431,7 @@ class ChatPanel(QWidget):
     # 타이핑 효과가 끝났을 때 — 정지 버튼(presenting) 해제용
     typing_finished = pyqtSignal()
     model_changed = pyqtSignal(str)
+    # 모델 피커 별 토글 — MainWindow가 DB에 반영 후 set_model_favorites로 다시 맞춤
     model_favorite_toggled = pyqtSignal(str)
     files_attached = pyqtSignal(list)
     skill_inserted = pyqtSignal(str)
@@ -1442,8 +1443,6 @@ class ChatPanel(QWidget):
     ollama_login_clicked = pyqtSignal()
     # 입력창에 뭔가 쓰기 시작했다 — 보내기 전에 준비할 일(임베딩 모델 깨우기)용
     composing = pyqtSignal()
-    # 모델 피커 별 토글 — MainWindow가 DB에 반영 후 set_model_favorites로 다시 맞춤
-    model_favorite_toggled = pyqtSignal(str)
 
     def __init__(self) -> None:
         super().__init__()
