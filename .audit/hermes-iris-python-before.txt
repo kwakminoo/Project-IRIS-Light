@@ -1,0 +1,1799 @@
+iris\automation\__init__.py:5:- Does not: 채팅 턴, Hermes 도구 실행.
+iris\iris_agent_login_warm_cli.py:39:        with (log_dir / "hermes_login_warm.log").open("a", encoding="utf-8") as fh:
+iris\agent\__init__.py:4:``hermes_*`` files are Unit 7 re-export shims. Worker symbols load lazily so
+iris\core\activity_privacy.py:202:    assert "\u26a1" not in strip_emoji("Connecting via Hermes \u26a1")
+iris\mcp\__init__.py:1:"""Iris MCP adapters (stdio bridges for Hermes).
+iris\mcp\__init__.py:4:- Owns: Hermes ↔ IRIS stdio MCP bridge surface (`iris-control` tools).
+iris\mcp\__init__.py:5:- Does not: LLM inference, tool execution inside Hermes, or UI widgets.
+iris\mcp\__init__.py:6:- Talks to: Hermes MCP config (`mcp_servers.iris-control`), Control Surface HTTP.
+iris\mcp\__init__.py:7:- Extend via: new MCP server process or `integrations/hermes-skills/` (prefer core diff=0).
+iris\__main__.py:29:    - 실행 프로토콜(첫 설치·Core 미완료) — winget/Hermes 등이 관리자에서만 정상
+iris\config\settings.py:19:    agent_command: str = "hermes"
+iris\config\settings.py:68:        from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
+iris\config\settings.py:70:        agent_api_key = resolve_hermes_api_key(raw_key)
+iris\config\settings.py:90:        agent_command=os.environ.get("IRIS_AGENT_COMMAND", "hermes").strip() or "hermes",
+iris\config\_check_iris_agent_settings_names.py:12:    for name in ("hermes_enabled", "hermes_command", "hermes_base_url", "hermes_api_key"):
+iris\config\_check_iris_agent_settings_names.py:16:    legacy_prefix = "IRIS_" + "HERMES_"
+iris\config\_check_iris_agent_policy_settings.py:21:    assert all(not hasattr(settings, name.replace("agent_", "hermes_")) for name in _FIELDS)
+iris\config\_check_iris_agent_policy_settings.py:30:        "iris.infrastructure.iris_agent_credentials.resolve_hermes_api_key",
+iris\assets\setup_logos.py:19:    "hermes_install": "hermes",
+iris\assets\setup_logos.py:20:    "hermes_env": "hermes",
+iris\assets\setup_logos.py:21:    "hermes_provider": "hermes",
+iris\assets\setup_logos.py:22:    "iris_control_sync": "hermes",
+iris\assets\setup_logos.py:23:    "iris_agent_engine": "hermes",
+iris\assets\setup_logos.py:35:    "hermes": "Iris Agent",
+iris\assets\setup_logos.py:41:    "hermes": "#5b4dff",
+iris\assets\setup_logos.py:88:    letter = {"ollama": "O", "hermes": "H", "iris": "I"}.get(brand, "?")
+iris\assets\setup_logos.py:102:    assert brand_for_step("iris_agent_engine") == "hermes"
+iris\assets\setup_logos.py:106:    pm = setup_brand_pixmap("hermes", size=32)
+iris\assets\setup_logos.py:108:    print("setup_logos ok", brand_label("hermes"), pm.width())
+iris\infrastructure\email_client.py:639:    """이메일 챗 → Hermes 에이전트에 주입할 시스템 컨텍스트.
+iris\infrastructure\api_model_meta.py:75:    Hermes options 400·파라미터 거부는 숨기지 않는다.
+iris\infrastructure\api_model_meta.py:141:    assert chat_error_hides_model("Hermes: HTTP 400 Unsupported parameter(s): options") is False
+iris\infrastructure\agent_runtime.py:4:전체 Hermes 트리를 모노레포에 넣지 않고, pin SHA + Iris soft-patch 흡수
+iris\infrastructure\agent_runtime.py:30:IRIS_AGENT_UPSTREAM_URL = "https://github.com/NousResearch/hermes-agent.git"
+iris\infrastructure\agent_runtime.py:32:LEGACY_AGENT_CHECKOUT_NAME = "hermes-agent"
+iris\infrastructure\agent_runtime.py:74:    """구 Hermes 홈 (마이그레이션 원본만). 활성 쓰기에 쓰지 않는다."""
+iris\infrastructure\agent_runtime.py:77:        return Path(local) / "hermes"
+iris\infrastructure\agent_runtime.py:78:    return Path.home() / ".hermes"
+iris\infrastructure\agent_runtime.py:91:    """제품 checkout 경로. iris-agent 우선, 없으면 레거시 hermes-agent, 둘 다 없으면 생성 목표(iris-agent)."""
+iris\infrastructure\agent_runtime.py:524:    command: str = "hermes",
+iris\infrastructure\agent_runtime.py:539:    # circular: hermes_gateway imports ensure_iris_agent_home from this module.
+iris\infrastructure\agent_runtime.py:541:        ensure_hermes_gateway_running,
+iris\infrastructure\agent_runtime.py:542:        ensure_hermes_provider_config,
+iris\infrastructure\agent_runtime.py:547:            ensure_hermes_provider_config()
+iris\infrastructure\agent_runtime.py:558:            ensure_hermes_gateway_running(
+iris\infrastructure\agent_runtime.py:569:    # Hermes install/gateway가 업스트림 SOUL.md를 심은 뒤 Iris 페르소나로 되돌린다.
+iris\infrastructure\agent_runtime.py:608:    from iris.system.iris_agent_control_sync import ensure_hermes_stdio_dead_check_patch
+iris\infrastructure\agent_runtime.py:611:        ensure_hermes_stdio_dead_check_patch(agent_root=root, mutate=True)
+iris\infrastructure\agent_runtime.py:613:    from iris.system.iris_agent_tool_choice import apply_hermes_tool_choice_overlay
+iris\infrastructure\agent_runtime.py:615:    messages.extend(apply_hermes_tool_choice_overlay(root))
+iris\learning\aloha_learner.py:13:from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\learning\aloha_learner.py:30:    """소스 하드코딩 금지 — env + Hermes .env."""
+iris\learning\aloha_learner.py:36:    hermes_env = hermes_home() / ".env"
+iris\learning\aloha_learner.py:37:    if hermes_env.is_file():
+iris\learning\aloha_learner.py:39:            for line in hermes_env.read_text(encoding="utf-8", errors="ignore").splitlines():
+iris\infrastructure\api_quota.py:18:from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\infrastructure\api_quota.py:43:def _hermes_env_path() -> Path:
+iris\infrastructure\api_quota.py:44:    return hermes_home() / ".env"
+iris\infrastructure\api_quota.py:68:    """프로세스 env → Hermes .env 순으로 키 조회."""
+iris\infrastructure\api_quota.py:73:    hermes = _parse_dotenv(_hermes_env_path())
+iris\infrastructure\api_quota.py:75:        v = (hermes.get(name) or "").strip()
+iris\infrastructure\absorbed_tool_aliases.py:1:"""Hermes model tool names → Iris Control actions (domain registry).
+iris\infrastructure\absorbed_tool_aliases.py:12:# Hermes tool names with no Iris Control replacement (strip from schemas only).
+iris\infrastructure\iris_agent_client.py:1:"""Hermes Agent API Server 클라이언트 — OpenAI 호환 채팅·모델 동기화."""
+iris\infrastructure\iris_agent_client.py:20:    is_weak_hermes_api_key,
+iris\infrastructure\iris_agent_client.py:21:    resolve_hermes_api_key,
+iris\infrastructure\iris_agent_client.py:47:# Hermes /health 정상 본문: {"status":"ok","platform":"hermes-agent",...}
+iris\infrastructure\iris_agent_client.py:60:    looks_like_hermes: bool = False
+iris\infrastructure\iris_agent_client.py:87:    """(alive_ok, looks_like_hermes, summary).
+iris\infrastructure\iris_agent_client.py:89:    ponytail: Hermes 0.20은 status==\"ok\". 다른 빌드가 healthy/ok:true 를
+iris\infrastructure\iris_agent_client.py:95:        looks = ("hermes" in platform) if platform else False
+iris\infrastructure\iris_agent_client.py:114:def is_hermes_syncable_model(model: str) -> bool:
+iris\infrastructure\iris_agent_client.py:115:    """Hermes config.yaml default에 그대로 쓸 수 있는 모델명인지.
+iris\infrastructure\iris_agent_client.py:187:def infer_hermes_provider(model: str) -> str:
+iris\infrastructure\iris_agent_client.py:188:    """Iris 모델명 → Hermes provider.
+iris\infrastructure\iris_agent_client.py:218:        return "Hermes stream finished with error"
+iris\infrastructure\iris_agent_client.py:325:        command: str = "hermes",
+iris\infrastructure\iris_agent_client.py:330:        self.api_key = resolve_hermes_api_key(api_key)
+iris\infrastructure\iris_agent_client.py:331:        self.command = (command or "hermes").strip() or "hermes"
+iris\infrastructure\iris_agent_client.py:377:                            looks_like_hermes=looks,
+iris\infrastructure\iris_agent_client.py:386:                        looks_like_hermes=looks,
+iris\infrastructure\iris_agent_client.py:433:        key_weak = is_weak_hermes_api_key(key) if key else True
+iris\infrastructure\iris_agent_client.py:547:                "model": "hermes-agent",
+iris\infrastructure\iris_agent_client.py:577:            return ["hermes-agent"]
+iris\infrastructure\iris_agent_client.py:584:        return out or ["hermes-agent"]
+iris\infrastructure\iris_agent_client.py:620:        provider = (provider or "").strip() or infer_hermes_provider(model)
+iris\infrastructure\iris_agent_client.py:623:        # Hermes 0.19+: 로컬 OpenAI-compat는 custom + base_url
+iris\infrastructure\iris_agent_client.py:663:        # Hermes(0.19+)엔 'ollama' provider가 없다 — 로컬 OpenAI-compat 프록시는
+iris\infrastructure\iris_agent_client.py:665:        hermes_provider = "custom" if provider == "ollama" else provider
+iris\infrastructure\iris_agent_client.py:668:            "provider": hermes_provider,
+iris\infrastructure\iris_agent_client.py:704:                errors.append(f"Hermes model API {e.code}: {detail or e.reason}")
+iris\infrastructure\iris_agent_client.py:706:                errors.append(f"Hermes model API 연결 실패: {e}")
+iris\infrastructure\iris_agent_client.py:718:        from iris.system.iris_agent_gateway import hermes_executable
+iris\infrastructure\iris_agent_client.py:720:        exe = hermes_executable(self.command)
+iris\infrastructure\iris_agent_client.py:722:            errors.append(f"Hermes CLI 실행 파일을 찾을 수 없습니다: {self.command}")
+iris\infrastructure\iris_agent_client.py:724:        # Hermes(0.19+)엔 'ollama' provider가 없다 — 로컬 OpenAI-compat 프록시는
+iris\infrastructure\iris_agent_client.py:726:        hermes_provider = "custom" if provider == "ollama" else provider
+iris\infrastructure\iris_agent_client.py:728:            [exe, "config", "set", "model.provider", hermes_provider],
+iris\infrastructure\iris_agent_client.py:763:                        f"Hermes CLI 실패 ({' '.join(cmd)}): {err or proc.returncode}"
+iris\infrastructure\iris_agent_client.py:770:            errors.append(f"Hermes CLI 실행 실패: {e}")
+iris\infrastructure\iris_agent_client.py:776:            from iris.system.iris_agent_gateway import hermes_home
+iris\infrastructure\iris_agent_client.py:778:            path = hermes_home() / "config.yaml"
+iris\infrastructure\iris_agent_client.py:796:            errors.append(f"Hermes api_key 기록 실패: {exc}")
+iris\infrastructure\iris_agent_client.py:829:        trace_payload("hermes", payload)
+iris\infrastructure\iris_agent_client.py:834:            headers["X-Hermes-Model"] = model
+iris\infrastructure\iris_agent_client.py:864:                            from iris.infrastructure.iris_agent_errors import format_hermes_sse_error
+iris\infrastructure\iris_agent_client.py:867:                                f"Hermes: {format_hermes_sse_error(soft_error, model=model)}"
+iris\infrastructure\iris_agent_client.py:890:                        # Hermes may emit stream_end(finished=False) then recover with a
+iris\infrastructure\iris_agent_client.py:895:                    if event_name == "hermes.tool.progress":
+iris\infrastructure\iris_agent_client.py:931:                    if obj.get("type") == "hermes.tool.progress":
+iris\infrastructure\iris_agent_client.py:937:                        from iris.infrastructure.iris_agent_errors import format_hermes_sse_error
+iris\infrastructure\iris_agent_client.py:940:                            f"Hermes: {format_hermes_sse_error(soft_error, model=model)}"
+iris\infrastructure\iris_agent_client.py:958:                from iris.infrastructure.iris_agent_errors import format_hermes_http_401
+iris\infrastructure\iris_agent_client.py:960:                raise RuntimeError(format_hermes_http_401()) from e
+iris\infrastructure\iris_agent_client.py:961:            raise RuntimeError(f"Hermes HTTP {e.code}: {detail or e.reason}") from e
+iris\infrastructure\iris_agent_client.py:963:            raise RuntimeError(f"Hermes 연결 실패: {e.reason}") from e
+iris\infrastructure\iris_agent_client.py:972:def host_label_for_hermes(base_url: str) -> str:
+iris\infrastructure\iris_agent_client.py:1034:    """Parse tool JSON; peel extra leading '[' when Hermes emits [[obj] (one ']')."""
+iris\infrastructure\iris_agent_client.py:1053:    """Hermes가 tool 인자 dict를 assistant content로 흘리는 경우 채팅에서 숨긴다."""
+iris\infrastructure\iris_agent_client.py:1086:    assert infer_hermes_provider("gemma4:31b-cloud") == "ollama"
+iris\infrastructure\iris_agent_client.py:1087:    assert infer_hermes_provider("gemma4:26b") == "ollama"
+iris\infrastructure\iris_agent_client.py:1088:    assert infer_hermes_provider("anthropic/claude") == "openrouter"
+iris\infrastructure\iris_agent_client.py:1089:    assert infer_hermes_provider("api:41025a6367b9:nvidia/nemotron-3") == "auto"
+iris\infrastructure\iris_agent_client.py:1090:    assert not is_hermes_syncable_model("api:x:nvidia/y")
+iris\infrastructure\iris_agent_client.py:1091:    assert is_hermes_syncable_model("gemma4:26b")
+iris\infrastructure\iris_agent_client.py:1129:    resolved = resolve_hermes_api_key("")
+iris\infrastructure\iris_agent_errors.py:1:"""Hermes 채팅 오류 분류 — 게이트웨이 Bearer vs Ollama 클라우드 401."""
+iris\infrastructure\iris_agent_errors.py:48:def format_hermes_sse_error(err_msg: str, *, model: str = "") -> str:
+iris\infrastructure\iris_agent_errors.py:49:    """SSE error.message → 사용자용 RuntimeError 본문 (앞에 'Hermes: ' 붙이지 않음)."""
+iris\infrastructure\iris_agent_errors.py:73:def format_hermes_http_401() -> str:
+iris\infrastructure\iris_agent_errors.py:78:def scrub_upstream_hermes_cli_hints(text: str) -> str:
+iris\infrastructure\iris_agent_errors.py:79:    """업스트림 format_error 의 `hermes doctor` 등 CLI 힌트를 Iris 안내로 가린다."""
+iris\infrastructure\iris_agent_errors.py:81:    if "hermes doctor" not in out.lower() and "hermes " not in out.lower():
+iris\infrastructure\iris_agent_errors.py:84:        r"(?i)\brun\s+[`']?hermes\s+doctor[`']?",
+iris\infrastructure\iris_agent_errors.py:88:    out = re.sub(r"(?i)\bhermes\s+doctor\b", "Iris Agent 진단", out)
+iris\infrastructure\iris_agent_errors.py:97:    raw = scrub_upstream_hermes_cli_hints((err or "").strip())
+iris\infrastructure\iris_agent_errors.py:239:    assert CLOUD_AUTH_ERROR_PREFIX in format_hermes_sse_error(
+iris\infrastructure\iris_agent_errors.py:242:    assert GATEWAY_AUTH_ERROR_PREFIX in format_hermes_http_401()
+iris\infrastructure\iris_agent_errors.py:243:    assert "도구" in format_hermes_sse_error(
+iris\infrastructure\iris_agent_errors.py:247:        'Hermes: HTTP 429: [{"error":{"code":429,"message":'
+iris\infrastructure\iris_agent_errors.py:253:        "Hermes: HTTP 400 Unsupported parameter(s): options"
+iris\infrastructure\iris_agent_errors.py:256:    assert "연결하지 못했습니다" in explain_chat_error("Hermes 연결 실패: refused")
+iris\infrastructure\iris_agent_errors.py:257:    assert "Iris Agent" in explain_chat_error("Hermes 연결 실패: refused")
+iris\infrastructure\iris_agent_errors.py:258:    assert "hermes doctor" not in explain_chat_error(
+iris\infrastructure\iris_agent_errors.py:259:        "custom rejected; run `hermes doctor` for details"
+iris\infrastructure\iris_agent_errors.py:261:    assert "Iris" in scrub_upstream_hermes_cli_hints("run hermes doctor now")
+iris\infrastructure\iris_agent_errors.py:308:    print("hermes_errors self-check ok")
+iris\learning\manager.py:208:    # --- Hermes / MCP API ---
+iris\infrastructure\external_api_keys.py:15:from iris.infrastructure.iris_agent_credentials import hermes_home, load_hermes_dotenv
+iris\infrastructure\external_api_keys.py:28:    hermes_backend: str = ""
+iris\infrastructure\external_api_keys.py:45:# hermes_backend 가 있으면 Hermes web.search_backend 로 연결하고, 없으면 키만 저장한다.
+iris\infrastructure\external_api_keys.py:62:        hermes_backend="brave-free",
+iris\infrastructure\external_api_keys.py:70:        hermes_backend="tavily",
+iris\infrastructure\external_api_keys.py:78:        hermes_backend="exa",
+iris\infrastructure\external_api_keys.py:86:        hermes_backend="firecrawl",
+iris\infrastructure\external_api_keys.py:94:        hermes_backend="parallel",
+iris\infrastructure\external_api_keys.py:102:        hermes_backend="keenable",
+iris\infrastructure\external_api_keys.py:111:        hermes_backend="ddgs",
+iris\infrastructure\external_api_keys.py:120:        hermes_backend="searxng",
+iris\infrastructure\external_api_keys.py:224:    last_hermes = ""
+iris\infrastructure\external_api_keys.py:231:        if preset.hermes_backend:
+iris\infrastructure\external_api_keys.py:232:            last_hermes = preset.id
+iris\infrastructure\external_api_keys.py:233:    return last_hermes or last_any
+iris\infrastructure\external_api_keys.py:273:    env = load_hermes_dotenv()
+iris\infrastructure\external_api_keys.py:281:    env = load_hermes_dotenv()
+iris\infrastructure\external_api_keys.py:294:    env = load_hermes_dotenv()
+iris\infrastructure\external_api_keys.py:319:    existing = load_hermes_dotenv()
+iris\infrastructure\external_api_keys.py:333:    path = hermes_home() / ".env"
+iris\infrastructure\external_api_keys.py:344:def apply_hermes_search_backend(backend: str, *, config_path: Path | None = None) -> None:
+iris\infrastructure\external_api_keys.py:352:    path = config_path or (hermes_home() / "config.yaml")
+iris\infrastructure\external_api_keys.py:425:        apply_hermes_search_backend("tavily", config_path=cfg)
+iris\infrastructure\external_api_keys.py:426:        apply_hermes_search_backend("exa", config_path=cfg)
+iris\infrastructure\external_api_keys.py:427:        apply_hermes_search_backend("", config_path=cfg)
+iris\infrastructure\iris_agent_credentials.py:1:"""Hermes API 키·.env — gateway/client 공용 (순환 import 방지)."""
+iris\infrastructure\iris_agent_credentials.py:22:def hermes_home() -> Path:
+iris\infrastructure\iris_agent_credentials.py:27:def is_weak_hermes_api_key(key: str) -> bool:
+iris\infrastructure\iris_agent_credentials.py:36:def load_hermes_dotenv() -> dict[str, str]:
+iris\infrastructure\iris_agent_credentials.py:38:    path = hermes_home() / ".env"
+iris\infrastructure\iris_agent_credentials.py:58:def resolve_hermes_api_key(api_key: str = "") -> str:
+iris\infrastructure\iris_agent_credentials.py:63:    Hermes .env 값이 있으면 그걸 쓰고, 없을 때만 Iris 설정/환경변수 키를 쓴다.
+iris\infrastructure\iris_agent_credentials.py:65:    env_key = load_hermes_dotenv().get("API_SERVER_KEY", "").strip()
+iris\infrastructure\iris_agent_credentials.py:72:    assert is_weak_hermes_api_key("change-me-please")
+iris\infrastructure\iris_agent_credentials.py:73:    assert is_weak_hermes_api_key("short")
+iris\infrastructure\iris_agent_credentials.py:74:    assert not is_weak_hermes_api_key("x" * 32)
+iris\infrastructure\iris_agent_credentials.py:75:    assert resolve_hermes_api_key("") == load_hermes_dotenv().get("API_SERVER_KEY", "").strip()
+iris\infrastructure\iris_agent_credentials.py:76:    print("hermes_credentials self-check ok")
+iris\browser\_check_intent.py:23:from iris.runtime.agent_local_gate import hermes_owns_local_intents
+iris\browser\_check_intent.py:43:        _use_hermes_backend=lambda: True,
+iris\browser\_check_intent.py:77:            _hermes_online = True
+iris\browser\_check_intent.py:96:            def _use_hermes_backend(self):
+iris\browser\_check_intent.py:133:    assert hermes_owns_local_intents(True) is True
+iris\browser\_check_intent.py:134:    assert hermes_owns_local_intents(False) is False
+iris\browser\_check_intent.py:219:        / "hermes-skills"
+iris\infrastructure\ollama_usage.py:19:from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\infrastructure\ollama_usage.py:50:        paths.append(Path(local) / "hermes" / "ollama_cookie.txt")
+iris\infrastructure\ollama_usage.py:51:    paths.append(Path.home() / ".hermes" / "ollama_cookie.txt")
+iris\infrastructure\ollama_usage.py:60:        hermes_env = hermes_home() / ".env"
+iris\infrastructure\ollama_usage.py:61:        if hermes_env.is_file():
+iris\infrastructure\ollama_usage.py:63:                for line in hermes_env.read_text(encoding="utf-8", errors="replace").splitlines():
+iris\browser\_check_bridge_snapshot.py:7:from iris.browser.observation import pack_browser_observation, pack_hermes_result
+iris\browser\_check_bridge_snapshot.py:100:    packed = pack_hermes_result(r)
+iris\infrastructure\ollama_client.py:438:        """로컬 설치 모델 + 클라우드 카탈로그 병합 (로컬 우선). Hermes/Ollama 공용."""
+iris\infrastructure\speak_capability.py:494:    """Provider-visible name: absorbed Hermes alias, else underscored action id."""
+iris\infrastructure\speak_capability.py:531:    Absorbed actions use Hermes-familiar names (``terminal``, ``write_file``, …).
+iris\infrastructure\serpapi_client.py:3:Hermes chat path uses the Hermes ``serpapi`` web provider + skill.
+iris\infrastructure\_check_absorbed_tool_wire.py:1:"""Wire: model-visible schemas use Hermes-familiar Iris names; install drops CORE."""
+iris\infrastructure\_check_absorbed_tool_wire.py:12:# Hermes CORE leftovers after Unit1 strip — must not survive Iris-only install.
+iris\infrastructure\_check_absorbed_tool_wire.py:13:_HERMES_CORE_LEFTOVERS = frozenset(
+iris\infrastructure\_check_absorbed_tool_wire.py:49:    """Call real _install_iris_engine_tools with a stub Hermes registry."""
+iris\infrastructure\_check_absorbed_tool_wire.py:111:    preload = sorted(_HERMES_CORE_LEFTOVERS | {"terminal", "write_file", "skills_list"})
+iris\infrastructure\_check_absorbed_tool_wire.py:114:        leftover = visible & _HERMES_CORE_LEFTOVERS
+iris\infrastructure\_check_absorbed_tool_aliases.py:1:"""Self-check: absorbed Hermes tool name → Iris Control action registry."""
+iris\knowledge\iris_wiki.py:302:        hermes_root: str = "",
+iris\knowledge\iris_wiki.py:304:        """등록·사용 중인 Hermes 스킬 목록 → user/integrations/skills.md."""
+iris\knowledge\iris_wiki.py:311:        if hermes_root:
+iris\knowledge\iris_wiki.py:312:            lines.append(f"- 경로: `{hermes_root}`")
+iris\knowledge\iris_wiki.py:329:        hermes_root: str = "",
+iris\knowledge\iris_wiki.py:331:        """Hermes config.yaml mcp_servers → user/integrations/mcp.md."""
+iris\knowledge\iris_wiki.py:338:        if hermes_root:
+iris\knowledge\iris_wiki.py:339:            lines.append(f"- 경로: `{hermes_root}`")
+iris\knowledge\iris_state.py:57:    hermes_enabled: bool = False,
+iris\knowledge\iris_state.py:58:    hermes_base_url: str = "",
+iris\knowledge\iris_state.py:59:    hermes_api_key: str = "",
+iris\knowledge\iris_state.py:68:    state["백엔드"] = "Iris Agent" if hermes_enabled else "Ollama 직행"
+iris\knowledge\iris_state.py:69:    if hermes_enabled:
+iris\knowledge\iris_state.py:70:        state["Iris Agent 게이트웨이"] = str(hermes_base_url or "").strip()
+iris\knowledge\iris_state.py:71:        state["Iris Agent API 키"] = mask(hermes_api_key)
+iris\knowledge\iris_state.py:334:        hermes_enabled=True,
+iris\knowledge\iris_state.py:335:        hermes_base_url="http://127.0.0.1:8642/v1",
+iris\knowledge\iris_state.py:336:        hermes_api_key="sk-hermes-secret",
+iris\knowledge\iris_state.py:344:    assert "sk-hermes-secret" not in blob
+iris\knowledge\iris_state.py:384:        assert "sk-hermes-secret" not in index
+iris\learning\skill_router.py:1:"""채팅 문장 → 배운 스킬 고르기·넣을 값 뽑기. 모델 없이 즉시 (Hermes 가 꺼져 있어도).
+iris\browser\observation.py:209:def pack_hermes_result(result: BrowserResult) -> dict[str, Any]:
+iris\audio\text_normalizer.py:18:    "Hermes": "아이리스 에이전트",
+iris\knowledge\lab_script_dump.py:1:"""Lecture PDF → practice script files (no Hermes body stuffing)."""
+iris\knowledge\lab_script_dump.py:63:    """In-process dump outcome. programs may hold bodies; strip before Hermes."""
+iris\knowledge\lab_script_dump.py:74:    """Wire / Hermes-facing payload. Invariant: no bodies, no page text."""
+iris\knowledge\lab_script_dump.py:343:def to_hermes_summary(result: LabDumpResult) -> LabDumpSummary:
+iris\infrastructure\__init__.py:4:- Owns: Ollama·Hermes·OpenAI-compat·메일·캘린더·검색 클라이언트.
+iris\infrastructure\__init__.py:6:- Talks to: Ollama `:11434`, Hermes `:8642`, 외부 API.
+iris\infrastructure\__init__.py:7:- Extend via: 새 제공자는 `*_client.py` 하나. 도구 추가는 Hermes 스킬이 우선.
+iris\infrastructure\_check_tool_json_as_content.py:3:Measured 2026-10-29 chat_messages id=895 (Hermes session 20261029_031906_0925ef).
+iris\infrastructure\_check_tool_json_as_content.py:18:# Well-formed double-list wrapper (also seen in Hermes tool prose).
+iris\engine\__init__.py:1:"""IRIS-owned Hermes engine.
+iris\engine\__init__.py:5:- Does not: import Hermes, bind :8642, or talk to Qt.
+iris\engine\__init__.py:26:    HermesHome,
+iris\engine\__init__.py:56:    "HermesHome",
+iris\engine\_sidecar_main.py:1:"""Hermes-interpreter sidecar entry.
+iris\engine\_sidecar_main.py:300:    # Drop Hermes builtins AIAgent preloaded — model sees Iris SpeakTools only.
+iris\engine\_sidecar_main.py:494:# Hermes can wedge after the "Turn ended" log before run_conversation returns
+iris\engine\_sidecar_main.py:503:    """Map a Hermes agent result to fail (code, detail), or None for done."""
+iris\engine\_sidecar_main.py:549:    """Fires once when Hermes logs the conversation-loop Turn ended line."""
+iris\engine\_sidecar_main.py:563:        # Hermes may wrap the line with a session prefix in getMessage().
+iris\assistant\external_agent_adapter.py:14:    hermes_online: bool = False,
+iris\assistant\external_agent_adapter.py:21:    elif hermes_online:
+iris\engine\_sidecar.py:5:- Does not: spawn a child or import Hermes.
+iris\knowledge\wiki_summarize.py:1:"""위키 저장용 본문 요약. 채팅에서 고른 모델(Ollama·API·Hermes)로 한 번 묻는다."""
+iris\engine\_home.py:4:- Owns: ENGINE_HERMES_SHA, locating EnginePython, import probe.
+iris\engine\_home.py:8:  hermes_install with home=EngineHome (never HermesHome).
+iris\engine\_home.py:29:ENGINE_HERMES_SHA = _engine_pin_sha()
+iris\engine\_home.py:31:_PROBE_IMPORT = "import hermes_cli, aiohttp, mcp, ruamel.yaml, dotenv; print('ok')"
+iris\engine\_home.py:72:        env["HERMES_HOME"] = str(home)
+iris\engine\_home.py:112:            f"hermes_cli import 응답 이상: {err[:240]}",
+iris\engine\_home.py:142:    from iris.system.iris_agent_install import install_hermes_with_system_python
+iris\engine\_home.py:144:    result = install_hermes_with_system_python(
+iris\ui\_check_agent_turn_tools.py:1:"""Hermes가 켜져 있으면 채팅 의도 6종은 모델 도구로 간다.
+iris\ui\_check_agent_turn_tools.py:23:from iris.runtime.agent_local_gate import hermes_owns_local_intents
+iris\ui\_check_agent_turn_tools.py:28:    assert hermes_owns_local_intents(True) is True
+iris\ui\_check_agent_turn_tools.py:29:    assert hermes_owns_local_intents(False) is False
+iris\ui\control_actions\agent_turn.py:174:        summary="Install a GitHub repo as MCP and/or skill. Required: url. kind=auto|mcp|skill. scope=project only in IRIS IDE (writes the open project). scope=iris only on the main Iris screen (Hermes). needs_input: ask and do not invent secrets. Do not claim installed without ok. Do not treat an IDE extension and a Hermes MCP as one install.",
+iris\knowledge\__init__.py:5:- Does not: 벡터 RAG(미구현), Hermes 웹 검색.
+iris\knowledge\__init__.py:7:- Extend via: 저장은 이 패키지. Hermes에서 부르려면 `iris/ui/control_actions/wiki.py`.
+iris\engine\_check_post_turn_end_stall.py:1:"""Host must get done/fail soon after Hermes logs Turn ended, even if run_conversation hangs.
+iris\engine\_check_post_turn_end_stall.py:20:    """Fake Hermes: stream text, log Turn ended, then never return."""
+iris\engine\_check_post_turn_end_stall.py:45:    """Turn ended only on disk (no logging.Handler). Simulates Hermes reconfig."""
+iris\engine\_check_post_turn_end_stall.py:111:    # Sidecar install imports Hermes tools.registry; this check only covers
+iris\system\control_surface.py:1:"""Iris Control Surface — 로컬 HTTP 제어면 (Hermes MCP 브리지 대상).
+iris\system\control_surface.py:21:# 클라이언트가 응답 전에 연결을 끊으면 Windows에서 흔함 (Hermes MCP 타임아웃 등)
+iris\engine\_check_iris_agent_sidecar_only.py:25:        hermes_external_gateway=True,
+iris\engine\_check_iris_agent_sidecar_only.py:60:    assert not hasattr(Settings, "hermes_external_gateway")
+iris\engine\_check_iris_agent_sidecar_only.py:64:    assert "hermes_external_gateway" not in settings_src
+iris\system\control_http_client.py:131:    # Hermes는 isError 응답을 연결 실패로 센다 (mcp_tool.py: "error" in parsed → breaker).
+iris\engine\_check_external_app_ui.py:205:            MainWindow._on_hermes_app_ui(host, "Remote host", "", resource_uri=_URI)
+iris\ui\workspaces\__init__.py:7:- Extend via: 새 페이지는 이 패키지. Hermes 노출은 `iris/ui/control_actions`.
+iris\ui\control_actions\wiki.py:433:        from iris.knowledge.lab_script_dump import dump_lab_scripts, to_hermes_summary
+iris\ui\control_actions\wiki.py:474:        return ok_result("content.dump_lab_scripts", to_hermes_summary(result).to_dict())
+iris\engine\_check_ensure_ready_ollama_options_guard.py:3:After Hermes absorption, chat uses InternalSidecar and never hits gateway ensure.
+iris\engine\_check_ensure_ready_ollama_options_guard.py:28:    # Absorbed live homes use iris-agent; main still documents hermes-agent.
+iris\system\github_extension_install.py:1:"""GitHub URL → Hermes MCP config / skills 폴더 설치.
+iris\system\github_extension_install.py:108:def hermes_home() -> Path:
+iris\system\github_extension_install.py:109:    from iris.system.iris_agent_control_sync import hermes_home as _home
+iris\system\github_extension_install.py:224:        home = (home or hermes_home()).expanduser()
+iris\system\gui_python.py:4:기다리며 남는다. 둘 다 cmdline 이 `-m iris` 로 보여 Hermes/제어 경로가
+iris\ui\control_actions\settings.py:89:        window._refresh_hermes_health()
+iris\ui\control_actions\hosts.py:18:    _hermes_online: Any
+iris\ui\control_actions\hosts.py:104:    _refresh_hermes_health: Any
+iris\ui\control_actions\session.py:71:                "hermes_online": bool(getattr(window, "_hermes_online", False)),
+iris\runtime\chat_canonical.py:18:# Hermes/agent session store — ephemeral for the agent loop only.
+iris\runtime\backend_route.py:16:LEGACY_HERMES_BACKEND = "hermes"
+iris\runtime\backend_route.py:20:    """True for canonical ``agent`` and legacy ``hermes`` chat-route ids."""
+iris\runtime\backend_route.py:25:    return str(raw or "").strip().lower() in (AGENT_BACKEND, LEGACY_HERMES_BACKEND)
+iris\runtime\backend_route.py:35:    Hermes 가 켜져 있으면 Ollama 이름이든 `api:` id 든 전부 게이트웨이를 거친다.
+iris\runtime\backend_route.py:58:            command=getattr(settings, "agent_command", "hermes"),
+iris\runtime\backend_route.py:75:    """채팅 목록 제목 전용. Hermes 를 쓰지 않는다.
+iris\runtime\backend_route.py:149:    Ollama 이름, `api:{제공자}:{모델}`, Hermes 경유를 채팅과 같은 규칙으로 보낸다.
+iris\runtime\backend_route.py:234:    # 제목 라우트는 Hermes 설정과 무관하게 api|ollama 만
+iris\runtime\backend_route.py:244:    # Hermes 가 켜져 있으면 전부 게이트웨이로
+iris\runtime\backend_route.py:245:    hermes_on = SimpleNamespace(
+iris\runtime\backend_route.py:249:        agent_command="hermes",
+iris\runtime\backend_route.py:258:        route = resolve_backend_route(hermes_on, None, "qwen3:8b")
+iris\runtime\backend_route.py:261:        assert is_agent_backend(LEGACY_HERMES_BACKEND)
+iris\runtime\backend_route.py:266:        assert resolve_backend_route(hermes_on, None, "api:gone:x") is None
+iris\engine\types.py:88:    """IRIS history for one send. No Hermes session id exists on this type."""
+iris\engine\types.py:211:HermesHome = NewType("HermesHome", Path)
+iris\ui\control_actions\browser.py:5:from iris.browser.observation import looks_sensitive_browser_act, pack_hermes_result
+iris\ui\control_actions\browser.py:55:        payload = pack_hermes_result(result)
+iris\ui\settings\update_notify_box.py:35:        # Compat for callers that still poke hermes_notify.
+iris\ui\settings\update_notify_box.py:36:        self.hermes_notify = self.agent_notify
+iris\engine\runtime.py:5:- Does not: import Hermes or bind :8642.
+iris\engine\runtime.py:64:    """Prefer iris-agent when present; else hermes-agent (main repo_dir name)."""
+iris\engine\runtime.py:69:    return base / "hermes-agent"
+iris\engine\runtime.py:180:    env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+iris\engine\runtime.py:372:    """Hermes `_init_openai_client` only takes the explicit path when both
+iris\system\iris_agent_absorbed_toolsets.py:1:"""Install-time overlay: empty Hermes absorbed toolset definitions.
+iris\system\iris_agent_absorbed_toolsets.py:7:``ensure_hermes_disabled_terminal`` remains the config.yaml belt-and-suspenders.
+iris\runtime\agent_log_activity.py:1:"""Hermes agent.log → Live Activity 줄 (필터·truncate·턴 범위 tail).
+iris\runtime\agent_log_activity.py:56:    """Allowlist만 통과. 노이즈(gateway, hermes_state, tools.registry …)는 None."""
+iris\system\iris_agent_control_sync.py:1:"""Hermes에 Iris Control 스킬·MCP 자세를 자동 설치·검증.
+iris\system\iris_agent_control_sync.py:20:from iris.infrastructure.iris_agent_credentials import hermes_home as _product_hermes_home
+iris\system\iris_agent_control_sync.py:46:    return iris_state_dir() / "hermes_iris_control_sync.json"
+iris\system\iris_agent_control_sync.py:55:        (path / "integrations" / "hermes-mcp").is_dir()
+iris\system\iris_agent_control_sync.py:109:def hermes_home() -> Path:
+iris\system\iris_agent_control_sync.py:111:    return _product_hermes_home()
+iris\system\iris_agent_control_sync.py:115:    return Path(home) if home is not None else hermes_home()
+iris\system\iris_agent_control_sync.py:118:def hermes_config_path(home: Path | None = None) -> Path:
+iris\system\iris_agent_control_sync.py:122:def hermes_skills_iris_control_dir(home: Path | None = None) -> Path:
+iris\system\iris_agent_control_sync.py:127:    return project_root() / "integrations" / "hermes-skills" / "iris-control"
+iris\system\iris_agent_control_sync.py:178:    """Hermes MCP용 인터프리터 — IRIS.exe(frozen)는 절대 쓰지 않는다.
+iris\system\iris_agent_control_sync.py:180:    Windows는 pythonw.exe 우선 — Hermes가 stdio MCP를 띄울 때 콘솔 서브시스템
+iris\system\iris_agent_control_sync.py:183:    # Prefer Iris project venv so Hermes always spawns the same interpreter.
+iris\system\iris_agent_control_sync.py:213:    """~/.iris-light/hermes-mcp 에 고정 entry 설치 — _MEI/temp 경로 금지."""
+iris\system\iris_agent_control_sync.py:214:    dest_dir = iris_state_dir() / "hermes-mcp"
+iris\system\iris_agent_control_sync.py:256:    # Absolute entry script — Hermes does not pass mcp cwd to StdioServerParameters.
+iris\system\iris_agent_control_sync.py:257:    # -u: unbuffered stdout (Hermes MCP SDK handshake times out if Python buffers stdio)
+iris\system\iris_agent_control_sync.py:286:def _hermes_mcp_tool_candidates(home: Path | None = None) -> list[Path]:
+iris\system\iris_agent_control_sync.py:290:        agent / "hermes_cli" / "tools" / "mcp_tool.py",
+iris\system\iris_agent_control_sync.py:299:def _hermes_mcp_tool_path(home: Path | None = None) -> Path | None:
+iris\system\iris_agent_control_sync.py:300:    for path in _hermes_mcp_tool_candidates(home):
+iris\system\iris_agent_control_sync.py:320:        return _hermes_mcp_tool_path()
+iris\system\iris_agent_control_sync.py:324:        root / "hermes_cli" / "tools" / "mcp_tool.py",
+iris\system\iris_agent_control_sync.py:336:def verify_hermes_stdio_dead_check(*, agent_root: Path | None = None) -> str:
+iris\system\iris_agent_control_sync.py:340:        return "hermes dead-check: mcp_tool.py missing"
+iris\system\iris_agent_control_sync.py:344:        return f"hermes dead-check read fail: {exc}"
+iris\system\iris_agent_control_sync.py:346:        return "hermes dead-check: broken pattern present"
+iris\system\iris_agent_control_sync.py:351:        return "hermes dead-check: ok (fixed/upstream)"
+iris\system\iris_agent_control_sync.py:352:    return "hermes dead-check: pattern unknown — ok at pin (upstream polarity fix)"
+iris\system\iris_agent_control_sync.py:355:def ensure_hermes_stdio_dead_check_patch(
+iris\system\iris_agent_control_sync.py:368:    status = verify_hermes_stdio_dead_check(agent_root=agent_root)
+iris\system\iris_agent_control_sync.py:376:        checked = "\n".join(f"  - {p}" for p in _hermes_mcp_tool_candidates(home))
+iris\system\iris_agent_control_sync.py:379:                "hermes mcp_tool.py missing — "
+iris\system\iris_agent_control_sync.py:382:        return f"hermes mcp_tool.py missing\n확인한 경로:\n{checked}"
+iris\system\iris_agent_control_sync.py:386:        return f"hermes dead-check patch read fail: {exc}"
+iris\system\iris_agent_control_sync.py:388:        return verify_hermes_stdio_dead_check(agent_root=agent_root)
+iris\system\iris_agent_control_sync.py:395:        return f"hermes dead-check patch write fail: {exc}"
+iris\system\iris_agent_control_sync.py:396:    return "hermes dead-check patched (stdio has-exited false positive)"
+iris\system\iris_agent_control_sync.py:400:    """Hermes MCP: @mobilenext/mobile-mcp — same SDK root as Iris android_emulator."""
+iris\system\iris_agent_control_sync.py:478:    path = hermes_config_path(home)
+iris\system\iris_agent_control_sync.py:537:# hermes-api-server composite drops computer_use; Iris chat is api_server — pin both.
+iris\system\iris_agent_control_sync.py:538:_IRIS_API_SERVER_TOOLSETS = ("hermes-api-server", "computer_use")
+iris\system\iris_agent_control_sync.py:557:def ensure_hermes_disabled_terminal(*, home: Path | None = None) -> tuple[bool, str]:
+iris\system\iris_agent_control_sync.py:558:    """Keep today's name. Merge terminal and the Hermes page-driving browser toolset.
+iris\system\iris_agent_control_sync.py:567:    path = hermes_config_path(home)
+iris\system\iris_agent_control_sync.py:588:        return False, "hermes disabled_toolsets already includes terminal and browser"
+iris\system\iris_agent_control_sync.py:609:        return False, "hermes disabled_toolsets write missing terminal or browser"
+iris\system\iris_agent_control_sync.py:610:    return True, "hermes disabled_toolsets: terminal, browser (IDE terminal via project.run; Iris QWebEngine for pages)"
+iris\system\iris_agent_control_sync.py:613:def read_hermes_disabled_toolsets() -> list[str]:
+iris\system\iris_agent_control_sync.py:614:    """Product Hermes config.yaml 의 agent.disabled_toolsets (없으면 빈 목록)."""
+iris\system\iris_agent_control_sync.py:619:    path = hermes_config_path()
+iris\system\iris_agent_control_sync.py:637:def verify_hermes_terminal_disabled() -> tuple[bool, str]:
+iris\system\iris_agent_control_sync.py:639:    names = read_hermes_disabled_toolsets()
+iris\system\iris_agent_control_sync.py:642:        return False, f"hermes disabled_toolsets missing {missing}; have={names}"
+iris\system\iris_agent_control_sync.py:643:    return True, "hermes disabled_toolsets verified: terminal, browser"
+iris\system\iris_agent_control_sync.py:646:def ensure_hermes_api_server_computer_use(*, home: Path | None = None) -> tuple[bool, str]:
+iris\system\iris_agent_control_sync.py:647:    """Upsert platform_toolsets.api_server to include hermes-api-server + computer_use."""
+iris\system\iris_agent_control_sync.py:653:    path = hermes_config_path(home)
+iris\system\iris_agent_control_sync.py:674:        return False, "hermes platform_toolsets.api_server already includes hermes-api-server + computer_use"
+iris\system\iris_agent_control_sync.py:696:        return False, f"hermes platform_toolsets.api_server write missing {missing}"
+iris\system\iris_agent_control_sync.py:697:    return True, "hermes platform_toolsets.api_server: hermes-api-server + computer_use"
+iris\system\iris_agent_control_sync.py:700:def read_hermes_api_server_toolsets(*, home: Path | None = None) -> list[str]:
+iris\system\iris_agent_control_sync.py:701:    """Product Hermes config.yaml 의 platform_toolsets.api_server (없으면 빈 목록)."""
+iris\system\iris_agent_control_sync.py:706:    path = hermes_config_path(home)
+iris\system\iris_agent_control_sync.py:724:def verify_hermes_api_server_computer_use(*, home: Path | None = None) -> tuple[bool, str]:
+iris\system\iris_agent_control_sync.py:725:    """api_server list must include hermes-api-server and computer_use."""
+iris\system\iris_agent_control_sync.py:726:    names = read_hermes_api_server_toolsets(home=home)
+iris\system\iris_agent_control_sync.py:729:        return False, f"hermes platform_toolsets.api_server missing {missing}; have={names}"
+iris\system\iris_agent_control_sync.py:730:    return True, "hermes platform_toolsets.api_server verified: hermes-api-server, computer_use"
+iris\system\iris_agent_control_sync.py:740:    src_root = repo / "integrations" / "hermes-skills" / "iris-control"
+iris\system\iris_agent_control_sync.py:741:    dst_root = hermes_skills_iris_control_dir(home)
+iris\system\iris_agent_control_sync.py:766:    src_root = repo / "integrations" / "hermes-skills" / "iris-control"
+iris\system\iris_agent_control_sync.py:767:    dst_root = hermes_skills_iris_control_dir(home)
+iris\system\iris_agent_control_sync.py:806:    path = hermes_config_path(home)
+iris\system\iris_agent_control_sync.py:952:        report = SyncReport(config_path=str(hermes_config_path(home)), ok=False)
+iris\system\iris_agent_control_sync.py:959:    report = SyncReport(config_path=str(hermes_config_path(home)))
+iris\system\iris_agent_control_sync.py:960:    path = hermes_config_path(home)
+iris\system\iris_agent_control_sync.py:990:    dst = hermes_skills_iris_control_dir(home)
+iris\system\iris_agent_control_sync.py:1015:    """스킬·MCP 자세 설치 후 검증. Hermes 디스크에 남겨 Iris 재시작에도 유지.
+iris\system\iris_agent_control_sync.py:1021:    - home=None 이면 hermes_home(). Internal sidecar passes EngineHome.
+iris\system\iris_agent_control_sync.py:1026:    report = SyncReport(config_path=str(hermes_config_path(target)))
+iris\system\iris_agent_control_sync.py:1044:        term_changed, term_msg = ensure_hermes_disabled_terminal(home=target)
+iris\system\iris_agent_control_sync.py:1047:        ok_term, verify_msg = verify_hermes_terminal_disabled()
+iris\system\iris_agent_control_sync.py:1056:        cu_changed, cu_msg = ensure_hermes_api_server_computer_use(home=target)
+iris\system\iris_agent_control_sync.py:1059:        ok_cu, verify_cu = verify_hermes_api_server_computer_use(home=target)
+iris\system\iris_agent_control_sync.py:1068:        dead_patch = ensure_hermes_stdio_dead_check_patch(home=target)
+iris\system\iris_agent_control_sync.py:1071:        report.messages.append(f"hermes dead-check patch skip: {exc}")
+iris\system\iris_agent_control_sync.py:1075:            apply_hermes_tool_choice_overlay,
+iris\system\iris_agent_control_sync.py:1076:            load_hermes_tool_choice,
+iris\system\iris_agent_control_sync.py:1080:        agent_root = _agent_checkout(hermes_home())
+iris\system\iris_agent_control_sync.py:1082:            for line in apply_hermes_tool_choice_overlay(agent_root):
+iris\system\iris_agent_control_sync.py:1085:            report.messages.append("hermes tool_choice overlay present")
+iris\system\iris_agent_control_sync.py:1087:            f"hermes agent.tool_choice: {load_hermes_tool_choice(home=target)}"
+iris\system\iris_agent_control_sync.py:1090:        report.messages.append(f"hermes tool_choice skip: {exc}")
+iris\system\iris_agent_control_sync.py:1189:    entry = root / "integrations" / "hermes-mcp" / "iris_control_stdio_entry.py"
+iris\system\iris_agent_control_sync.py:1204:    patch_msg = ensure_hermes_stdio_dead_check_patch()
+iris\system\iris_agent_control_sync.py:1223:        print("hermes_iris_control_sync self-check: npx missing (mobile-mcp spawn skipped)")
+iris\system\iris_agent_control_sync.py:1226:    print("hermes_iris_control_sync self-check ok", root, "mcp", len(audited))
+iris\ui\settings\settings_service.py:52:def load_hermes_sync_status_text() -> str:
+iris\ui\settings\settings_service.py:53:    """마지막 Iris↔Hermes Control 동기화 상태 문구를 읽는다."""
+iris\system\iris_agent_gateway.py:1:"""Hermes gateway 감지 및 자동 기동."""
+iris\system\iris_agent_gateway.py:27:    hermes_home,
+iris\system\iris_agent_gateway.py:28:    load_hermes_dotenv,
+iris\system\iris_agent_gateway.py:29:    resolve_hermes_api_key,
+iris\system\iris_agent_gateway.py:96:    hermes_home: str = ""
+iris\system\iris_agent_gateway.py:178:    key = resolve_hermes_api_key()
+iris\system\iris_agent_gateway.py:209:            api_server_enabled=load_hermes_dotenv().get("API_SERVER_ENABLED", "true"),
+iris\system\iris_agent_gateway.py:222:        base_url, api_key=resolve_hermes_api_key(api_key)
+iris\system\iris_agent_gateway.py:233:    diag.hermes_home = diag.hermes_home or str(hermes_home())
+iris\system\iris_agent_gateway.py:255:    d = hermes_home() / "logs" / "iris-gateway"
+iris\system\iris_agent_gateway.py:269:def _windows_hermes_candidates() -> list[Path]:
+iris\system\iris_agent_gateway.py:270:    """venv Scripts 와 공식 설치 심(hermes/bin, checkout/bin)."""
+iris\system\iris_agent_gateway.py:271:    home = hermes_home()
+iris\system\iris_agent_gateway.py:275:        scripts / "hermes.exe",
+iris\system\iris_agent_gateway.py:276:        scripts / "hermes-agent.exe",
+iris\system\iris_agent_gateway.py:277:        repo / "bin" / "hermes.exe",
+iris\system\iris_agent_gateway.py:278:        home / "bin" / "hermes.exe",
+iris\system\iris_agent_gateway.py:279:        home / "bin" / "hermes.cmd",
+iris\system\iris_agent_gateway.py:283:def hermes_executable(command: str = "hermes") -> str | None:
+iris\system\iris_agent_gateway.py:284:    """PATH·설정 경로·Windows 기본 설치 위치에서 hermes 실행 파일 찾기."""
+iris\system\iris_agent_gateway.py:285:    cmd = (command or "hermes").strip() or "hermes"
+iris\system\iris_agent_gateway.py:293:        for candidate in _windows_hermes_candidates():
+iris\system\iris_agent_gateway.py:306:    env_port = load_hermes_dotenv().get("API_SERVER_PORT", "").strip()
+iris\system\iris_agent_gateway.py:312:def is_hermes_gateway_running(
+iris\system\iris_agent_gateway.py:320:        api_key=resolve_hermes_api_key(api_key),
+iris\system\iris_agent_gateway.py:334:def _hermes_agent_dir() -> Path:
+iris\system\iris_agent_gateway.py:335:    return iris_agent_repo_dir(hermes_home())
+iris\system\iris_agent_gateway.py:338:def _hermes_venv_dir() -> Path:
+iris\system\iris_agent_gateway.py:339:    return _hermes_agent_dir() / "venv"
+iris\system\iris_agent_gateway.py:342:def _hermes_venv_python() -> Path | None:
+iris\system\iris_agent_gateway.py:343:    """Hermes 전용 venv python — uv trampoline 오염 회피용."""
+iris\system\iris_agent_gateway.py:345:        py = _hermes_venv_dir() / "Scripts" / "python.exe"
+iris\system\iris_agent_gateway.py:347:        py = _hermes_venv_dir() / "bin" / "python"
+iris\system\iris_agent_gateway.py:351:def _hermes_committed_python() -> Path | None:
+iris\system\iris_agent_gateway.py:353:    root = hermes_home() / "installs"
+iris\system\iris_agent_gateway.py:371:def _hermes_runtime_python() -> Path | None:
+iris\system\iris_agent_gateway.py:372:    return _hermes_committed_python() or _hermes_venv_python()
+iris\system\iris_agent_gateway.py:375:def is_hermes_trampoline_failure(text: str) -> bool:
+iris\system\iris_agent_gateway.py:398:def is_hermes_cli_missing_failure(text: str) -> bool:
+iris\system\iris_agent_gateway.py:399:    """gateway/venv 가 hermes_cli 없이 기동돼 ModuleNotFoundError 나는 경우."""
+iris\system\iris_agent_gateway.py:403:    if "no module named 'hermes_cli'" in t or 'no module named "hermes_cli"' in t:
+iris\system\iris_agent_gateway.py:405:    return "hermes_cli" in t and "modulenotfounderror" in t
+iris\system\iris_agent_gateway.py:408:def is_hermes_gateway_dep_missing_failure(text: str) -> bool:
+iris\system\iris_agent_gateway.py:417:    for mod in ("aiohttp", "hermes_cli", "mcp", "ruamel", "dotenv"):
+iris\system\iris_agent_gateway.py:423:def probe_hermes_runtime(
+iris\system\iris_agent_gateway.py:424:    *, command: str = "hermes", timeout_sec: float = 25.0
+iris\system\iris_agent_gateway.py:426:    """Hermes venv/exe가 실제로 gateway를 띄울 수 있는지.
+iris\system\iris_agent_gateway.py:429:    venv만 있고 hermes_cli/aiohttp 가 없는 껍데기 설치를 설치·gateway 전에 잡는다.
+iris\system\iris_agent_gateway.py:431:    venv_py = _hermes_runtime_python()
+iris\system\iris_agent_gateway.py:432:    venv_dir = venv_py.parent.parent if venv_py is not None else _hermes_venv_dir()
+iris\system\iris_agent_gateway.py:437:        # gateway 는 python -m hermes_cli.main + aiohttp(tcp_site).
+iris\system\iris_agent_gateway.py:438:        # print('ok')/hermes_cli 만 보면 껍데기·extras 누락을 통과시킨다.
+iris\system\iris_agent_gateway.py:444:                    "import hermes_cli, aiohttp, mcp, ruamel.yaml, dotenv; print('ok')",
+iris\system\iris_agent_gateway.py:460:        if proc.returncode != 0 or is_hermes_trampoline_failure(err):
+iris\system\iris_agent_gateway.py:462:            if is_hermes_cli_missing_failure(detail):
+iris\system\iris_agent_gateway.py:463:                return False, f"hermes_cli 없음: {detail[:240]}"
+iris\system\iris_agent_gateway.py:464:            if is_hermes_gateway_dep_missing_failure(detail):
+iris\system\iris_agent_gateway.py:468:            return False, f"hermes_cli import 응답 이상: {err[:240]}"
+iris\system\iris_agent_gateway.py:471:    exe = hermes_executable(command)
+iris\system\iris_agent_gateway.py:473:        return False, "hermes 실행 파일 없음"
+iris\system\iris_agent_gateway.py:489:        return False, f"hermes 실행 실패: {exc}"
+iris\system\iris_agent_gateway.py:491:    if proc.returncode != 0 or is_hermes_trampoline_failure(err):
+iris\system\iris_agent_gateway.py:508:    """Hermes gateway 자식 프로세스 환경 — Iris .venv 오염 제거 + Hermes 키만 명시.
+iris\system\iris_agent_gateway.py:510:    Iris (.venv) VIRTUAL_ENV/PYTHONPATH 를 그대로 넘기면 uv hermes.exe 가
+iris\system\iris_agent_gateway.py:515:    # G2: Iris/IDE 오염을 먼저 제거한 뒤 Hermes 전용 값만 넣는다
+iris\system\iris_agent_gateway.py:518:    home = hermes_home()
+iris\system\iris_agent_gateway.py:519:    env["HERMES_HOME"] = str(home)
+iris\system\iris_agent_gateway.py:520:    env["HERMES_ACCEPT_HOOKS"] = "1"
+iris\system\iris_agent_gateway.py:522:    env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+iris\system\iris_agent_gateway.py:523:    dotenv = load_hermes_dotenv()
+iris\system\iris_agent_gateway.py:525:        # Iris 프로세스 값이 있어도 Hermes 전용 키는 파일 값을 쓴다
+iris\system\iris_agent_gateway.py:531:    venv_py = _hermes_runtime_python()
+iris\system\iris_agent_gateway.py:532:    venv = venv_py.parent.parent if venv_py is not None else _hermes_venv_dir()
+iris\system\iris_agent_gateway.py:545:        "HERMES_HOME": env.get("HERMES_HOME", ""),
+iris\system\iris_agent_gateway.py:555:def _windows_hidden_cmd(hermes_exe: str) -> list[str]:
+iris\system\iris_agent_gateway.py:558:    venv python -m hermes_cli.main 우선 — hermes.exe(uv trampoline)만 쓰면
+iris\system\iris_agent_gateway.py:561:    venv_py = _hermes_runtime_python()
+iris\system\iris_agent_gateway.py:563:        return [str(venv_py), "-m", "hermes_cli.main", *_gateway_argv()]
+iris\system\iris_agent_gateway.py:564:    return [hermes_exe, *_gateway_argv()]
+iris\system\iris_agent_gateway.py:567:def _build_gateway_cmd(command: str = "hermes") -> list[str] | None:
+iris\system\iris_agent_gateway.py:568:    exe = hermes_executable(command)
+iris\system\iris_agent_gateway.py:569:    venv_py = _hermes_runtime_python()
+iris\system\iris_agent_gateway.py:573:        return _windows_hidden_cmd(exe or "hermes")
+iris\system\iris_agent_gateway.py:575:        return [str(venv_py), "-m", "hermes_cli.main", *_gateway_argv()]
+iris\system\iris_agent_gateway.py:576:    return [exe or "hermes", *_gateway_argv()]
+iris\system\iris_agent_gateway.py:605:        # CREATE_NEW_PROCESS_GROUP은 Hermes gateway가 수 초 내 종료되는 원인이 됨
+iris\system\iris_agent_gateway.py:651:def hermes_runtime_report(*, command: str = "hermes") -> str:
+iris\system\iris_agent_gateway.py:653:    exe = hermes_executable(command)
+iris\system\iris_agent_gateway.py:654:    venv_py = _hermes_runtime_python()
+iris\system\iris_agent_gateway.py:655:    agent = _hermes_agent_dir()
+iris\system\iris_agent_gateway.py:659:        f"[Hermes] executable={exe or 'MISSING'}",
+iris\system\iris_agent_gateway.py:660:        f"[Hermes] venv_python={venv_py or 'MISSING'}",
+iris\system\iris_agent_gateway.py:661:        f"[Hermes] cwd={cwd or 'MISSING'}",
+iris\system\iris_agent_gateway.py:662:        f"[Hermes] command={' '.join(cmd) if cmd else 'MISSING'}",
+iris\system\iris_agent_gateway.py:668:        required.extend(_windows_hermes_candidates() if sys.platform == "win32" else [])
+iris\system\iris_agent_gateway.py:675:        lines.append(f"[Hermes] missing={agent}")
+iris\system\iris_agent_gateway.py:678:            lines.append(f"[Hermes] missing={path}")
+iris\system\iris_agent_gateway.py:680:    lines.append(f"[Hermes] return_code={code if code is not None else 'none'}")
+iris\system\iris_agent_gateway.py:682:        lines.append(f"[Hermes] stdout={_tail_log(_LAST_LOG_PATHS[0], limit=400) or '(empty)'}")
+iris\system\iris_agent_gateway.py:683:        lines.append(f"[Hermes] stderr={_tail_log(_LAST_LOG_PATHS[1], limit=400) or '(empty)'}")
+iris\system\iris_agent_gateway.py:685:        lines.append("[Hermes] stdout=(no log)")
+iris\system\iris_agent_gateway.py:686:        lines.append("[Hermes] stderr=(no log)")
+iris\system\iris_agent_gateway.py:689:        path = _gateway_log_dir() / "hermes-iris.log"
+iris\system\iris_agent_gateway.py:698:def start_hermes_gateway(command: str = "hermes") -> bool:
+iris\system\iris_agent_gateway.py:699:    """`hermes gateway run`을 창 없이 백그라운드로 기동. 실행 파일이 없으면 False."""
+iris\system\iris_agent_gateway.py:704:        report = hermes_runtime_report(command=command)
+iris\system\iris_agent_gateway.py:717:    cwd = str(_hermes_agent_dir())
+iris\system\iris_agent_gateway.py:765:def stop_hermes_gateway(
+iris\system\iris_agent_gateway.py:766:    command: str = "hermes",
+iris\system\iris_agent_gateway.py:771:    """`hermes gateway stop --all`로 락을 잡고 있는 구 프로세스를 내린다.
+iris\system\iris_agent_gateway.py:776:    exe = hermes_executable(command)
+iris\system\iris_agent_gateway.py:813:    return hermes_home() / "gateway.lock"
+iris\system\iris_agent_gateway.py:817:    return hermes_home() / "gateway.pid"
+iris\system\iris_agent_gateway.py:888:def _pid_looks_like_hermes(pid: int) -> bool:
+iris\system\iris_agent_gateway.py:889:    """살아 있는 PID가 Hermes gateway인지 — PID 재사용/타 프로세스 오인 방지."""
+iris\system\iris_agent_gateway.py:901:            name.startswith("hermes")
+iris\system\iris_agent_gateway.py:902:            or "hermes_cli.main" in cmdline
+iris\system\iris_agent_gateway.py:903:            or "\\hermes" in cmdline
+iris\system\iris_agent_gateway.py:904:            or "/hermes" in cmdline
+iris\system\iris_agent_gateway.py:910:        return name.startswith("hermes") or "python" in name
+iris\system\iris_agent_gateway.py:916:    Hermes는 gateway.pid를 O_CREAT|O_EXCL로 만들므로, 죽은 프로세스의 pid
+iris\system\iris_agent_gateway.py:918:    살아 있는 Hermes PID의 lock/pid는 삭제하지 않는다 (G3).
+iris\system\iris_agent_gateway.py:921:    home = hermes_home()
+iris\system\iris_agent_gateway.py:930:        if pid > 0 and _pid_exists(pid) and _pid_looks_like_hermes(pid):
+iris\system\iris_agent_gateway.py:939:    # kanban dispatcher stale lock (Hermes 전용 판정 금지 — dispatcher는 별 프로세스)
+iris\system\iris_agent_gateway.py:1013:    """8642(또는 base)를 Hermes가 아닌 프로세스가 점유하면 진단 반환 (G6)."""
+iris\system\iris_agent_gateway.py:1016:    if health.ok and health.looks_like_hermes:
+iris\system\iris_agent_gateway.py:1021:    # health ok가 아닌데 포트만 점유 — 또는 health ok인데 hermes 아님
+iris\system\iris_agent_gateway.py:1023:        if _pid_looks_like_hermes(pid):
+iris\system\iris_agent_gateway.py:1045:    if health.ok and not health.looks_like_hermes and listeners:
+iris\system\iris_agent_gateway.py:1067:    """Hermes gateway 프로세스 PID.
+iris\system\iris_agent_gateway.py:1076:        if pid > 0 and _pid_exists(pid) and _pid_looks_like_hermes(pid):
+iris\system\iris_agent_gateway.py:1091:            looks_hermes = (
+iris\system\iris_agent_gateway.py:1092:                name.startswith("hermes")
+iris\system\iris_agent_gateway.py:1093:                or "hermes_cli.main" in cmdline
+iris\system\iris_agent_gateway.py:1094:                or "\\hermes" in cmdline
+iris\system\iris_agent_gateway.py:1095:                or "/hermes" in cmdline
+iris\system\iris_agent_gateway.py:1097:            if looks_hermes and "gateway" in cmdline and "run" in cmdline:
+iris\system\iris_agent_gateway.py:1228:    key = resolve_hermes_api_key(api_key)
+iris\system\iris_agent_gateway.py:1259:                hermes_runtime_report()
+iris\system\iris_agent_gateway.py:1279:                            api_server_enabled=load_hermes_dotenv().get(
+iris\system\iris_agent_gateway.py:1304:                            api_server_enabled=load_hermes_dotenv().get(
+iris\system\iris_agent_gateway.py:1334:                            api_server_enabled=load_hermes_dotenv().get(
+iris\system\iris_agent_gateway.py:1395:                api_server_enabled=load_hermes_dotenv().get("API_SERVER_ENABLED", ""),
+iris\system\iris_agent_gateway.py:1428:            api_server_enabled=load_hermes_dotenv().get("API_SERVER_ENABLED", ""),
+iris\system\iris_agent_gateway.py:1444:        root = _hermes_agent_dir()
+iris\system\iris_agent_gateway.py:1458:def ensure_hermes_gateway_running(
+iris\system\iris_agent_gateway.py:1462:    command: str = "hermes",
+iris\system\iris_agent_gateway.py:1469:    key = resolve_hermes_api_key(api_key)
+iris\system\iris_agent_gateway.py:1479:    # 이미 Hermes ready OK
+iris\system\iris_agent_gateway.py:1483:        return restart_hermes_gateway(
+iris\system\iris_agent_gateway.py:1515:        stop_hermes_gateway(
+iris\system\iris_agent_gateway.py:1533:    # G3: stale lock/pid 정리 (살아 있는 Hermes는 유지)
+iris\system\iris_agent_gateway.py:1546:    # 좀비 Hermes만 있으면 정리 후 재기동
+iris\system\iris_agent_gateway.py:1548:        # lock이 살아 있는 Hermes인데 health 실패 → 재시작 경로
+iris\system\iris_agent_gateway.py:1550:        stop_hermes_gateway(
+iris\system\iris_agent_gateway.py:1563:        return start_hermes_gateway(command)
+iris\system\iris_agent_gateway.py:1570:                action=f"{hermes_home() / '.env'} 에서 API_SERVER_ENABLED=true 로 설정하세요.",
+iris\system\iris_agent_gateway.py:1581:                action="시작 프로토콜 hermes_env 단계에서 키를 동기화하세요.",
+iris\system\iris_agent_gateway.py:1589:    if not start_hermes_gateway(command):
+iris\system\iris_agent_gateway.py:1602:def restart_hermes_gateway(
+iris\system\iris_agent_gateway.py:1606:    command: str = "hermes",
+iris\system\iris_agent_gateway.py:1616:    key = resolve_hermes_api_key(api_key)
+iris\system\iris_agent_gateway.py:1627:        return start_hermes_gateway(command)
+iris\system\iris_agent_gateway.py:1632:    stop_hermes_gateway(
+iris\system\iris_agent_gateway.py:1659:    if not start_hermes_gateway(command):
+iris\system\iris_agent_gateway.py:1660:        hermes_runtime_report(command=command)
+iris\system\iris_agent_gateway.py:1671:    report = hermes_runtime_report(command=command)
+iris\system\iris_agent_gateway.py:1686:def _hermes_module_cmd(*args: str) -> list[str] | None:
+iris\system\iris_agent_gateway.py:1687:    """PM python -m hermes_cli.main. 3.12로 3.14 site-packages를 열면 pydantic_core가 깨진다."""
+iris\system\iris_agent_gateway.py:1688:    py = _hermes_runtime_python()
+iris\system\iris_agent_gateway.py:1690:        return [str(py), "-m", "hermes_cli.main", *args]
+iris\system\iris_agent_gateway.py:1691:    exe = hermes_executable()
+iris\system\iris_agent_gateway.py:1697:def verify_iris_mcp_tools(*, command: str = "hermes", timeout_sec: float = 45.0) -> tuple[bool, str]:
+iris\system\iris_agent_gateway.py:1702:def ensure_hermes_provider_config() -> None:
+iris\system\iris_agent_gateway.py:1705:    - `ollama` → `custom` (Hermes 0.19+ 로컬 OpenAI-compat)
+iris\system\iris_agent_gateway.py:1709:    path = hermes_home() / "config.yaml"
+iris\system\iris_agent_gateway.py:1736:        # Iris 피커 API 모델이 Hermes default로 오염된 경우
+iris\system\iris_agent_gateway.py:1769:    """오염된 Hermes default 복구용 — 로컬 Ollama 목록의 첫 모델 또는 안전한 기본값."""
+iris\system\iris_agent_gateway.py:1786:    ensure_hermes_provider_config()
+iris\system\iris_agent_gateway.py:1787:    assert is_hermes_gateway_running("http://127.0.0.1:1/v1") is False
+iris\system\iris_agent_gateway.py:1788:    # Iris VIRTUAL_ENV 오염 시에도 Hermes venv 로 고정되는지
+iris\system\iris_agent_gateway.py:1792:    venv_py = _hermes_runtime_python()
+iris\system\iris_agent_gateway.py:1796:        cmd = _windows_hidden_cmd(hermes_executable("hermes") or "hermes")
+iris\system\iris_agent_gateway.py:1797:        assert cmd[:3] == [str(venv_py), "-m", "hermes_cli.main"]
+iris\system\iris_agent_gateway.py:1803:    assert parse_health_payload({"status": "ok", "platform": "hermes-agent"})[0]
+iris\system\iris_agent_gateway.py:1806:    exe = hermes_executable("hermes")
+iris\system\iris_agent_gateway.py:1807:    report = hermes_runtime_report(command="hermes")
+iris\system\iris_agent_gateway.py:1808:    assert "[Hermes] command=" in report
+iris\system\iris_agent_gateway.py:1809:    assert "[Hermes] return_code=" in report
+iris\system\iris_agent_gateway.py:1811:        "hermes_gateway ok - exe:",
+iris\system\iris_agent_gateway.py:1816:        hermes_home(),
+iris\system\iris_agent_gateway.py:1818:        bool(resolve_hermes_api_key()),
+iris\system\iris_agent_gateway.py:1820:        is_hermes_gateway_running("http://127.0.0.1:8642/v1"),
+iris\runtime\agent_local_gate.py:1:"""Hermes가 켜져 있으면 채팅 의도 가로채기를 모델 도구에 넘긴다."""
+iris\runtime\agent_local_gate.py:6:def hermes_owns_local_intents(hermes_enabled: bool) -> bool:
+iris\runtime\agent_local_gate.py:8:    return bool(hermes_enabled)
+iris\ui\settings\settings_dialog.py:50:    apply_hermes_search_backend,
+iris\ui\settings\settings_dialog.py:98:from iris.system.iris_agent_login_warm import sync as sync_hermes_login_warm
+iris\ui\settings\settings_dialog.py:101:    save_hermes_login_warm_box,
+iris\ui\settings\settings_dialog.py:310:        q.append(self._section_hermes_login_warm)
+iris\ui\settings\settings_dialog.py:324:        q.append(self._section_hermes_control)
+iris\ui\settings\settings_dialog.py:368:    def _section_hermes_login_warm(self) -> None:
+iris\ui\settings\settings_dialog.py:369:        self._hermes_login_warm_box = IrisAgentLoginWarmBox(self._db)
+iris\ui\settings\settings_dialog.py:370:        self._content_lay.addWidget(make_collapsible(self._hermes_login_warm_box))
+iris\ui\settings\settings_dialog.py:434:    def _section_hermes_control(self) -> None:
+iris\ui\settings\settings_dialog.py:435:        self._content_lay.addWidget(make_collapsible(self._build_hermes_control_box()))
+iris\ui\settings\settings_dialog.py:780:            if preset.hermes_backend and pid == active:
+iris\ui\settings\settings_dialog.py:827:            backend = search_preset_by_id(active).hermes_backend
+iris\ui\settings\settings_dialog.py:829:                apply_hermes_search_backend(backend)
+iris\ui\settings\settings_dialog.py:2049:    def _build_hermes_control_box(self) -> QGroupBox:
+iris\ui\settings\settings_dialog.py:2063:        self._sync_btn.clicked.connect(self._run_hermes_control_sync)
+iris\ui\settings\settings_dialog.py:2310:            f"에이전트 {'OK' if snap.get('hermes_exe') else '없음'}"
+iris\ui\settings\settings_dialog.py:2311:            + self._setup_running_suffix(snap.get("hermes_running")),
+iris\ui\settings\settings_dialog.py:2335:            agent_command=self._settings.agent_command or "hermes",
+iris\ui\settings\settings_dialog.py:2343:            and bool(snap.get("hermes_exe"))
+iris\ui\settings\settings_dialog.py:2494:        return settings_service.load_hermes_sync_status_text()
+iris\ui\settings\settings_dialog.py:2496:    def _run_hermes_control_sync(self) -> None:
+iris\ui\settings\settings_dialog.py:2498:        from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
+iris\ui\settings\settings_dialog.py:2505:            key = resolve_hermes_api_key(self._settings.agent_api_key)
+iris\ui\settings\settings_dialog.py:2508:        cmd = (self._settings.agent_command or "").strip() or "hermes"
+iris\ui\settings\settings_dialog.py:2516:        worker.finished_ok.connect(self._on_hermes_control_sync_done)
+iris\ui\settings\settings_dialog.py:2519:    def _on_hermes_control_sync_done(self, ok: bool, summary: str) -> None:
+iris\ui\settings\settings_dialog.py:2697:            warm_box = getattr(self, "_hermes_login_warm_box", None)
+iris\ui\settings\settings_dialog.py:2699:                save_hermes_login_warm_box(self._db, warm_box)
+iris\ui\settings\settings_dialog.py:2701:                    warm_status = sync_hermes_login_warm(warm_box.prefs().enabled)
+iris\ui\settings\settings_dialog.py:2721:            from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
+iris\ui\settings\settings_dialog.py:2723:            hermes_api_key = resolve_hermes_api_key(self._settings.agent_api_key)
+iris\ui\settings\settings_dialog.py:2725:            hermes_api_key = self._settings.agent_api_key or ""
+iris\ui\settings\settings_dialog.py:2729:            agent_command=self._settings.agent_command or "hermes",
+iris\ui\settings\settings_dialog.py:2731:            agent_api_key=hermes_api_key,
+iris\system\iris_agent_cli_shim_overlay.py:1:"""Install-time CLI import shim: iris_agent_cli / iris_cli re-export hermes_cli.
+iris\system\iris_agent_cli_shim_overlay.py:12:_MARKER = "Iris CLI shim — re-exports hermes_cli"
+iris\system\iris_agent_cli_shim_overlay.py:16:from hermes_cli import *  # noqa: F401, F403
+iris\system\iris_agent_cli_shim_overlay.py:20:"""Forward ``-m {pkg}.main`` to hermes_cli.main."""
+iris\system\iris_agent_cli_shim_overlay.py:21:from hermes_cli.main import main
+iris\system\iris_agent_cli_shim_overlay.py:46:    hermes = root / "hermes_cli"
+iris\system\iris_agent_cli_shim_overlay.py:47:    if not hermes.is_dir() and not (hermes.with_suffix(".py")).is_file():
+iris\system\iris_agent_cli_shim_overlay.py:48:        return ["cli shim: hermes_cli missing — skipped"]
+iris\system\iris_agent_cli_shim_overlay.py:85:    return _MARKER in text or "from hermes_cli import" in text
+iris\system\iris_agent_cli_shim_overlay.py:95:    return "hermes_cli.main" in text
+iris\system\iris_agent_memory_nudge.py:9:from iris.system.iris_agent_control_sync import hermes_home
+iris\system\iris_agent_memory_nudge.py:22:1a. Provider-visible SpeakTool names: Hermes-familiar `terminal` / `write_file` / `read_file` / `search_files` / `web_search` / `web_extract` (Iris Control under the hood), else dots→underscores (`settings_get`, `wiki_search`). Use the exact schema name. For "메일 화면 열어줘", call `workspace_open_email({})`.
+iris\system\iris_agent_memory_nudge.py:30:5. Run commands via SpeakTools `terminal` (Iris-owned; not a separate Hermes builtin). Home / assistant → Iris Shell chat card. IDE Companion → bound IDE integrated terminal. Never invent a filesystem limit.
+iris\system\iris_agent_memory_nudge.py:146:    root = Path(home) if home is not None else hermes_home()
+iris\system\iris_agent_cli_rename_overlay.py:1:"""F3 — materialize real iris_agent_cli; hermes_cli becomes reverse shim.
+iris\system\iris_agent_cli_rename_overlay.py:4:never raise. When rename of physical hermes_cli fails after copy, leave
+iris\system\iris_agent_cli_rename_overlay.py:16:_FORWARD_MARKER = "Iris CLI shim — re-exports hermes_cli"
+iris\system\iris_agent_cli_rename_overlay.py:26:# Submodule imports (hermes_cli._early_recovery) resolve into iris_agent_cli.
+iris\system\iris_agent_cli_rename_overlay.py:31:"""Forward ``-m hermes_cli.main`` to iris_agent_cli.main."""
+iris\system\iris_agent_cli_rename_overlay.py:53:    """True when iris_agent_cli is the thin F2 re-export of hermes_cli."""
+iris\system\iris_agent_cli_rename_overlay.py:61:    return _FORWARD_MARKER in text or "from hermes_cli import" in text
+iris\system\iris_agent_cli_rename_overlay.py:78:def hermes_cli_is_reverse_shim(agent_root: Path) -> bool:
+iris\system\iris_agent_cli_rename_overlay.py:79:    init = Path(agent_root) / "hermes_cli" / "__init__.py"
+iris\system\iris_agent_cli_rename_overlay.py:90:    """True when F3 end-state holds: real iris_agent_cli + reverse hermes_cli."""
+iris\system\iris_agent_cli_rename_overlay.py:94:    hermes = root / "hermes_cli"
+iris\system\iris_agent_cli_rename_overlay.py:95:    if not hermes.exists():
+iris\system\iris_agent_cli_rename_overlay.py:97:    return hermes_cli_is_reverse_shim(root)
+iris\system\iris_agent_cli_rename_overlay.py:101:    """Copy+rewrite hermes_cli → iris_agent_cli; reverse-shim hermes_cli. Soft-fail."""
+iris\system\iris_agent_cli_rename_overlay.py:103:    hermes = root / "hermes_cli"
+iris\system\iris_agent_cli_rename_overlay.py:104:    if not hermes.is_dir():
+iris\system\iris_agent_cli_rename_overlay.py:105:        return ["cli rename: hermes_cli missing — skipped"]
+iris\system\iris_agent_cli_rename_overlay.py:130:            shutil.copytree(hermes, iris)
+iris\system\iris_agent_cli_rename_overlay.py:145:    # Replace physical hermes_cli with reverse shim.
+iris\system\iris_agent_cli_rename_overlay.py:150:            "cli rename: soft-fail — hermes_cli left as upstream; "
+iris\system\iris_agent_cli_rename_overlay.py:175:        if "hermes_cli" not in text:
+iris\system\iris_agent_cli_rename_overlay.py:178:            text.replace("hermes_cli", "iris_agent_cli"),
+iris\system\iris_agent_cli_rename_overlay.py:187:    hermes = root / "hermes_cli"
+iris\system\iris_agent_cli_rename_overlay.py:188:    if hermes_cli_is_reverse_shim(root):
+iris\system\iris_agent_cli_rename_overlay.py:189:        return True, "cli rename: hermes_cli already reverse shim"
+iris\system\iris_agent_cli_rename_overlay.py:191:    bak = root / "hermes_cli._f3_upstream"
+iris\system\iris_agent_cli_rename_overlay.py:195:        hermes.rename(bak)
+iris\system\iris_agent_cli_rename_overlay.py:198:        return False, f"cli rename: hermes_cli rename locked ({exc})"
+iris\system\iris_agent_cli_rename_overlay.py:201:        hermes.mkdir(parents=True, exist_ok=True)
+iris\system\iris_agent_cli_rename_overlay.py:202:        (hermes / "__init__.py").write_text(_REVERSE_INIT, encoding="utf-8", newline="\n")
+iris\system\iris_agent_cli_rename_overlay.py:203:        (hermes / "main.py").write_text(_REVERSE_MAIN, encoding="utf-8", newline="\n")
+iris\system\iris_agent_cli_rename_overlay.py:207:            if hermes.exists():
+iris\system\iris_agent_cli_rename_overlay.py:208:                shutil.rmtree(hermes)
+iris\system\iris_agent_cli_rename_overlay.py:209:            bak.rename(hermes)
+iris\system\iris_agent_cli_rename_overlay.py:219:    return True, "cli rename: hermes_cli → reverse shim"
+iris\system\iris_agent_login_warm.py:21:LEGACY_TASK_NAME = r"\IrisLight\HermesGatewayWarm"
+iris\system\iris_agent_login_warm.py:136:    xml_path = Path(tempfile.gettempdir()) / "iris_hermes_login_warm.xml"
+iris\system\iris_agent_install.py:1:"""Hermes Windows 설치 우회 — uv managed Python junction(WinError 448) 회피.
+iris\system\iris_agent_install.py:12:요구하는 범위(hermes_python_range)를 벗어나면 다시 고른다. 2026-10-02 upstream 은
+iris\system\iris_agent_install.py:41:HERMES_REPO_HTTPS = load_upstream_url()
+iris\system\iris_agent_install.py:43:_HERMES_PYTHON_MIN = (3, 11)
+iris\system\iris_agent_install.py:44:_HERMES_PYTHON_MAX_EXCLUSIVE = (3, 14)
+iris\system\iris_agent_install.py:121:def is_supported_hermes_python(path: Path, want: PyRange | None = None) -> bool:
+iris\system\iris_agent_install.py:122:    lo, hi = want or (_HERMES_PYTHON_MIN, _HERMES_PYTHON_MAX_EXCLUSIVE)
+iris\system\iris_agent_install.py:132:def hermes_python_range(repo: Path) -> PyRange:
+iris\system\iris_agent_install.py:136:    lo, hi = _HERMES_PYTHON_MIN, _HERMES_PYTHON_MAX_EXCLUSIVE
+iris\system\iris_agent_install.py:187:            if p.is_file() and is_supported_hermes_python(p, want):
+iris\system\iris_agent_install.py:193:    """Hermes venv 베이스. 3.11 → 3.12 → 3.13 (want 가 있으면 그 범위). Iris .venv 는 그 다음."""
+iris\system\iris_agent_install.py:207:        if cand.is_file() and is_supported_hermes_python(cand, want):
+iris\system\iris_agent_install.py:211:        if found and is_supported_hermes_python(Path(found), want):
+iris\system\iris_agent_install.py:215:        if p.is_file() and is_supported_hermes_python(p, want):
+iris\system\iris_agent_install.py:239:    major, minor = want[0] if want else _HERMES_PYTHON_MIN
+iris\system\iris_agent_install.py:281:def _kill_hermes_tree_holders(agent: Path) -> None:
+iris\system\iris_agent_install.py:290:        for image in ("hermes.exe", "python.exe", "pythonw.exe"):
+iris\system\iris_agent_install.py:310:    """iris-agent / hermes-agent 의 .broken- / .trash- / .staging- 사이드카."""
+iris\system\iris_agent_install.py:318:def force_retire_hermes_agent(
+iris\system\iris_agent_install.py:320:    command: str = "hermes",
+iris\system\iris_agent_install.py:323:    """잠긴 iris-agent·hermes-agent / .broken-* / staging-* 를 rename 으로 치우고 삭제 시도.
+iris\system\iris_agent_install.py:327:    home = gw.hermes_home()
+iris\system\iris_agent_install.py:330:        gw.stop_hermes_gateway(command, wait_sec=6.0)
+iris\system\iris_agent_install.py:359:        _kill_hermes_tree_holders(path)
+iris\system\iris_agent_install.py:433:    real = gw.hermes_home()
+iris\system\iris_agent_install.py:456:    """다른 프로세스가 Hermes 설치 잠금을 잡고 있음."""
+iris\system\iris_agent_install.py:482:    log_dir = (home if home is not None else gw.hermes_home()) / "logs"
+iris\system\iris_agent_install.py:519:def hermes_install_lock(home: Path) -> Iterator[Path]:
+iris\system\iris_agent_install.py:521:    path = home / "iris-hermes-install.lock"
+iris\system\iris_agent_install.py:595:            [str(venv_py), "-c", "import hermes_cli, aiohttp, mcp; print('ok')"],
+iris\system\iris_agent_install.py:690:        ok, detail = gw.probe_hermes_runtime(command=command, timeout_sec=30.0)
+iris\system\iris_agent_install.py:811:        # probe (venv/Scripts/python) then fails with ModuleNotFoundError: hermes_cli.
+iris\system\iris_agent_install.py:952:    logs = gw.hermes_home() / "logs"
+iris\system\iris_agent_install.py:1040:    """uv.lock 있으면 uv sync --frozen (Hermes `venv/` 경로 유지). 없으면 None."""
+iris\system\iris_agent_install.py:1081:        [git, "-C", str(staging), "remote", "add", "origin", HERMES_REPO_HTTPS],
+iris\system\iris_agent_install.py:1126:def install_hermes_with_system_python(
+iris\system\iris_agent_install.py:1128:    command: str = "hermes",
+iris\system\iris_agent_install.py:1161:        with hermes_install_lock(home):
+iris\system\iris_agent_install.py:1162:            # probe_hermes_runtime reads the default gateway home. Explicit
+iris\system\iris_agent_install.py:1165:                already, already_detail = gw.probe_hermes_runtime(
+iris\system\iris_agent_install.py:1196:            if clone.returncode != 0 or not (staging / "hermes_cli").is_dir():
+iris\system\iris_agent_install.py:1211:            want = hermes_python_range(staging)
+iris\system\iris_agent_install.py:1251:    head = "Obtaining file:///tmp/hermes-agent\nInstalling build dependencies...\n"
+iris\system\iris_agent_install.py:1255:    assert not msg.strip().endswith("Obtaining file:///tmp/hermes-agent")
+iris\system\iris_agent_install.py:1266:    print("hermes_install helpers ok", find_bootstrap_python())
+iris\ui\settings\iris_agent_login_warm_box.py:10:    load_hermes_login_warm,
+iris\ui\settings\iris_agent_login_warm_box.py:11:    save_hermes_login_warm,
+iris\ui\settings\iris_agent_login_warm_box.py:20:        prefs = load_hermes_login_warm(db)
+iris\ui\settings\iris_agent_login_warm_box.py:38:HermesLoginWarmBox = IrisAgentLoginWarmBox
+iris\ui\settings\iris_agent_login_warm_box.py:41:def save_hermes_login_warm_box(db: Database, box: IrisAgentLoginWarmBox) -> None:
+iris\ui\settings\iris_agent_login_warm_box.py:42:    save_hermes_login_warm(db, box.prefs())
+iris\system\iris_agent_soul_sync.py:1:"""Hermes SOUL.md에 Iris 페르소나를 동기화.
+iris\system\iris_agent_soul_sync.py:3:Hermes는 제품 홈(iris_agent_home)/SOUL.md를 system prompt identity(slot #1)로 쓴다.
+iris\system\iris_agent_soul_sync.py:4:레포 `integrations/hermes-soul/SOUL.md`를 원본으로 두고, sync·runtime ensure 때 반영한다.
+iris\system\iris_agent_soul_sync.py:6:천장: Hermes install이 업스트림 SOUL을 다시 심으면 runtime ensure가 재적용.
+iris\system\iris_agent_soul_sync.py:14:from iris.system.iris_agent_control_sync import hermes_home, project_root
+iris\system\iris_agent_soul_sync.py:20:    return project_root() / "integrations" / "hermes-soul" / "SOUL.md"
+iris\system\iris_agent_soul_sync.py:23:def hermes_soul_path(home: Path | None = None) -> Path:
+iris\system\iris_agent_soul_sync.py:24:    """제품 홈 SOUL만. 레거시 Hermes 홈은 보지 않는다."""
+iris\system\iris_agent_soul_sync.py:27:    return hermes_home() / "SOUL.md"
+iris\system\iris_agent_soul_sync.py:51:    dst = hermes_soul_path(home)
+iris\system\iris_agent_soul_sync.py:56:        # 마커 없으면 업스트림 Hermes SOUL로 보고 강제 갱신 (SHA만으로 current 오인 금지).
+iris\system\iris_agent_soul_sync.py:73:    product = hermes_soul_path().read_text(encoding="utf-8", errors="replace")
+iris\system\iris_agent_soul_sync.py:76:    assert "Hermes Agent" not in product
+iris\system\iris_agent_soul_sync.py:78:    print("ok", hermes_soul_path(), len(product), "chars")
+iris\system\iris_agent_ollama_guard.py:1:"""Hermes custom 프로파일의 Ollama 전용 ``options.num_ctx`` 가드.
+iris\system\iris_agent_ollama_guard.py:22:    """Hermes ``_looks_like_ollama_endpoint`` 와 같은 규칙.
+iris\system\iris_agent_ollama_guard.py:114:    from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\system\iris_agent_ollama_guard.py:115:    from iris.system.setup_protocol import HERMES_MIN_OLLAMA_NUM_CTX
+iris\system\iris_agent_ollama_guard.py:117:    path = hermes_home() / "config.yaml"
+iris\system\iris_agent_ollama_guard.py:134:        if cur >= HERMES_MIN_OLLAMA_NUM_CTX:
+iris\system\iris_agent_ollama_guard.py:136:        model["ollama_num_ctx"] = HERMES_MIN_OLLAMA_NUM_CTX
+iris\system\iris_agent_ollama_guard.py:152:    hermes_enabled: bool,
+iris\system\iris_agent_ollama_guard.py:153:    hermes_base_url: str,
+iris\system\iris_agent_ollama_guard.py:156:    if not hermes_enabled:
+iris\system\iris_agent_ollama_guard.py:160:    if not probe_gateway_health(hermes_base_url, timeout_sec=1.5).ok:
+iris\system\iris_agent_ollama_guard.py:172:        client = IrisAgentClient(hermes_base_url, timeout_sec=20.0)
+iris\system\iris_agent_ollama_guard.py:176:                return "Hermes 채팅 경로 응답 있음"
+iris\system\iris_agent_ollama_guard.py:179:        return "Hermes 채팅 응답 없음"
+iris\system\iris_agent_ollama_guard.py:183:            return f"Hermes 채팅 실패 (options): {text[:160]}"
+iris\system\iris_agent_ollama_guard.py:184:        return f"Hermes 채팅 실패: {text[:160]}"
+iris\system\iris_agent_update.py:34:HermesUpdateStatus = IrisAgentUpdateStatus
+iris\system\iris_agent_update.py:37:def hermes_repo_dir(command: str = "hermes") -> Path | None:
+iris\system\iris_agent_update.py:38:    """실행 중인 hermes 체크아웃. venv Scripts 위, 없으면 제품 홈 iris_agent_repo_dir."""
+iris\system\iris_agent_update.py:39:    from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\system\iris_agent_update.py:40:    from iris.system.iris_agent_gateway import hermes_executable
+iris\system\iris_agent_update.py:42:    exe = hermes_executable(command)
+iris\system\iris_agent_update.py:45:            if (parent / ".git").exists() and (parent / "hermes_cli").is_dir():
+iris\system\iris_agent_update.py:47:    repo = iris_agent_repo_dir(hermes_home())
+iris\system\iris_agent_update.py:72:def fetch_hermes_remote_sha(repo: Path | None = None) -> str:
+iris\system\iris_agent_update.py:78:def check_hermes_update(
+iris\system\iris_agent_update.py:80:    command: str = "hermes",
+iris\system\iris_agent_update.py:88:    root = repo if repo is not None else hermes_repo_dir(command)
+iris\system\iris_agent_update.py:121:def hermes_update_argv(exe: str) -> list[str]:
+iris\system\iris_agent_update.py:182:def apply_hermes_update(
+iris\system\iris_agent_update.py:184:    command: str = "hermes",
+iris\system\iris_agent_update.py:196:        hermes_executable,
+iris\system\iris_agent_update.py:197:        stop_hermes_gateway,
+iris\system\iris_agent_update.py:200:    exe = hermes_executable(command)
+iris\system\iris_agent_update.py:203:    repo = hermes_repo_dir(command)
+iris\system\iris_agent_update.py:209:    stop_hermes_gateway(command, wait_sec=20.0)
+iris\runtime\model_switch.py:5:시키는 일은 `summarizer` 콜러블로 주입받는다 — 그래야 Ollama·Hermes·커스텀 API
+iris\system\iris_agent_package_identity.py:1:"""Install-time soft patch: live pyproject package name hermes-agent → iris-agent.
+iris\system\iris_agent_package_identity.py:4:Legacy hermes script may keep hermes_cli.main (reverse shim after F3).
+iris\system\iris_agent_package_identity.py:13:    r'(?m)^(name\s*=\s*")hermes-agent("\s*)$',
+iris\system\iris_agent_package_identity.py:40:    text = text.replace('"hermes-agent[', '"iris-agent[')
+iris\system\iris_agent_package_identity.py:41:    text = text.replace("'hermes-agent[", "'iris-agent[")
+iris\system\iris_agent_package_identity.py:48:        return ["package identity: no hermes-agent markers — skipped"]
+iris\system\iris_agent_package_identity.py:58:    if '"iris-agent[' in text and '"hermes-agent[' not in text:
+iris\system\iris_agent_package_identity.py:71:    # Retarget F1-era iris-* scripts that still pointed at hermes_cli.main.
+iris\system\iris_agent_package_identity.py:73:        r'(?m)^(iris-agent\s*=\s*")hermes_cli\.main:main("\s*)$',
+iris\system\iris_agent_package_identity.py:78:        r'(?m)^(iris\s*=\s*")hermes_cli\.main:main("\s*)$',
+iris\system\iris_agent_package_identity.py:87:    # Prefer after legacy hermes console script; else right under the header.
+iris\system\iris_agent_package_identity.py:88:    if re.search(r"(?m)^hermes\s*=", text):
+iris\system\iris_agent_package_identity.py:91:            r"(?m)^hermes\s*=.*$",
+iris\system\iris_agent_package_identity.py:118:    # Prefer immediately after hermes_cli.*; else right after include = [.
+iris\system\iris_agent_package_identity.py:119:    m = re.search(r'(?m)^(\s*)"hermes_cli\.\*"\s*,?\s*$', text)
+iris\system\iris_agent_package_identity.py:121:        rebuilt = f'{m.group(1)}"hermes_cli.*",\n{block}'
+iris\runtime\model_failover.py:12:  모델뿐 아니라 **백엔드(ollama/hermes/api provider)까지** 통째로 바꾼다.
+iris\runtime\model_failover.py:180:    backend: str = ""  # ollama | agent | api | ''(현재 것 유지); legacy hermes ok
+iris\system\iris_agent_tool_choice.py:1:"""Hermes tool-choice setting + ``respond`` exit overlay.
+iris\system\iris_agent_tool_choice.py:181:    path = Path(agent_root) / "hermes_cli" / "config_defaults.py"
+iris\system\iris_agent_tool_choice.py:199:def apply_hermes_tool_choice_overlay(agent_root: Path) -> list[str]:
+iris\system\iris_agent_tool_choice.py:229:def load_hermes_tool_choice(*, home: Path | None = None) -> str:
+iris\system\iris_agent_tool_choice.py:237:        from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\system\iris_agent_tool_choice.py:239:        home = hermes_home()
+iris\system\iris_agent_tool_choice.py:252:def set_hermes_tool_choice(value: str) -> tuple[bool, str]:
+iris\system\iris_agent_tool_choice.py:262:    from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\system\iris_agent_tool_choice.py:264:    path = hermes_home() / "config.yaml"
+iris\system\iris_agent_tool_choice.py:281:        return False, f"hermes agent.tool_choice already {choice}"
+iris\system\iris_agent_tool_choice.py:302:        return False, f"hermes agent.tool_choice write missing {choice}"
+iris\system\iris_agent_tool_choice.py:303:    return True, f"hermes agent.tool_choice: {choice}"
+iris\system\iris_agent_tool_choice.py:308:    choice = load_hermes_tool_choice()
+iris\system\iris_agent_tool_choice.py:333:        agent_root = hermes_home_agent_root()
+iris\system\iris_agent_tool_choice.py:336:        # Load installed overlay (same demotion file Hermes uses).
+iris\system\iris_agent_tool_choice.py:340:        spec = importlib.util.spec_from_file_location("hermes_agent_tool_choice", path)
+iris\system\iris_agent_tool_choice.py:358:def hermes_home_agent_root() -> Path:
+iris\system\iris_agent_tool_choice.py:360:    from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\system\iris_agent_tool_choice.py:362:    return iris_agent_repo_dir(hermes_home())
+iris\ui\workers\chat_attempt.py:1:"""채팅 전환 체인의 공용 부품 — Ollama·Hermes 워커가 같이 쓴다.
+iris\ui\workers\chat_attempt.py:4:Hermes라면 해석된 타깃)를 UI 스레드가 미리 만들어 여기 담아 넘긴다.
+iris\ui\workers\chat_attempt.py:34:    # Hermes 전용 — resolve_iris_agent_inference() 결과. UI 스레드에서 미리 푼다.
+iris\ui\workers\chat_attempt.py:126:    assert decide_fallback("Hermes HTTP 503: upstream", 2).delay_ms == 4000
+iris\system\iris_web.py:1:"""Iris-owned web search / extract (stdlib urllib). No Hermes checkout web tools."""
+iris\system\iris_web.py:31:# Prefer these when no explicit preset is set (Hermes-shaped cascade, Iris keys).
+iris\system\iris_web.py:244:    """Hermes-shaped search: ``{success, data.web[]}`` or ``{success:false, error}``."""
+iris\system\iris_web.py:319:    format: str | None = None,  # noqa: A002 — Hermes-shaped arg name
+iris\system\iris_web.py:322:    """Extract page text. Returns ``{results: [...]}`` (Hermes-adjacent)."""
+iris\ui\workers\boot_checks_worker.py:60:            from iris.ui.chat.skill_mcp_dialogs import hermes_root, list_hermes_mcps, list_hermes_skills
+iris\ui\workers\boot_checks_worker.py:62:            root = str(hermes_root())
+iris\ui\workers\boot_checks_worker.py:63:            skills = [(n, d) for n, d, _p in list_hermes_skills(limit=120)]
+iris\ui\workers\boot_checks_worker.py:64:            mcps = list_hermes_mcps(limit=40)
+iris\ui\workers\boot_checks_worker.py:65:            self._wiki.sync_skills_catalog(skills, hermes_root=root)
+iris\ui\workers\boot_checks_worker.py:66:            self._wiki.sync_mcp_catalog(mcps, hermes_root=root)
+iris\ui\workers\backend_call.py:19:BACKEND_HERMES = BACKEND_AGENT  # compat alias — writers emit "agent"
+iris\ui\workers\backend_call.py:21:# Readers also accept legacy "hermes" (see iris.runtime.backend_route.is_agent_backend).
+iris\ui\workers\backend_call.py:22:_AGENT_BACKENDS = frozenset({BACKEND_AGENT, "hermes"})
+iris\ui\workers\backend_call.py:36:    command: str = "hermes"
+iris\ui\workers\backend_call.py:37:    # Hermes 전용 — resolve_iris_agent_inference() 결과
+iris\ui\workers\backend_call.py:54:        return _hermes(route, messages, stop)
+iris\ui\workers\backend_call.py:78:def _hermes(route, messages, stop) -> str:
+iris\ui\workers\backend_call.py:155:    class _FakeHermes:
+iris\ui\workers\backend_call.py:165:    class _FailSyncHermes:
+iris\ui\workers\backend_call.py:173:            raise AssertionError("hermes stream must not run after sync fail + base_url")
+iris\ui\workers\backend_call.py:178:    fake = _FakeHermes()
+iris\ui\workers\backend_call.py:188:            BackendRoute(backend="hermes", model="ignored", target=_FakeTarget()),
+iris\ui\workers\backend_call.py:200:    _hc.IrisAgentClient = lambda *a, **k: _FailSyncHermes()  # type: ignore[misc, assignment]
+iris\ui\workers\__init__.py:1:"""QThread 기반 워커 (email_workers, hermes_workers, ollama_workers, boot_checks_worker).
+iris\ui\workers\__init__.py:4:- Owns: UI 스레드 밖에서 도는 메일·Hermes·Ollama·부팅 체크.
+iris\runtime\_check_agent_log_activity.py:45:        "2026-10-28 01:57:23,529 WARNING hermes_state: state.db: linked SQLite "
+iris\runtime\_check_agent_log_activity.py:49:        "2026-10-29 11:09:07,004 INFO gateway.run: Starting Hermes Gateway..."
+iris\ui\workers\_check_hermes_health_ctor.py:33:    print("hermes_worker_ctors ok")
+iris\storage\__init__.py:5:- Does not: Hermes 메모리, 모델 가중치.
+iris\ui\workers\iris_agent_workers.py:131:        command: str = "hermes",
+iris\ui\workers\iris_agent_workers.py:176:        command: str = "hermes",
+iris\ui\workers\iris_agent_update_worker.py:16:    def __init__(self, command: str = "hermes", parent=None) -> None:
+iris\ui\workers\iris_agent_update_worker.py:18:        self._command = (command or "hermes").strip() or "hermes"
+iris\ui\workers\iris_agent_update_worker.py:22:            from iris.system.iris_agent_update import check_hermes_update
+iris\ui\workers\iris_agent_update_worker.py:24:            self.finished_ok.emit(check_hermes_update(command=self._command))
+iris\ui\workers\iris_agent_update_worker.py:39:        command: str = "hermes",
+iris\ui\workers\iris_agent_update_worker.py:45:        self._command = (command or "hermes").strip() or "hermes"
+iris\ui\workers\iris_agent_update_worker.py:51:            from iris.system.iris_agent_update import apply_hermes_update
+iris\ui\workers\iris_agent_update_worker.py:53:            msg = apply_hermes_update(
+iris\ui\workers\iris_agent_update_worker.py:67:    from iris.system.iris_agent_update import IrisAgentUpdateStatus, hermes_update_argv
+iris\ui\workers\iris_agent_update_worker.py:72:    assert hermes_update_argv("hermes") == ["hermes", "update", "--yes"]
+iris\ui\workers\iris_agent_update_worker.py:76:    print("hermes_update_worker ok")
+iris\runtime\turn_followthrough.py:76:    # Hermes 내장 terminal/shell/bash 는 Iris에서 비활성 — IDE project.run 증거로 세지 않는다.
+iris\runtime\user_turn_dispatcher.py:16:    새 에이전트 도구는 여기가 아니라 Hermes 스킬/MCP에 둔다.
+iris\ui\workers\startup_health_worker.py:22:        hermes_base_url: str | None = None,
+iris\ui\workers\startup_health_worker.py:23:        hermes_command: str | None = None,
+iris\ui\workers\startup_health_worker.py:34:            else (hermes_base_url or "http://127.0.0.1:8642/v1")
+iris\ui\workers\startup_health_worker.py:37:            agent_command if agent_command is not None else hermes_command
+iris\ui\workers\startup_health_worker.py:38:        ) or "hermes"
+iris\ui\workers\startup_health_worker.py:99:        hermes_base_url: str | None = None,
+iris\ui\workers\startup_health_worker.py:100:        hermes_command: str | None = None,
+iris\ui\workers\startup_health_worker.py:110:            else (hermes_base_url or "http://127.0.0.1:8642/v1")
+iris\ui\workers\startup_health_worker.py:113:            agent_command if agent_command is not None else hermes_command
+iris\ui\workers\startup_health_worker.py:114:        ) or "hermes"
+iris\ui\workers\startup_health_worker.py:146:        agent_command="hermes",
+iris\ui\workers\handoff_summary_worker.py:85:    assert SummaryRoute(backend="HERMES", model="m").backend == "HERMES"
+iris\runtime\tool_force.py:3:Hermes (PR #145164 overlay) owns wire ``tool_choice=required`` + ``respond``.
+iris\runtime\__init__.py:5:- Does not: PyQt widgets, Ollama/Hermes HTTP, or skill markdown.
+iris\runtime\__init__.py:7:- Extend via: intents near dispatcher; new agent tools go to Hermes skills/MCP, not here.
+iris\ui\workers\extension_install_worker.py:1:"""채팅 GitHub MCP/Skill 설치 — Hermes 설정에 반영. gateway 재기동 없음."""
+iris\ui\workers\extension_install_worker.py:23:        command: str = "hermes",
+iris\runtime\_check_tool_force.py:28:    # Vendor overlay module (Hermes PR #145164 shape)
+iris\runtime\_check_tool_force.py:119:    # demotion helpers present (temp file — do not touch live Hermes demotion list)
+iris\ui\_check_hermes_update.py:1:"""Hermes 업데이트 채팅 프롬프트 자검. 실제 업데이트는 호출하지 않는다."""
+iris\ui\_check_hermes_update.py:13:    panel.append_hermes_update_prompt(detail="abc1234 → def5678")
+iris\ui\_check_hermes_update.py:15:    assert "iris-hermes-update://apply" in html
+iris\ui\_check_hermes_update.py:16:    assert "iris-hermes-update://later" in html
+iris\ui\_check_hermes_update.py:18:    assert "Hermes 업데이트가 가능합니다" in html
+iris\ui\_check_hermes_update.py:19:    panel.dismiss_hermes_update_prompt("미룸")
+iris\ui\_check_hermes_update.py:21:    assert "iris-hermes-update://apply" not in html2
+iris\ui\_check_hermes_update.py:23:    print("hermes_update prompt ok")
+iris\storage\failover_prefs.py:32:        if self.backend == "hermes":
+iris\ui\_check_iris_branding_user_strings.py:1:"""User-visible Hermes branding must not appear in Iris UI product strings.
+iris\ui\_check_iris_branding_user_strings.py:18:    "Hermes API",
+iris\ui\_check_iris_branding_user_strings.py:19:    "Hermes를",
+iris\ui\_check_iris_branding_user_strings.py:20:    "Hermes 를",
+iris\ui\_check_iris_branding_user_strings.py:21:    "Hermes가",
+iris\ui\_check_iris_branding_user_strings.py:22:    "Hermes 가",
+iris\ui\_check_iris_branding_user_strings.py:23:    "Hermes model sync",
+iris\ui\_check_iris_branding_user_strings.py:24:    "Ollama/Hermes",
+iris\ui\_check_iris_branding_user_strings.py:25:    "Hermes AGENT",
+iris\ui\_check_iris_branding_user_strings.py:26:    "Hermes Skills",
+iris\ui\_check_iris_branding_user_strings.py:27:    "Hermes/Ollama",
+iris\ui\_check_iris_branding_user_strings.py:28:    "Hermes 연결",
+iris\ui\_check_iris_branding_user_strings.py:29:    "Hermes terminal",
+iris\ui\_check_iris_branding_user_strings.py:30:    "너는 Hermes",
+iris\ui\_check_hermes_required.py:28:    assert not hasattr(s, "hermes_enabled")
+iris\ui\_check_hermes_required.py:33:    assert "hermes_enabled" not in fields, "설정 저장 구조체에 hermes_enabled가 남아 있음"
+iris\ui\_check_hermes_required.py:37:        assert not hasattr(dlg, "_hermes_on"), "설정 화면에 에이전트 끄기 체크박스가 남아 있음"
+iris\ui\_check_iris_branding_product_copy.py:1:"""Product-path string literals must not present Hermes as the Iris brand.
+iris\ui\_check_iris_branding_product_copy.py:23:    "Hermes 웹검색",
+iris\ui\_check_iris_branding_product_copy.py:24:    "Hermes를",
+iris\ui\_check_iris_branding_product_copy.py:25:    "Hermes 를",
+iris\ui\_check_iris_branding_product_copy.py:26:    "Hermes가",
+iris\ui\_check_iris_branding_product_copy.py:27:    "Hermes 가",
+iris\ui\_check_iris_branding_product_copy.py:28:    "Do not use Hermes",
+iris\ui\_check_iris_branding_product_copy.py:29:    '"Hermes"',
+iris\ui\_check_iris_branding_product_copy.py:30:    "'Hermes'",
+iris\ui\_check_iris_branding_product_copy.py:60:                # Exact brand label check for setup_logos: value == Hermes
+iris\ui\_check_iris_branding_product_copy.py:61:                if needle in ('"Hermes"', "'Hermes'"):
+iris\ui\_check_iris_branding_product_copy.py:62:                    if text == "Hermes":
+iris\storage\update_notify_prefs.py:22:    def hermes(self) -> bool:
+iris\storage\update_notify_prefs.py:47:        agent = bool(data.get("hermes"))
+iris\storage\update_notify_prefs.py:74:        assert got.iris is True and got.agent is False and got.hermes is False
+iris\storage\update_notify_prefs.py:75:        # legacy JSON key "hermes" still loads
+iris\storage\update_notify_prefs.py:76:        db.set_preference(UPDATE_NOTIFY_KEY, json.dumps({"iris": False, "hermes": True}))
+iris\storage\update_notify_prefs.py:78:        assert legacy.agent is True and legacy.hermes is True
+iris\ui\_check_iris_agent_vault_brand.py:11:HERMES_DIR = ROOT / "obsidian-vault" / "Hermes"
+iris\ui\_check_iris_agent_vault_brand.py:13:ACTIVE_HOME = r"%LOCALAPPDATA%\hermes"
+iris\ui\_check_iris_agent_vault_brand.py:21:    assert not HERMES_DIR.exists(), f"legacy folder still exists: {HERMES_DIR}"
+iris\ui\_check_iris_agent_vault_brand.py:45:        (n.folder or "") == "Hermes" or (n.folder or "").startswith("Hermes/")
+iris\ui\_check_iris_agent_vault_brand.py:47:    ), "ObsidianVault still lists Hermes notes"
+iris\system\setup_protocol.py:3:UI 없음. 기존 ollama_server / iris_agent_engine / hermes_iris_control_sync 를 재사용.
+iris\system\setup_protocol.py:27:from iris.infrastructure.iris_agent_credentials import is_weak_hermes_api_key
+iris\system\setup_protocol.py:29:    ensure_hermes_provider_config,
+iris\system\setup_protocol.py:30:    hermes_executable,
+iris\system\setup_protocol.py:31:    hermes_home,
+iris\system\setup_protocol.py:32:    load_hermes_dotenv,
+iris\system\setup_protocol.py:33:    probe_hermes_runtime,
+iris\system\setup_protocol.py:34:    resolve_hermes_api_key,
+iris\system\setup_protocol.py:57:HERMES_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.ps1"
+iris\system\setup_protocol.py:65:_HERMES_IDLE_SEC = 900.0
+iris\system\setup_protocol.py:66:_HERMES_HARD_SEC = 3600.0
+iris\system\setup_protocol.py:134:    "hermes_install",
+iris\system\setup_protocol.py:135:    "hermes_env",
+iris\system\setup_protocol.py:136:    "hermes_provider",
+iris\system\setup_protocol.py:147:    "hermes_install": "Iris Agent 설치",
+iris\system\setup_protocol.py:148:    "hermes_env": "Iris Agent API 키·서버 설정",
+iris\system\setup_protocol.py:149:    "hermes_provider": "Iris Agent ↔ Ollama 연결",
+iris\system\setup_protocol.py:182:    {"ollama_install", "hermes_install", "emulator"}
+iris\system\setup_protocol.py:186:# - core_ready / 부팅 게이트: verify_core_quick (Ollama 응답·가용 모델·Hermes /health)
+iris\system\setup_protocol.py:417:    hermes_command: str | None = None,
+iris\system\setup_protocol.py:421:    cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
+iris\system\setup_protocol.py:422:    if not ollama_executable() or not hermes_executable(cmd):
+iris\system\setup_protocol.py:430:    hermes_base_url: str | None = None,
+iris\system\setup_protocol.py:431:    hermes_command: str | None = None,
+iris\system\setup_protocol.py:440:        else (hermes_base_url or "http://127.0.0.1:8642/v1")
+iris\system\setup_protocol.py:442:    cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
+iris\system\setup_protocol.py:446:    if hermes_executable(cmd):
+iris\system\setup_protocol.py:449:            api_key=resolve_hermes_api_key(),
+iris\system\setup_protocol.py:458:    hermes_base_url: str | None = None,
+iris\system\setup_protocol.py:459:    hermes_command: str | None = None,
+iris\system\setup_protocol.py:467:    - Ollama 응답 + 가용 추론(로컬 모델 또는 클라우드 로그인) + Hermes /health
+iris\system\setup_protocol.py:478:        else (hermes_base_url or "http://127.0.0.1:8642/v1")
+iris\system\setup_protocol.py:480:    cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
+iris\system\setup_protocol.py:481:    if not ollama_executable() or not hermes_executable(cmd):
+iris\system\setup_protocol.py:713:# Hermes 업스트림 MINIMUM_CONTEXT_LENGTH — metadata 32K여도 config 오버라이드로 통과
+iris\system\setup_protocol.py:714:HERMES_MIN_OLLAMA_NUM_CTX = 64000
+iris\system\setup_protocol.py:717:def _guard_fresh_hermes_tree() -> None:
+iris\system\setup_protocol.py:725:        apply_iris_agent_baseline_overlays(iris_agent_repo_dir(hermes_home()))
+iris\system\setup_protocol.py:736:    """Hermes config.yaml model 섹션을 Ollama 설정으로 명확히 덮어쓴다.
+iris\system\setup_protocol.py:761:    if cur_ctx < HERMES_MIN_OLLAMA_NUM_CTX:
+iris\system\setup_protocol.py:762:        model["ollama_num_ctx"] = HERMES_MIN_OLLAMA_NUM_CTX
+iris\system\setup_protocol.py:836:        hermes_base_url: str | None = None,
+iris\system\setup_protocol.py:837:        hermes_command: str | None = None,
+iris\system\setup_protocol.py:851:            else (hermes_base_url or "http://127.0.0.1:8642/v1")
+iris\system\setup_protocol.py:853:        cmd = (agent_command if agent_command is not None else hermes_command) or "hermes"
+iris\system\setup_protocol.py:868:        self._hermes_runtime_repaired = False
+iris\system\setup_protocol.py:869:        self._hermes_official_failed = False
+iris\system\setup_protocol.py:871:        self._hermes_prefer_bypass = False
+iris\system\setup_protocol.py:872:        # hermes_env 가 키를 바꿨으면 gateway 가 already-running 이어도 restart
+iris\system\setup_protocol.py:873:        self._hermes_key_rotated = False
+iris\system\setup_protocol.py:908:            ("hermes_install", self._step_hermes_install),
+iris\system\setup_protocol.py:909:            ("hermes_env", self._step_hermes_env),
+iris\system\setup_protocol.py:910:            ("hermes_provider", self._step_hermes_provider),
+iris\system\setup_protocol.py:949:        abort_when: 누적 stdout에 대해 True면 조기 kill (Hermes 448 등).
+iris\system\setup_protocol.py:1102:        exe_h = hermes_executable(self.agent_command)
+iris\system\setup_protocol.py:1115:            "hermes_exe": exe_h,
+iris\system\setup_protocol.py:1117:            "hermes_running": self._engine_agent_present(),
+iris\system\setup_protocol.py:1120:            "api_key_set": bool(resolve_hermes_api_key()),
+iris\system\setup_protocol.py:1127:        exe_h = hermes_executable(self.agent_command)
+iris\system\setup_protocol.py:1137:            "hermes_exe": exe_h,
+iris\system\setup_protocol.py:1138:            "hermes_running": None,
+iris\system\setup_protocol.py:1141:            "api_key_set": bool(resolve_hermes_api_key()),
+iris\system\setup_protocol.py:1157:        out["hermes_running"] = self._engine_agent_present()
+iris\system\setup_protocol.py:1325:                cfg = hermes_home() / "config.yaml"
+iris\system\setup_protocol.py:1343:        key = resolve_hermes_api_key()
+iris\system\setup_protocol.py:1460:        """UI 데모 — sleep + NeedsUser만. winget/pip/.env/Hermes 디스크 미변경."""
+iris\system\setup_protocol.py:1468:            "hermes_install": (
+iris\system\setup_protocol.py:1470:                HERMES_INSTALL_URL,
+iris\system\setup_protocol.py:1516:                    "hermes_install": "[데모] Iris Agent 실행 파일 확인",
+iris\system\setup_protocol.py:1517:                    "hermes_env": "[데모] API 키 동기화됨 (파일 미기록)",
+iris\system\setup_protocol.py:1518:                    "hermes_provider": "[데모] provider 설정됨 (config 미변경)",
+iris\system\setup_protocol.py:1538:        """실제 프로토콜 UI 문구로 흐름만 재현. winget/pip/.env/Hermes 디스크 미변경."""
+iris\system\setup_protocol.py:1546:            "hermes_install": (
+iris\system\setup_protocol.py:1548:                HERMES_INSTALL_URL,
+iris\system\setup_protocol.py:1556:            "hermes_env": "API_SERVER_ENABLED·키 동기화됨",
+iris\system\setup_protocol.py:1557:            "hermes_provider": "provider → Ollama(custom) 설정",
+iris\system\setup_protocol.py:1948:            if step_id == "hermes_install":
+iris\system\setup_protocol.py:1949:                return self._record_step("hermes_install", "done", "Iris Agent 설치됨")
+iris\system\setup_protocol.py:1964:        if step_id == "hermes_install":
+iris\system\setup_protocol.py:1965:            if self._hermes_prefer_bypass:
+iris\system\setup_protocol.py:1966:                return self._install_hermes_bypass()
+iris\system\setup_protocol.py:1967:            return self._install_hermes()
+iris\system\setup_protocol.py:2423:    def _step_hermes_install(self) -> SetupStepResult:
+iris\system\setup_protocol.py:2424:        ok, detail = probe_hermes_runtime(command=self.agent_command)
+iris\system\setup_protocol.py:2427:                "hermes_install", "done", f"Iris Agent 사용 가능 ({detail})"
+iris\system\setup_protocol.py:2431:        broken = bool(hermes_executable(self.agent_command)) or (
+iris\system\setup_protocol.py:2432:            iris_agent_repo_dir(hermes_home())
+iris\system\setup_protocol.py:2436:                step_id="hermes_install",
+iris\system\setup_protocol.py:2442:                action_url=HERMES_INSTALL_URL,
+iris\system\setup_protocol.py:2444:                label=CORE_STEP_LABELS["hermes_install"],
+iris\system\setup_protocol.py:2448:            step_id="hermes_install",
+iris\system\setup_protocol.py:2451:            action_url=HERMES_INSTALL_URL,
+iris\system\setup_protocol.py:2453:            label=CORE_STEP_LABELS["hermes_install"],
+iris\system\setup_protocol.py:2457:    def _wipe_hermes_agent_runtime(self) -> str:
+iris\system\setup_protocol.py:2458:        """깨진 hermes-agent 트리 정리 (.env·config.yaml 유지). 잠금 시 rename 우회."""
+iris\system\setup_protocol.py:2459:        from iris.system.iris_agent_install import force_retire_hermes_agent
+iris\system\setup_protocol.py:2461:        return force_retire_hermes_agent(command=self.agent_command)
+iris\system\setup_protocol.py:2463:    def _run_hermes_official_installer(self) -> subprocess.CompletedProcess[str]:
+iris\system\setup_protocol.py:2473:            + HERMES_INSTALL_URL
+iris\system\setup_protocol.py:2478:        # 근본 우회는 _install_hermes_bypass 가 담당한다.
+iris\system\setup_protocol.py:2492:            timeout=_HERMES_IDLE_SEC,
+iris\system\setup_protocol.py:2493:            hard_timeout=_HERMES_HARD_SEC,
+iris\system\setup_protocol.py:2499:    def _hermes_done(self, message: str) -> SetupStepResult:
+iris\system\setup_protocol.py:2500:        self._hermes_official_failed = False
+iris\system\setup_protocol.py:2501:        self._hermes_prefer_bypass = False
+iris\system\setup_protocol.py:2504:        return self._record_step("hermes_install", "done", message[:240])
+iris\system\setup_protocol.py:2506:    def _hermes_cancelled(self) -> SetupStepResult:
+iris\system\setup_protocol.py:2507:        result = self._record_step("hermes_install", "failed", "사용자가 중단함")
+iris\system\setup_protocol.py:2509:            "step": "hermes_install",
+iris\system\setup_protocol.py:2517:    def _hermes_user_fail(
+iris\system\setup_protocol.py:2524:            step="hermes_install",
+iris\system\setup_protocol.py:2531:        steps["hermes_install"] = {
+iris\system\setup_protocol.py:2538:            step_id="hermes_install",
+iris\system\setup_protocol.py:2541:            action_url=HERMES_INSTALL_URL,
+iris\system\setup_protocol.py:2548:    def _install_hermes_bypass(self) -> SetupStepResult:
+iris\system\setup_protocol.py:2552:            install_hermes_with_system_python,
+iris\system\setup_protocol.py:2557:            return self._hermes_cancelled()
+iris\system\setup_protocol.py:2558:        self._hermes_prefer_bypass = True
+iris\system\setup_protocol.py:2565:            result = install_hermes_with_system_python(
+iris\system\setup_protocol.py:2572:            return self._hermes_cancelled()
+iris\system\setup_protocol.py:2575:            self._hermes_runtime_repaired = True
+iris\system\setup_protocol.py:2576:            return self._hermes_done(result.message)
+iris\system\setup_protocol.py:2578:            return self._hermes_cancelled()
+iris\system\setup_protocol.py:2580:        return self._hermes_user_fail(
+iris\system\setup_protocol.py:2587:    def _install_hermes(self) -> SetupStepResult:
+iris\system\setup_protocol.py:2595:            return self._hermes_cancelled()
+iris\system\setup_protocol.py:2596:        ok, detail = probe_hermes_runtime(command=self.agent_command)
+iris\system\setup_protocol.py:2598:            return self._hermes_done(f"Iris Agent 이미 사용 가능 ({detail})")
+iris\system\setup_protocol.py:2601:                step_id="hermes_install",
+iris\system\setup_protocol.py:2604:                action_url="https://hermes-agent.nousresearch.com/docs/",
+iris\system\setup_protocol.py:2606:                label=CORE_STEP_LABELS["hermes_install"],
+iris\system\setup_protocol.py:2610:            prefer_bypass=self._hermes_prefer_bypass or self._hermes_official_failed,
+iris\system\setup_protocol.py:2618:            return self._install_hermes_bypass()
+iris\system\setup_protocol.py:2621:        if iris_agent_repo_dir(hermes_home()).is_dir() or hermes_executable(
+iris\system\setup_protocol.py:2624:            wipe_msg = self._wipe_hermes_agent_runtime()
+iris\system\setup_protocol.py:2626:            self._hermes_runtime_repaired = True
+iris\system\setup_protocol.py:2631:            proc = self._run_hermes_official_installer()
+iris\system\setup_protocol.py:2633:            return self._hermes_cancelled()
+iris\system\setup_protocol.py:2636:            ok_after, detail_after = probe_hermes_runtime(command=self.agent_command)
+iris\system\setup_protocol.py:2638:                return self._hermes_done(f"시간 초과 후 Iris Agent 사용 가능 ({detail_after})")
+iris\system\setup_protocol.py:2644:            self._hermes_official_failed = True
+iris\system\setup_protocol.py:2645:            self._hermes_prefer_bypass = True
+iris\system\setup_protocol.py:2651:            return self._install_hermes_bypass()
+iris\system\setup_protocol.py:2653:        ok_after, detail_after = probe_hermes_runtime(command=self.agent_command)
+iris\system\setup_protocol.py:2655:            _guard_fresh_hermes_tree()
+iris\system\setup_protocol.py:2656:            return self._hermes_done(f"Iris Agent 설치됨 ({detail_after})")
+iris\system\setup_protocol.py:2664:        self._hermes_official_failed = True
+iris\system\setup_protocol.py:2671:        return self._install_hermes_bypass()
+iris\system\setup_protocol.py:2673:    def _step_hermes_env(self, *, force_rotate: bool = False) -> SetupStepResult:
+iris\system\setup_protocol.py:2674:        home = hermes_home()
+iris\system\setup_protocol.py:2677:        existing = load_hermes_dotenv()
+iris\system\setup_protocol.py:2682:        if force_rotate or is_weak_hermes_api_key(key):
+iris\system\setup_protocol.py:2685:        self._hermes_key_rotated = bool(self._hermes_key_rotated or key_rotated)
+iris\system\setup_protocol.py:2696:        if not resolve_hermes_api_key():
+iris\system\setup_protocol.py:2697:            return self._record_step("hermes_env", "failed", "API 키 동기화 실패")
+iris\system\setup_protocol.py:2701:        return self._record_step("hermes_env", "done", msg)
+iris\system\setup_protocol.py:2703:    def _step_hermes_provider(self) -> SetupStepResult:
+iris\system\setup_protocol.py:2704:        path = hermes_home() / "config.yaml"
+iris\system\setup_protocol.py:2705:        hermes_home().mkdir(parents=True, exist_ok=True)
+iris\system\setup_protocol.py:2710:                "hermes_provider",
+iris\system\setup_protocol.py:2721:                return self._record_step("hermes_provider", "failed", f"config 읽기 실패: {exc}")
+iris\system\setup_protocol.py:2725:        # Hermes config에 남아 있는 클라우드 default도 검사
+iris\system\setup_protocol.py:2743:                    "hermes_provider",
+iris\system\setup_protocol.py:2747:                card = self._ollama_login_or_min_model_card("hermes_provider")
+iris\system\setup_protocol.py:2753:        # Ollama OpenAI-compat — ensure_hermes_provider_config가 ollama→custom 변환
+iris\system\setup_protocol.py:2775:            return self._record_step("hermes_provider", "failed", f"config 쓰기 실패: {exc}")
+iris\system\setup_protocol.py:2776:        ensure_hermes_provider_config()
+iris\system\setup_protocol.py:2784:        ctx = int(data["model"].get("ollama_num_ctx") or HERMES_MIN_OLLAMA_NUM_CTX)
+iris\system\setup_protocol.py:2788:        return self._record_step("hermes_provider", "done", msg)
+iris\system\setup_protocol.py:2822:            if force_restart or self._hermes_key_rotated:
+iris\system\setup_protocol.py:2838:        self._hermes_key_rotated = False
+iris\system\setup_protocol.py:2869:            self._step_hermes_env(force_rotate=True)
+iris\system\setup_protocol.py:2902:                self._step_hermes_env(force_rotate=False)
+iris\system\setup_protocol.py:2909:                self._step_hermes_env(force_rotate=True)
+iris\system\setup_protocol.py:2917:                    self._step_hermes_env(force_rotate=False)
+iris\system\setup_protocol.py:3567:        hermes_base_url="http://127.0.0.1:2/v1",
+iris\system\setup_protocol.py:3590:                hermes_base_url="http://127.0.0.1:2/v1",
+iris\system\setup_protocol.py:3591:                hermes_command="hermes",
+iris\system\setup_protocol.py:3598:        if ollama_executable() and hermes_executable("hermes"):
+iris\system\setup_protocol.py:3599:            assert needs_setup_wizard(hermes_command="hermes") is False
+iris\system\setup_protocol.py:3611:    # --- 7) Hermes provider 설정은 예전 provider의 base_url/model을 남기지 않고
+iris\ui\_check_iris_agent_settings_phase3.py:1:"""Phase 3 — 설정 UI에서 Hermes 클라이언트 껍질 필드가 코드로 삭제됐는지 자검.
+iris\ui\_check_iris_agent_settings_phase3.py:22:    "Hermes API URL",
+iris\ui\_check_iris_agent_settings_phase3.py:23:    "Hermes API Key",
+iris\ui\_check_iris_agent_settings_phase3.py:24:    "Hermes 명령",
+iris\ui\_check_iris_agent_settings_phase3.py:25:    "연결 (Ollama / Hermes)",
+iris\ui\_check_iris_agent_settings_phase3.py:51:        for attr in ("_hermes_url", "_hermes_key", "_hermes_cmd"):
+iris\ui\_check_control_scenarios.py:51:def check_hermes_wiring() -> dict:
+iris\ui\_check_control_scenarios.py:52:    cfg = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / "config.yaml"
+iris\ui\_check_control_scenarios.py:54:    skills_root = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / "skills"
+iris\ui\_check_control_scenarios.py:64:        (ROOT / "integrations" / "hermes-skills" / "iris-control").rglob("SKILL.md")
+iris\ui\_check_control_scenarios.py:148:    wiring = check_hermes_wiring()
+iris\ui\_check_control_scenarios.py:275:            "hermes_mcp_registered": wiring["mcp_servers_in_config"],
+iris\ui\_check_control_scenarios.py:278:                "Hermes has no iris-control MCP in config.yaml, so NL requests "
+iris\storage\iris_agent_login_warm_prefs.py:13:HERMES_LOGIN_WARM_KEY = "hermes_login_warm_v1"
+iris\storage\iris_agent_login_warm_prefs.py:22:HermesLoginWarmPrefs = IrisAgentLoginWarmPrefs
+iris\storage\iris_agent_login_warm_prefs.py:25:def load_hermes_login_warm(db: Database | None) -> IrisAgentLoginWarmPrefs:
+iris\storage\iris_agent_login_warm_prefs.py:28:    raw = db.get_preference(HERMES_LOGIN_WARM_KEY, "")
+iris\storage\iris_agent_login_warm_prefs.py:42:def save_hermes_login_warm(db: Database, prefs: IrisAgentLoginWarmPrefs) -> None:
+iris\storage\iris_agent_login_warm_prefs.py:44:        HERMES_LOGIN_WARM_KEY,
+iris\storage\iris_agent_login_warm_prefs.py:55:        assert load_hermes_login_warm(db).enabled is True
+iris\storage\iris_agent_login_warm_prefs.py:56:        save_hermes_login_warm(db, IrisAgentLoginWarmPrefs(enabled=False))
+iris\storage\iris_agent_login_warm_prefs.py:57:        assert load_hermes_login_warm(db).enabled is False
+iris\storage\iris_agent_login_warm_prefs.py:58:        save_hermes_login_warm(db, IrisAgentLoginWarmPrefs(enabled=True))
+iris\storage\iris_agent_login_warm_prefs.py:59:        assert load_hermes_login_warm(db).enabled is True
+iris\storage\iris_agent_login_warm_prefs.py:60:        assert HermesLoginWarmPrefs is IrisAgentLoginWarmPrefs
+iris\storage\iris_agent_login_warm_prefs.py:62:    print("hermes_login_warm_prefs ok")
+iris\ui\chat\name_plan.py:169:    """Single naming entry for vibe, Verify plan, and Hermes policy.
+iris\ui\_check_control_action_split.py:71:    window._refresh_hermes_health.assert_called()
+iris\ui\_check_iris_agent_product_docs_brand.py:5:활성 홈으로 `%LOCALAPPDATA%\\hermes`를 쓰거나 Iris가 Hermes를 감싼다고 쓰면 실패.
+iris\ui\_check_iris_agent_product_docs_brand.py:34:ACTIVE_HOME_NEEDLE = r"%LOCALAPPDATA%\hermes"
+iris\ui\chat\chat_notices.py:20:    kind: str  # update | hermes_update | ollama_login | error | note | app_note | stt_pending
+iris\ui\_check_ide_control_scenarios.py:3:제어면 HTTP + Hermes MCP/스킬 배선 검증.
+iris\ui\_check_ide_control_scenarios.py:4:NL→Hermes LLM 경로는 인프라가 준비됐는지까지 확인 (실제 LLM 응답은 수동).
+iris\ui\_check_ide_control_scenarios.py:162:        "Hermes config에 iris-control MCP 자동 설치",
+iris\ui\_check_ide_control_scenarios.py:166:        fix="iris/system/iris_agent_control_sync.py ensure_mcp_in_config / Hermes config 쓰기 권한",
+iris\ui\_check_ide_control_scenarios.py:181:    state_file = Path.home() / ".iris-light" / "hermes_iris_control_sync.json"
+iris\ui\_check_ide_control_scenarios.py:185:        "~/.iris-light/hermes_iris_control_sync.json 존재",
+iris\ui\_check_ide_control_scenarios.py:275:        "코딩(파일 작성)은 Hermes terminal/patch 또는 Iris 채팅이 담당(Companion은 레이아웃)",
+iris\ui\_check_ide_control_scenarios.py:279:    # 10 MCP stdio invoke path (what Hermes uses)
+iris\ui\_check_ide_control_scenarios.py:295:            "MCP stdio → iris_get_state (Hermes가 쓸 경로)",
+iris\ui\_check_ide_control_scenarios.py:305:            "MCP stdio → iris_get_state (Hermes가 쓸 경로)",
+iris\ui\_check_ide_control_scenarios.py:324:            "시나리오 1–3·10: Hermes 배선/인프라",
+iris\ui\window\_check_chat_title_route.py:1:"""채팅 제목 라우트: Hermes 켜져 있어도 hermes가 아니다. api: 만 provider API."""
+iris\ui\window\_check_chat_title_route.py:35:    # Hermes ON 이어도 제목 라우트는 ollama 직행 (도구 불필요)
+iris\ui\chat\file_write_claim.py:385:    """코드만 한 번. Hermes 스트림·tool_choice·options 는 쓰지 않는다."""
+iris\ui\_check_hermes_user_branding_p4.py:1:"""P4 — 사용자·에이전트 노출 핫패스에서 Hermes/헤르메스 브랜드 0.
+iris\ui\_check_hermes_user_branding_p4.py:3:실행: .venv\\Scripts\\python.exe -m iris.ui._check_hermes_user_branding_p4
+iris\ui\_check_hermes_user_branding_p4.py:5:INTERNAL_OK (검사 제외): hermes_* 모듈명, HERMES_* env, hermes-agent checkout,
+iris\ui\_check_hermes_user_branding_p4.py:26:    "integrations/hermes-skills/iris-control/iris-vibe-code/SKILL.md",
+iris\ui\_check_hermes_user_branding_p4.py:27:    "integrations/hermes-skills/iris-control/iris-mobile-mcp/SKILL.md",
+iris\ui\_check_hermes_user_branding_p4.py:31:    "[Hermes tool]",
+iris\ui\_check_hermes_user_branding_p4.py:32:    "헤르메스",
+iris\ui\_check_hermes_user_branding_p4.py:33:    '"Hermes": "헤르메스"',
+iris\ui\_check_hermes_user_branding_p4.py:34:    "Hermes 업데이트가 가능",
+iris\ui\_check_hermes_user_branding_p4.py:35:    "헤르메스 업데이트 알림",
+iris\ui\_check_hermes_user_branding_p4.py:36:    "Hermes에 연결된 스킬",
+iris\ui\_check_hermes_user_branding_p4.py:37:    "Hermes gateway가 꺼져",
+iris\ui\_check_hermes_user_branding_p4.py:38:    "Hermes gateway를 시작",
+iris\ui\_check_hermes_user_branding_p4.py:39:    "Hermes gateway 기동 중",
+iris\ui\_check_hermes_user_branding_p4.py:40:    "Hermes 또는 Ollama가 켜져",
+iris\ui\_check_hermes_user_branding_p4.py:41:    "Hermes 게이트웨이 API 키",
+iris\ui\_check_hermes_user_branding_p4.py:42:    "restart Hermes gateway",
+iris\ui\_check_hermes_user_branding_p4.py:43:    "Hermes built-in",
+iris\ui\_check_hermes_user_branding_p4.py:44:    "Do not use Hermes `terminal`",
+iris\ui\_check_hermes_user_branding_p4.py:45:    "Hermes mobile-mcp",
+iris\ui\_check_hermes_user_branding_p4.py:46:    "Hermes model synced:",
+iris\ui\_check_hermes_user_branding_p4.py:47:    "Hermes model sync failed:",
+iris\ui\_check_hermes_user_branding_p4.py:48:    "Hermes 업데이트를 적용하는 중",
+iris\ui\_check_hermes_user_branding_p4.py:49:    'return "Hermes" if',
+iris\ui\_check_hermes_user_branding_p4.py:50:    "Hermes 웹검색",
+iris\ui\_check_hermes_user_branding_p4.py:51:    "Hermes에 연결되는",
+iris\ui\_check_hermes_user_branding_p4.py:52:    "· Hermes",
+iris\ui\_check_hermes_user_branding_p4.py:53:    "Hermes→Ollama",
+iris\ui\_check_hermes_user_branding_p4.py:54:    "Hermes가 '비슷한",
+iris\ui\_check_hermes_user_branding_p4.py:61:        scrub_upstream_hermes_cli_hints,
+iris\ui\_check_hermes_user_branding_p4.py:67:    scrubbed = scrub_upstream_hermes_cli_hints(
+iris\ui\_check_hermes_user_branding_p4.py:68:        "custom rejected; run `hermes doctor` for details"
+iris\ui\_check_hermes_user_branding_p4.py:70:    assert "hermes doctor" not in scrubbed.lower()
+iris\ui\_check_hermes_user_branding_p4.py:71:    assert "hermes doctor" not in explain_chat_error(
+iris\ui\_check_hermes_user_branding_p4.py:72:        "custom rejected; run hermes doctor"
+iris\ui\_check_hermes_user_branding_p4.py:84:        '"Hermes 설치"',
+iris\ui\_check_hermes_user_branding_p4.py:85:        '"Hermes gateway 기동"',
+iris\ui\_check_hermes_user_branding_p4.py:86:        '"Hermes API 키·서버 설정"',
+iris\ui\_check_hermes_user_branding_p4.py:91:    assert not hits, "user/agent-facing Hermes copy:\n  " + "\n  ".join(hits)
+iris\ui\_check_hermes_user_branding_p4.py:92:    print("hermes_user_branding_p4 ok")
+iris\ui\window\top_status_header.py:194:        hermes_online: bool = False,
+iris\ui\window\top_status_header.py:197:        line = external_backend_status_line(settings, hermes_online=hermes_online)
+iris\system\_check_browser_hermes_play.py:1:"""Live Hermes play check. Not a unit stand-in.
+iris\system\_check_browser_hermes_play.py:3:Records whether a connected Hermes + shipped model emits iris_invoke for
+iris\system\_check_browser_hermes_play.py:19:from iris.system.iris_agent_gateway import is_hermes_gateway_running
+iris\system\_check_browser_hermes_play.py:32:        _use_hermes_backend=lambda: True,
+iris\system\_check_browser_hermes_play.py:75:        up = is_hermes_gateway_running(base, timeout_sec=2.0)
+iris\system\_check_browser_hermes_play.py:77:        print(f"SKIP live Hermes play: probe failed ({exc}). Not a unit stand-in. Do not restore regex.")
+iris\system\_check_browser_hermes_play.py:80:        print("SKIP live Hermes play: gateway not up. Not a unit stand-in. Do not restore regex.")
+iris\system\_check_browser_hermes_play.py:84:    from iris.infrastructure.iris_agent_credentials import resolve_hermes_api_key
+iris\system\_check_browser_hermes_play.py:86:    client = IrisAgentClient(base, api_key=resolve_hermes_api_key(settings.agent_api_key))
+iris\system\_check_browser_hermes_play.py:95:        print("SKIP live Hermes play: no shipped model. Not a unit stand-in. Do not restore regex.")
+iris\system\_check_browser_hermes_play.py:104:        print(f"SKIP live Hermes play: stream failed ({exc}). Not a unit stand-in. Do not restore regex.")
+iris\system\_check_browser_hermes_play.py:108:            f"SKIP live Hermes play: stream exceeded {_STREAM_BUDGET_SEC:.0f}s on model={model}. "
+iris\system\_check_browser_hermes_play.py:117:        print(f"SKIP live Hermes play: veto stream failed ({exc}). Not a unit stand-in. Do not restore regex.")
+iris\system\_check_browser_hermes_play.py:121:            f"SKIP live Hermes play: veto stream exceeded {_STREAM_BUDGET_SEC:.0f}s. "
+iris\system\_check_browser_hermes_play.py:129:            "FAIL live Hermes play: packed home-screen turn did not emit iris_invoke/browser.search. "
+iris\system\_check_browser_hermes_play.py:134:        print("FAIL live Hermes play: 유튜브가 뭐야? drove a browser action.")
+iris\system\_check_browser_hermes_play.py:136:    print("live Hermes play ok")
+iris\system\_check_gateway_retired_product_surface.py:18:    assert "hermes_gateway" not in CORE_STEP_IDS
+iris\system\_check_gateway_retired_product_surface.py:20:    assert "hermes_gateway" not in CORE_STEP_LABELS
+iris\system\_check_gateway_retired_product_surface.py:36:        "IRIS_AGENT_COMMAND": "hermes",
+iris\system\_check_gateway_retired_product_surface.py:52:    """Product detect must not health-probe :8642 for hermes_running."""
+iris\system\_check_gateway_retired_product_surface.py:55:    assert "is_hermes_gateway_running" not in text, path.name
+iris\system\_check_gateway_retired_product_surface.py:56:    # Detect paths fill hermes_running via engine filesystem check.
+iris\ui\chat\composer_plus_menu.py:20:from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\ui\chat\composer_plus_menu.py:23:def _hermes_root() -> Path:
+iris\ui\chat\composer_plus_menu.py:24:    return hermes_home()
+iris\ui\chat\composer_plus_menu.py:27:def list_hermes_skill_names(*, limit: int = 80) -> list[str]:
+iris\ui\chat\composer_plus_menu.py:28:    root = _hermes_root() / "skills"
+iris\ui\chat\composer_plus_menu.py:47:    root = _hermes_root() / "skills" / "custom"
+iris\ui\chat\composer_plus_menu.py:64:def list_hermes_mcp_names(*, limit: int = 24) -> list[str]:
+iris\ui\chat\composer_plus_menu.py:66:    cfg = _hermes_root() / "config.yaml"
+iris\ui\chat\composer_plus_menu.py:263:        n_skills = len(list_hermes_skill_names())
+iris\ui\chat\composer_plus_menu.py:278:        n_mcp = len(list_hermes_mcp_names())
+iris\ui\chat\composer_plus_menu.py:487:    assert isinstance(list_hermes_skill_names(), list)
+iris\ui\chat\composer_plus_menu.py:488:    assert isinstance(list_hermes_mcp_names(), list)
+iris\ui\chat\composer_plus_menu.py:502:        len(list_hermes_skill_names()),
+iris\ui\chat\composer_plus_menu.py:504:        len(list_hermes_mcp_names()),
+iris\ui\chat\skill_mcp_dialogs.py:21:from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\ui\chat\skill_mcp_dialogs.py:36:def hermes_root() -> Path:
+iris\ui\chat\skill_mcp_dialogs.py:37:    return hermes_home()
+iris\ui\chat\skill_mcp_dialogs.py:71:def list_hermes_skills(*, limit: int = 80) -> list[tuple[str, str, Path]]:
+iris\ui\chat\skill_mcp_dialogs.py:73:    root = hermes_root() / "skills"
+iris\ui\chat\skill_mcp_dialogs.py:96:def list_hermes_mcps(*, limit: int = 40) -> list[tuple[str, str]]:
+iris\ui\chat\skill_mcp_dialogs.py:98:    cfg = hermes_root() / "config.yaml"
+iris\ui\chat\skill_mcp_dialogs.py:132:        from iris.ui.chat.composer_plus_menu import list_hermes_mcp_names
+iris\ui\chat\skill_mcp_dialogs.py:134:        return [(n, _KNOWN_MCP_DESC.get(n, "(config.yaml)")) for n in list_hermes_mcp_names(limit=limit)]
+iris\ui\chat\skill_mcp_dialogs.py:143:        root = str(hermes_root())
+iris\ui\chat\skill_mcp_dialogs.py:144:        skills = [(n, d) for n, d, _p in list_hermes_skills(limit=120)]
+iris\ui\chat\skill_mcp_dialogs.py:145:        mcps = list_hermes_mcps(limit=40)
+iris\ui\chat\skill_mcp_dialogs.py:146:        wiki.sync_skills_catalog(skills, hermes_root=root)
+iris\ui\chat\skill_mcp_dialogs.py:147:        wiki.sync_mcp_catalog(mcps, hermes_root=root)
+iris\ui\chat\skill_mcp_dialogs.py:156:    dest = hermes_root() / "skills" / "custom" / safe
+iris\ui\chat\skill_mcp_dialogs.py:178:    path = hermes_root() / "config.yaml"
+iris\ui\chat\skill_mcp_dialogs.py:372:        skills = list_hermes_skills()
+iris\ui\chat\skill_mcp_dialogs.py:460:        mcps = list_hermes_mcps()
+iris\ui\chat\skill_mcp_dialogs.py:513:    assert isinstance(list_hermes_skills(), list)
+iris\ui\chat\skill_mcp_dialogs.py:514:    assert isinstance(list_hermes_mcps(), list)
+iris\ui\chat\skill_mcp_dialogs.py:519:        len(list_hermes_skills()),
+iris\ui\chat\skill_mcp_dialogs.py:521:        len(list_hermes_mcps()),
+iris\ui\window\setup_wizard.py:70:    "hermes_install",
+iris\ui\window\setup_wizard.py:71:    "hermes_env",
+iris\ui\window\setup_wizard.py:72:    "hermes_provider",
+iris\ui\window\setup_wizard.py:803:        if "[" in (err or "") or "gateway" in low or "health" in low or "hermes" in low:
+iris\ui\window\setup_wizard.py:901:        # Ollama/Hermes warm 으로 응답없음이 난다 — 닫기 경로에서는 생략.
+iris\system\_check_hermes_gateway_diagnostics.py:1:"""Hermes gateway 진단(G1~G10) 자검 — pytest 없이 바로 실행.
+iris\system\_check_hermes_gateway_diagnostics.py:3:.venv\\Scripts\\python.exe -m iris.system._check_hermes_gateway_diagnostics
+iris\system\_check_hermes_gateway_diagnostics.py:21:        home = root / "hermes"
+iris\system\_check_hermes_gateway_diagnostics.py:28:        assert parse_health_payload({"status": "ok", "platform": "hermes-agent"})[0]
+iris\system\_check_hermes_gateway_diagnostics.py:37:            patch.object(gw, "hermes_home", return_value=home),
+iris\system\_check_hermes_gateway_diagnostics.py:38:            patch.object(gw, "_hermes_venv_python", return_value=None),
+iris\system\_check_hermes_gateway_diagnostics.py:39:            patch.object(gw, "_hermes_venv_dir", return_value=root / "no-venv"),
+iris\system\_check_hermes_gateway_diagnostics.py:44:        assert cleaned.get("HERMES_HOME") == str(home)
+iris\system\_check_hermes_gateway_diagnostics.py:47:        with patch.object(gw, "hermes_home", return_value=home):
+iris\system\_check_hermes_gateway_diagnostics.py:60:            assert gw.start_hermes_gateway() is False
+iris\system\_check_hermes_gateway_diagnostics.py:72:            patch.object(gw, "hermes_home", return_value=home),
+iris\system\_check_hermes_gateway_diagnostics.py:88:                    ok=False, code="bad_body", looks_like_hermes=False
+iris\system\_check_hermes_gateway_diagnostics.py:92:            patch.object(gw, "_pid_looks_like_hermes", return_value=False),
+iris\system\_check_hermes_gateway_diagnostics.py:98:        with patch.object(gw, "hermes_home", return_value=home):
+iris\system\_check_hermes_gateway_diagnostics.py:105:        assert gw.is_hermes_trampoline_failure(
+iris\system\_check_hermes_gateway_diagnostics.py:109:        assert not gw.is_hermes_trampoline_failure("connection refused")
+iris\system\_check_hermes_gateway_diagnostics.py:121:    print("hermes_gateway diagnostics check ok (G1-G10 harness)")
+iris\ui\window\main_window.py:404:        self._hermes_health_worker: IrisAgentHealthWorker | None = None
+iris\ui\window\main_window.py:405:        self._hermes_model_worker: IrisAgentModelSyncWorker | None = None
+iris\ui\window\main_window.py:412:        self._hermes_update_check_worker: QThread | None = None
+iris\ui\window\main_window.py:413:        self._hermes_update_apply_worker: QThread | None = None
+iris\ui\window\main_window.py:414:        self._hermes_update_checked_cids: set[int] = set()
+iris\ui\window\main_window.py:415:        self._hermes_update_recheck = False
+iris\ui\window\main_window.py:416:        self._hermes_update_check_cid = 0
+iris\ui\window\main_window.py:454:        self._hermes_online = False
+iris\ui\window\main_window.py:728:        self._hermes_login_warm_wanted = None
+iris\ui\window\main_window.py:770:            QTimer.singleShot(16_000, self._sync_hermes_login_warm)
+iris\ui\window\main_window.py:805:        # Hermes health/MCP sync는 control surface 기동 이후에 (아래 start 이후)
+iris\ui\window\main_window.py:824:        self._chat.hermes_update_action_clicked.connect(self._on_hermes_update_action)
+iris\ui\window\main_window.py:1147:        # ponytail: control/Hermes는 intro 끝난 뒤(_on_intro_finished) — MCP→/v1/state가
+iris\ui\window\main_window.py:1236:        self._refresh_hermes_health()
+iris\ui\window\main_window.py:1250:            QTimer.singleShot(2800, self._begin_hermes_update_check)
+iris\ui\window\main_window.py:1278:        # prefer "agent"; accept legacy "hermes"
+iris\ui\window\main_window.py:1289:            recheck = self._hermes_update_recheck
+iris\ui\window\main_window.py:1290:            self._hermes_update_recheck = False
+iris\ui\window\main_window.py:1291:            checked = self._hermes_update_checked_cids
+iris\ui\window\main_window.py:1292:            begin = self._begin_hermes_update_check
+iris\ui\window\main_window.py:1440:    def _begin_hermes_update_check(self) -> None:
+iris\ui\window\main_window.py:1444:        if cid in self._hermes_update_checked_cids:
+iris\ui\window\main_window.py:1447:            self._hermes_update_check_worker is not None
+iris\ui\window\main_window.py:1448:            and self._hermes_update_check_worker.isRunning()
+iris\ui\window\main_window.py:1450:            self._hermes_update_recheck = True
+iris\ui\window\main_window.py:1452:        self._hermes_update_checked_cids.add(cid)
+iris\ui\window\main_window.py:1453:        self._hermes_update_check_cid = cid
+iris\ui\window\main_window.py:1460:        self._hermes_update_check_worker = worker
+iris\ui\window\main_window.py:1461:        worker.finished_ok.connect(self._on_hermes_update_status)
+iris\ui\window\main_window.py:1462:        worker.failed.connect(self._on_hermes_update_check_failed)
+iris\ui\window\main_window.py:1465:    def _on_hermes_update_check_failed(self, _message: str) -> None:
+iris\ui\window\main_window.py:1466:        started = self._hermes_update_check_cid
+iris\ui\window\main_window.py:1467:        self._hermes_update_check_worker = None
+iris\ui\window\main_window.py:1470:    def _on_hermes_update_status(self, status: object) -> None:
+iris\ui\window\main_window.py:1473:        started = self._hermes_update_check_cid
+iris\ui\window\main_window.py:1474:        self._hermes_update_check_worker = None
+iris\ui\window\main_window.py:1482:            self._chat.append_hermes_update_prompt(detail=detail)
+iris\ui\window\main_window.py:1485:    def _on_hermes_update_action(self, action: str) -> None:
+iris\ui\window\main_window.py:1488:            self._chat.dismiss_hermes_update_prompt(
+iris\ui\window\main_window.py:1495:            self._hermes_update_apply_worker is not None
+iris\ui\window\main_window.py:1496:            and self._hermes_update_apply_worker.isRunning()
+iris\ui\window\main_window.py:1501:        self._chat.dismiss_hermes_update_prompt(
+iris\ui\window\main_window.py:1510:        self._hermes_update_apply_worker = worker
+iris\ui\window\main_window.py:1511:        worker.progress.connect(self._on_hermes_gateway_notice)
+iris\ui\window\main_window.py:1512:        worker.finished_ok.connect(self._on_hermes_update_applied)
+iris\ui\window\main_window.py:1513:        worker.failed.connect(self._on_hermes_update_apply_failed)
+iris\ui\window\main_window.py:1516:    def _on_hermes_update_applied(self, message: str) -> None:
+iris\ui\window\main_window.py:1517:        self._hermes_update_apply_worker = None
+iris\ui\window\main_window.py:1518:        self._hermes_online = True
+iris\ui\window\main_window.py:1521:            hermes_online=True,
+iris\ui\window\main_window.py:1528:    def _on_hermes_update_apply_failed(self, message: str) -> None:
+iris\ui\window\main_window.py:1529:        self._hermes_update_apply_worker = None
+iris\ui\window\main_window.py:1530:        self._refresh_hermes_health()
+iris\ui\window\main_window.py:1551:    def _refresh_hermes_health(self) -> None:
+iris\ui\window\main_window.py:1553:            self._hermes_online = False
+iris\ui\window\main_window.py:1556:                hermes_online=False,
+iris\ui\window\main_window.py:1559:        if self._hermes_health_worker is not None and self._hermes_health_worker.isRunning():
+iris\ui\window\main_window.py:1563:        self._hermes_health_worker = worker
+iris\ui\window\main_window.py:1564:        worker.notice.connect(self._on_hermes_gateway_notice)
+iris\ui\window\main_window.py:1565:        worker.finished_ok.connect(self._on_hermes_health)
+iris\ui\window\main_window.py:1566:        worker.failed.connect(self._on_hermes_health_failed)
+iris\ui\window\main_window.py:1569:    def _on_hermes_gateway_notice(self, message: str) -> None:
+iris\ui\window\main_window.py:1575:    def _on_hermes_health(self, online: object) -> None:
+iris\ui\window\main_window.py:1576:        self._hermes_online = bool(online)
+iris\ui\window\main_window.py:1579:            hermes_online=self._hermes_online,
+iris\ui\window\main_window.py:1581:        if self._hermes_online:
+iris\ui\window\main_window.py:1589:                    self._sync_hermes_model(model)
+iris\ui\window\main_window.py:1597:        self._hermes_health_worker = None
+iris\ui\window\main_window.py:1600:            if self._hermes_online:
+iris\ui\window\main_window.py:1611:    def _on_hermes_health_failed(self, _err: str) -> None:
+iris\ui\window\main_window.py:1612:        self._hermes_online = False
+iris\ui\window\main_window.py:1615:            hermes_online=False,
+iris\ui\window\main_window.py:1617:        self._hermes_health_worker = None
+iris\ui\window\main_window.py:1622:    def _sync_hermes_model(self, model: str) -> None:
+iris\ui\window\main_window.py:1630:    def _on_hermes_model_synced(self) -> None:
+iris\ui\window\main_window.py:1633:        self._hermes_model_worker = None
+iris\ui\window\main_window.py:1635:    def _on_hermes_model_sync_failed(self, err: str) -> None:
+iris\ui\window\main_window.py:1637:        self._hermes_model_worker = None
+iris\ui\window\main_window.py:1747:                self._sync_hermes_model(chosen)
+iris\ui\window\main_window.py:1973:            self._sync_hermes_model(model)
+iris\ui\window\main_window.py:2269:        elif self._use_hermes_backend():
+iris\ui\window\main_window.py:2365:            hermes_enabled=bool(self._settings.agent_enabled),
+iris\ui\window\main_window.py:2366:            hermes_base_url=self._settings.agent_base_url,
+iris\ui\window\main_window.py:2367:            hermes_api_key=self._settings.agent_api_key,
+iris\ui\window\main_window.py:2464:    def _sync_hermes_login_warm(self) -> None:
+iris\ui\window\main_window.py:2466:        from iris.storage.iris_agent_login_warm_prefs import load_hermes_login_warm
+iris\ui\window\main_window.py:2472:            wanted = bool(load_hermes_login_warm(self._db).enabled)
+iris\ui\window\main_window.py:2475:        if getattr(self, "_hermes_login_warm_wanted", None) == wanted:
+iris\ui\window\main_window.py:2477:        self._hermes_login_warm_wanted = wanted
+iris\ui\window\main_window.py:2552:        # MCP 도구는 Hermes 게이트웨이를 거칠 때만 붙는다. 직행 경로에서
+iris\ui\window\main_window.py:2683:        Iris API runtime(`api:…`)은 도구가 필요 없는 한 줄 요청이라 Hermes 경유 없이
+iris\ui\window\main_window.py:2684:        제공자로 직행한다. Hermes 레지스트리 404(nvidia/…)를 피한다.
+iris\ui\window\main_window.py:2702:        if self._use_hermes_backend():
+iris\ui\window\main_window.py:2734:        제목은 Hermes 없이 api/ollama 직행. 실패 시 휴리스틱만 쓴다.
+iris\ui\window\main_window.py:3023:            # Hermes 를 끈 상태의 이 경로는 Ollama 데몬만 부를 수 있다.
+iris\ui\window\main_window.py:3090:    def _hermes_fallback_attempts(
+iris\ui\window\main_window.py:3096:        """Hermes 경로의 전환 체인.
+iris\ui\window\main_window.py:3098:        Hermes 게이트웨이는 Ollama 이름과 `api:{provider}:{model}` 둘 다 받으므로
+iris\ui\window\main_window.py:3397:            self._begin_hermes_update_check()
+iris\ui\window\main_window.py:3820:    def _use_hermes_backend(self) -> bool:
+iris\ui\window\main_window.py:3824:        return "Iris Agent" if self._use_hermes_backend() else "Ollama"
+iris\ui\window\main_window.py:4164:        """파일 검증 실패 시 다음 모델로 원 goal 을 한 턴 재제출. Hermes attempts 체인 재사용."""
+iris\ui\window\main_window.py:4885:        from iris.runtime.agent_local_gate import hermes_owns_local_intents
+iris\ui\window\main_window.py:4890:            wiki_requests_go_to_hermes,
+iris\ui\window\main_window.py:4893:        if not wiki_requests_go_to_hermes() and try_wiki_command(self, turn):
+iris\ui\window\main_window.py:4895:        # PDF·URL·파일 위키 저장은 Hermes가 요약만 쓰지 못하게 Iris가 원본까지 import 한다.
+iris\ui\window\main_window.py:4900:        # 배운 업무(스킬) — Hermes 가 연결돼 있으면 모델이 learning.run 을 부르고,
+iris\ui\window\main_window.py:4901:        # 꺼져 있거나 죽어 있으면 여기서 이름으로 바로 고른다 (실제로 Hermes 가 죽어 실행 못 함)
+iris\ui\window\main_window.py:4904:        if not (self._use_hermes_backend() and self._hermes_online):
+iris\ui\window\main_window.py:4908:        owns = hermes_owns_local_intents(self._use_hermes_backend())
+iris\ui\window\main_window.py:4916:            if not wiki_requests_go_to_hermes() and self._try_local_wiki_save(turn):
+iris\ui\window\main_window.py:4965:        if self._use_hermes_backend() and not self._hermes_online:
+iris\ui\window\main_window.py:4969:            self._refresh_hermes_health()
+iris\ui\window\main_window.py:5444:        # Hermes ON → 모든 모델(Ollama·NVIDIA API 등)을 Hermes 에이전트로
+iris\ui\window\main_window.py:5445:        # (IDE/메일 MCP 도구 유지). Hermes OFF일 때만 API 직접 호출.
+iris\ui\window\main_window.py:5446:        if self._use_hermes_backend():
+iris\ui\window\main_window.py:5459:            attempts = self._hermes_fallback_attempts(model, messages, target)
+iris\ui\window\main_window.py:5550:                    lambda message, tid=turn_id: self._on_hermes_tool_progress_for_turn(
+iris\ui\window\main_window.py:5557:                lambda title, html_path, resource_uri="", tid=turn_id: self._on_hermes_app_ui_for_turn(
+iris\ui\window\main_window.py:5562:            worker.reasoning.connect(lambda chunk, tid=turn_id: self._on_hermes_reasoning_for_turn(chunk, tid))
+iris\ui\window\main_window.py:5581:        """Hermes 턴 동안 agent.log allowlist 줄을 Live Activity에 붙인다."""
+iris\ui\window\main_window.py:5869:    def _on_hermes_tool_progress_for_turn(self, message: str, turn_id: str) -> None:
+iris\ui\window\main_window.py:5876:                self._on_hermes_tool_progress(message)
+iris\ui\window\main_window.py:6029:            # 유저 행은 유지. 스트림 5xx 후 Hermes 복구와 겹치면 pop이 성공 착지를 지운다.
+iris\ui\window\main_window.py:6057:    def _on_hermes_tool_progress(self, message: str) -> None:
+iris\ui\window\main_window.py:6081:    def _on_hermes_app_ui_for_turn(
+iris\ui\window\main_window.py:6091:            lambda: self._on_hermes_app_ui(title, html_path, resource_uri=resource_uri),
+iris\ui\window\main_window.py:6094:    def _on_hermes_app_ui(
+iris\ui\window\main_window.py:6116:    def _on_hermes_reasoning_for_turn(self, chunk: str, turn_id: str) -> None:
+iris\ui\window\main_window.py:6117:        self._relay_foreground_turn(turn_id, lambda: self._on_hermes_reasoning(chunk))
+iris\ui\window\main_window.py:6119:    def _on_hermes_reasoning(self, chunk: str = "") -> None:
+iris\ui\window\main_window.py:6292:        if self._use_hermes_backend():
+iris\ui\window\main_window.py:6333:        if self._use_hermes_backend() and not self._hermes_online:
+iris\ui\window\main_window.py:6334:            self._hermes_online = True
+iris\ui\window\main_window.py:6337:                hermes_online=True,
+iris\ui\window\main_window.py:6458:        # 스트리밍 중인 Hermes worker의 content_chunk 시그널을 큐에서 꺼내 재전달해
+iris\ui\window\main_window.py:6557:            from iris.runtime.agent_local_gate import hermes_owns_local_intents
+iris\ui\window\main_window.py:6560:            run_locally = (not hermes_owns_local_intents(self._use_hermes_backend())) and is_run_request(
+iris\ui\window\main_window.py:7891:        # 유저 행 유지. Hermes 스트림 실패→비스트림 복구와 레이스하면 pop이 답을 지운다.
+iris\ui\window\main_window.py:8897:        """짧은 메일/캘린더/위키/기본화면·마이크 요청은 Hermes 없이 아이콘과 동일 처리."""
+iris\ui\window\main_window.py:9035:        Iris Agent 경로는 HERMES_HOME/SOUL.md가 identity(slot #1)라 페르소나를
+iris\ui\window\main_window.py:9062:        # ponytail: Hermes는 SOUL.md가 identity. Ollama만 여기 주입.
+iris\ui\window\main_window.py:9063:        if not self._use_hermes_backend():
+iris\ui\window\main_window.py:11217:            self._refresh_hermes_health()
+iris\ui\window\main_window.py:11219:                self._sync_hermes_model(self._saved_model)
+iris\ui\window\main_window.py:11452:            if self._hermes_health_worker is not None and self._hermes_health_worker.isRunning():
+iris\ui\window\main_window.py:11454:                if not self._hermes_health_worker.wait(3000):
+iris\ui\window\main_window.py:11455:                    self._hermes_health_worker.terminate()
+iris\ui\window\main_window.py:11456:                    self._hermes_health_worker.wait(2000)
+iris\ui\_check_lab_script_dump.py:17:    to_hermes_summary,
+iris\ui\_check_lab_script_dump.py:83:        summary = to_hermes_summary(result)
+iris\system\_check_hermes_update.py:1:"""Hermes 업데이트 감지 자검. 실제 hermes update 는 호출하지 않는다."""
+iris\system\_check_hermes_update.py:10:    check_hermes_update,
+iris\system\_check_hermes_update.py:11:    hermes_update_argv,
+iris\system\_check_hermes_update.py:29:    assert hermes_update_argv(r"C:\hermes.exe")[-2:] == ["update", "--yes"]
+iris\system\_check_hermes_update.py:31:    with tempfile.TemporaryDirectory(prefix="iris-hermes-upd-") as tmp:
+iris\system\_check_hermes_update.py:32:        repo = Path(tmp) / "hermes-agent"
+iris\system\_check_hermes_update.py:34:        (repo / "hermes_cli").mkdir()
+iris\system\_check_hermes_update.py:49:        same = check_hermes_update(repo=repo, remote_sha=local)
+iris\system\_check_hermes_update.py:53:        behind = check_hermes_update(repo=repo, remote_sha="f" * 40)
+iris\system\_check_hermes_update.py:58:        missing = check_hermes_update(repo=Path(tmp) / "nope", remote_sha="abc")
+iris\system\_check_hermes_update.py:61:    print("hermes_update check ok")
+iris\system\_check_hermes_computer_use_enabled.py:1:"""Hermes api_server computer_use 활성 + terminal/browser 비활성 계약 자검."""
+iris\system\_check_hermes_computer_use_enabled.py:11:        ensure_hermes_api_server_computer_use,
+iris\system\_check_hermes_computer_use_enabled.py:12:        ensure_hermes_disabled_terminal,
+iris\system\_check_hermes_computer_use_enabled.py:13:        read_hermes_api_server_toolsets,
+iris\system\_check_hermes_computer_use_enabled.py:14:        read_hermes_disabled_toolsets,
+iris\system\_check_hermes_computer_use_enabled.py:15:        verify_hermes_api_server_computer_use,
+iris\system\_check_hermes_computer_use_enabled.py:16:        verify_hermes_terminal_disabled,
+iris\system\_check_hermes_computer_use_enabled.py:19:    assert "hermes-api-server" in _IRIS_API_SERVER_TOOLSETS
+iris\system\_check_hermes_computer_use_enabled.py:23:    assert "hermes-api-server" in merged and "computer_use" in merged
+iris\system\_check_hermes_computer_use_enabled.py:25:    ensure_hermes_disabled_terminal()
+iris\system\_check_hermes_computer_use_enabled.py:26:    ok_term, term_msg = verify_hermes_terminal_disabled()
+iris\system\_check_hermes_computer_use_enabled.py:28:    disabled = read_hermes_disabled_toolsets()
+iris\system\_check_hermes_computer_use_enabled.py:33:    ensure_hermes_api_server_computer_use()
+iris\system\_check_hermes_computer_use_enabled.py:34:    ok_cu, cu_msg = verify_hermes_api_server_computer_use()
+iris\system\_check_hermes_computer_use_enabled.py:36:    api = read_hermes_api_server_toolsets()
+iris\system\_check_hermes_computer_use_enabled.py:37:    assert "hermes-api-server" in api and "computer_use" in api, api
+iris\system\_check_hermes_computer_use_enabled.py:38:    print("hermes_computer_use_enabled check ok", cu_msg)
+iris\ui\chat\chat_renderer.py:486:    "iris-tts://", "iris-error://", "iris-update://", "iris-hermes-update://",
+iris\system\_check_hermes_terminal_disabled.py:1:"""Hermes 내장 terminal/browser toolset 비활성 계약 자검."""
+iris\system\_check_hermes_terminal_disabled.py:10:        ensure_hermes_disabled_terminal,
+iris\system\_check_hermes_terminal_disabled.py:11:        read_hermes_disabled_toolsets,
+iris\system\_check_hermes_terminal_disabled.py:12:        verify_hermes_terminal_disabled,
+iris\system\_check_hermes_terminal_disabled.py:19:    ensure_hermes_disabled_terminal()
+iris\system\_check_hermes_terminal_disabled.py:20:    ok, msg = verify_hermes_terminal_disabled()
+iris\system\_check_hermes_terminal_disabled.py:22:    names = read_hermes_disabled_toolsets()
+iris\system\_check_hermes_terminal_disabled.py:24:    print("hermes_terminal_disabled check ok", msg)
+iris\ui\chat\chat_panel.py:684:    hermes_update_action_clicked = pyqtSignal(str)  # apply | later
+iris\ui\chat\chat_panel.py:823:        if anchor.startswith("iris-hermes-update://"):
+iris\ui\chat\chat_panel.py:824:            action = anchor.removeprefix("iris-hermes-update://").strip().lower()
+iris\ui\chat\chat_panel.py:826:                self.hermes_update_action_clicked.emit(action)
+iris\ui\chat\chat_panel.py:1451:    hermes_update_action_clicked = pyqtSignal(str)
+iris\ui\chat\chat_panel.py:1587:        self._log.hermes_update_action_clicked.connect(self.hermes_update_action_clicked.emit)
+iris\ui\chat\chat_panel.py:1870:        # Hermes X-Hermes-Model 헤더가 latin-1로 터진다. data 없으면 미선택.
+iris\ui\chat\chat_panel.py:2239:    def append_hermes_update_prompt(self, *, detail: str = "") -> None:
+iris\ui\chat\chat_panel.py:2240:        """Hermes 업데이트 안내 + 업데이트 / 나중에 링크."""
+iris\ui\chat\chat_panel.py:2247:                kind="hermes_update",
+iris\ui\chat\chat_panel.py:2250:                    ChatNoticeAction("iris-hermes-update://apply", "[업데이트]"),
+iris\ui\chat\chat_panel.py:2251:                    ChatNoticeAction("iris-hermes-update://later", "[나중에]"),
+iris\ui\chat\chat_panel.py:2256:    def dismiss_hermes_update_prompt(self, note: str = "") -> None:
+iris\ui\chat\chat_panel.py:2257:        """Hermes 업데이트 버튼 제거."""
+iris\ui\chat\chat_panel.py:2258:        self._dismiss_notice_actions("hermes_update", "iris-hermes-update://")
+iris\ui\_check_calendar.py:55:        # Aware row like Hermes/chat calendar add (crash sample).
+iris\system\_check_github_extension_install.py:345:def _check_hermes_sees_it(home: Path) -> None:
+iris\system\_check_github_extension_install.py:346:    from iris.system.iris_agent_gateway import hermes_executable
+iris\system\_check_github_extension_install.py:347:    from iris.system.github_extension_install import hermes_home
+iris\system\_check_github_extension_install.py:349:    exe = hermes_executable("hermes")
+iris\system\_check_github_extension_install.py:351:        print("hermes mcp test skip: hermes executable missing")
+iris\system\_check_github_extension_install.py:353:    real = hermes_home() / "config.yaml"
+iris\system\_check_github_extension_install.py:360:    env["HERMES_HOME"] = str(home)
+iris\system\_check_github_extension_install.py:374:        print("hermes mcp test skip", exc)
+iris\system\_check_github_extension_install.py:377:    assert before == after, "hermes mcp test touched the real Hermes config"
+iris\system\_check_github_extension_install.py:380:        raise SystemExit(f"hermes mcp test failed\n{out[-800:]}")
+iris\system\_check_github_extension_install.py:381:    print("hermes mcp test ok", "ping" in out)
+iris\system\_check_github_extension_install.py:508:        _check_hermes_sees_it(home)
+iris\system\_check_iris_agent_absorbed_toolsets.py:1:"""Absorbed Hermes toolsets overlay: terminal/browser/file/web emptied."""
+iris\system\_check_iris_agent_absorbed_toolsets.py:22:_HERMES_CORE_TOOLS = [
+iris\system\_check_iris_agent_absorbed_toolsets.py:69:    _HERMES_CORE_TOOLS[:] = _iris_strip_absorbed_tools(_HERMES_CORE_TOOLS)
+iris\system\_check_iris_agent_absorbed_toolsets.py:107:        core = ns["_HERMES_CORE_TOOLS"]
+iris\system\_check_iris_agent_absorbed_toolsets.py:114:        assert core == [], core  # Iris-only: Hermes CORE emptied
+iris\system\_check_iris_agent_absorbed_toolsets.py:136:        _assert_core_lacks_absorbed(ns["_HERMES_CORE_TOOLS"])
+iris\ui\chat\_check_stream_end_idle.py:23:    "Hermes PDF turn landed on H1 already. "
+iris\ui\chat\_check_stream_end_idle.py:46:    panel.append_stream_chunk("Hermes PDF turn landed on H1 already. ")
+iris\system\_check_iris_agent_cli_rename.py:1:"""F3 — rename overlay materializes real iris_agent_cli; hermes_cli becomes reverse shim.
+iris\system\_check_iris_agent_cli_rename.py:3:Probe drops hermes_cli. Tempdir only — never force-rename a live locked tree.
+iris\system\_check_iris_agent_cli_rename.py:27:    hermes = root / "hermes_cli"
+iris\system\_check_iris_agent_cli_rename.py:28:    hermes.mkdir()
+iris\system\_check_iris_agent_cli_rename.py:29:    (hermes / "__init__.py").write_text(
+iris\system\_check_iris_agent_cli_rename.py:30:        '"""tiny hermes_cli."""\nMARKER = "upstream"\n',
+iris\system\_check_iris_agent_cli_rename.py:33:    (hermes / "main.py").write_text(
+iris\system\_check_iris_agent_cli_rename.py:37:    tools = hermes / "tools"
+iris\system\_check_iris_agent_cli_rename.py:40:        '"""hermes_cli.tools stub."""\nX = 1\n',
+iris\system\_check_iris_agent_cli_rename.py:57:        assert "hermes_cli" not in init_text or "iris_agent_cli" in init_text
+iris\system\_check_iris_agent_cli_rename.py:62:        assert "hermes_cli" not in tools_init
+iris\system\_check_iris_agent_cli_rename.py:64:        hermes_init = (root / "hermes_cli" / "__init__.py").read_text(encoding="utf-8")
+iris\system\_check_iris_agent_cli_rename.py:65:        assert "iris_agent_cli" in hermes_init
+iris\system\_check_iris_agent_cli_rename.py:66:        assert "from iris_agent_cli import" in hermes_init
+iris\system\_check_iris_agent_cli_rename.py:75:            for name in ("iris_agent_cli", "hermes_cli", "iris_cli"):
+iris\system\_check_iris_agent_cli_rename.py:79:            hermes = importlib.import_module("hermes_cli")
+iris\system\_check_iris_agent_cli_rename.py:80:            assert getattr(hermes, "MARKER", None) == "upstream"
+iris\system\_check_iris_agent_cli_rename.py:83:            for name in ("iris_agent_cli", "hermes_cli", "iris_cli"):
+iris\system\_check_iris_agent_cli_rename.py:99:        # Must not overwrite real package with forward hermes re-export.
+iris\system\_check_iris_agent_cli_rename.py:101:        assert "from hermes_cli import" not in init
+iris\system\_check_iris_agent_cli_rename.py:109:    assert "hermes_cli" not in names
+iris\system\_check_iris_agent_cli_rename.py:114:    assert "hermes_cli" not in snippet
+iris\system\_check_iris_agent_cli_rename.py:130:    """hermes_cli.<sub> must resolve into iris_agent_cli via reverse-shim __path__."""
+iris\system\_check_iris_agent_cli_rename.py:136:        hermes_pkg = root / "hermes_cli"
+iris\system\_check_iris_agent_cli_rename.py:138:        # Submodule lives only under iris_agent_cli — not as a hermes_cli file.
+iris\system\_check_iris_agent_cli_rename.py:144:        assert not (hermes_pkg / "_early_recovery.py").exists()
+iris\system\_check_iris_agent_cli_rename.py:145:        hermes_names = {p.name for p in hermes_pkg.iterdir()}
+iris\system\_check_iris_agent_cli_rename.py:146:        assert hermes_names <= {"__init__.py", "main.py", "__pycache__"}
+iris\system\_check_iris_agent_cli_rename.py:151:            "hermes_cli",
+iris\system\_check_iris_agent_cli_rename.py:154:            "hermes_cli._early_recovery",
+iris\system\_check_iris_agent_cli_rename.py:159:            hermes = importlib.import_module("hermes_cli")
+iris\system\_check_iris_agent_cli_rename.py:161:            assert list(hermes.__path__) == list(iris.__path__)
+iris\system\_check_iris_agent_cli_rename.py:162:            sub = importlib.import_module("hermes_cli._early_recovery")
+iris\system\_check_iris_agent_cli_rename.py:164:            assert sub.__name__ == "hermes_cli._early_recovery"
+iris\ui\wiki_turn.py:3:채팅 턴은 wiki_requests_go_to_hermes 가 참이면 여기서 닫지 않는다.
+iris\ui\wiki_turn.py:12:def wiki_requests_go_to_hermes() -> bool:
+iris\ui\wiki_turn.py:13:    """위키 채팅은 키워드 명령으로 턴을 닫지 않는다. Hermes 도구가 실행한다."""
+iris\ui\wiki_turn.py:241:    assert wiki_requests_go_to_hermes() is True
+iris\ui\wiki_turn.py:247:    assert "wiki_requests_go_to_hermes()" in src
+iris\system\_check_iris_agent_active_docs.py:16:    "IRIS_" + "HERMES_",
+iris\system\_check_iris_agent_active_docs.py:17:    "settings." + "hermes_",
+iris\system\_check_iris_agent_active_docs.py:18:    "iris/infrastructure/" + "hermes_",
+iris\system\_check_iris_agent_active_docs.py:19:    "iris/system/" + "hermes_",
+iris\system\_check_iris_agent_active_docs.py:20:    "iris/ui/workers/" + "hermes_",
+iris\system\_check_iris_agent_active_docs.py:21:    "HermesClient",
+iris\system\_check_iris_agent_active_docs.py:22:    "HermesChatWorker",
+iris\system\_check_iris_agent_active_docs.py:23:    "resolve_hermes_inference",
+iris\system\_check_iris_agent_active_docs.py:35:    assert "Nous Hermes Agent" in readme
+iris\ui\chat\__init__.py:7:- Extend via: 이 패키지. Hermes 액션은 `iris/ui/control_actions/chat.py`.
+iris\system\_check_iris_agent_cli_shim.py:1:"""F2 — install overlay plants iris_agent_cli / iris_cli shims over hermes_cli.
+iris\system\_check_iris_agent_cli_shim.py:3:F3 supersedes when real iris_agent_cli exists (reverse hermes_cli shim).
+iris\system\_check_iris_agent_cli_shim.py:4:Probe names are iris_agent_cli / iris_cli only (no hermes_cli).
+iris\system\_check_iris_agent_cli_shim.py:25:        hermes = root / "hermes_cli"
+iris\system\_check_iris_agent_cli_shim.py:26:        hermes.mkdir()
+iris\system\_check_iris_agent_cli_shim.py:27:        (hermes / "__init__.py").write_text(
+iris\system\_check_iris_agent_cli_shim.py:28:            '"""fake hermes_cli for shim check."""\nMARKER = "hermes"\n',
+iris\system\_check_iris_agent_cli_shim.py:31:        (hermes / "main.py").write_text(
+iris\system\_check_iris_agent_cli_shim.py:50:                assert getattr(mod, "MARKER", None) == "hermes"
+iris\system\_check_iris_agent_cli_shim.py:53:            for name in ("iris_agent_cli", "iris_cli", "hermes_cli"):
+iris\system\_check_iris_agent_cli_shim.py:77:    assert "hermes_cli" not in names
+iris\system\_check_iris_agent_engine_setup_step.py:12:    assert "hermes_gateway" not in CORE_STEP_IDS
+iris\system\_check_iris_agent_engine_setup_step.py:17:    assert "restart_hermes_gateway" not in step_src
+iris\system\_check_iris_agent_engine_setup_step.py:18:    assert "ensure_hermes_gateway_running" not in step_src
+iris\system\_check_iris_agent_engine_setup_step.py:19:    assert "start_hermes_gateway" not in step_src
+iris\system\_check_iris_agent_facade.py:36:# Hot product paths that must not import hermes_workers / Hermes* chat-health names.
+iris\system\_check_iris_agent_facade.py:51:    r"from\s+iris\.ui\.workers\.hermes_workers\b|import\s+iris\.ui\.workers\.hermes_workers\b"
+iris\system\_check_iris_agent_facade.py:53:_BANNED_WORKER = re.compile(r"\bHermesChatWorker\b|\bHermesHealthWorker\b")
+iris\system\_check_iris_agent_facade.py:107:    assert "HermesChatWorker" not in src
+iris\system\_check_iris_agent_facade.py:108:    assert "HermesHealthWorker" not in src
+iris\system\_check_iris_agent_facade.py:109:    assert "hermes_workers" not in src
+iris\system\_check_iris_agent_facade.py:117:    assert "HermesControlSyncWorker" not in src
+iris\system\_check_iris_agent_facade.py:120:def _check_hot_paths_no_hermes_workers() -> None:
+iris\system\_check_iris_agent_facade.py:133:    _check_hot_paths_no_hermes_workers()
+iris\ui\_check_iris_branding_worker_aliases.py:1:"""Product UI code should import IrisAgent* worker names, not Hermes* class names.
+iris\ui\_check_iris_branding_worker_aliases.py:16:    r"from\s+iris\.ui\.workers(?:\.iris_agent_workers|\.hermes_workers|\.iris_agent_update_worker)?\s+import\s+[^\n]*\bHermes(?:Chat|Health|ControlSync|ModelSync|UpdateCheck|UpdateApply)Worker\b"
+iris\ui\_check_iris_branding_worker_aliases.py:19:    r"\bHermesChatWorker\b|\bHermesHealthWorker\b|\bHermesUpdateCheckWorker\b|\bHermesUpdateApplyWorker\b"
+iris\ui\_check_iris_branding_worker_aliases.py:35:def find_hermes_worker_imports() -> list[str]:
+iris\ui\_check_iris_branding_worker_aliases.py:50:                    "HermesChatWorker(" in line
+iris\ui\_check_iris_branding_worker_aliases.py:51:                    or "HermesHealthWorker(" in line
+iris\ui\_check_iris_branding_worker_aliases.py:52:                    or "HermesUpdateCheckWorker(" in line
+iris\ui\_check_iris_branding_worker_aliases.py:53:                    or "HermesUpdateApplyWorker(" in line
+iris\ui\_check_iris_branding_worker_aliases.py:60:    hits = find_hermes_worker_imports()
+iris\system\_check_iris_agent_home_phase4.py:24:from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\system\_check_iris_agent_home_phase4.py:37:    assert upd.fetch_hermes_remote_sha(Path(".")) == pin
+iris\system\_check_iris_agent_home_phase4.py:39:    assert "ls-remote" not in inspect.getsource(upd.check_hermes_update)
+iris\system\_check_iris_agent_home_phase4.py:47:        legacy = root / "hermes"
+iris\system\_check_iris_agent_home_phase4.py:61:            assert hermes_home() == product
+iris\system\_check_iris_agent_home_phase4.py:100:    assert not is_chat_product_of_record("hermes_session_db")
+iris\system\_check_iris_agent_home_phase4.py:111:    src = inspect.getsource(gw.ensure_hermes_gateway_running)
+iris\ui\_check_setup_protocol.py:61:    assert "hermes_gateway" not in _STREAM_STEPS
+iris\ui\_check_setup_protocol.py:63:        {"ollama_install", "hermes_install", "emulator"}
+iris\ui\_check_setup_hermes_live.py:1:"""Live check: hermes install → gateway → core smoke.
+iris\ui\_check_setup_hermes_live.py:3:실행: .venv\\Scripts\\python.exe -m iris.ui._check_setup_hermes_live
+iris\ui\_check_setup_hermes_live.py:17:        is_hermes_gateway_running,
+iris\ui\_check_setup_hermes_live.py:18:        probe_hermes_runtime,
+iris\ui\_check_setup_hermes_live.py:19:        resolve_hermes_api_key,
+iris\ui\_check_setup_hermes_live.py:23:    print("probe", probe_hermes_runtime())
+iris\ui\_check_setup_hermes_live.py:24:    key = resolve_hermes_api_key()
+iris\ui\_check_setup_hermes_live.py:26:    print("running_before", is_hermes_gateway_running(url, api_key=key, timeout_sec=2.0))
+iris\ui\_check_setup_hermes_live.py:34:        ("hermes_install", proto._step_hermes_install),
+iris\ui\_check_setup_hermes_live.py:35:        ("hermes_env", proto._step_hermes_env),
+iris\ui\_check_setup_hermes_live.py:36:        ("hermes_provider", proto._step_hermes_provider),
+iris\ui\_check_setup_hermes_live.py:45:        if result.status == "needs_user" and name == "hermes_install":
+iris\ui\_check_setup_hermes_live.py:46:            result = proto._install_hermes()
+iris\ui\_check_setup_hermes_live.py:56:    print("running_after", is_hermes_gateway_running(url, api_key=key, timeout_sec=3.0))
+iris\system\_check_iris_agent_inventory_freeze.py:1:"""Unit 0/7 — Freeze C vs B inventory (Iris↔Hermes unification).
+iris\system\_check_iris_agent_inventory_freeze.py:3:Fails when new *logic* ``hermes_*`` product modules appear, or when
+iris\system\_check_iris_agent_inventory_freeze.py:4:``ExternalGateway`` / legacy hermes-home product residue grows outside the
+iris\system\_check_iris_agent_inventory_freeze.py:7:Unit 7: thin ``hermes_*`` re-export shims that only forward to ``iris_agent_*``
+iris\system\_check_iris_agent_inventory_freeze.py:8:are **not** counted as product hermes modules (``is_thin_hermes_reexport_shim``).
+iris\system\_check_iris_agent_inventory_freeze.py:9:Logic lives under ``iris_agent_*`` names; the hermes_* allowlist must stay empty
+iris\system\_check_iris_agent_inventory_freeze.py:25:# Unit 7 emptied logic hermes_* product modules (shims excluded from count).
+iris\system\_check_iris_agent_inventory_freeze.py:26:GRANDFATHERED_HERMES_PRODUCT_MODULES: frozenset[str] = frozenset()
+iris\system\_check_iris_agent_inventory_freeze.py:31:# Unit 3 emptied legacy LOCALAPPDATA hermes home from product error/UI paths.
+iris\system\_check_iris_agent_inventory_freeze.py:32:GRANDFATHERED_LEGACY_HERMES_HOME_PRODUCT_FILES: frozenset[str] = frozenset()
+iris\system\_check_iris_agent_inventory_freeze.py:37:    "%LOCALAPPDATA%" + _BS + "hermes",
+iris\system\_check_iris_agent_inventory_freeze.py:38:    "%LOCALAPPDATA%" + _BS + _BS + "hermes",
+iris\system\_check_iris_agent_inventory_freeze.py:39:    "%LOCALAPPDATA%/hermes",
+iris\system\_check_iris_agent_inventory_freeze.py:58:def is_thin_hermes_reexport_shim(path: Path) -> bool:
+iris\system\_check_iris_agent_inventory_freeze.py:59:    """True when hermes_*.py only re-exports an iris_agent_* module.
+iris\system\_check_iris_agent_inventory_freeze.py:65:    if not path.name.startswith("hermes_") or path.suffix != ".py":
+iris\system\_check_iris_agent_inventory_freeze.py:94:def discovered_hermes_product_modules() -> set[str]:
+iris\system\_check_iris_agent_inventory_freeze.py:95:    """Logic hermes_* modules only; thin iris_agent_* re-export shims excluded."""
+iris\system\_check_iris_agent_inventory_freeze.py:98:        if not (path.name.startswith("hermes_") and path.suffix == ".py"):
+iris\system\_check_iris_agent_inventory_freeze.py:100:        if is_thin_hermes_reexport_shim(path):
+iris\system\_check_iris_agent_inventory_freeze.py:106:def discovered_hermes_shim_modules() -> set[str]:
+iris\system\_check_iris_agent_inventory_freeze.py:109:        if path.name.startswith("hermes_") and is_thin_hermes_reexport_shim(path):
+iris\system\_check_iris_agent_inventory_freeze.py:123:def discovered_legacy_hermes_home_product_files() -> set[str]:
+iris\system\_check_iris_agent_inventory_freeze.py:148:    logic = discovered_hermes_product_modules()
+iris\system\_check_iris_agent_inventory_freeze.py:149:    shims = discovered_hermes_shim_modules()
+iris\system\_check_iris_agent_inventory_freeze.py:150:    assert not shims, "legacy hermes re-export shims remain:\n  " + "\n  ".join(sorted(shims))
+iris\system\_check_iris_agent_inventory_freeze.py:153:            "public hermes_* product modules (logic; shims excluded)",
+iris\system\_check_iris_agent_inventory_freeze.py:155:            GRANDFATHERED_HERMES_PRODUCT_MODULES,
+iris\system\_check_iris_agent_inventory_freeze.py:167:            "legacy hermes-home product files",
+iris\system\_check_iris_agent_inventory_freeze.py:168:            discovered_legacy_hermes_home_product_files(),
+iris\system\_check_iris_agent_inventory_freeze.py:169:            GRANDFATHERED_LEGACY_HERMES_HOME_PRODUCT_FILES,
+iris\system\_check_iris_agent_inventory_freeze.py:175:        f"hermes_modules={len(logic)}",
+iris\system\_check_iris_agent_inventory_freeze.py:176:        f"hermes_shims={len(shims)}",
+iris\system\_check_iris_agent_inventory_freeze.py:178:        f"legacy_home_files={len(GRANDFATHERED_LEGACY_HERMES_HOME_PRODUCT_FILES)}",
+iris\system\_check_iris_agent_no_compat_aliases.py:13:            "HermesClient",
+iris\system\_check_iris_agent_no_compat_aliases.py:14:            "HermesInferenceTarget",
+iris\system\_check_iris_agent_no_compat_aliases.py:15:            "normalize_hermes_openai_base_url",
+iris\system\_check_iris_agent_no_compat_aliases.py:16:            "resolve_hermes_inference",
+iris\system\_check_iris_agent_no_compat_aliases.py:19:            "HermesHealthWorker",
+iris\system\_check_iris_agent_no_compat_aliases.py:20:            "HermesChatWorker",
+iris\system\_check_iris_agent_no_compat_aliases.py:21:            "HermesControlSyncWorker",
+iris\system\_check_iris_agent_no_compat_aliases.py:22:            "HermesModelSyncWorker",
+iris\system\_check_iris_agent_no_compat_aliases.py:24:        update_worker: ("HermesUpdateCheckWorker", "HermesUpdateApplyWorker"),
+iris\ui\_check_terminal_force.py:1:"""Companion 실행은 IDE 터미널(project.run)만. Hermes terminal / browser-만으로는 성공 아님."""
+iris\ui\_check_terminal_force.py:11:def check_hermes_terminal_not_tool_ok() -> None:
+iris\ui\_check_terminal_force.py:34:def check_hermes_disabled_config() -> None:
+iris\ui\_check_terminal_force.py:35:    from iris.system.iris_agent_control_sync import verify_hermes_terminal_disabled
+iris\ui\_check_terminal_force.py:37:    ok, msg = verify_hermes_terminal_disabled()
+iris\ui\_check_terminal_force.py:42:    check_hermes_terminal_not_tool_ok()
+iris\ui\_check_terminal_force.py:45:    check_hermes_disabled_config()
+iris\ui\_check_stream_token_usage.py:56:    from iris.infrastructure import iris_agent_client as hermes
+iris\ui\_check_stream_token_usage.py:58:    hermes_bodies: list[dict] = []
+iris\ui\_check_stream_token_usage.py:60:    def fake_hermes_open(req, timeout=0):
+iris\ui\_check_stream_token_usage.py:62:        hermes_bodies.append(body)
+iris\ui\_check_stream_token_usage.py:73:    client = hermes.IrisAgentClient("http://127.0.0.1:9/v1", api_key="k")
+iris\ui\_check_stream_token_usage.py:74:    with patch.object(hermes, "urlopen", fake_hermes_open):
+iris\ui\_check_stream_token_usage.py:76:    assert "stream_options" in hermes_bodies[0]
+iris\ui\_check_stream_token_usage.py:77:    assert "stream_options" not in hermes_bodies[1]
+iris\ui\_check_project_read_file.py:16:    / "hermes-skills"
+iris\ui\_check_sidecar_done_landing.py:3:Hermes can wedge after logging Turn ended before run_conversation returns.
+iris\ui\_check_sidecar_done_landing.py:52:    # Match product spawn: engine venv has Hermes ``tools``; Iris .venv does not.
+iris\ui\_check_summary_display.py:184:    panel.append_message_instant("Iris", "Hermes 오류: timeout")
+iris\ui\_check_summary_display.py:186:    assert "Hermes 오류: timeout" in panel._log.toPlainText()
+iris\ui\ai_hub\ai_hub_dialog.py:21:    load_hermes_tool_choice,
+iris\ui\ai_hub\ai_hub_dialog.py:22:    set_hermes_tool_choice,
+iris\ui\ai_hub\ai_hub_dialog.py:99:        index = self._tool_choice.findData(load_hermes_tool_choice())
+iris\ui\ai_hub\ai_hub_dialog.py:125:        _, status = set_hermes_tool_choice(str(self._tool_choice.currentData() or ""))
+iris\ui\ai_hub\ai_hub_dialog.py:126:        if not status.startswith("hermes agent.tool_choice"):
+iris\system\_check_iris_agent_package_identity.py:26:    name = "hermes-agent"
+iris\system\_check_iris_agent_package_identity.py:32:      "hermes-agent[cron]",
+iris\system\_check_iris_agent_package_identity.py:33:      "hermes-agent[mcp]",
+iris\system\_check_iris_agent_package_identity.py:37:    hermes = "hermes_cli.main:main"
+iris\system\_check_iris_agent_package_identity.py:38:    hermes-agent = "agent.legacy_cli:main"
+iris\system\_check_iris_agent_package_identity.py:43:      "hermes_cli",
+iris\system\_check_iris_agent_package_identity.py:44:      "hermes_cli.*",
+iris\system\_check_iris_agent_package_identity.py:66:        assert 'name = "hermes-agent"' not in text
+iris\system\_check_iris_agent_package_identity.py:68:        assert '"hermes-agent[' not in text
+iris\system\_check_iris_agent_package_identity.py:69:        assert 'hermes = "hermes_cli.main:main"' in text
+iris\system\_check_iris_agent_package_identity.py:92:    # HEAD may still probe hermes_cli; packages.find overlay is the landable fix.
+iris\system\_check_iris_agent_package_identity.py:96:    assert "hermes_cli" not in names
+iris\ui\_check_web_run_actions.py:38:    # Must not import Hermes checkout tools.
+iris\ui\ai_hub\providers_panel.py:447:                    hermes_enabled=bool(self._settings.agent_enabled),
+iris\ui\ai_hub\providers_panel.py:448:                    hermes_base_url=self._settings.agent_base_url,
+iris\system\_check_iris_agent_phase5_prove3.py:128:    # Worker module re-exports reset for UI-side callers (lazy, no new hermes_*).
+iris\ui\_check_mcp_tool_error.py:1:"""도구 실행 오류는 Hermes 연결 실패 횟수에 들어가지 않는다.
+iris\ui\_check_mcp_tool_error.py:3:Hermes mcp_tool.py는 isError 결과를 tool_error(JSON에 error 키)로 바꾸고
+iris\ui\_check_mcp_tool_error.py:21:def _hermes_count(previous: int, mcp_result: dict) -> int:
+iris\ui\_check_mcp_tool_error.py:44:        count = _hermes_count(count, result)
+iris\ui\_check_mcp_tool_error.py:48:    count = _hermes_count(count, ok)
+iris\ui\_check_mcp_tool_error.py:62:        count = _hermes_count(count, result)
+iris\system\_check_iris_agent_repo_dir.py:31:        assert got.name == "hermes-agent"
+iris\system\_check_iris_agent_runtime_phase1.py:5:- 홈이 iris_agent_home / hermes_home 단일 경로
+iris\system\_check_iris_agent_runtime_phase1.py:24:from iris.infrastructure.iris_agent_credentials import hermes_home
+iris\system\_check_iris_agent_runtime_phase1.py:34:    assert "NousResearch/hermes-agent" in load_upstream_url()
+iris\system\_check_iris_agent_runtime_phase1.py:37:    assert upd.fetch_hermes_remote_sha(Path(".")) == pin
+iris\system\_check_iris_agent_runtime_phase1.py:38:    src = inspect.getsource(upd.check_hermes_update)
+iris\system\_check_iris_agent_runtime_phase1.py:48:            assert hermes_home() == product
+iris\system\_check_iris_agent_runtime_phase1.py:51:        (legacy_only / "hermes").mkdir()
+iris\system\_check_iris_agent_runtime_phase1.py:59:            assert home != legacy_only / "hermes"
+iris\system\_check_iris_agent_runtime_phase1.py:64:    assert hermes_home() == sync.hermes_home() == iris_agent_home()
+iris\system\_check_iris_agent_runtime_phase1.py:71:    repo = upd.hermes_repo_dir()
+iris\system\_check_iris_agent_runtime_phase1.py:74:        status = upd.check_hermes_update(repo=repo)
+iris\system\_check_iris_agent_runtime_phase1.py:102:        with mock.patch.object(gw, "_hermes_agent_dir", return_value=bare):
+iris\system\_check_iris_agent_supervisor_phase4b.py:28:    assert "ensure_hermes_gateway_running" in src
+iris\system\_check_iris_agent_supervisor_phase4b.py:29:    assert "ensure_hermes_provider_config" in src
+iris\system\_check_iris_agent_supervisor_phase4b.py:44:    assert "ensure_hermes_gateway_running" not in health_src
+iris\system\_check_iris_agent_supervisor_phase4b.py:48:    assert "ensure_hermes_gateway_running" not in warm_cli
+iris\system\_check_iris_agent_supervisor_phase4b.py:60:    assert "ensure_hermes_gateway_running" not in warm_fn
+iris\system\_check_iris_agent_supervisor_phase4b.py:67:    assert "restart_hermes_gateway" not in step_src
+iris\system\_check_iris_agent_supervisor_phase4b.py:68:    assert "ensure_hermes_gateway_running" not in step_src
+iris\system\_check_iris_agent_supervisor_phase4b.py:77:    assert "%LOCALAPPDATA%\\hermes" not in setup
+iris\system\_check_iris_agent_supervisor_phase4b.py:78:    assert r"%LOCALAPPDATA%\hermes" not in setup
+iris\system\_check_iris_agent_tool_registry_phase2.py:5:- SOUL 에 Hermes 부정문이 없다.
+iris\system\_check_iris_agent_tool_registry_phase2.py:6:- 손댄 iris-control 스킬 사용자 문구에 Hermes 가 없다.
+iris\system\_check_iris_agent_tool_registry_phase2.py:66:    soul = (root / "integrations" / "hermes-soul" / "SOUL.md").read_text(
+iris\system\_check_iris_agent_tool_registry_phase2.py:70:    assert "Hermes가 아니다" not in soul
+iris\system\_check_iris_agent_tool_registry_phase2.py:71:    assert "Hermes Agent가 아니다" not in soul
+iris\system\_check_iris_agent_tool_registry_phase2.py:74:        root / "integrations" / "hermes-skills" / "iris-control" / "iris-session-status",
+iris\system\_check_iris_agent_tool_registry_phase2.py:75:        root / "integrations" / "hermes-skills" / "iris-control" / "iris-work-start",
+iris\system\_check_iris_agent_tool_registry_phase2.py:79:        assert "hermes" not in text.lower(), skill_dir.name
+iris\system\_check_iris_agent_tool_registry_phase2_2.py:5:- iris-wiki 스킬 사용자 문구에 hermes / mcp__iris_control__ 가 없다.
+iris\system\_check_iris_agent_tool_registry_phase2_2.py:74:        / "hermes-skills"
+iris\system\_check_iris_agent_tool_registry_phase2_2.py:79:    assert "hermes" not in skill.lower()
+iris\system\_check_iris_agent_tool_registry_phase2_3.py:91:        / "hermes-skills"
+iris\system\_check_iris_agent_tool_registry_phase2_3.py:96:    assert "hermes" not in skill.lower()
+iris\system\_check_iris_agent_tool_registry_phase2_4.py:113:        / "hermes-skills"
+iris\system\_check_iris_agent_tool_registry_phase2_4.py:118:    assert "hermes" not in skill.lower()
+iris\system\_check_iris_agent_tool_registry_phase2_5.py:166:            / "hermes-skills"
+iris\system\_check_iris_agent_tool_registry_phase2_5.py:194:    path_doc = (completed / "Iris-Agent-Hermes기반-구현경로.md").read_text(
+iris\system\_check_iris_control_mcp_compat_live.py:16:        home = Path(tmp) / "hermes"
+iris\system\_check_iris_control_mcp_compat_live.py:20:                "iris.system.iris_agent_control_sync.hermes_home",
+iris\system\_check_iris_control_mcp_compat_live.py:24:                "iris.system.iris_agent_soul_sync.hermes_home",
+iris\system\_check_iris_control_mcp_compat_live.py:28:                "iris.system.iris_agent_memory_nudge.hermes_home",
+iris\system\_check_product_no_gateway_spawn.py:1:"""Unit 2 — Product callers must not spawn/restart :8642 Hermes gateway."""
+iris\system\_check_product_no_gateway_spawn.py:14:    "restart_hermes_gateway",
+iris\system\_check_product_no_gateway_spawn.py:15:    "ensure_hermes_gateway_running",
+iris\system\_check_product_no_gateway_spawn.py:16:    "start_hermes_gateway",
+iris\system\_check_product_no_iris_control_mcp.py:97:        home = Path(tmp) / "hermes-home"
+iris\system\_check_product_no_iris_control_mcp.py:106:                "iris.system.iris_agent_control_sync.hermes_home",
+iris\system\_check_product_no_iris_control_mcp.py:110:                "iris.system.iris_agent_soul_sync.hermes_home",
+iris\system\_check_product_no_iris_control_mcp.py:114:                "iris.system.iris_agent_memory_nudge.hermes_home",
+iris\system\_check_product_no_iris_control_mcp.py:144:        home = Path(tmp) / "hermes-home"
+iris\system\_check_product_no_iris_control_mcp.py:152:                "iris.system.iris_agent_control_sync.hermes_home",
+iris\system\_check_product_no_iris_control_mcp.py:156:                "iris.system.iris_agent_soul_sync.hermes_home",
+iris\system\_check_product_no_iris_control_mcp.py:160:                "iris.system.iris_agent_memory_nudge.hermes_home",
+iris\system\_check_product_ready_no_gateway.py:24:    assert "restart_hermes_gateway" not in step_src
+iris\system\_check_product_ready_no_gateway.py:25:    assert "ensure_hermes_gateway_running" not in step_src
+iris\system\_check_product_ready_no_gateway.py:40:    assert "ensure_hermes_gateway_running" not in health_src
+iris\system\_check_speak_tools_no_mcp_seed_path.py:33:        home = Path(tmp) / "hermes-home"
+iris\system\_check_speak_tools_no_mcp_seed_path.py:41:                "iris.system.iris_agent_control_sync.hermes_home",
+iris\system\_check_speak_tools_no_mcp_seed_path.py:45:                "iris.system.iris_agent_soul_sync.hermes_home",
+iris\system\_check_speak_tools_no_mcp_seed_path.py:49:                "iris.system.iris_agent_memory_nudge.hermes_home",
+iris\system\__init__.py:4:- Owns: 설치 프로토콜, Hermes/Ollama 기동, Control Surface `:8765`, 스킬 동기화, IDE 타일.
+iris\system\__init__.py:6:- Talks to: `iris/infrastructure` 클라이언트, Hermes config, UI.
+iris\system\_check_uv_probe_boost_no_editable.py:86:            command="hermes",
