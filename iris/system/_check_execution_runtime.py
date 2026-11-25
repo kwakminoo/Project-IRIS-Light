@@ -35,12 +35,41 @@ from iris.system.execution_runtime import (
     default_runtime,
 )
 from iris.system.project_ops import result_from_runtime_record
+from iris.system.request_approval import (
+    default_approval_ledger,
+    fingerprint_from_manage_args,
+)
 
 
 def _pid_alive(pid: int) -> bool:
     from iris.system.execution_runtime import _pid_still_alive
 
     return _pid_still_alive(pid)
+
+
+def _grant_start_ctx(
+    args: dict,
+    *,
+    session_id: str,
+    workspace_id: str = "",
+    workspace_root: str = "",
+    principal: str = "",
+    permission_scope: str = "session",
+):
+    """HF-04: manage(start) uses ledger approval_reference — not set_human_confirm."""
+    rec = default_approval_ledger().grant(
+        fingerprint=fingerprint_from_manage_args(args),
+        session_id=session_id,
+        workspace_id=workspace_id,
+    )
+    return make_execution_context(
+        session_id=session_id,
+        workspace_id=workspace_id,
+        workspace_root=workspace_root,
+        principal=principal,
+        permission_scope=permission_scope,
+        approval_reference=rec.request_id,
+    )
 
 
 def _check_start_wait_exit() -> None:
@@ -317,16 +346,16 @@ def _check_start_requires_approval() -> None:
         )
         assert denied.get("ok") is False, denied
         err = str(denied.get("error") or "").lower()
-        assert "confirm" in err or "human" in err, denied
+        assert "confirm" in err or "human" in err or "approval" in err, denied
 
-        rt.set_human_confirm(lambda _s, _a: True)
+        start_args = {
+            "action": "start",
+            "argv": [sys.executable, "-c", "import sys; sys.exit(0)"],
+            "cwd": str(Path.home()),
+        }
         ok = rt.manage(
-            {
-                "action": "start",
-                "argv": [sys.executable, "-c", "import sys; sys.exit(0)"],
-                "cwd": str(Path.home()),
-            },
-            ctx=ctx,
+            start_args,
+            ctx=_grant_start_ctx(start_args, session_id="sess-a"),
         )
         assert ok.get("ok") is True, ok
         run_id = (ok.get("data") or {}).get("run_id")
@@ -342,21 +371,19 @@ def _check_start_cwd_outside_denied() -> None:
         outside.mkdir(exist_ok=True)
         try:
             rt = _fresh_rt(root)
-            rt.set_human_confirm(lambda _s, _a: True)
-            ctx = make_execution_context(
+            start_args = {
+                "action": "start",
+                "argv": [sys.executable, "-c", "pass"],
+                "cwd": str(outside),
+                # Forged — must be ignored; trusted ctx workspace_root wins.
+                "workspace_root": str(outside),
+            }
+            ctx = _grant_start_ctx(
+                start_args,
                 session_id="sess-a",
                 workspace_root=str(root / "ws"),
             )
-            denied = rt.manage(
-                {
-                    "action": "start",
-                    "argv": [sys.executable, "-c", "pass"],
-                    "cwd": str(outside),
-                    # Forged — must be ignored; trusted ctx workspace_root wins.
-                    "workspace_root": str(outside),
-                },
-                ctx=ctx,
-            )
+            denied = rt.manage(start_args, ctx=ctx)
             assert denied.get("ok") is False, denied
             assert "cwd" in str(denied.get("error") or "").lower() or "path" in str(
                 denied.get("error") or ""
@@ -371,16 +398,15 @@ def _check_start_cwd_outside_denied() -> None:
 def _check_same_session_status_ok() -> None:
     with tempfile.TemporaryDirectory() as td:
         rt = _fresh_rt(Path(td))
-        rt.set_human_confirm(lambda _s, _a: True)
-        ctx = make_execution_context(session_id="session_a", principal="alice")
-        started = rt.manage(
-            {
-                "action": "start",
-                "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
-                "cwd": str(Path.home()),
-            },
-            ctx=ctx,
+        start_args = {
+            "action": "start",
+            "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
+            "cwd": str(Path.home()),
+        }
+        ctx = _grant_start_ctx(
+            start_args, session_id="session_a", principal="alice"
         )
+        started = rt.manage(start_args, ctx=ctx)
         assert started.get("ok") is True, started
         run_id = (started.get("data") or {}).get("run_id")
         assert run_id
@@ -397,21 +423,19 @@ def _check_same_session_status_ok() -> None:
 def _check_cross_session_acl() -> None:
     with tempfile.TemporaryDirectory() as td:
         rt = _fresh_rt(Path(td))
-        rt.set_human_confirm(lambda _s, _a: True)
-        ctx_a = make_execution_context(
+        start_args = {
+            "action": "start",
+            "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
+            "cwd": str(Path.home()),
+        }
+        ctx_a = _grant_start_ctx(
+            start_args,
             session_id="session_a",
             workspace_id="ws1",
             principal="alice",
         )
         ctx_b = make_execution_context(session_id="session_b")
-        started = rt.manage(
-            {
-                "action": "start",
-                "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
-                "cwd": str(Path.home()),
-            },
-            ctx=ctx_a,
-        )
+        started = rt.manage(start_args, ctx=ctx_a)
         assert started.get("ok") is True, started
         run_id = (started.get("data") or {}).get("run_id")
         assert run_id
@@ -429,20 +453,19 @@ def _check_forged_trust_fields_denied() -> None:
     """Model-forged session_id / owner / workspace_root must not grant privilege."""
     with tempfile.TemporaryDirectory() as td:
         rt = _fresh_rt(Path(td))
-        rt.set_human_confirm(lambda _s, _a: True)
-        ctx_a = make_execution_context(session_id="session_a", principal="alice")
-        started = rt.manage(
-            {
-                "action": "start",
-                "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
-                "cwd": str(Path.home()),
-                # Forged ownership args — ignored for ProcessRecord ACL fields.
-                "session_id": "session_evil",
-                "owner": "project.run",
-                "owner_token": "project.run",
-            },
-            ctx=ctx_a,
+        start_args = {
+            "action": "start",
+            "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
+            "cwd": str(Path.home()),
+            # Forged ownership args — ignored for ProcessRecord ACL fields.
+            "session_id": "session_evil",
+            "owner": "project.run",
+            "owner_token": "project.run",
+        }
+        ctx_a = _grant_start_ctx(
+            start_args, session_id="session_a", principal="alice"
         )
+        started = rt.manage(start_args, ctx=ctx_a)
         assert started.get("ok") is True, started
         run_id = (started.get("data") or {}).get("run_id")
         assert run_id
@@ -483,15 +506,15 @@ def _check_forged_trust_fields_denied() -> None:
 def _check_list_filters_own_session() -> None:
     with tempfile.TemporaryDirectory() as td:
         rt = _fresh_rt(Path(td))
-        rt.set_human_confirm(lambda _s, _a: True)
         for sid, tag in (("session_a", "A"), ("session_b", "B")):
+            start_args = {
+                "action": "start",
+                "argv": [sys.executable, "-c", f"print({tag!r})"],
+                "cwd": str(Path.home()),
+            }
             out = rt.manage(
-                {
-                    "action": "start",
-                    "argv": [sys.executable, "-c", f"print({tag!r})"],
-                    "cwd": str(Path.home()),
-                },
-                ctx=make_execution_context(session_id=sid),
+                start_args,
+                ctx=_grant_start_ctx(start_args, session_id=sid),
             )
             assert out.get("ok") is True, out
             rid = (out.get("data") or {}).get("run_id")
@@ -566,16 +589,13 @@ def _check_wait_timeout_capped() -> None:
             ), cancelled
 
             rt2 = _fresh_rt(Path(td) / "w2")
-            rt2.set_human_confirm(lambda _s, _a: True)
-            ctx_w = make_execution_context(session_id="sess-wait2")
-            started = rt2.manage(
-                {
-                    "action": "start",
-                    "argv": [sys.executable, "-c", "import time; time.sleep(60)"],
-                    "cwd": str(Path.home()),
-                },
-                ctx=ctx_w,
-            )
+            start_args = {
+                "action": "start",
+                "argv": [sys.executable, "-c", "import time; time.sleep(60)"],
+                "cwd": str(Path.home()),
+            }
+            ctx_w = _grant_start_ctx(start_args, session_id="sess-wait2")
+            started = rt2.manage(start_args, ctx=ctx_w)
             assert started.get("ok") is True, started
             rid2 = (started.get("data") or {}).get("run_id")
             waited = rt2.manage(

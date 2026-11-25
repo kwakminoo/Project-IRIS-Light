@@ -15,6 +15,7 @@ from iris.system.iris_shell import (
 from iris.ui.chat.shell_controller import (
     bind_block,
     clip_live,
+    get_by_request,
     new_request,
     run_shell_live,
 )
@@ -52,20 +53,33 @@ def register_shell_actions(window: Any, reg: ActionRegistry) -> None:
             return err_result("shell.run", str(exc))
 
         chat = getattr(window, "_chat", None)
-        block_id = take_shell_confirm_block(chat, command=job.command)
+        payload = args if isinstance(args, dict) else {}
+        prior_rid = str(payload.pop("_iris_shell_request_id", "") or "").strip()
+        block_id = take_shell_confirm_block(
+            chat, command=job.command, request_id=prior_rid
+        )
         # Trusted Control context — prefer turn-frozen ctx; ignore model trust fields.
         ctx = trusted_execution_context(window)
         session_id = str(ctx.effective_session_id() or "")
         workspace_id = str(ctx.workspace_id or "")
 
-        req = new_request(
-            session_id=session_id,
-            workspace_id=workspace_id,
-            command=job.command,
-            block_id=block_id,
-        )
-        if block_id:
-            bind_block(req.request_id, block_id)
+        existing = get_by_request(prior_rid) if prior_rid else None
+        if existing is not None:
+            req = existing
+            req.session_id = session_id or req.session_id
+            req.workspace_id = workspace_id or req.workspace_id
+            req.command = job.command or req.command
+            if block_id:
+                bind_block(req.request_id, block_id)
+        else:
+            req = new_request(
+                session_id=session_id,
+                workspace_id=workspace_id,
+                command=job.command,
+                block_id=block_id,
+            )
+            if block_id:
+                bind_block(req.request_id, block_id)
 
         def _stream(
             job_: ShellJob,

@@ -436,7 +436,13 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
     ctx = trusted_execution_context(window)
     session_id = str(ctx.effective_session_id() or "")
     workspace_id = str(ctx.workspace_id or ctx.workspace_root or root_s)
-    from iris.ui.chat.shell_controller import bind_block, bind_run, new_request, set_status
+    from iris.ui.chat.shell_controller import (
+        bind_block,
+        bind_run,
+        get_by_request,
+        new_request,
+        set_status,
+    )
     from iris.ui.chat.shell_gate import take_shell_confirm_block
 
     cmd_preview = (
@@ -444,15 +450,30 @@ def project_run(window: ProjectHost, args: dict[str, Any]) -> dict[str, Any]:
         if start_kwargs.get("shell")
         else " ".join(str(a) for a in argv)
     )
-    block_id = take_shell_confirm_block(getattr(window, "_chat", None))
-    req = new_request(
-        session_id=session_id,
-        workspace_id=workspace_id,
+    # HF-05: request_id↔block_id from confirm stash (not FIFO pop(0)).
+    prior_rid = str(args.pop("_iris_shell_request_id", "") or "").strip()
+    block_id = take_shell_confirm_block(
+        getattr(window, "_chat", None),
         command=str(cmd_preview or ""),
-        block_id=block_id,
+        request_id=prior_rid,
     )
-    if block_id:
-        bind_block(req.request_id, block_id)
+    existing = get_by_request(prior_rid) if prior_rid else None
+    if existing is not None:
+        req = existing
+        req.session_id = session_id or req.session_id
+        req.workspace_id = workspace_id or req.workspace_id
+        req.command = str(cmd_preview or "") or req.command
+        if block_id:
+            bind_block(req.request_id, block_id)
+    else:
+        req = new_request(
+            session_id=session_id,
+            workspace_id=workspace_id,
+            command=str(cmd_preview or ""),
+            block_id=block_id,
+        )
+        if block_id:
+            bind_block(req.request_id, block_id)
     set_status(req.request_id, "approved")
 
     t0 = time.monotonic()

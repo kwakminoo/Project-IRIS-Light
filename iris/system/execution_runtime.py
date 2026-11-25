@@ -28,11 +28,8 @@ from iris.system.execution_context import (
 )
 from iris.system.execution_policy import (
     WAIT_MAX_TIMEOUT_S,
-    PolicyDecision,
     cap_wait_timeout,
-    check_action_approval,
     check_process_start_cwd,
-    process_start_action_spec,
 )
 from iris.system.run_env import build_child_env
 from iris.system.win_subprocess import no_window_kwargs
@@ -600,42 +597,34 @@ class ProcessRegistry:
                 runs = [r.as_dict() for r in self.list_runs(session_id=sid)]
                 return {"ok": True, "action": "process.manage", "data": {"runs": runs}}
             if action == "start":
-                # Prefer request-scoped ledger via ctx.approval_reference (HF-04).
-                # Do not require mutating self._human_confirm for product path.
+                # HF-04: manage(start) consumes RequestApprovalLedger only.
+                # Product process.manage must not call set_human_confirm.
+                from iris.system.request_approval import (
+                    default_approval_ledger,
+                    fingerprint_from_manage_args,
+                )
+
                 approval_ref = ""
                 if ctx is not None:
                     approval_ref = str(getattr(ctx, "approval_reference", "") or "").strip()
-                if approval_ref:
-                    from iris.system.request_approval import (
-                        default_approval_ledger,
-                        fingerprint_from_manage_args,
-                    )
-
-                    ok_c, reason_c = default_approval_ledger().consume(
-                        request_id=approval_ref,
-                        fingerprint=fingerprint_from_manage_args(raw),
-                        session_id=ctx.effective_session_id() if ctx is not None else "",
-                        workspace_id=str(getattr(ctx, "workspace_id", "") or ""),
-                    )
-                    if not ok_c:
-                        return {
-                            "ok": False,
-                            "action": "process.manage",
-                            "error": reason_c or "approval required",
-                            "data": {"confirm_required": True, "risk": "high"},
-                        }
-                    approval = PolicyDecision(True)
-                else:
-                    approval = check_action_approval(
-                        process_start_action_spec(),
-                        dict(raw),
-                        self._human_confirm,
-                    )
-                if not approval.allowed:
+                if not approval_ref:
                     return {
                         "ok": False,
                         "action": "process.manage",
-                        "error": approval.reason or "human confirm required",
+                        "error": "human confirm required",
+                        "data": {"confirm_required": True, "risk": "high"},
+                    }
+                ok_c, reason_c = default_approval_ledger().consume(
+                    request_id=approval_ref,
+                    fingerprint=fingerprint_from_manage_args(raw),
+                    session_id=ctx.effective_session_id() if ctx is not None else "",
+                    workspace_id=str(getattr(ctx, "workspace_id", "") or ""),
+                )
+                if not ok_c:
+                    return {
+                        "ok": False,
+                        "action": "process.manage",
+                        "error": reason_c or "human confirm required",
                         "data": {"confirm_required": True, "risk": "high"},
                     }
                 ws_root = ""

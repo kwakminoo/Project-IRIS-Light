@@ -125,17 +125,26 @@ def _check_legacy_unscoped_denies_cross_session() -> None:
     import sys
 
     with tempfile.TemporaryDirectory() as td:
-        rt = ExecutionRuntime(runs_root=Path(td) / "runs")
-        rt.set_human_confirm(lambda _s, _a: True)
-        owner = make_execution_context(session_id="session_a")
-        started = rt.manage(
-            {
-                "action": "start",
-                "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
-                "cwd": str(Path.home()),
-            },
-            ctx=owner,
+        from iris.system.request_approval import (
+            default_approval_ledger,
+            fingerprint_from_manage_args,
         )
+
+        rt = ExecutionRuntime(runs_root=Path(td) / "runs")
+        start_args = {
+            "action": "start",
+            "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
+            "cwd": str(Path.home()),
+        }
+        rec = default_approval_ledger().grant(
+            fingerprint=fingerprint_from_manage_args(start_args),
+            session_id="session_a",
+        )
+        owner = make_execution_context(
+            session_id="session_a",
+            approval_reference=rec.request_id,
+        )
+        started = rt.manage(start_args, ctx=owner)
         assert started.get("ok") is True, started
         run_id = (started.get("data") or {}).get("run_id")
         # Legacy unscoped invoke: no trusted session on ctx.

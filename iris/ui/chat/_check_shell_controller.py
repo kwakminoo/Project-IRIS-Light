@@ -1,6 +1,9 @@
-"""U07 shell controller identity map + live paint + cancel."""
+"""U07 / HF-06 shell controller identity map + live paint + cancel."""
 
 from __future__ import annotations
+
+import threading
+import time
 
 from iris.system.iris_shell import ShellJob, ShellOutcome, parse_shell_job
 from iris.ui.chat import shell_controller as sc
@@ -51,8 +54,15 @@ def _check_run_shell_live_one_box() -> None:
     chat = _Chat()
     job = ShellJob(command="echo live", cwd=parse_shell_job({"command": "echo live"}).cwd)
     req = sc.new_request(command=job.command)
+    bound_midstream: list[str] = []
 
-    def fake_stream(_job: ShellJob, on_chunk, cancel_event=None) -> ShellOutcome:
+    def fake_stream(_job: ShellJob, on_chunk, cancel_event=None, on_started=None) -> ShellOutcome:
+        # HF-06: bind as soon as start succeeds (before stream ends).
+        if callable(on_started):
+            on_started("run-live")
+        mapped = sc.get_by_request(req.request_id)
+        assert mapped is not None and mapped.run_id == "run-live"
+        bound_midstream.append(mapped.run_id)
         on_chunk("line-a\n")
         return ShellOutcome(
             ok=True,
@@ -75,6 +85,7 @@ def _check_run_shell_live_one_box() -> None:
         request_id=req.request_id,
     )
     assert outcome.ok and bid == "live-1"
+    assert bound_midstream == ["run-live"]
     mapped = sc.get_by_request(req.request_id)
     assert mapped is not None
     assert mapped.block_id == "live-1"
@@ -84,10 +95,60 @@ def _check_run_shell_live_one_box() -> None:
     assert len(inserts) == 1
 
 
-def _check_cancel_without_run() -> None:
+def _check_cancel_awaiting_approval() -> None:
     sc.reset_for_tests()
     req = sc.new_request(command="noop")
-    assert sc.cancel_request(req.request_id) is False
+    assert req.status == "awaiting_approval"
+    assert sc.cancel_request(req.request_id) is True
+    assert sc.get_by_request(req.request_id).status == "cancelled"
+    # HF-06: do not force running over cancelled.
+    sc.set_status(req.request_id, "running")
+    assert sc.get_by_request(req.request_id).status == "cancelled"
+    sc.bind_run(req.request_id, "late-run")
+    assert sc.get_by_request(req.request_id).status == "cancelled"
+    assert sc.get_by_run("late-run").request_id == req.request_id
+
+
+def _check_cancel_event_during_stream() -> None:
+    sc.reset_for_tests()
+    req = sc.new_request(command="sleep")
+    saw_cancel = threading.Event()
+
+    def fake_stream(_job, on_chunk, cancel_event=None, on_started=None):
+        if callable(on_started):
+            on_started("run-cancel")
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                saw_cancel.set()
+                return ShellOutcome(
+                    ok=False,
+                    command=_job.command,
+                    cwd=str(_job.cwd),
+                    exit_code=-1,
+                    stdout="",
+                    stderr="",
+                    summary="cancelled",
+                    run_id="run-cancel",
+                    status="cancelled",
+                )
+            time.sleep(0.02)
+        raise AssertionError("cancel_event never set")
+
+    def _cancel_soon() -> None:
+        time.sleep(0.05)
+        sc.cancel_request(req.request_id)
+
+    threading.Thread(target=_cancel_soon, daemon=True).start()
+    outcome, _bid = sc.run_shell_live(
+        chat=None,
+        on_ui=lambda fn: fn(),
+        job=ShellJob(command="sleep", cwd=parse_shell_job({"command": "echo"}).cwd),
+        stream_fn=fake_stream,
+        request_id=req.request_id,
+    )
+    assert saw_cancel.is_set()
+    assert outcome.status == "cancelled"
     assert sc.get_by_request(req.request_id).status == "cancelled"
 
 
@@ -105,7 +166,8 @@ def main() -> None:
     _check_identity_and_phase()
     _check_concurrent_isolation()
     _check_run_shell_live_one_box()
-    _check_cancel_without_run()
+    _check_cancel_awaiting_approval()
+    _check_cancel_event_during_stream()
     _check_live_ring_bounded()
     print("shell_controller ok")
 

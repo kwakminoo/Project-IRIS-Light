@@ -344,6 +344,43 @@ def main() -> int:
 
         handle_apply_click(edit, "iris-apply://hello.py")
 
+    # HF-05: reverse-order approve — request_id↔block_id map, not FIFO pop(0).
+    from iris.ui.chat import shell_controller as sc
+    from iris.ui.chat.shell_gate import stash_shell_confirm_block, take_shell_confirm_block
+
+    sc.reset_for_tests()
+    map_chat = _Chat()
+    rid_a = stash_shell_confirm_block(map_chat, "block-a", command="cmd-a")
+    rid_b = stash_shell_confirm_block(map_chat, "block-b", command="cmd-b")
+    assert rid_a and rid_b and rid_a != rid_b
+    # Take B first (reverse of stash order) — must get block-b, not FIFO head.
+    assert take_shell_confirm_block(map_chat, request_id=rid_b) == "block-b"
+    assert take_shell_confirm_block(map_chat, request_id=rid_a) == "block-a"
+    assert take_shell_confirm_block(map_chat, request_id=rid_a) == ""
+
+    # Command match still works without request_id when distinct.
+    rid_c = stash_shell_confirm_block(map_chat, "block-c", command="unique-c")
+    rid_d = stash_shell_confirm_block(map_chat, "block-d", command="unique-d")
+    assert take_shell_confirm_block(map_chat, command="unique-d") == "block-d"
+    assert take_shell_confirm_block(map_chat, command="unique-c") == "block-c"
+    assert rid_c and rid_d
+
+    # HF-05: take timeout → deny (cleanup, no unbounded wait).
+    arm("gate-timeout")
+    timed: list[str] = []
+
+    def _wait_timeout() -> None:
+        timed.append(take("gate-timeout", timeout=0.08))
+
+    tw = threading.Thread(target=_wait_timeout, daemon=True)
+    tw.start()
+    tw.join(2)
+    assert timed == ["timeout"], timed
+    assert not tw.is_alive()
+    # Expired wait removed — late decide is a no-op.
+    decide("gate-timeout", "run")
+    assert take("gate-timeout", timeout=0.05) == ""
+
     print("shell_gate ok")
     return 0
 

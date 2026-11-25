@@ -744,9 +744,11 @@ def human_confirm_decision(
         )
         if decided.approved is not None:
             if name in _SHELL_NO_HUD_ACTIONS and decided.approved:
-                stash_shell_confirm_block(
+                rid = stash_shell_confirm_block(
                     chat, decided.block_id, command=command
                 )
+                if isinstance(args, dict) and rid:
+                    args["_iris_shell_request_id"] = rid
             return bool(decided.approved)
         # Card unavailable: shell/project fail-closed (approval_ui_unavailable).
         if name in _SHELL_NO_HUD_ACTIONS:

@@ -128,24 +128,23 @@ def get_by_run(run_id: str) -> ShellRequest | None:
 
 
 def cancel_request(request_id: str) -> bool:
-    """Cancel via Runtime when run_id is bound. Same path for Shell Box stop."""
+    """Cancel awaiting_approval or running. Same path for Shell Box stop."""
     rid = str(request_id or "").strip()
     with _lock:
         req = _by_request.get(rid)
         run_id = req.run_id if req is not None else ""
     if not rid:
         return False
+    # Mark cancelled first so live paint / bind_run cannot overwrite with running.
+    set_status(rid, "cancelled")
     if not run_id:
-        set_status(rid, "cancelled")
-        return False
+        return True
     from iris.system.execution_runtime import default_runtime
 
     try:
         default_runtime().cancel(run_id)
     except Exception:
-        set_status(rid, "cancelled")
         return False
-    set_status(rid, "cancelled")
     return True
 
 
@@ -285,7 +284,8 @@ def run_shell_live(
         cur = get_by_request(rid)
         if cur is not None and cur.status == "cancelled":
             cancel_event.set()
-        else:
+        elif cur is None or cur.status != "cancelled":
+            # HF-06: never force running over cancelled.
             set_status(rid, "running")
         if bid:
             bind_block(rid, bid)

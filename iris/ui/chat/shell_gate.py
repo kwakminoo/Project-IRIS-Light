@@ -8,10 +8,12 @@ from typing import Any, Callable
 
 from iris.ui.chat.run_visibility import card_from_control_result, insert_visibility_card
 from iris.ui.chat.shell_approval import ApprovalState, preview_command, should_auto_run
+from iris.ui.chat.shell_controller import bind_block, get_by_request, new_request
 
-# Chat attr: block_id → command preview (request-bound; not FIFO-only).
-SHELL_CONFIRM_BLOCK_ATTR = "_shell_confirm_block_ids"  # legacy list name kept
-SHELL_CONFIRM_MAP_ATTR = "_shell_confirm_by_command"
+# Chat attr: request_id → block_id (HF-05 — not FIFO pop(0) identity).
+SHELL_CONFIRM_MAP_ATTR = "_shell_confirm_by_request"
+# Legacy list attr — readers may exist; writers no longer use it as identity.
+SHELL_CONFIRM_BLOCK_ATTR = "_shell_confirm_block_ids"
 DEFAULT_APPROVAL_WAIT_S = 300.0
 
 
@@ -48,17 +50,14 @@ def decide(block_id: str, decision: str) -> None:
 
 
 def take(block_id: str, timeout: float | None = DEFAULT_APPROVAL_WAIT_S) -> str:
+    """Wait for a card decision. Always bounded — expire → deny (empty/"timeout")."""
     with _lock:
         slot = _waits.get(block_id)
     if slot is None:
         # Nothing was armed. Waiting here would leave the worker blocked.
         return ""
-    wait_s = None if timeout is None else max(0.05, float(timeout))
-    if wait_s is None:
-        slot.event.wait()
-        fired = True
-    else:
-        fired = bool(slot.event.wait(timeout=wait_s))
+    wait_s = DEFAULT_APPROVAL_WAIT_S if timeout is None else max(0.05, float(timeout))
+    fired = bool(slot.event.wait(timeout=wait_s))
     with _lock:
         if _waits.get(block_id) is slot:
             _waits.pop(block_id, None)
@@ -68,55 +67,62 @@ def take(block_id: str, timeout: float | None = DEFAULT_APPROVAL_WAIT_S) -> str:
 
 
 def stash_shell_confirm_block(
-    chat: Any | None, block_id: str, command: str = ""
-) -> None:
-    if chat is None:
-        return
+    chat: Any | None,
+    block_id: str,
+    command: str = "",
+    *,
+    request_id: str = "",
+) -> str:
+    """Bind request_id↔block_id and stash on chat. Returns request_id used."""
     bid = (block_id or "").strip()
-    if not bid:
-        return
     cmd = str(command or "").strip()
+    rid = str(request_id or "").strip()
+    if rid:
+        existing = get_by_request(rid)
+        if existing is None:
+            new_request(request_id=rid, command=cmd, block_id=bid)
+        else:
+            if cmd and not existing.command:
+                existing.command = cmd
+            if bid:
+                bind_block(rid, bid)
+    else:
+        req = new_request(command=cmd, block_id=bid)
+        rid = req.request_id
+        if bid:
+            bind_block(rid, bid)
+    if chat is None or not rid:
+        return rid
     m = getattr(chat, SHELL_CONFIRM_MAP_ATTR, None)
     if not isinstance(m, dict):
         m = {}
         setattr(chat, SHELL_CONFIRM_MAP_ATTR, m)
-    m[bid] = cmd
-    # Keep legacy list for old readers (migration).
-    q = getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, None)
-    if not isinstance(q, list):
-        q = []
-        setattr(chat, SHELL_CONFIRM_BLOCK_ATTR, q)
-    if bid not in q:
-        q.append(bid)
+    m[rid] = bid
+    return rid
 
 
-def take_shell_confirm_block(chat: Any | None, command: str = "") -> str:
+def take_shell_confirm_block(
+    chat: Any | None,
+    command: str = "",
+    *,
+    request_id: str = "",
+) -> str:
+    """Resolve block_id via request_id map (or command match). Never FIFO-only."""
     if chat is None:
         return ""
+    rid = str(request_id or "").strip()
     cmd = str(command or "").strip()
     m = getattr(chat, SHELL_CONFIRM_MAP_ATTR, None)
-    if isinstance(m, dict) and m:
-        if cmd:
-            for bid, preview in list(m.items()):
-                if str(preview or "").strip() == cmd:
-                    m.pop(bid, None)
-                    q = getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, None)
-                    if isinstance(q, list) and bid in q:
-                        q.remove(bid)
-                    return str(bid)
-        # LIFO fallback when command unknown — last approved wins over FIFO mismatch.
-        bid, _preview = m.popitem()
-        q = getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, None)
-        if isinstance(q, list) and bid in q:
-            q.remove(bid)
-        return str(bid)
-    q = getattr(chat, SHELL_CONFIRM_BLOCK_ATTR, None)
-    if isinstance(q, list) and q:
-        return str(q.pop(0) or "").strip()
-    legacy = str(getattr(chat, "_shell_confirm_block_id", "") or "").strip()
-    if legacy:
-        setattr(chat, "_shell_confirm_block_id", "")
-        return legacy
+    if not isinstance(m, dict) or not m:
+        return ""
+    if rid and rid in m:
+        return str(m.pop(rid) or "").strip()
+    if cmd:
+        for key, bid in list(m.items()):
+            req = get_by_request(key)
+            if req is not None and str(req.command or "").strip() == cmd:
+                m.pop(key, None)
+                return str(bid or "").strip()
     return ""
 
 
@@ -188,7 +194,8 @@ def try_card_confirm(
             _ui(on_attention)
         except Exception:
             pass
-    approved = wait(block_id) in ("run", "always")
+    decision = wait(block_id)
+    approved = decision in ("run", "always")
     return CardConfirmResult(approved, block_id)
 
 
