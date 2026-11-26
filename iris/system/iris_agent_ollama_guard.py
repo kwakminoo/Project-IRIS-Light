@@ -155,7 +155,7 @@ def note_after_provider_direct_ok(
     """직접 연결 성공 뒤에 붙일 한 줄. 게이트웨이를 새로 띄우지 않는다.
 
     Empty agent_base_url = product sidecar path. Skip :8642 probe/chat
-    (normalize would otherwise resurrect the retired ExternalGateway URL).
+    (normalize would otherwise resurrect the retired :8642 URL).
     """
     if not hermes_enabled:
         return ""

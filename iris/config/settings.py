@@ -18,7 +18,7 @@ class Settings:
     agent_enabled: bool = True
     agent_command: str = "iris-agent"
     # Product ready = InternalSidecar (engine), not HTTP :8642.
-    # Empty = no advertised ExternalGateway URL. Opt-in diagnostics may still
+    # Empty = no advertised :8642 URL. Opt-in diagnostics may still
     # pass a URL; agent_enabled does not require :8642.
     agent_base_url: str = ""
     agent_api_key: str = ""

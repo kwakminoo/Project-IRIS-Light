@@ -568,7 +568,7 @@ def ensure_iris_agent_runtime(
     base_url: str = "",
     *,
     api_key: str = "",
-    command: str = "hermes",
+    command: str = "iris-agent",
     wait_sec: float = 45.0,
     should_abort: Callable[[], bool] | None = None,
     on_progress: Callable[[str], None] | None = None,

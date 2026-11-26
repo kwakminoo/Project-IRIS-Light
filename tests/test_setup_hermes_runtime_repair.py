@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from iris.engine.types import EngineHome, EngineReady, InternalSidecar
+from iris.infrastructure.agent_runtime import ENGINE_SELECTION_FILE
 from iris.system import iris_agent_gateway as gw
 from iris.system import iris_agent_install as hi
 from iris.system.setup_protocol import SetupProtocol
@@ -61,7 +63,15 @@ class SetupHermesRuntimeRepairTests(unittest.TestCase):
         (agent / "venv" / "marker.txt").write_text("x", encoding="utf-8")
         env_path = self.home / ".env"
         env_path.write_text("API_SERVER_KEY=keep-me\n", encoding="utf-8")
-        with patch("iris.engine._home.probe_engine_python", return_value=object()):
+        # Gate fires only when active selection is the live reference checkout.
+        (self.home / ENGINE_SELECTION_FILE).write_text(
+            json.dumps({"active": "hermes-agent", "previous": None}),
+            encoding="utf-8",
+        )
+        with (
+            patch("iris.engine._home.probe_engine_python", return_value=object()),
+            patch.object(hi, "_dev_owned_cutover_allowed", return_value=False),
+        ):
             result = hi.install_iris_agent_with_system_python(home=self.home)
         self.assertFalse(result.ok)
         self.assertEqual(result.kind, "gate")

@@ -138,7 +138,12 @@ def _simulate_install(surface: str, preload: list[str]) -> set[str]:
         for row in (agent.tools or [])
         if isinstance(row, dict)
     }
-    assert visible == set(installed) == set(agent.valid_tool_names)
+    installed_set = set(installed)
+    # Progressive disclosure may hide the long tail behind tool_search; bindings
+    # and valid_tool_names still cover every Iris model name.
+    assert installed_set <= set(agent.valid_tool_names)
+    assert "terminal" in visible
+    assert visible - {"tool_search", "tool_describe", "tool_call"} <= installed_set
     assert fake.registered == [], "product install must not register into Hermes"
     assert all(result == '{"ok": true}' for result in results.values()), results
     expected_actions = {

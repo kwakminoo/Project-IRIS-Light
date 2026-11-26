@@ -30,7 +30,7 @@ class BackendRoute:
     base_url: str = ""
     api_key: str = ""
     auth_style: str = "bearer"
-    command: str = "hermes"
+    command: str = "iris-agent"
     # resolve_iris_agent_inference() 결과
     target: Any = None
     extra: dict[str, str] = field(default_factory=dict)
@@ -107,6 +107,7 @@ def _api(route, messages, timeout_sec, stop) -> str:
 if __name__ == "__main__":
     r = BackendRoute(backend="ollama", model="m")
     assert r.base_url == "" and r.target is None and r.extra == {}
+    assert r.command == "iris-agent"
     assert BackendRoute(backend="api", model="m", auth_style="x-api-key").auth_style == "x-api-key"
 
     print("backend_call self-check ok")

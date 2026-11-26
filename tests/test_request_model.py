@@ -21,6 +21,7 @@ from iris.engine import (  # noqa: E402
 )
 from iris.infrastructure.iris_agent_client import IrisAgentClient, IrisAgentInferenceTarget  # noqa: E402
 from iris.runtime.chat_run_slot import ChatRunSlot, choose_turn_model  # noqa: E402
+from iris.ui.workers.backend_call import BACKEND_AGENT, BackendRoute, collect_reply  # noqa: E402
 from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker  # noqa: E402
 
 
@@ -160,21 +161,31 @@ class ChatWorkerModelTests(TestCase):
 
 class SideCallHermesTests(TestCase):
     def test_title_path_does_not_write_gateway_config(self) -> None:
-        from iris.ui.workers.backend_call import BackendRoute, _hermes
-
-        client = _FakeClient()
+        """Title/summary side-call uses collect_reply; agent→API remap, no gateway client."""
         target = IrisAgentInferenceTarget(
-            model="vendor/internal-v3", provider="custom", display="friendly"
+            model="vendor/internal-v3",
+            provider="custom",
+            display="friendly",
+            base_url="http://127.0.0.1:9/v1",
+            api_key="gateway-auth",
         )
         route = BackendRoute(
-            backend="hermes",
+            backend=BACKEND_AGENT,
             model="api:ab12:friendly",
             api_key="gateway-auth",
             target=target,
         )
-        with patch("iris.infrastructure.iris_agent_client.IrisAgentClient", return_value=client):
-            text = _hermes(route, [{"role": "user", "content": "제목"}], lambda: False)
+        seen: list[tuple[str, str, str]] = []
+
+        def _fake_api(api_route, messages, timeout_sec, stop):
+            seen.append((api_route.model, api_route.base_url, api_route.api_key))
+            return "ok"
+
+        with (
+            patch("iris.ui.workers.backend_call._api", side_effect=_fake_api),
+            patch("iris.infrastructure.iris_agent_client.IrisAgentClient") as client_cls,
+        ):
+            text = collect_reply(route, [{"role": "user", "content": "제목"}])
         self.assertEqual(text, "ok")
-        self.assertEqual(client.set_calls, 0)
-        self.assertEqual(client.seen, [("vendor/internal-v3", "custom")])
-        self.assertFalse(any("api_key" in item for item in client.kwargs))
+        self.assertEqual(seen, [("vendor/internal-v3", "http://127.0.0.1:9/v1", "gateway-auth")])
+        client_cls.assert_not_called()

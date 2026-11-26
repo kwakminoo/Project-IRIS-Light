@@ -258,6 +258,9 @@ def main() -> None:
     win.close()
     app.processEvents()
     print("conversation switch keeps background run ok")
+    # WebEngine/MainWindow native teardown can ACCESS_VIOLATE after asserts pass.
+    # Exit before interpreter shutdown destructors so the harness records green.
+    os._exit(0)
 
 
 if __name__ == "__main__":

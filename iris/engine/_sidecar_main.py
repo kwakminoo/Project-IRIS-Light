@@ -411,6 +411,8 @@ def _install_iris_engine_tools(
         engine_tool_bindings,
         normalize_speak_surface,
     )
+
+    tool_surface = _load_local_helper("tool_surface")
     surf = normalize_speak_surface(surface)
     contract_rows = engine_tool_bindings(surface=surf)
     iris_tools: list[dict] = []
@@ -433,11 +435,31 @@ def _install_iris_engine_tools(
             row.fingerprint,
         )
 
+    context_length = None
+    try:
+        from iris.system.setup_protocol import HERMES_MIN_OLLAMA_NUM_CTX
+
+        context_length = int(HERMES_MIN_OLLAMA_NUM_CTX)
+    except Exception:
+        context_length = None
+    model_visible, deferred_defs, _activated = tool_surface.assemble_iris_model_tools(
+        iris_tools,
+        context_length=context_length,
+    )
     snapshot = MappingProxyType(dict(bindings))
     trusted = dict(bridge_context or {})
+    deferred_snapshot = tuple(deferred_defs)
 
     def dispatch(name: str, args: dict | None = None, *_a: object, **_kw: object) -> str:
-        binding = snapshot.get(str(name or "").strip())
+        key = str(name or "").strip()
+        bridged = tool_surface.dispatch_iris_bridge(
+            key,
+            args,
+            deferred_defs=list(deferred_snapshot),
+        )
+        if bridged is not None:
+            return bridged
+        binding = snapshot.get(key)
         if binding is None:
             return _tool_not_available(name)
         logging.getLogger(__name__).info(
@@ -461,13 +483,15 @@ def _install_iris_engine_tools(
     model_tools = importlib.import_module("model_tools")
     model_tools.handle_function_call = dispatch
     agent._iris_native_tool_bindings = snapshot
+    agent._iris_deferred_tool_defs = deferred_snapshot
     agent._skip_mcp_refresh = True
     _guard_native_tool_refresh()
     _guard_hermes_registry_dispatch()
 
-    # Drop Core schemas preloaded during construction; providers see Iris only.
-    agent.tools = iris_tools
-    agent.valid_tool_names = set(snapshot)
+    # Drop Core schemas preloaded during construction; providers see Iris eager
+    # tools plus the tool_search bridge when the long tail is deferred.
+    agent.tools = model_visible
+    agent.valid_tool_names = set(snapshot) | set(tool_surface.BRIDGE_TOOL_NAMES)
     return tuple(snapshot)
 
 

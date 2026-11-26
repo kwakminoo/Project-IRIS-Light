@@ -37,7 +37,9 @@ def main() -> None:
         if hasattr(module, name)
     ]
     assert not leftovers, "compat aliases remain: " + ", ".join(leftovers)
-    assert backend_call._AGENT_BACKENDS == frozenset({"agent"})
+    assert backend_call.BACKEND_AGENT == "agent"
+    assert not hasattr(backend_call, "BACKEND_HERMES")
+    assert backend_call.BackendRoute(backend="agent", model="m").command == "iris-agent"
     assert backend_route.is_agent_backend("agent") is True
     assert backend_route.is_agent_backend("hermes") is False
     assert FallbackEntry(model="m", backend="hermes").backend != "agent"

@@ -5,68 +5,73 @@
 | 문서 번호 | W16-TRACK-2026-11-26 |
 | 작성일 | 2026-11-26 |
 | 관련 | Codex `Harden IRIS native independence` · brief NIP-00…13 |
-| 대상 | Working tree on `main` @ `44df2f2` + dirty Wave 1.6 edits |
-| 목적 | Codex 한도 끊김 이후 이어서 구현·검증할 단위 고정 |
+| 대상 | Working tree on `main` @ `029c1ceef289d78f7fb4a66271d686c95cd20aba` |
+| 목적 | Wave 1.6 실측 상태를 고정하고 Wave 2 Entry만 판정한다 |
 
 ## 1. 결론
 
-이번 재개로 NIP-02~08·11 핵심은 green이다. NIP-09는 PARTIAL(로컬 HELLO·grounding·짧은 계약 PASS, 멀티모델/외부 live OPEN). NIP-12 OPEN · NIP-13 KEEP → **Wave 2 진입 불가**. gateway 모듈 ISOLATE.
+Owned Core·NIP-01/02 핫패스·NIP-12(57/57)·FPR13 contracts(17/17)·L3 live(hello+shell)·L5/L6·vibe_smoke 9/9·제품 Control(browser/shell/email.compose_draft)는 green이다. NIP-09는 PARTIAL(로컬 멀티툴 매트릭스 미완·유료 OPEN). FPR13 `ide_product_control`만 `--product-home` 없으면 UNVERIFIED. gateway ISOLATE. `legacy_migration_approved=false`.
 
-## 2. Codex 트레일 (권위)
+**Wave 2 Entry:** 개발 **CONDITIONAL GO** / 공개·마이그레이션 **NO-GO**.
 
-| 시각/메시지 | 내용 | 판정 |
+## 2. Owned Core (실측)
+
+| 항목 | 값 | 증거 |
 |---|---|---|
-| 시작 | Ponytail으로 Wave 1.6 brief 읽고 stage 진행 | — |
-| 중간 | Owned 선택 이미 있음. corrupt/missing selection 수용 과다 → 선택·복구 강화 | DONE (코드+`agent_runtime` self-check) |
-| 중간 | engine/installer 포커스 체크 PASS. 격리 lifecycle uv 설치 시작 | DONE |
-| 중간 | Gateway fallback을 routine/summary에서 발견. Graphify 후 제거 예정 | OPEN (끊김) |
-| 마지막 사용자 인용 | clean install `gpt-oss:20b` 턴 OK. staged update exact-response 실패 → prior slot 유지. process approval env/timeout fingerprint 수정 | PARTIAL→lifecycle 증거는 이후 완주 |
-| IDE/Validation 형제 | usage limit 로 FINAL_ANSWER 실패 | OPEN |
+| Vendor + active | `0.1.2+iris.a382af23` | `vendor/iris-agent-core/SOURCE_MANIFEST.json` · `~\.iris-light\agent\iris-agent.slot-272facc0f5fd4b6f\SOURCE_MANIFEST.json` |
+| Active slot | `iris-agent.slot-272facc0f5fd4b6f` | NIP-01/09 closure · slot manifest |
+| Update / rollback / reupdate | verified | FPR13 `installer_lifecycle` PASS · lifecycle evidence under `.tmp/wave16-lifecycle/` / `.tmp/fpr13/logs/installer_lifecycle.log` |
+| HELLO | PASS | FPR13 `l01_general_chat` · NIP-09 `1_general_chat` |
+| Hermes on import path | no | `nip01-02-closure-evidence-2026-11-26.md` |
+| `legacy_migration_approved` | **false** | SOURCE_MANIFEST (vendor + slot) |
 
-세션 id: `01a216a6-b0b0-7590-ab18-3ac0012d1fc4`
+## 3. NIP 상태 (`029c1ce`)
 
-## 3. 상속 증거 (재실행·실측)
-
-| 주장 | 증거 | 상태 |
+| Phase | 상태 | 비고 / 증거 |
 |---|---|---|
-| Owned 선택 무결성 | `selected_owned_engine` integrity+venv 검사. hermes 자동 선택 제거 | PASS (`python -m iris.infrastructure.agent_runtime`) |
-| Live selection | active=`iris-agent.slot-e38f3ea761714c36`, previous=`hermes-agent` | PASS (실측) |
-| Process approval env/timeout | `FinalizedStartPlan.environment_id`/`timeout_s` fingerprint | PASS (`_check_process_manage` · `_check_request_approval` · `_check_run_approval`) |
-| 격리 lifecycle | `.tmp/wave16-lifecycle/run-9w0usfic/evidence.json` install→HELLO→update→rollback→recovery | PASS (파일 실측). Codex 중간 실패 메시지보다 최종 증거가 앞섬 |
-| Core version | vendor `0.1.2+iris.a382af23`, `legacy_migration_approved=false` | PASS |
-| Gateway-free one-shot | headless `_oneshot_route` + GUI `_summary_route_for`→`resolve_title_route`. unittest 3 ok | DONE |
-| IDE Bridge NIP-06 | bridge_nav FAIL→PASS(active editor push). 6 포커스 체크 + sync | 계약 DONE / GUI 수동 OPEN |
-| Native tool NIP-05 | 계약 PASS + owned live shell `finished_exactly:true` (NIP-04) | DONE |
+| NIP-00 Baseline | DONE | HEAD=`029c1ce` |
+| NIP-01 Engine Independence | DONE (핫패스) | `docs/code-review/nip01-02-closure-evidence-2026-11-26.md` PASS |
+| NIP-02 Residual/Gateway | DONE (핫패스) / 모듈 **ISOLATE** | 동 문서. spawn 0. R-ASSETS-ABSORB 전분기 OPEN |
+| NIP-03 Runtime Hardening | 계약 DONE | stall·cancel·idle·sidecar 계열 유지 |
+| NIP-04 Tool grounding | DONE (L3) | FPR13 `l04` PASS · NIP-09 matrix shell auto PASS (`_check_owned_live_shell --auto`는 fixture 플레이크 잔여) |
+| NIP-05 Tool security | DONE (계약) | contracts + approval 경로 |
+| NIP-06 IDE | 계약 DONE / product L4 UNVERIFIED | vibe_smoke 9/9 PASS. FPR13 `ide_product_control` needs `--product-home` |
+| NIP-07 Product features | DONE | vibe_smoke · L5 · Control browser/shell/email.compose_draft (`sent:false`) |
+| NIP-08 E2E infra | DONE (flag 실측) / L4 UNVERIFIED | contracts+live+gui+lifecycle PASS. L4만 product-home 미배선 |
+| NIP-09 Model quality | **PARTIAL** | auto/single/shell PASS · multi-tool PARTIAL · 나머지 PARTIAL/OPEN · `docs/code-review/nip09-model-quality-closure-2026-11-26.md` |
+| NIP-10 Lifecycle | PASS (격리) | FPR13 `installer_lifecycle` PASS. 제품 홈 재설치 KEEP |
+| NIP-11 Hygiene | DONE | branding·no-console·gitignore 계약 |
+| NIP-12 Full regression | **PASS** (57/57) | `.tmp/nip12-regression/results.json` · `docs/code-review/nip12-full-regression-2026-11-26.md` |
+| NIP-13 Wave 2 Entry | **CONDITIONAL GO (dev) / NO-GO (public)** | 아래 §5 |
 
-## 4. NIP 상태 (이번 재개 기준)
+## 4. FPR13 (latest `.tmp/fpr13/results.json`)
 
-| Phase | 상태 | 비고 |
+| Layer | Status | Detail |
 |---|---|---|
-| NIP-00 Baseline | DONE | HEAD=`44df2f2` + wave16 audit 산출 |
-| NIP-01 Engine Independence | PARTIAL | Hermes auto-fallback 제거. 전경로 감사 잔여 |
-| NIP-02 Residual/Gateway | 제품 핫패스 DONE / 모듈 ISOLATE | empty→`:8642` 부활 제거. gateway 모듈·진단 ISOLATE. spawn 제품 호출자 0 |
-| NIP-03 Runtime Hardening | 계약 DONE | ollama cleanup·stall·cancel·idle·sidecar landing 5체크 PASS. 워킹트리 dirty/미커밋 |
-| NIP-04 Tool grounding | DONE | ShellAssistNudge 복구. evidence `finished_exactly:true` + marker 인용 (재검증) |
-| NIP-05 Tool security | DONE | 계약 PASS + live shell grounding PASS |
-| NIP-06 IDE | 계약 DONE / GUI OPEN | openFile→current 탭 동기화 수정. 포커스 6체크 PASS. 제품 GUI 수동 잔여 |
-| NIP-07 Product features | DONE | fpr_product_gui + vibe_smoke 9/9 PASS (`ide_id:iris_ide`, Iris 재시작 후) |
-| NIP-08 E2E infra | 러너 배선 DONE / flag 실실행 OPEN | L5=`_check_fpr_product_gui`+`--include-gui`. L6=`_check_owned_lifecycle`+`--include-lifecycle`. contracts-only 17/17 유지 |
-| NIP-09 Model quality | PARTIAL | gpt-oss HELLO·lifecycle·finished_exactly·피커/빌링 PASS. 멀티툴/멀티모델·외부 live OPEN (`.tmp/nip09-w16-snapshot/STATUS.md`) |
-| NIP-10 Lifecycle | PARTIAL/PASS 격리 | 격리 evidence PASS. 제품 홈 재설치는 KEEP 주의 |
-| NIP-11 Hygiene | DONE | `.gitignore` 로그만 ignore·소스 keep. wave16 audit는 `.tmp/`. branding·no-console PASS |
-| NIP-12 Full regression | OPEN | |
-| NIP-13 Wave 2 Entry | KEEP | 공개 GO 금지. 개발은 계속 |
+| L2 contracts | **17/17 PASS** | c01–c14 + fpr_* roster/runtime/transcript |
+| L3 live | hello **PASS** · shell **PASS** | `--include-live` 재실측. l04 evidence attempt=1 after harden |
+| L4 product | **UNVERIFIED** | `ide_product_control` — needs `--product-home` (vibe_smoke로 제품 IDE는 별도 PASS) |
+| L5 GUI | **PASS** | `wiki_browser_gui` · `process_approval_gui` (라이브 IRIS와 동시 실행 시 singleton 충돌 주의) |
+| L6 lifecycle | **PASS** | `installer_lifecycle` |
+| Combined | live 21 pass / 0 fail (L4·L5·L6 skip when flag absent) · gui+lifecycle 20 pass / 0 fail | `.tmp/fpr13/results.json` 최신 런은 flag 조합에 따라 unverified 행 존재. **FAIL 0** |
 
-## 5. 재개 단위 (직렬/병렬)
+제품 vibe: **9/9 PASS**. Control smoke: browser.navigate ok · shell.run ok · email.compose_draft `sent:false` (`.tmp/wave16-product-gui-control.json`).
 
-| 단위 | 병렬 | 검증 |
+## 5. Wave 2 Entry (NIP-13)
+
+| 조건 | 상태 | 판정 |
 |---|---|---|
-| NIP-04 grounding | DONE | evidence `finished_exactly:true` |
-| A/B one-shot Gateway | DONE | headless + GUI summary |
-| C IDE recovery | 계약 DONE | bridge_nav 등 재검증 PASS. GUI writeFile/타일 수동 OPEN |
-| 다음 | NIP-03/07/08… | 계약 가능 단위부터 |
+| Owned Core + HELLO + update/rollback | PASS | 개발 허용 근거 |
+| NIP-01/02 핫패스 | PASS · gateway ISOLATE | 개발 허용 근거 |
+| NIP-12 contracts | 57/57 PASS | 개발 허용 근거 |
+| FPR13 contracts + L5/L6 | PASS | 개발 허용 근거 |
+| NIP-09 quality matrix | PARTIAL (multi-tool/file/IDE PARTIAL · paid OPEN) | **공개 차단** · 개발 GO의 주요 잔여 |
+| FPR13 L4 ide_product_control | UNVERIFIED | vibe_smoke로 완화. 러너 flag 배선은 잔여 |
+| `legacy_migration_approved` | false | **승격 금지** |
+| 공개 Production / migration | — | **NO-GO** |
 
-차단: dirty ~71 files — 공유 파일 병렬 쓰기 금지. NIP-12/13 fan-out 금지.
+**Verdict:** Wave 2 Entry = **CONDITIONAL GO (development only)** / **public NO-GO**.  
+핵심 독립성·회귀·FPR13 실행 계층은 통과. NIP-09 멀티툴 품질·공개 cutover는 미완이라 공개 GO는 아니다. Wave 2 기능 착수는 하지 않는다.
 
 ## 6. KEEP
 
@@ -74,19 +79,10 @@
 - hermes 물리 삭제 금지
 - 요청 없는 commit/push
 - 사용자 데이터 영구 삭제 금지
+- Wave 2 feature 시작 금지 (이번 문서 작업 범위)
 
 ## 7. 조치
 
-1. 공개 `legacy_migration_approved`·Wave 2 착수·commit/push는 요청 전까지 하지 않는다.
-2. 다음 가역 단위(원하면): FPR13 `--include-live` L3, `--include-gui` L5 재실측, NIP-09 멀티툴 로컬 매트릭스, NIP-12 회귀 묶음.
-3. 워킹트리는 dirty — 저장/커밋은 사용자 요청 시.
-
-## 8. Wave 2 Entry (NIP-13)
-
-| 조건 | 상태 |
-|---|---|
-| 핵심 독립성 (NIP-01/02 핫패스) | 개발 GO에 충분 (모듈 ISOLATE 잔여) |
-| 제품 안정·보안 계약 | 대부분 DONE |
-| NIP-09 품질 매트릭스 | PARTIAL → **차단** |
-| NIP-12 Full regression | OPEN → **차단** |
-| 공개 Production | KEEP false |
+1. 공개 GO·migration 승격·commit/push·Wave 2 기능은 요청 전까지 하지 않는다.
+2. 다음 가역 단위(원하면): FPR13 L4 `--product-home` 배선, NIP-09 multi-tool·file 완주, streaming/cancel 제품 GUI 수동 표.
+3. 본 트래커 HEAD는 `029c1ce`로 고정한다.
