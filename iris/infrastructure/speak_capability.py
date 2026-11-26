@@ -9,10 +9,13 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
+import shlex
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from subprocess import list2cmdline
 from typing import Any, Callable, Literal, Mapping, Protocol
 
 from iris.apps.directory import AppDirectory, entries_as_dicts
@@ -377,15 +380,41 @@ def _script_from_shell_argv(items: list[str]) -> str | None:
     return None
 
 
+def _join_argv_command(items: list[str]) -> str:
+    """Plain argv list → one string for cmd /c or sh -c."""
+    if os.name == "nt":
+        return list2cmdline(items)
+    return shlex.join(items)
+
+
+def _command_from_argv_items(items: list[str]) -> str:
+    """bash/sh -lc SCRIPT → SCRIPT; else join argv for the host shell."""
+    script = _script_from_shell_argv(items)
+    if script is not None:
+        return script
+    return _join_argv_command(items)
+
+
 def _coerce_list_literal_command(command: str) -> str:
     """Unwrap model stringified argv lists at the Speak boundary (FIG-05)."""
     items = _parse_string_list_literal(command)
     if items is None:
         return command
-    script = _script_from_shell_argv(items)
-    if script is not None:
-        return script
-    return command
+    return _command_from_argv_items(items)
+
+
+def _as_command_string(raw: Any) -> str | None:
+    """Model command value → canonical string (list argv or stringified list)."""
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        if not raw or not all(isinstance(item, str) for item in raw):
+            return None
+        return _command_from_argv_items([str(item) for item in raw])
+    text = str(raw).strip()
+    if not text:
+        return None
+    return _coerce_list_literal_command(text)
 
 
 def normalize_speak_invoke(
@@ -394,23 +423,23 @@ def normalize_speak_invoke(
     """Coerce model arg aliases at the Speak/grant boundary (before validate).
 
     - shell.run / project.run: cmd|shell → command (canonical wins); drop alias keys
-    - shell.run / project.run: stringified bash/sh -lc argv list → script string
+    - shell.run / project.run: stringified or real bash/sh -lc argv list → script
+    - shell.run / project.run: plain argv list (e.g. ["echo","X"]) → joined command
     - browser.open + url → browser.navigate (open grant/handler has no url field)
     """
     key = (action or "").strip()
     payload = dict(args or {})
     if key in _COMMAND_ALIAS_ACTIONS:
-        if not str(payload.get("command") or "").strip():
+        chosen = _as_command_string(payload.get("command"))
+        if not chosen:
             for alias in _COMMAND_ALIAS_KEYS:
-                raw = payload.get(alias)
-                if raw is not None and str(raw).strip():
-                    payload["command"] = str(raw)
+                chosen = _as_command_string(payload.get(alias))
+                if chosen:
                     break
         for alias in _COMMAND_ALIAS_KEYS:
             payload.pop(alias, None)
-        cmd = payload.get("command")
-        if isinstance(cmd, str) and cmd.strip():
-            payload["command"] = _coerce_list_literal_command(cmd)
+        if chosen:
+            payload["command"] = chosen
         return key, payload
     if key == "browser.open":
         url = str(payload.get("url") or "").strip()

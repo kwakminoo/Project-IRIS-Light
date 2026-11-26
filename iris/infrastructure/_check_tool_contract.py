@@ -363,6 +363,26 @@ def main() -> None:
     )
     assert list_ok.ok is True, list_ok
     assert seen and seen[-1][1] == {"command": "echo MARKER"}, seen
+    # Live model miss: cmd as a real JSON array (not a stringified list).
+    argv_n, argv_args = normalize_speak_invoke(
+        "shell.run", {"cmd": ["echo", "MARKER"]}
+    )
+    assert argv_n == "shell.run"
+    assert argv_args == {"command": "echo MARKER"}, argv_args
+    bash_argv_n, bash_argv_args = normalize_speak_invoke(
+        "shell.run", {"cmd": ["bash", "-lc", "echo MARKER"]}
+    )
+    assert bash_argv_n == "shell.run"
+    assert bash_argv_args == {"command": "echo MARKER"}, bash_argv_args
+    str_echo_n, str_echo_args = normalize_speak_invoke(
+        "shell.run", {"cmd": "['echo', 'MARKER']"}
+    )
+    assert str_echo_n == "shell.run"
+    assert str_echo_args == {"command": "echo MARKER"}, str_echo_args
+    seen.clear()
+    argv_ok = tools.invoke("shell.run", {"cmd": ["echo", "MARKER"]})
+    assert argv_ok.ok is True, argv_ok
+    assert seen and seen[-1][1] == {"command": "echo MARKER"}, seen
 
     # Model alias: browser.open+url → browser.navigate (open grant has empty schema).
     open_n, open_args = normalize_speak_invoke(
