@@ -1,4 +1,10 @@
-"""Product sidecars must never dispatch through the original registry."""
+"""Product sidecars must never dispatch through the original registry.
+
+Gate B / R-NAT-FIG09 negatives:
+- Hermes original names stay blocked (apply_patch, clarify, patch)
+- unregistered / inactive invokes are refused
+- confirm_required cannot be self-approved by model confirm:true alone
+"""
 
 from __future__ import annotations
 
@@ -7,12 +13,24 @@ import sys
 import types
 from types import SimpleNamespace
 
-from iris.engine import _sidecar_main as sidecar
 from iris.infrastructure.absorbed_tool_aliases import (
     INTERNAL_ALIASES,
     model_names,
+    resolve_action,
     strip_only_names,
 )
+from iris.infrastructure.agent_tool_registry import invoke_agent_tool
+from iris.infrastructure.speak_capability import (
+    PHASE4_ALLOWLIST,
+    SpeakTools,
+    engine_tool_schemas,
+)
+from iris.system.control_surface import ActionSpec
+from iris.system.execution_policy import check_action_approval
+from iris.engine import _sidecar_main as sidecar
+
+# Gate B pinned Hermes originals (must stay TOOL_NOT_AVAILABLE on product install).
+_MUST_BLOCK_HERMES = ("apply_patch", "clarify", "patch")
 
 
 def _simulate_product_install() -> tuple[object, list[str], object]:
@@ -67,6 +85,50 @@ def _simulate_product_install() -> tuple[object, list[str], object]:
                 sys.modules[key] = value
 
 
+def _assert_hermes_registry_blocked(registry: object, name: str) -> None:
+    result = registry.dispatch(name, {"probe": True})  # type: ignore[attr-defined]
+    payload = json.loads(result)
+    assert payload.get("ok") is False, (name, result)
+    assert payload.get("error") == "TOOL_NOT_AVAILABLE", (name, result)
+    assert payload.get("tool_name") == name, (name, result)
+
+
+def _check_unregistered_and_inactive() -> None:
+    """Speak / agent registry / strip-only (inactive) must refuse, not run."""
+    class _Surf:
+        def invoke(self, action: str, args: dict) -> dict | None:
+            raise AssertionError(f"unregistered must not hit surface: {action}")
+
+    tools = SpeakTools(PHASE4_ALLOWLIST, surface=_Surf())
+    speak = tools.invoke("unregistered_gate_b_tool", {})
+    assert speak.ok is False, speak
+    assert "not_allowed" in (speak.error or ""), speak
+
+    agent = invoke_agent_tool("unregistered_gate_b_tool", {})
+    assert agent.get("ok") is False, agent
+    assert "unknown tool" in str(agent.get("error") or ""), agent
+
+    # Inactive Hermes strip-only: no Control action, not in product schemas.
+    assert "clarify" in strip_only_names()
+    assert resolve_action("clarify", "home") is None
+    home_names = {str(s["name"]) for s in engine_tool_schemas("home")}
+    assert "clarify" not in home_names
+    assert "patch" not in home_names  # internal alias, not dual-emitted
+
+
+def _check_approval_cannot_self_approve() -> None:
+    """confirm_required + model confirm:true alone must stay denied."""
+    spec = ActionSpec(
+        name="email.send",
+        summary="send",
+        risk="high",
+        confirm_required=True,
+    )
+    denied = check_action_approval(spec, {"confirm": True, "to": "a@b.c"}, None)
+    assert denied.allowed is False, denied
+    assert denied.reason == "human confirm required"
+
+
 def main() -> None:
     agent, hermes_hits, registry = _simulate_product_install()
     assert getattr(agent, "_iris_native_tool_bindings", None) is not None
@@ -76,16 +138,21 @@ def main() -> None:
     alias = next(iter(INTERNAL_ALIASES))
 
     for name in (absorbed, strip, alias, "delegate_task", "unregistered_original_tool"):
-        result = registry.dispatch(name, {"probe": True})
-        payload = json.loads(result)
-        assert payload.get("ok") is False, (name, result)
-        assert payload.get("error") == "TOOL_NOT_AVAILABLE", (name, result)
-        assert payload.get("tool_name") == name, (name, result)
+        _assert_hermes_registry_blocked(registry, name)
+
+    # Gate B pin: named Hermes originals (not only "first of each set").
+    for name in _MUST_BLOCK_HERMES:
+        _assert_hermes_registry_blocked(registry, name)
 
     assert hermes_hits == [], hermes_hits
+
+    _check_unregistered_and_inactive()
+    _check_approval_cannot_self_approve()
+
     print(
         "native_tool_hermes_disabled ok",
-        f"blocked={absorbed},{strip},{alias}",
+        f"blocked={','.join(_MUST_BLOCK_HERMES)}",
+        "gate_b=unregistered,inactive,approval_refuse",
     )
 
 

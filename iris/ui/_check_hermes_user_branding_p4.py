@@ -114,10 +114,13 @@ def main() -> None:
     setup = (ROOT / "iris/system/setup_protocol.py").read_text(encoding="utf-8")
     assert "action_url=HERMES_INSTALL_URL" not in setup
     assert "hermes-agent.nousresearch.com/docs" not in setup
-    assert 'HERMES_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.ps1"' in setup
+    assert "HERMES_INSTALL_URL" not in setup
+    assert "_run_hermes_official_installer" not in setup
+    assert "hermes-agent.nousresearch.com/install.ps1" not in setup
     logos = (ROOT / "iris/assets/setup_logos.py").read_text(encoding="utf-8")
     assert '"hermes": "H"' not in logos
-    assert '"hermes": "IA"' in logos
+    assert '"hermes": "IA"' not in logos
+    assert '"iris_agent": "Iris Agent"' in logos or "iris_agent" in logos
     tts = (ROOT / "iris/audio/text_normalizer.py").read_text(encoding="utf-8")
     assert '"Hermes": "아이리스 에이전트"' in tts
     guard = (ROOT / "iris/system/iris_agent_ollama_guard.py").read_text(encoding="utf-8")

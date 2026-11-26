@@ -56,6 +56,7 @@ ToolErrorBudget = _load_local_helper("tool_error_budget").ToolErrorBudget
 _diagram_nudge_mod = _load_local_helper("diagram_tool_nudge")
 DiagramToolNudge = _diagram_nudge_mod.DiagramToolNudge
 append_hint_to_last_tool_result = _diagram_nudge_mod.append_hint_to_last_tool_result
+ShellAssistNudge = _load_local_helper("shell_assist_nudge").ShellAssistNudge
 
 
 def _force_utf8_stdio() -> None:
@@ -816,6 +817,7 @@ def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
     outcome: dict[str, object] = {}
     budget = ToolErrorBudget()
     diagram_nudge = DiagramToolNudge()
+    shell_assist_nudge = ShellAssistNudge()
     agent_ref: dict[str, object] = {}
 
     def on_delta(text: object) -> None:
@@ -900,6 +902,13 @@ def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
             appended = append_hint_to_last_tool_result(active, hint)
             _watch_trace(
                 f"diagram_tool_nudge appended={appended} {hint[:160]}"
+            )
+        shell_hint = shell_assist_nudge.observe(tool_name, args, result)
+        if shell_hint:
+            active = agent_ref.get("agent")
+            appended = append_hint_to_last_tool_result(active, shell_hint)
+            _watch_trace(
+                f"shell_assist_nudge appended={appended} {shell_hint[:160]}"
             )
         reason = budget.observe(tool_name, args, result)
         if not reason:

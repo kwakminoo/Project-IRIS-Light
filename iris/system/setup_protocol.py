@@ -48,7 +48,6 @@ DEFAULT_CLOUD_MODEL = "gemma4:e2b-cloud"
 
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download/windows"
 OLLAMA_INSTALL_PS1 = "https://ollama.com/install.ps1"
-HERMES_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.ps1"
 ANDROID_STUDIO_URL = "https://developer.android.com/studio"
 OLLAMA_SIGNIN_URL = "https://ollama.com/signin"
 NODE_DOWNLOAD_URL = "https://nodejs.org/en/download"
@@ -56,8 +55,6 @@ NODE_DOWNLOAD_URL = "https://nodejs.org/en/download"
 # 설치기: 출력 없으면 idle_timeout, 절대 상한 hard_timeout
 _INSTALL_IDLE_SEC = 600.0
 _INSTALL_HARD_SEC = 3600.0
-_HERMES_IDLE_SEC = 900.0
-_HERMES_HARD_SEC = 3600.0
 
 
 def iris_agent_executable(command: str = "iris-agent") -> str | None:
@@ -2448,42 +2445,6 @@ class SetupProtocol:
         from iris.system.iris_agent_install import force_retire_iris_agent
 
         return force_retire_iris_agent(command=self.agent_command)
-
-    def _run_hermes_official_installer(self) -> subprocess.CompletedProcess[str]:
-        """공식 install.ps1 — HTTPS clone은 스크립트가 SSH 실패 후 처리.
-
-        R1(c): 스트림에 uv 448 마커가 보이면 조기 abort → 호출부가 우회로.
-        """
-        from iris.system.iris_agent_install import looks_like_uv_python_mount_failure
-
-        ps = (
-            "$ProgressPreference='SilentlyContinue'; "
-            "& ([scriptblock]::Create((irm '"
-            + HERMES_INSTALL_URL
-            + "'))) -SkipSetup -NonInteractive"
-        )
-        # uv junction(WinError 448) 완화를 위해 LOCALAPPDATA 쪽 힌트만 세팅.
-        # 공식 스크립트가 UV_PYTHON_INSTALL_DIR 을 checkout 전용으로 덮어쓰므로
-        # 근본 우회는 _install_iris_agent_bypass 가 담당한다.
-        env = os.environ.copy()
-        local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        env.setdefault("UV_DATA_DIR", str(Path(local) / "uv"))
-        env.setdefault("UV_CACHE_DIR", str(Path(local) / "uv" / "cache"))
-        return self._run_streamed(
-            [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                ps,
-            ],
-            timeout=_HERMES_IDLE_SEC,
-            hard_timeout=_HERMES_HARD_SEC,
-            hidden=False,
-            env=env,
-            abort_when=looks_like_uv_python_mount_failure,
-        )
 
     def _hermes_done(self, message: str) -> SetupStepResult:
         self._iris_agent_official_failed = False

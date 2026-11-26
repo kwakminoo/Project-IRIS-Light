@@ -105,16 +105,54 @@ def read_engine_selection(home: Path) -> tuple[Path | None, Path | None]:
     return active, engine_slot_path(home, previous) if previous else None
 
 
+def _newest_owned_slot(base: Path) -> Path | None:
+    """selection 없을 때 SOURCE_MANIFEST 있는 iris-agent.slot-* 중 mtime 최신."""
+    best: Path | None = None
+    best_mtime = float("-inf")
+    try:
+        entries = list(base.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.is_dir() or not _OWNED_SLOT_NAME.fullmatch(entry.name):
+            continue
+        manifest = entry / "SOURCE_MANIFEST.json"
+        if not manifest.is_file():
+            continue
+        try:
+            mtime = manifest.stat().st_mtime
+        except OSError:
+            continue
+        if mtime >= best_mtime:
+            best = entry
+            best_mtime = mtime
+    return best
+
+
 def iris_agent_repo_dir(home: Path | None = None) -> Path:
-    """제품 checkout 경로. iris-agent 우선, 없으면 레거시 hermes-agent, 둘 다 없으면 생성 목표(iris-agent)."""
+    """제품 checkout 경로.
+
+    1. selection.active
+    2. ``iris-agent/``
+    3. newest ``iris-agent.slot-*`` with SOURCE_MANIFEST
+    4. hermes-agent only as recovery when no owned tree exists
+    5. else canonical ``iris-agent`` (may not exist yet — probe fails closed)
+    """
     base = home or iris_agent_home()
     active, _ = read_engine_selection(base)
     if active is not None:
         return active
     canonical = base / IRIS_AGENT_CHECKOUT_NAME
-    legacy = base / LEGACY_AGENT_CHECKOUT_NAME
     if canonical.is_dir():
         return canonical
+    owned = _newest_owned_slot(base)
+    if owned is not None:
+        return owned
+    legacy = base / LEGACY_AGENT_CHECKOUT_NAME
+    # ponytail: hermes-agent remains a last-resort recovery path when selection
+    # is missing and no owned iris-agent/ or iris-agent.slot-* exists (rollback
+    # compatibility). NORMAL product path must not prefer hermes over an owned
+    # slot. Cutover/rollback still goes through selection.previous, not this.
     if legacy.is_dir():
         return legacy
     return canonical
@@ -669,10 +707,17 @@ if __name__ == "__main__":
         assert iris_agent_repo_dir(h) == h / IRIS_AGENT_CHECKOUT_NAME
         (h / LEGACY_AGENT_CHECKOUT_NAME).mkdir()
         assert iris_agent_repo_dir(h) == h / LEGACY_AGENT_CHECKOUT_NAME
+        slot = h / "iris-agent.slot-aaaaaaaaaaaaaaaa"
+        slot.mkdir()
+        (slot / "SOURCE_MANIFEST.json").write_text("{}", encoding="utf-8")
+        assert iris_agent_repo_dir(h) == slot
         (h / IRIS_AGENT_CHECKOUT_NAME).mkdir()
         assert iris_agent_repo_dir(h) == h / IRIS_AGENT_CHECKOUT_NAME
     resolved = iris_agent_repo_dir(home)
-    assert resolved.name in (IRIS_AGENT_CHECKOUT_NAME, LEGACY_AGENT_CHECKOUT_NAME)
+    assert (
+        resolved.name in (IRIS_AGENT_CHECKOUT_NAME, LEGACY_AGENT_CHECKOUT_NAME)
+        or _OWNED_SLOT_NAME.fullmatch(resolved.name)
+    )
     assert iris_agent_home() == product_agent_home()
     print(
         "agent_runtime self-check ok",

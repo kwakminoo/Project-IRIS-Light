@@ -118,7 +118,12 @@ def _check_repo_dir_resolve() -> None:
         home = Path(tmp)
         assert iris_agent_repo_dir(home) == home / IRIS_AGENT_CHECKOUT_NAME
         (home / LEGACY_AGENT_CHECKOUT_NAME).mkdir()
+        # hermes-only: recovery fallback when no owned tree
         assert iris_agent_repo_dir(home) == home / LEGACY_AGENT_CHECKOUT_NAME
+        slot = home / "iris-agent.slot-1111111111111111"
+        slot.mkdir()
+        (slot / "SOURCE_MANIFEST.json").write_text("{}", encoding="utf-8")
+        assert iris_agent_repo_dir(home) == slot
         (home / IRIS_AGENT_CHECKOUT_NAME).mkdir()
         assert iris_agent_repo_dir(home) == home / IRIS_AGENT_CHECKOUT_NAME
 

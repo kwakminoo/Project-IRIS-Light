@@ -1,7 +1,7 @@
 """Fail if Iris product code still exposes Hermes-named APIs / step ids.
 
 Allowed leftovers (not scanned as failures when only these appear):
-- HERMES_INSTALL_URL, HERMES_HOME env assignments
+- HERMES_HOME env assignments
 - Upstream URL strings (github.com/NousResearch/hermes-agent, …)
 - Legacy path fallbacks that look for hermes.exe as last resort
 - Comments that say \"legacy hermes\"
@@ -62,7 +62,7 @@ _AGENT_CMD_DEFAULT = re.compile(
 
 # Lines that may mention hermes.exe / legacy without failing the pin.
 _ALLOW_LINE = re.compile(
-    r"HERMES_INSTALL_URL|HERMES_HOME|HERMES_REPO|"
+    r"HERMES_HOME|HERMES_REPO|"
     r"hermes-agent\.nousresearch|NousResearch/hermes-agent|"
     r"legacy hermes|hermes\.exe|hermes-agent\.exe|"
     r"hermes_cli|file:///tmp/hermes-agent|"

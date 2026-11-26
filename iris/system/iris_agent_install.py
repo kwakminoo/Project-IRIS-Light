@@ -1,7 +1,7 @@
 """Install the bundled Iris Agent Core and atomically select a verified slot.
 
 Each slot keeps its absolute virtualenv paths. The prior selection remains
-available for recovery. Older checkout helpers remain for compatibility.
+available for recovery.
 """
 
 from __future__ import annotations
@@ -31,12 +31,10 @@ from iris.infrastructure.agent_runtime import (
     ensure_iris_agent_home,
     iris_agent_repo_dir,
     load_pinned_sha,
-    load_upstream_url,
     read_engine_selection,
 )
 from iris.system import iris_agent_gateway as gw
 
-HERMES_REPO_HTTPS = load_upstream_url()
 StreamFn = Callable[[str], None]
 _HERMES_PYTHON_MIN = (3, 11)
 _HERMES_PYTHON_MAX_EXCLUSIVE = (3, 14)
@@ -71,6 +69,11 @@ def looks_like_uv_python_mount_failure(text: str) -> bool:
     if not t:
         return False
     return any(m in t for m in _UV_MOUNT_MARKERS)
+
+
+def _dev_owned_cutover_allowed() -> bool:
+    """Developer-only bypass of the hermes→owned replace gate. Default off."""
+    return os.environ.get("IRIS_DEV_OWNED_CUTOVER", "").strip().lower() in ("1", "true", "yes")
 
 
 def vendor_iris_agent_core_root() -> Path:
@@ -1114,40 +1117,6 @@ def _guard_installed_agent(agent: Path) -> None:
         return
 
 
-def _checkout_pinned_sha(git: str, staging: Path, pin: str) -> subprocess.CompletedProcess[str]:
-    """shallow clone 대신 init+fetch+checkout 으로 pin 만 받는다."""
-    init = _run([git, "-c", "core.longpaths=true", "init", str(staging)], timeout=60.0)
-    if init.returncode != 0:
-        return init
-    remote = _run(
-        [git, "-C", str(staging), "remote", "add", "origin", HERMES_REPO_HTTPS],
-        timeout=30.0,
-    )
-    if remote.returncode != 0:
-        return remote
-    fetch = _run(
-        [
-            git,
-            "-c",
-            "core.longpaths=true",
-            "-C",
-            str(staging),
-            "fetch",
-            "--depth",
-            "1",
-            "origin",
-            pin,
-        ],
-        timeout=600.0,
-    )
-    if fetch.returncode != 0:
-        return fetch
-    return _run(
-        [git, "-C", str(staging), "checkout", "--force", "FETCH_HEAD"],
-        timeout=120.0,
-    )
-
-
 def _swap_staging_into_place(home: Path, staging: Path, agent: Path) -> str | None:
     """staging → iris-agent rename. 실패 시 메시지."""
     if agent.exists():
@@ -1207,7 +1176,11 @@ def install_iris_agent_with_system_python(
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 return fail("source", "동봉된 Iris Agent 소스를 복구해야 합니다", f"{exc}\nRun IRIS Setup with a verified bundle.")
             replacing_reference = current.is_dir() and not (current / "SOURCE_MANIFEST.json").is_file()
-            if replacing_reference and manifest.get("legacy_migration_approved") is not True:
+            if (
+                replacing_reference
+                and manifest.get("legacy_migration_approved") is not True
+                and not _dev_owned_cutover_allowed()
+            ):
                 return fail("gate", "기존 Iris Agent 엔진 유지", "Owned engine is awaiting full product parity. The current installation remains selected.")
             if current.is_dir() and (update or replacing_reference) and model_check is None:
                 return fail("probe", "Iris Agent 모델 검증이 필요합니다", "Select a model before updating the active engine.")
