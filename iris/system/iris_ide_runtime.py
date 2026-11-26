@@ -17,6 +17,7 @@ from typing import Any, Callable
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from iris.infrastructure.iris_ide_client import IrisIdeClient, IrisIdeClientError
 from iris.system.iris_agent_control_sync import iris_state_dir, project_root
 from iris.system.node_runtime import (
     NODE_DOWNLOAD_URL,
@@ -169,7 +170,8 @@ class IrisIdeRuntimeManager:
         self._bridge_port: int | None = None
         self._token: str = ""
         self._workspace: str = ""
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._stop_requested = threading.Event()
         self._proc_logs: tuple[Any, ...] = ()
 
     def status(self) -> IrisIdeStatus:
@@ -375,6 +377,7 @@ class IrisIdeRuntimeManager:
                 "iris.ide.showStartScreen",
                 "iris.ide.runFile",
                 "IRIS_EXIT:",
+                "open editor has unsaved (dirty) changes",
                 "iris.pdf",
                 "iris-pdf",
             )
@@ -429,59 +432,65 @@ class IrisIdeRuntimeManager:
             shutil.copy2(built, target)
 
     def start(self, project_root_path: str = "") -> tuple[bool, str]:
-        # 이전 Iris 세션 orphan Theia가 있으면 포트/워크스페이스 고착
-        if not is_iris_ide_demo():
-            st = self._read_state()
-            tracked = self._proc is not None and self._proc.poll() is None
-            if not tracked and int(st.get("pid") or 0):
-                self.stop()
-        running = False
         with self._lock:
-            if is_iris_ide_demo():
-                self._theia_port = 3000
-                self._bridge_port = 3001
-                self._token = "demo-token"
-                self._workspace = project_root_path or ""
-                self._write_state(
-                    {
-                        "pid": 0,
-                        "port": 3000,
-                        "bridge_port": 3001,
-                        "token": self._token,
-                        "workspace": self._workspace,
-                        "workspace_open": bool(self._workspace),
-                    }
-                )
-                return True, "demo"
-            ok, msg = self.verify_installation()
-            if not ok:
-                return False, msg
-            try:
-                self._sync_prebuilt_frontend()
-            except OSError as exc:
-                return False, f"IRIS IDE frontend sync failed: {exc}"
-            running = self._proc is not None and self._proc.poll() is None
-            if running:
-                if not project_root_path:
-                    return True, "already running"
-                root = Path(project_root_path).expanduser()
-                if not root.is_dir():
-                    return False, f"not a directory: {project_root_path}"
-                target = str(root.resolve())
-                if self._workspace == target:
-                    return True, target
+            self._stop_requested.clear()
+            return self._start(project_root_path)
 
-        if running and project_root_path:
-            self.stop()
-            return self.start(project_root_path)
+    def _start(self, project_root_path: str) -> tuple[bool, str]:
+        root = Path(project_root_path).expanduser()
+        if project_root_path and not root.is_dir():
+            return False, f"not a directory: {project_root_path}"
+        target = str(root.resolve()) if project_root_path else ""
+        if is_iris_ide_demo():
+            self._theia_port = 3000
+            self._bridge_port = 3001
+            self._token = "demo-token"
+            self._workspace = target
+            self._write_state(
+                {
+                    "pid": 0,
+                    "port": 3000,
+                    "bridge_port": 3001,
+                    "token": self._token,
+                    "workspace": self._workspace,
+                    "workspace_open": bool(self._workspace),
+                }
+            )
+            return True, "demo"
+        if (
+            self._proc is not None and self._proc.poll() is None
+            and self._bridge_proc is not None and self._bridge_proc.poll() is None
+            and (not target or (self.workspace_open and self.workspace == target))
+            and self.health()
+        ):
+            return True, target or "already running"
 
-        with self._lock:
-            root = Path(project_root_path or "").expanduser()
-            if project_root_path and not root.is_dir():
-                return False, f"not a directory: {project_root_path}"
-            # ponytail: 빈 경로면 project_root()로 폴백하지 않음 — 웰컴 모드
-            self._workspace = str(root.resolve()) if (project_root_path and root.is_dir()) else ""
-            self._theia_port = _free_port()
+        ok, msg = self.verify_installation()
+        if not ok:
+            return False, msg
+        try:
+            self._sync_prebuilt_frontend()
+        except OSError as exc:
+            return False, f"IRIS IDE frontend sync failed: {exc}"
+        state = self._read_state()
+        if self._proc or self._bridge_proc or state.get("pid") or state.get("bridge_pid"):
+            self._stop()
+        node = node_executable()
+        theia_cli = runtime_install_dir() / "node_modules" / "@theia" / "cli" / "bin" / "theia.js"
+        bridge_js = runtime_install_dir() / "bridge" / "standalone-bridge.js"
+        src_bridge = runtime_source_dir() / "bridge" / "standalone-bridge.js"
+        # Refresh installed bridge alongside the runtime without rebuilding Theia.
+        if src_bridge.is_file():
+            bridge_js.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_bridge, bridge_js)
+        if not theia_cli.is_file():
+            return False, "IRIS IDE CLI missing — repair/install 필요"
+        if not bridge_js.is_file():
+            return False, "bridge script missing"
+        self._workspace = target
+        self._theia_port = _free_port()
+        self._bridge_port = _free_port()
+        while self._bridge_port == self._theia_port:
             self._bridge_port = _free_port()
         self._token = secrets.token_urlsafe(24)
         env = os.environ.copy()
@@ -495,18 +504,6 @@ class IrisIdeRuntimeManager:
         env["IRIS_IDE_STATE_FILE"] = str(runtime_state_path())
         # Theia 내장 IrisIdeBridgeServer가 같은 포트에 재bind하지 않게
         env["IRIS_IDE_STANDALONE_BRIDGE"] = "1"
-        node = node_executable()
-        theia_cli = runtime_install_dir() / "node_modules" / "@theia" / "cli" / "bin" / "theia.js"
-        bridge_js = runtime_install_dir() / "bridge" / "standalone-bridge.js"
-        src_bridge = runtime_source_dir() / "bridge" / "standalone-bridge.js"
-        # 설치본 bridge가 구버전이면 setWorkspace 등 누락 — 기동 직전 소스 덮어씀
-        if src_bridge.is_file():
-            bridge_js.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_bridge, bridge_js)
-        if not theia_cli.is_file():
-            return False, "IRIS IDE CLI missing — repair/install 필요"
-        if not bridge_js.is_file():
-            return False, "bridge script missing"
         install_root = runtime_install_dir()
         plugins_dir = install_root / "plugins"
         router_config = install_root / "ovsx-router-config.json"
@@ -549,12 +546,7 @@ class IrisIdeRuntimeManager:
                 stderr=subprocess.STDOUT,
             )
         except OSError as exc:
-            for handle in self._proc_logs:
-                try:
-                    handle.close()
-                except OSError:
-                    pass
-            self._proc_logs = ()
+            self._stop()
             return False, str(exc)
         self._write_state(
             {
@@ -570,7 +562,7 @@ class IrisIdeRuntimeManager:
         ok_ready, detail = self.wait_until_ready(timeout_sec=120.0)
         if not ok_ready:
             log_tail = self._recent_proc_log_tail()
-            self.stop()
+            self._stop()
             if log_tail:
                 return False, f"{detail}\n{log_tail}"
             return False, detail
@@ -587,6 +579,8 @@ class IrisIdeRuntimeManager:
             if self._bridge_proc is not None and self._bridge_proc.poll() is not None:
                 code = self._bridge_proc.returncode
                 return False, f"bridge process exited early (code={code})"
+            if self._stop_requested.is_set():
+                return False, "IRIS IDE startup cancelled"
             if self.health():
                 st = self._read_state()
                 if int(st.get("bridge_port") or 0):
@@ -665,15 +659,10 @@ class IrisIdeRuntimeManager:
         url = self.bridge_base_url()
         if not url:
             return False
-        token = self.bridge_token()
-        req = Request(f"{url}/health", method="POST", data=b"{}")
-        req.add_header("Content-Type", "application/json")
-        if token:
-            req.add_header("Authorization", f"Bearer {token}")
         try:
-            with urlopen(req, timeout=2.0) as resp:
-                return 200 <= resp.status < 500
-        except (URLError, TimeoutError, OSError):
+            client = IrisIdeClient(base_url=url, token=self.bridge_token(), timeout=2.0)
+            return client.health().get("product") == "IRIS IDE"
+        except IrisIdeClientError:
             return False
 
     def switch_workspace(self, project_root_path: str) -> tuple[bool, str]:
@@ -688,6 +677,10 @@ class IrisIdeRuntimeManager:
         return self.switch_workspace(project_root_path)
 
     def stop(self) -> None:
+        self._stop_requested.set()
+        self._stop()
+
+    def _stop(self) -> None:
         with self._lock:
             st = self._read_state()
             pids: list[int] = []
@@ -718,6 +711,8 @@ class IrisIdeRuntimeManager:
                         pass
             self._proc = None
             self._bridge_proc = None
+            self._theia_port = self._bridge_port = None
+            self._token = self._workspace = ""
             for handle in self._proc_logs:
                 try:
                     handle.close()

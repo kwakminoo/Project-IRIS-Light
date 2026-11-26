@@ -7,9 +7,18 @@ import logging
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 LOGGER = logging.getLogger(__name__)
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_BRIDGE_HTTP = build_opener(ProxyHandler({}), _NoRedirect())
 
 
 class IrisIdeClientError(RuntimeError):
@@ -57,7 +66,12 @@ class IrisIdeClient:
         self.base_url = (base_url or "").rstrip("/")
         self.token = (token or "").strip()
         self.timeout = float(timeout)
-        if not self.base_url.startswith("http://127.0.0.1"):
+        try:
+            origin = urlsplit(self.base_url)
+            port = origin.port
+        except ValueError:
+            port = None
+        if not port or self.base_url != f"http://127.0.0.1:{port}":
             raise IrisIdeClientError("bridge must bind to 127.0.0.1 only")
 
     def _request(self, command: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -70,7 +84,7 @@ class IrisIdeClient:
         t0 = time.monotonic()
         LOGGER.debug("iris_ide bridge -> %s (timeout=%.1fs)", command, self.timeout)
         try:
-            with urlopen(req, timeout=self.timeout) as resp:
+            with _BRIDGE_HTTP.open(req, timeout=self.timeout) as resp:
                 raw = resp.read().decode("utf-8")
         except HTTPError as exc:
             # 브리지는 실패 사유를 본문 JSON에만 담는다 — 버리면 "HTTP Error 400"만 남아 진단이 끊긴다.
@@ -154,6 +168,14 @@ class IrisIdeClient:
 
     def create_file(self, path: str, content: str = "") -> dict[str, Any]:
         return self._request("createFile", {"path": path, "content": content})
+
+    def write_file(self, path: str, content: str) -> dict[str, Any]:
+        try:
+            return self._request("writeFile", {"path": path, "content": content})
+        except IrisIdeClientError as exc:
+            if "unsupported frontend command: writeFile" in str(exc):
+                raise IrisIdeClientError("Repair IRIS IDE to enable writing existing files safely") from exc
+            raise
 
     def delete_file(self, path: str) -> dict[str, Any]:
         return self._request("deleteFile", {"path": path})

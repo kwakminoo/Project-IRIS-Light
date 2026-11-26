@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
 
 from iris.system.iris_ide_runtime import (
     IrisIdeRuntimeManager,
@@ -14,7 +17,43 @@ from iris.system.node_runtime import is_node_ready
 from iris.system.setup_protocol import OPTIONAL_IDS
 
 
+def check_bridge_recovery() -> None:
+    from iris.system import iris_ide_runtime as runtime
+
+    with TemporaryDirectory() as temp:
+        root = Path(temp)
+        for name in ("bridge/standalone-bridge.js", "node_modules/@theia/cli/bin/theia.js"):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        processes = [Mock(pid=i, poll=Mock(return_value=None)) for i in range(100, 104)]
+        mgr = IrisIdeRuntimeManager()
+        with (
+            patch.object(runtime, "iris_state_dir", return_value=root),
+            patch.object(runtime, "runtime_install_dir", return_value=root),
+            patch.object(runtime, "runtime_source_dir", return_value=root / "unused"),
+            patch.object(runtime, "_free_port", side_effect=range(8000, 8004)),
+            patch.object(runtime.subprocess, "Popen", side_effect=processes) as launch,
+            patch.object(runtime.subprocess, "run"),
+            patch.object(runtime.os, "kill"),
+            patch.object(mgr, "verify_installation", return_value=(True, "ok")),
+            patch.object(mgr, "health", return_value=True),
+        ):
+            try:
+                assert mgr.start(temp)[0]
+                first_url, first_token = mgr.bridge_base_url(), mgr.bridge_token()
+                assert mgr.start(temp)[0] and launch.call_count == 2
+                processes[0].poll.return_value = 1
+                assert mgr.start(temp)[0] and launch.call_count == 4
+                assert mgr.bridge_base_url() != first_url and mgr.bridge_token() != first_token
+            finally:
+                mgr.stop()
+            assert not mgr.bridge_base_url() and not mgr.bridge_token()
+            assert not runtime.runtime_state_path().exists()
+
+
 def main() -> None:
+    check_bridge_recovery()
     assert "iris_ide" in OPTIONAL_IDS
     assert runtime_source_dir().joinpath("package.json").is_file()
     mgr = IrisIdeRuntimeManager()

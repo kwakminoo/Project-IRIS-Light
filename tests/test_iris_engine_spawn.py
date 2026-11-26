@@ -17,6 +17,7 @@ from iris.engine import (
     InternalSidecar,
 )
 from iris.infrastructure.agent_runtime import IRIS_AGENT_CHECKOUT_NAME
+from iris.system._check_iris_agent_repo_dir import write_owned_slot_fixture
 
 
 def _child_pids() -> set[int]:
@@ -49,6 +50,7 @@ def _wait_pid_gone(pid: int, timeout: float = 5.0) -> bool:
 
 
 def _write_cmd(home: Path, name: str, body: str) -> Path:
+    write_owned_slot_fixture(home / IRIS_AGENT_CHECKOUT_NAME)
     if sys.platform == "win32":
         scripts = home / IRIS_AGENT_CHECKOUT_NAME / "venv" / "Scripts"
         scripts.mkdir(parents=True, exist_ok=True)

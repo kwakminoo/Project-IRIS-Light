@@ -93,6 +93,8 @@ def invoke_http_timeout(
         return 45.0
     if name in ("ide.pick_open_file", "ide.pick_open_folder"):
         return None
+    if name == "ide.open_folder":
+        return 175.0
     # confirm이 Qt 메인에서 HUD를 띄우면 15s UiThreadTimeout에 죽는다.
     if confirm_required and not runs_off_ui_thread(name):
         return None
@@ -401,6 +403,8 @@ class ControlSurface:
         self.bound_port: int | None = None
 
     def start(self) -> int:
+        if self.host != "127.0.0.1":
+            raise OSError("Iris Control must bind to 127.0.0.1")
         if self._httpd is not None:
             return int(self.bound_port or self.port)
 
@@ -414,10 +418,9 @@ class ControlSurface:
 
             def _auth_ok(self) -> bool:
                 auth = self.headers.get("Authorization", "")
-                if auth == f"Bearer {surface.token}":
-                    return True
-                q = urlparse(self.path).query
-                return f"token={surface.token}" in q.split("&") if q else False
+                return secrets.compare_digest(
+                    auth.encode("utf-8"), f"Bearer {surface.token}".encode("utf-8")
+                )
 
             def _cors(self) -> None:
                 # Theia(QWebEngine) → control 포트는 cross-origin — ACAO 없으면 askIris 실패
@@ -541,7 +544,7 @@ class ControlSurface:
         for candidate in range(self.port, self.port + 10):
             try:
                 httpd = QuietHTTPServer((self.host, candidate), Handler)
-                bound = candidate
+                bound = int(httpd.server_address[1])
                 break
             except OSError as exc:
                 last_err = exc

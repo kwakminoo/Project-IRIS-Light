@@ -32,6 +32,7 @@ class IdeHost(Protocol):
     _ide_session: Any
     _on_ide_icon: Any
     _open_ide_folder: Any
+    _wait_for_iris_ide_workspace: Any
     _toggle_maximize: Any
     _ui_mode: Any
     activateWindow: Any
@@ -52,6 +53,7 @@ class ProjectHost(Protocol):
     _ide_session: Any
     _iris_ide_bridge_client: Any
     _open_ide_folder: Any
+    _wait_for_iris_ide_workspace: Any
     _ui_mode: Any
     diagram_preview: Any
 

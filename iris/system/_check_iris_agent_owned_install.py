@@ -21,7 +21,9 @@ def _assert_hermes_replace_gate() -> None:
         assert not m._dev_owned_cutover_allowed()
         with tempfile.TemporaryDirectory(prefix="iris-hermes-gate-") as tmp:
             home = Path(tmp)
-            (home / "hermes-agent").mkdir()
+            reference = home / "hermes-agent"
+            reference.mkdir()
+            m._write_engine_selection(home, reference, None)
             blocked = m.install_iris_agent_with_system_python(
                 home=home, update=True, model_check=lambda _: None
             )

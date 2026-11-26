@@ -64,6 +64,7 @@ _HELLO_TIMEOUT_SEC = 5.0
 _TURN_IDLE_SEC = 600.0
 _CANCEL_POLL_SEC = 0.2
 _WATCH_LOG = Path.home() / ".iris-light" / "logs" / "turn_end_watch.log"
+_WATCH_LOCK = Lock()
 
 
 def _agent_checkout_root(home: Path) -> Path:
@@ -107,24 +108,21 @@ def _watch_trace(msg: str) -> None:
     critical = msg.startswith(
         ("recv ", "read_turn_events", "run_turn started", "TOOL_RESULT ")
     )
-    if not critical:
+    path = _WATCH_LOG
 
-        def _write() -> None:
-            try:
-                _WATCH_LOG.parent.mkdir(parents=True, exist_ok=True)
-                with _WATCH_LOG.open("a", encoding="utf-8") as fh:
+    def write() -> None:
+        try:
+            with _WATCH_LOCK:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as fh:
                     fh.write(line)
-            except Exception:
-                return
+        except OSError:
+            return
 
-        threading.Thread(target=_write, name="iris-host-watch", daemon=True).start()
-        return
-    try:
-        _WATCH_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with _WATCH_LOG.open("a", encoding="utf-8") as fh:
-            fh.write(line)
-    except Exception:
-        return
+    if critical:
+        write()
+    else:
+        threading.Thread(target=write, name="iris-host-watch", daemon=True).start()
 
 
 def _terminal_dir() -> Path:
@@ -199,6 +197,7 @@ def _sidecar_env(home: EngineHome, python: Path) -> dict[str, str]:
     env = _stripped_probe_env(home=home, python=python)
     for key in _GATEWAY_ENV_KEYS:
         env.pop(key, None)
+    env.pop("IRIS_ENGINE_AGENT_MODULE", None)
     env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     env["IRIS_ENGINE_GUI_PYTHON"] = sys.executable
     # Unique per spawn so turn-end file poll cannot steal another sidecar's line.
@@ -413,7 +412,7 @@ def _spawn_sidecar(
             [str(python_path), str(_SIDECAR_MAIN)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -452,6 +451,7 @@ class Engine:
         self._lock = Lock()
         self._child: subprocess.Popen[str] | None = None
         self._child_hello_pid: int | None = None
+        self._stdout_reader: tuple[subprocess.Popen[str], queue.Queue[str | None]] | None = None
         # True while a turn owns the child for I/O outside _lock. Shutdown ignores it.
         self._turn_active = False
         self._tool_handler: Callable[[str, dict[str, object]], dict[str, object]] | None = None
@@ -492,7 +492,7 @@ class Engine:
                         self._child_hello_pid = None
                 probe = (
                     _probe_imports(Path(self._staged_python), home=home)
-                    if self._staged_python is not None else probe_engine_python(home)
+                    if self._staged_python is not None else probe_engine_python(home, python=selected)
                 )
                 if self._staged_python is None and probe is not None and probe.code in (
                     EngineErrorCode.NOT_INSTALLED,
@@ -501,13 +501,11 @@ class Engine:
                     install_error = install_into(home)
                     if isinstance(install_error, EngineError):
                         return EngineFailed(install_error)
-                    probe = probe_engine_python(home)
+                    selected = engine_python(home)
+                    probe = probe_engine_python(home, python=selected)
                 if probe is not None:
                     return EngineFailed(probe)
-                spawned = (
-                    _spawn_sidecar(home, python=self._staged_python)
-                    if self._staged_python is not None else _spawn_sidecar(home)
-                )
+                spawned = _spawn_sidecar(home, python=selected)
                 if isinstance(spawned, EngineFailed):
                     return spawned
                 self._child, self._child_hello_pid = spawned
@@ -597,9 +595,14 @@ class Engine:
         surface: object | None = None,
         expected_turn_id: str = "",
         expected_session_id: str = "",
-        expected_workspace_id: str = "",
+        expected_workspace_id: str | None = None,
+        seen_tool_calls: set[str] | None = None,
     ) -> None:
         request_id = str(raw.get("id") or "").strip()
+        tool_call_id = str(raw.get("tool_call_id") or "")
+        turn_id = str(raw.get("turn_id") or "")
+        session_id = str(raw.get("session_id") or "")
+        workspace_id = str(raw.get("workspace_id") or "")
         name = str(raw.get("name") or "").strip()
         args = raw.get("args")
         if not isinstance(args, dict):
@@ -620,12 +623,16 @@ class Engine:
                 binding_error = "canonical action does not match trusted binding"
             elif str(raw.get("schema_fingerprint") or "") != binding.fingerprint:
                 binding_error = "schema fingerprint does not match trusted binding"
-            elif expected_turn_id and str(raw.get("turn_id") or "") != expected_turn_id:
+            elif expected_turn_id and turn_id != expected_turn_id:
                 binding_error = "turn identity does not match trusted runtime"
-            elif expected_session_id and str(raw.get("session_id") or "") != expected_session_id:
+            elif expected_session_id and session_id != expected_session_id:
                 binding_error = "session identity does not match trusted runtime"
-            elif expected_workspace_id and str(raw.get("workspace_id") or "") != expected_workspace_id:
+            elif expected_workspace_id is not None and workspace_id != expected_workspace_id:
                 binding_error = "workspace identity does not match trusted runtime"
+            elif not tool_call_id.strip():
+                binding_error = "tool call identity missing"
+            elif seen_tool_calls is not None and tool_call_id in seen_tool_calls:
+                binding_error = "duplicate tool call identity"
             else:
                 action = binding.canonical_action
         if binding_error:
@@ -651,7 +658,8 @@ class Engine:
                     f"action={action} owner=iris"
                 )
                 # Host-verified meta: separate channel from model args (never stuff into args).
-                tool_call_id = str(raw.get("tool_call_id") or "").strip()
+                if seen_tool_calls is not None:
+                    seen_tool_calls.add(tool_call_id)
                 with bind_host_tool_call_meta(
                     tool_call_id=tool_call_id, request_id=request_id
                 ):
@@ -662,7 +670,6 @@ class Engine:
                 }
             except Exception as exc:
                 result = {"ok": False, "error": str(exc) or type(exc).__name__}
-        tool_call_id = str(raw.get("tool_call_id") or "").strip()
         ok = bool(result.get("ok")) if isinstance(result, dict) else False
         error_code = ""
         if isinstance(result, dict):
@@ -678,9 +685,33 @@ class Engine:
         if child.stdin is None:
             raise OSError("sidecar stdin is missing")
         child.stdin.write(
-            encode_host_command("tool_result", id=request_id, result=result)
+            encode_host_command(
+                "tool_result", id=request_id, tool_call_id=tool_call_id,
+                turn_id=turn_id, session_id=session_id, workspace_id=workspace_id,
+                result=result,
+            )
         )
         child.stdin.flush()
+
+    def _stdout_lines(self, child: subprocess.Popen[str]) -> queue.Queue[str | None]:
+        if self._stdout_reader is not None and self._stdout_reader[0] is child:
+            return self._stdout_reader[1]
+        lines: queue.Queue[str | None] = queue.Queue()
+
+        def read() -> None:
+            stream = child.stdout
+            try:
+                if stream is not None:
+                    for line in iter(stream.readline, ""):
+                        lines.put(line)
+            except (OSError, ValueError):
+                pass
+            finally:
+                lines.put(None)
+
+        threading.Thread(target=read, name="iris-sidecar-stdout", daemon=True).start()
+        self._stdout_reader = (child, lines)
+        return lines
 
     def _read_turn_events(
         self,
@@ -694,40 +725,21 @@ class Engine:
         session_id: str = "",
         workspace_id: str = "",
     ) -> Iterator[TurnEvent]:
-        # One reader thread only. Spawning a new readline every poll abandons
-        # prior readers on the same Windows pipe and yields OSError 22 on write.
+        # The previous turn may finish over UDP while stdout is still blocked.
+        # Keep one reader per child so it cannot steal the next turn's delta.
         if hello_pid is None:
             hello_pid = self._child_hello_pid
-        lines: queue.Queue[str] = queue.Queue()
-        stop_reader = threading.Event()
+        lines = self._stdout_lines(child)
         _watch_trace(
             f"read_turn_events start hello_pid={hello_pid} "
             f"udp={udp_sock is not None}"
         )
 
-        def _reader() -> None:
-            stream = child.stdout
-            while not stop_reader.is_set():
-                if stream is None:
-                    lines.put("")
-                    return
-                try:
-                    line = stream.readline()
-                except Exception:
-                    line = ""
-                if line:
-                    lines.put(line)
-                    continue
-                if child.poll() is not None or stop_reader.is_set():
-                    lines.put("")
-                    return
-                time.sleep(0.05)
-
-        reader = threading.Thread(target=_reader, name="iris-sidecar-stdout", daemon=True)
-        reader.start()
         idle_deadline = time.monotonic() + _TURN_IDLE_SEC
         last_miss_log = 0.0
+        stdout_closed = False
         handled_tool_requests: set[str] = set()
+        seen_tool_calls: set[str] = set()
         try:
             while True:
                 if cancel.cancelled():
@@ -752,9 +764,13 @@ class Engine:
                         _watch_trace(f"udp recv err {exc!r}")
                 if not line:
                     try:
-                        line = lines.get_nowait()
+                        queued = lines.get(timeout=_CANCEL_POLL_SEC if udp_sock is None else 0)
+                        if queued is None:
+                            stdout_closed = True
+                        else:
+                            line = queued
                     except queue.Empty:
-                        line = ""
+                        pass
                 if not line:
                     # UDP can miss on Windows localhost; sidecar also writes the
                     # terminal file. Poll it here so land does not depend on UI.
@@ -772,32 +788,30 @@ class Engine:
                             self._stop_and_forget()
                             yield TurnCancelled()
                             return
-                        if time.monotonic() >= idle_deadline:
-                            if child.poll() is None:
-                                yield TurnFailed(
-                                    EngineError(
-                                        EngineErrorCode.TURN_IDLE,
-                                        "sidecar event timed out",
-                                    )
-                                )
-                                return
+                        if stdout_closed and child.poll() is not None:
                             self._forget_if_current(child)
                             yield TurnFailed(
-                                EngineError(
-                                    EngineErrorCode.SPAWN_FAILED,
-                                    "sidecar exited during turn",
-                                )
+                                EngineError(EngineErrorCode.SIDECAR_DIED, "sidecar exited during turn")
+                            )
+                            return
+                        if time.monotonic() >= idle_deadline:
+                            self._forget_if_current(child)
+                            yield TurnFailed(
+                                EngineError(EngineErrorCode.TURN_IDLE, "sidecar event timed out")
                             )
                             return
                         continue
-                idle_deadline = time.monotonic() + _TURN_IDLE_SEC
                 try:
                     raw = json.loads(line)
                 except json.JSONDecodeError:
-                    _watch_trace(
-                        f"json_fail line_len={len(line)} head={line.strip()[:80]!r}"
-                    )
+                    _watch_trace(f"json_fail line_len={len(line)}")
                     continue
+                if (
+                    turn_id and isinstance(raw, dict) and raw.get("t") != "tool_request"
+                    and raw.get("turn_id") != turn_id
+                ):
+                    continue
+                idle_deadline = time.monotonic() + _TURN_IDLE_SEC
                 if isinstance(raw, dict) and raw.get("t") == "tool_request":
                     request_id = str(raw.get("id") or "").strip()
                     if request_id and request_id in handled_tool_requests:
@@ -812,8 +826,10 @@ class Engine:
                             expected_turn_id=turn_id,
                             expected_session_id=session_id,
                             expected_workspace_id=workspace_id,
+                            seen_tool_calls=seen_tool_calls,
                         )
                     except (OSError, ValueError) as exc:
+                        self._forget_if_current(child)
                         yield TurnFailed(
                             EngineError(
                                 EngineErrorCode.TOOL_TRANSPORT,
@@ -832,11 +848,15 @@ class Engine:
                     )
                 elif isinstance(event, TurnCancelled):
                     _watch_trace("recv cancel")
+                if (
+                    isinstance(event, (TurnFinished, TurnFailed))
+                    and isinstance(raw, dict) and raw.get("retire") is True
+                ):
+                    self._forget_if_current(child)
                 yield event
                 if isinstance(event, (TurnFinished, TurnFailed, TurnCancelled)):
                     return
         finally:
-            stop_reader.set()
             if udp_sock is not None:
                 try:
                     udp_sock.close()

@@ -24,6 +24,7 @@ from iris.engine import (
 from iris.engine._sidecar import encode_host_command, parse_turn_event
 from iris.engine.runtime import _read_terminal_file_impl, _sidecar_env
 from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
+from iris.system._check_iris_agent_repo_dir import write_owned_slot_fixture
 from iris.system.win_subprocess import no_window_kwargs
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -86,15 +87,10 @@ def _read_terminal(pid: int) -> TurnFailed:
 
 
 def _write_cmd(home: Path, body: str) -> Path:
+    path = write_owned_slot_fixture(home / "iris-agent")
     if sys.platform == "win32":
-        scripts = home / "hermes-agent" / "venv" / "Scripts"
-        scripts.mkdir(parents=True, exist_ok=True)
-        path = scripts / "python.cmd"
         path.write_text(body.replace("\n", "\r\n"), encoding="utf-8")
         return path
-    bin_dir = home / "hermes-agent" / "venv" / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    path = bin_dir / "python"
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
     return path

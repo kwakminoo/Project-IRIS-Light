@@ -225,12 +225,14 @@ export class IrisIdeBridgeServer {
                 throw new Error('save goes through the standalone bridge frontend');
             case 'reloadFromDisk':
                 throw new Error('reloadFromDisk goes through the standalone bridge frontend');
+            case 'writeFile':
+                throw new Error('writeFile goes through the standalone bridge frontend');
             case 'createFile': {
                 const rel = String(args.path || '');
                 const abs = this.resolvePath(rel);
                 fs.mkdirSync(path.dirname(abs), { recursive: true });
                 const content = String(args.content ?? '');
-                fs.writeFileSync(abs, content, 'utf-8');
+                fs.writeFileSync(abs, content, { encoding: 'utf8', flag: 'wx' });
                 return { path: abs, created: true };
             }
             case 'deleteFile': {

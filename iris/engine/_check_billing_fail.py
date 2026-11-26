@@ -1,9 +1,10 @@
-"""Billing agent results must emit fail, not done."""
+"""Billing and typed model budget failures reach the IRIS failure path."""
 
 from __future__ import annotations
 
+from iris.engine._sidecar import parse_turn_event
 from iris.engine._sidecar_main import agent_result_fail
-from iris.engine.types import EngineError, EngineErrorCode
+from iris.engine.types import EngineError, EngineErrorCode, TurnFailed
 from iris.infrastructure.iris_agent_errors import explain_chat_error
 
 
@@ -22,6 +23,17 @@ def main() -> None:
     assert code == "billing", code
     assert "402" in detail or "credits" in detail.lower(), detail
     assert agent_result_fail({"final_response": "hello"}) is None
+    for code, hint in (
+        (EngineErrorCode.MODEL_OUTPUT_LIMIT, "output tokens exhausted"),
+        (EngineErrorCode.MODEL_CONTEXT_OVERFLOW, "prompt too large"),
+    ):
+        reason = code.value
+        assert agent_result_fail(
+            {"failure_reason": reason, "completed": False, "partial": True, "error": hint}
+        ) == (reason, hint)
+        event = parse_turn_event({"t": "fail", "code": reason, "detail": hint})
+        assert isinstance(event, TurnFailed) and event.error.code is code
+        assert explain_chat_error(event.error.user_message) == event.error.user_message
     err = EngineError(EngineErrorCode.BILLING, detail)
     assert "크레딧" in err.user_message
     assert explain_chat_error(err.user_message) == err.user_message

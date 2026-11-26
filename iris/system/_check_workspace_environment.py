@@ -244,6 +244,10 @@ def _check_product_python_excluded_from_system() -> None:
         else:
             assert hit.source == "none"
 
+        with mock.patch("iris.system.workspace_env.walk_up_venv_python", return_value=(product, root.parent)):
+            hit = WorkspaceEnvironmentResolver().resolve(project_root=root, allow_create=False)
+        assert hit.python != product, "walking up from another workspace must skip the IRIS product venv"
+
 
 def _agent_core_venv_python() -> Path | None:
     """Live Agent Core interpreter when installed; else a synthetic path under Agent Home."""

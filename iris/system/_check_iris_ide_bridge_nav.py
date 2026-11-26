@@ -96,6 +96,8 @@ def _self_check() -> None:
         QTimer.singleShot(int(timeout * 1000), loop.quit)
         loop.exec()
         view.loadFinished.disconnect(done)
+        # ponytail: do not raise_/setFocus here — steals Theia editor current back to
+        # sidebar/prior tab after openFile, so getActiveEditor stays on a.py (#1 flake).
         return bool(box.get("ok"))
 
     def wait_shell(timeout: float = 120.0) -> bool:
@@ -152,7 +154,9 @@ def _self_check() -> None:
         assert out2.get("via") != "bridge_fallback", f"쿼리 소실 후 폴러 정지 (#1 미해결): {out2}"
         pause(1.5)
         ed2 = call(client.get_active_editor).get("editor")
-        assert ed2 and "b.py" in str(ed2.get("path")), f"쿼리 소실 후 경로 미갱신: {ed2}"
+        if not ed2 or "b.py" not in str(ed2.get("path")):
+            tabs = js("Array.from(document.querySelectorAll('.lm-TabBar-tab')).map(t => t.textContent.trim())")
+            raise AssertionError(f"active editor did not update: {ed2}; result: {out2}; tabs: {tabs}")
         assert ed2.get("languageId"), f"쿼리 소실 후 push 정지 (#1 미해결): {ed2}"
         log("  4·5) 쿼리스트링 소실 후에도 상태 전송·명령 폴링 생존 ok")
 

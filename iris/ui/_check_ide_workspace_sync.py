@@ -17,6 +17,7 @@ def _window(session: SimpleNamespace | None) -> MagicMock:
     window = MagicMock()
     window._control_qt_invoker = None
     window._get_bound_ide_session.return_value = session
+    window._wait_for_iris_ide_workspace.return_value = ""
     window._ui_mode = "ide_companion"
     return window
 
@@ -43,6 +44,10 @@ def check_aligned_skips_open() -> None:
         )
         assert err is None, err
         assert opened == [], f"expected 0 open_folder calls, got {opened}"
+        window._wait_for_iris_ide_workspace.assert_called_once_with(root)
+        window._wait_for_iris_ide_workspace.return_value = "IRIS IDE frontend unavailable"
+        error = ensure_iris_ide_workspace(window, root, action="project.write_file")
+        assert error is not None and "frontend unavailable" in error.get("error", ""), error
 
 
 def check_mismatch_opens_then_ok() -> None:
@@ -74,6 +79,7 @@ def check_mismatch_opens_then_ok() -> None:
         assert err is None, err
         assert opened == [want_s], opened
         assert str(Path(session.workspace_root).resolve()) == want_s
+        window._wait_for_iris_ide_workspace.assert_called_once_with(want_s)
 
 
 def check_mismatch_open_fail() -> None:

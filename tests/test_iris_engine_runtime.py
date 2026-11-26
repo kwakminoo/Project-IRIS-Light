@@ -107,7 +107,7 @@ class EngineReadyStubTests(TestCase):
             engine._turn_active = False
             self.assertIsInstance(engine.ensure_ready(), EngineReady)
             stop.assert_called_once_with(old)
-            spawn.assert_called_once_with(self.home)
+            spawn.assert_called_once_with(self.home, python=Path("new-python"))
             self.assertIs(engine._child, new)
 
     def test_ensure_ready_on_fresh_sidecar_is_not_installed(self) -> None:
@@ -133,7 +133,7 @@ class EngineReadyStubTests(TestCase):
         with (
             patch(
                 "iris.engine.runtime.probe_engine_python",
-                side_effect=lambda _home: next(probes),
+                side_effect=lambda _home, **_kwargs: next(probes),
             ),
             patch("iris.engine.runtime._spawn_sidecar", return_value=spawn_fail),
         ):

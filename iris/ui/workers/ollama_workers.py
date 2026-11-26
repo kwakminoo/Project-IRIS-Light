@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Empty, Queue
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -150,38 +150,68 @@ class OllamaModelsVerifyWorker(QThread):
         self._base_url = base_url
 
     def run(self) -> None:
-        # ponytail: 클라우드 카탈로그가 크면 순차 25초×N은 너무 김. 6병렬.
-        # 천장: 동시 6건. 더 필요하면 워커 수만 올린다.
+        # ponytail: six probes at a time. In-flight HTTP calls use their own
+        # timeouts so an unresponsive provider cannot hold Qt shutdown open.
         client = OllamaClient(self._base_url)
-        try:
-            models = client.list_chat_models(probe_cloud=False)
-        except Exception:
+        cancelled = threading.Event()
+        listing: Queue[list[OllamaModelInfo] | None] = Queue()
+
+        def take(results: Queue):
+            while not self.isInterruptionRequested():
+                try:
+                    return results.get(timeout=0.1)
+                except Empty:
+                    continue
+            return None
+
+        def load_models() -> None:
+            try:
+                listing.put(client.list_chat_models(probe_cloud=False))
+            except Exception:
+                listing.put(None)
+
+        threading.Thread(target=load_models, daemon=True, name="iris-model-cleanup-list").start()
+        models = take(listing)
+        if self.isInterruptionRequested():
+            return
+        if models is None:
             self.finished_all.emit([], 0, 0, False)
             return
-        usable = 0
-        done = 0
-        total = len(models)
-        if not models:
-            self.finished_all.emit([], 0, 0, True)
-            return
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            futures = {}
-            for model in models:
-                if self.isInterruptionRequested():
-                    break
-                futures[pool.submit(client.classify_model, model.name)] = model.name
-            for fut in as_completed(futures):
-                name = futures[fut]
+
+        jobs: Queue[str] = Queue()
+        results: Queue[tuple[str, str, str]] = Queue()
+        for model in models:
+            jobs.put(model.name)
+
+        def probe() -> None:
+            while not cancelled.is_set():
                 try:
-                    state, tool = fut.result()
+                    name = jobs.get_nowait()
+                except Empty:
+                    return
+                try:
+                    state, tool = client.classify_model(name)
                 except Exception:
                     state, tool = "unverified", "unknown"
+                results.put((name, state, tool))
+
+        total = len(models)
+        usable = 0
+        for _ in range(min(total, 6)):
+            threading.Thread(target=probe, daemon=True, name="iris-model-cleanup-probe").start()
+        try:
+            for done in range(1, total + 1):
+                result = take(results)
+                if result is None or self.isInterruptionRequested():
+                    return
+                name, state, tool = result
                 if state != "unavailable":
                     usable += 1
-                done += 1
                 self.verified_one.emit(name, state, tool)
                 self.progress.emit(done, total, usable)
-        self.finished_all.emit(models, usable, total, done == total)
+        finally:
+            cancelled.set()
+        self.finished_all.emit(models, usable, total, True)
 
 
 class OllamaChatWorker(QThread):

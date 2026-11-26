@@ -1,5 +1,5 @@
 {
-  "version": "0.1.1+iris.a382af23",
+  "version": "0.1.2+iris.a382af23",
   "package": "iris-agent-core",
   "upstream_revision": "a382af23f4c067d23463b5781958684c2cda82bc",
   "entry_point": "iris_agent_cli.main:main",
@@ -17,9 +17,12 @@
     "agent/inline_tool_executors.py": "ea7ef3906169984f51dddbfe3dfa7e871f4fc06f7e12805ee9c342495d911c29",
     "agent/tool_executor.py": "09e80e07ae759281119bd7f39f75e167eb7473671582f141b3ed601cad62dcc8",
     "iris_agent_cli/main.py": "5d3542c1e2c75c3ce434816167802cf80d9625469261b7b4d701304909f66d21",
-    "pyproject.toml": "292e3ac7e08e97ea0172d90729f6be6be6b0e72c8fa0625dd17f51c31c709b21",
+    "model_tools.py": "252418e89742093a27cbb82b6abd3f7b4512045282fef119a2630ac9deb5fd0f",
+    "plugins/model-providers/custom/__init__.py": "9532ab3d720600b728fe45993782435c33165165e838810fff0c04ba8a958a11",
+    "pyproject.toml": "7b45cd56539839941c3e72890a8e5664477068c468d5ec0061e0d3c309acaeed",
     "run_agent.py": "05b9bf47d71dd54b67d905fca20c329260b0447a21ab12227afe37653bfac4ff",
     "setup.py": "23b2453c734661af9b4d9998171dc794e555c22f554d44cd4a625ea74d348d5d",
-    "uv.lock": "6d38e36127cff3c7720aa1da146fcf2a0011d15125a3447ed60326f5e4fc73f6"
+    "tools/registry.py": "0dd8939f3e102679a8236ab688653a906f3914ce9921000df13ef7a9b240d36c",
+    "uv.lock": "c24742f64c04eb32cb340af3ae39258b7ab81a73fc1cbeb761f4cc3f413e2abd"
   }
 }

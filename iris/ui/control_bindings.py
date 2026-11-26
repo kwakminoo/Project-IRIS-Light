@@ -426,13 +426,20 @@ def ensure_iris_ide_workspace(
         bound = str(Path(session.workspace_root).resolve())
     except OSError:
         bound = str(session.workspace_root or "")
-    if bound == root_s:
+    def _wait_ready(bound_session: Any) -> dict[str, Any] | None:
+        if bound_session.ide_id == "iris_ide":
+            error = window._wait_for_iris_ide_workspace(root_s)
+            if error:
+                return err_result(action, error, {"project_root": root_s, "hint": "ide.open_folder"})
         return None
 
+    if bound == root_s:
+        return _wait_ready(session)
+
     def _default_open(path: str) -> str:
-        # 액션 스레드에서 직접 호출(기존 open_similar 와 동일). Queued _call_on_ui(3s)로
-        # 동기 open_folder 를 감싸면 타임아웃·재진입 함정.
-        err = window._open_ide_folder(path, new_window=new_window, source="chat")
+        err = _call_on_ui_unbounded(
+            window, lambda: window._open_ide_folder(path, new_window=new_window, source="chat")
+        )
         return str(err or "")
 
     opener = open_folder if open_folder is not None else _default_open
@@ -483,7 +490,7 @@ def ensure_iris_ide_workspace(
                 "hint": "ide.open_folder",
             },
         )
-    return None
+    return _wait_ready(session2)
 
 
 def _qt_pump() -> None:

@@ -102,3 +102,8 @@ integrations/iris-ide/.theia/
 
 # 설치 로그 (setup.ps1)
 setup-log*.txt
+/iris-ide-buildtools.log
+/iris-ide-reinstall.log
+/scripts/_build_exe*.log
+/scripts/_build_exe*.log.err
+/scripts/_build_exe*.pid

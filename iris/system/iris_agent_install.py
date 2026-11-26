@@ -26,12 +26,13 @@ from typing import Callable, Iterator
 from iris.infrastructure.agent_runtime import (
     ENGINE_SELECTION_FILE,
     IRIS_AGENT_CHECKOUT_NAME,
+    LEGACY_AGENT_CHECKOUT_NAME,
     apply_iris_agent_baseline_overlays,
     engine_slot_path,
     ensure_iris_agent_home,
-    iris_agent_repo_dir,
     load_pinned_sha,
     read_engine_selection,
+    selected_owned_engine,
 )
 from iris.system import iris_agent_gateway as gw
 
@@ -767,10 +768,14 @@ def _activate_staged(home: Path, staging: Path) -> tuple[bool, str]:
     """Select a verified stable slot, retaining the previous active engine."""
     # ponytail: Keep older slots until cleanup can verify their sidecars have exited.
     try:
-        current = iris_agent_repo_dir(home)
-        _, last_previous = read_engine_selection(home)
-        previous = current if current.is_dir() else last_previous
-        _write_engine_selection(home, staging, previous if previous and previous.is_dir() else None)
+        current = selected_owned_engine(home)
+        active, previous = read_engine_selection(home)
+        # Keep an explicitly selected reference available to diagnostic tooling.
+        reference = next(
+            (slot for slot in (active, previous) if slot and slot.name == LEGACY_AGENT_CHECKOUT_NAME and slot.is_dir()),
+            None,
+        )
+        _write_engine_selection(home, staging, current or reference)
     except (OSError, ValueError) as exc:
         return False, f"Iris Agent 전환 실패: {exc}"
     return True, staging.name
@@ -795,23 +800,15 @@ def _write_engine_selection(home: Path, active: Path, previous: Path | None) -> 
 
 
 def rollback_iris_agent(home: Path) -> str:
-    """Probe the recovery slot and select it without moving either installation."""
-    from iris.engine._home import _probe_imports, checkout_python
-
+    """Probe the previous Owned slot before making it active."""
     with iris_agent_install_lock(home):
         current, previous = read_engine_selection(home)
-        if current is None or previous is None:
-            raise RuntimeError("Iris Agent recovery slot is unavailable")
-        if (previous / "SOURCE_MANIFEST.json").is_file():
-            ok, detail = _probe_owned_slot(previous, home)
-        else:
-            python = checkout_python(previous)
-            with tempfile.TemporaryDirectory(prefix="iris-recovery-", dir=home) as tmp:
-                error = _probe_imports(Path(python), home=Path(tmp)) if python else None
-            ok, detail = python is not None and error is None, str(error or "Recovery Python missing")
+        if previous is None or previous == current or previous.name == LEGACY_AGENT_CHECKOUT_NAME:
+            raise RuntimeError("Iris Agent Owned recovery slot is unavailable")
+        ok, detail = _probe_owned_slot(previous, home)
         if not ok:
             raise RuntimeError(f"Iris Agent recovery slot failed: {detail}")
-        _write_engine_selection(home, previous, current if current.is_dir() else None)
+        _write_engine_selection(home, previous, current if current and current.is_dir() else None)
         return previous.name
 
 
@@ -1165,8 +1162,8 @@ def install_iris_agent_with_system_python(
         return InstallResult(False, "사용자가 중단함", "cancel")
     try:
         with iris_agent_install_lock(home):
-            current = iris_agent_repo_dir(home)
-            if not update and probe_engine_python(EngineHome(home)) is None:
+            current = selected_owned_engine(home)
+            if current is not None and not update and probe_engine_python(EngineHome(home)) is None:
                 return InstallResult(True, f"Iris Agent 사용 가능 ({current.name})")
             vendor = vendor_iris_agent_core_root()
             try:
@@ -1175,14 +1172,15 @@ def install_iris_agent_with_system_python(
                     raise ValueError("Requested source revision does not match the bundle")
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 return fail("source", "동봉된 Iris Agent 소스를 복구해야 합니다", f"{exc}\nRun IRIS Setup with a verified bundle.")
-            replacing_reference = current.is_dir() and not (current / "SOURCE_MANIFEST.json").is_file()
+            active, _ = read_engine_selection(home)
+            replacing_reference = current is None and active is not None and active.name == LEGACY_AGENT_CHECKOUT_NAME and active.is_dir()
             if (
                 replacing_reference
                 and manifest.get("legacy_migration_approved") is not True
                 and not _dev_owned_cutover_allowed()
             ):
                 return fail("gate", "기존 Iris Agent 엔진 유지", "Owned engine is awaiting full product parity. The current installation remains selected.")
-            if current.is_dir() and (update or replacing_reference) and model_check is None:
+            if (replacing_reference or (current is not None and update)) and model_check is None:
                 return fail("probe", "Iris Agent 모델 검증이 필요합니다", "Select a model before updating the active engine.")
             want = iris_agent_python_range(vendor)
             py = ensure_system_python_winget(run_streamed=run_streamed, on_stream=on_stream, want=want)

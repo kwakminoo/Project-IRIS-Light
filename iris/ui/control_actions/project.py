@@ -29,6 +29,7 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
         ensure_iris_ide_workspace,
         err_result,
         iris_ide_editor_opened,
+        iris_ide_save_ok,
         load_user_profile,
         ok_result,
         resolve_bound_work_root,
@@ -145,13 +146,14 @@ def project_write_file(window: ProjectHost, args: dict[str, Any]) -> dict[str, A
                 _log(window, "project.write_file", True)
                 return _logged(written)
             abs_path.parent.mkdir(parents=True, exist_ok=True)
-            end = max(len(text) + 1, 999999)
-
             if abs_path.is_file():
                 open_out, open_err = _open_tab(client, norm_rel)
                 if open_err:
                     return _open_fail_payload(path_s, norm_rel, text, open_err, open_out)
-                _bridge_call_pumping(lambda: client.replace_range(text, path=norm_rel, start=0, end=end))
+                saved = _bridge_call_pumping(lambda: client.write_file(norm_rel, text))
+                saved_ok, save_err = iris_ide_save_ok(saved)
+                if not saved_ok:
+                    return _open_fail_payload(path_s, norm_rel, text, save_err, open_out)
             else:
                 _bridge_call_pumping(lambda: client.create_file(norm_rel, text))
                 open_out, open_err = _open_tab(client, norm_rel)

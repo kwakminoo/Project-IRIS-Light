@@ -307,6 +307,8 @@ class IrisIdeWindow(QMainWindow):
         view = self._ensure_view()
         if not url or view is None:
             self.show_loading("IDE URL 없음 — IRIS IDE 설치/복구 필요")
+            if on_ready is not None:
+                on_ready(False)
             return
         if bridge_port and bridge_token:
             sep = "&" if "?" in url else "?"
@@ -332,9 +334,9 @@ class IrisIdeWindow(QMainWindow):
         self._defer_show = defer_show
         same_url = url == self._loaded_url and not force_reload
         if same_url and self._stack.currentWidget() is view:
-            if defer_show:
+            if defer_show or on_ready is not None:
                 self.theia_load_finished.emit(True)
-            else:
+            if not defer_show:
                 self.show()
                 self.raise_()
             return

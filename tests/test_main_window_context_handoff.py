@@ -262,8 +262,7 @@ class ContextHandoffWiringTests(TestCase):
     # --- 구 모델 인수인계 요약 ----------------------------------------
 
     def test_summary_route_picks_the_backend_in_use(self) -> None:
-        from types import SimpleNamespace as NS
-
+        """한 줄 요약은 Hermes 켜져 있어도 ollama|api 만 (NIP-02 / _oneshot_route)."""
         self.win._use_hermes_backend = lambda: False
         route = MainWindow._summary_route_for(self.win, "qwen3:8b")
         self.assertEqual(route.backend, "ollama")
@@ -273,13 +272,11 @@ class ContextHandoffWiringTests(TestCase):
         self.win._settings.agent_base_url = "http://127.0.0.1:8642/v1"
         self.win._settings.agent_api_key = "k"
         self.win._settings.agent_command = "iris-agent"
-        with patch(
-            "iris.infrastructure.iris_agent_client.resolve_iris_agent_inference",
-            return_value=NS(model="upstream", label="up"),
-        ):
-            route = MainWindow._summary_route_for(self.win, "qwen3:8b")
-        self.assertEqual(route.backend, "agent")
-        self.assertEqual(route.target.model, "upstream")
+        route = MainWindow._summary_route_for(self.win, "qwen3:8b")
+        self.assertEqual(route.backend, "ollama")
+        self.assertEqual(route.model, "qwen3:8b")
+        self.assertNotEqual(route.backend, "agent")
+        self.assertFalse((route.base_url or "").rstrip("/").endswith(":8642"))
 
     def test_summary_route_api_model_skips_hermes(self) -> None:
         """Hermes 켜져 있어도 Iris API runtime 제목/요약은 제공자 직행."""
@@ -294,7 +291,7 @@ class ContextHandoffWiringTests(TestCase):
             models=["nvidia/nemotron-mini"],
         )
         with patch(
-            "iris.ui.window.main_window.get_api_provider", return_value=provider
+            "iris.storage.api_providers.get_api_provider", return_value=provider
         ):
             route = MainWindow._summary_route_for(
                 self.win, "api:nv1:nvidia/nemotron-mini"
@@ -306,7 +303,7 @@ class ContextHandoffWiringTests(TestCase):
     def test_summary_route_is_none_when_it_cannot_resolve(self) -> None:
         self.win._use_hermes_backend = lambda: True
         with patch(
-            "iris.ui.window.main_window.get_api_provider",
+            "iris.storage.api_providers.get_api_provider",
             return_value=None,
         ):
             self.assertIsNone(MainWindow._summary_route_for(self.win, "api:gone:x"))

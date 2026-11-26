@@ -73,6 +73,7 @@ class _HungFileOnlyTurnEndAgent:
 class _QuickAgent:
     def __init__(self, **kwargs: Any) -> None:
         self._persist_disabled = False
+        self._stream = kwargs["stream_delta_callback"]
 
     def run_conversation(
         self,
@@ -80,11 +81,13 @@ class _QuickAgent:
         conversation_history: list | None = None,
         **_kwargs: Any,
     ) -> dict:
+        self._stream("draft streamed before finalization")
         logging.getLogger("agent.conversation_loop").info(
             "Turn ended: reason=text_response(finish_reason=stop) model=stub "
             "api_calls=1/1 budget=1/1 tool_turns=0 last_msg_role=assistant "
             "response_len=5 session=stub"
         )
+        time.sleep(0.05)
         return {"final_response": "quick"}
 
 
@@ -111,7 +114,7 @@ def main() -> None:
     # Sidecar install imports Hermes tools.registry; this check only covers
     # post-Turn-ended emit, so stub the hook (product path still installs).
     sidecar._install_iris_engine_tools = (  # type: ignore[method-assign]
-        lambda _agent, surface=None: ()
+        lambda _agent, **_kwargs: ()
     )
 
     hung_events: list[dict] = []
@@ -129,6 +132,7 @@ def main() -> None:
     assert terminal is not None, f"no done/fail after Turn ended; events={hung_events!r}"
     assert terminal.get("t") == "done", terminal
     assert terminal.get("text") == "assistant landed", terminal
+    assert terminal.get("retire") is True, terminal
     assert elapsed < 2.0, elapsed
 
     quick_events: list[dict] = []

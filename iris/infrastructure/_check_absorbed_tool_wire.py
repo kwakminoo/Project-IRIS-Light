@@ -187,12 +187,22 @@ def _check_native_transport_serialized() -> None:
             time.sleep(0.02)
             with state_lock:
                 state["active"] -= 1
+            req = local.request
+            # Parent echoes correlation keys that _request_native_tool now requires.
             return json.dumps(
-                {"t": "tool_result", "id": local.request_id, "result": {"ok": True}}
+                {
+                    "t": "tool_result",
+                    "id": req["id"],
+                    "tool_call_id": req.get("tool_call_id", ""),
+                    "turn_id": req.get("turn_id", ""),
+                    "session_id": req.get("session_id", ""),
+                    "workspace_id": req.get("workspace_id", ""),
+                    "result": {"ok": True},
+                }
             )
 
     def emit(payload: dict) -> None:
-        local.request_id = payload["id"]
+        local.request = payload
 
     original_emit, original_stdin = sidecar._emit, sidecar.sys.stdin
     sidecar._emit, sidecar.sys.stdin = emit, _Stdin()

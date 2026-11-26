@@ -6,6 +6,7 @@ RequestApprovalLedger stays the only approval system.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -24,6 +25,8 @@ class FinalizedStartPlan:
     argv: list[str] | None
     shell: str | None
     env: tuple[tuple[str, str], ...] | None = None
+    environment_id: str = ""
+    timeout_s: float | None = None
 
     def fingerprint(self) -> str:
         env_map = dict(self.env) if self.env else None
@@ -32,6 +35,8 @@ class FinalizedStartPlan:
             shell=self.shell,
             cwd=self.cwd,
             env=env_map,
+            environment_id=self.environment_id,
+            timeout_s=self.timeout_s,
         )
 
     def preview(self) -> str:
@@ -136,6 +141,18 @@ def finalize_process_start_plan(
             hint=_START_XOR_HINT,
             data={"argv_present": has_argv, "shell_present": has_shell},
         )
+    try:
+        timeout_raw = args.get("timeout_s")
+        timeout_s = float(timeout_raw) if timeout_raw is not None else None
+        if timeout_s is not None and not math.isfinite(timeout_s):
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        return FinalizeStartFailure(
+            error="invalid process timeout",
+            error_code="invalid_timeout",
+            hint="timeout_s must be a finite number",
+            data={},
+        )
     if bound_argv:
         from iris.system.workspace_env import bind_execution_argv
 
@@ -149,4 +166,6 @@ def finalize_process_start_plan(
         argv=list(bound_argv) if bound_argv else None,
         shell=shell if has_shell else None,
         env=_env_tuple(args),
+        environment_id=str(args.get("environment_id") or args.get("env_id") or ""),
+        timeout_s=timeout_s if timeout_s is not None and timeout_s > 0 else None,
     )

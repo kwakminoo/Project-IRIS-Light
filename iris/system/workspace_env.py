@@ -350,8 +350,8 @@ class WorkspaceEnvironmentResolver:
             )
 
         # Prefer bound root .venv, then walk-up from file (IDE parity).
-        # Reject Agent Core only — product sys.executable may equal this project's
-        # .venv when Iris itself was launched from it (thin launcher / -m iris).
+        # An explicitly bound IRIS project may use its own .venv. Unrelated
+        # workspaces must not discover the app interpreter by walking ancestors.
         at_root = find_venv_python(root)
         if at_root is not None and not _is_agent_core_interpreter(at_root):
             return WorkspacePython(python=at_root, root=root, source=_SOURCE_VENV, locks=locks)
@@ -367,7 +367,9 @@ class WorkspaceEnvironmentResolver:
         walked = walk_up_venv_python(start)
         if walked is not None:
             py, venv_root = walked
-            if not _is_agent_core_interpreter(py):
+            if not _is_agent_core_interpreter(py) and (
+                venv_root == root or not _is_product_interpreter(py)
+            ):
                 return WorkspacePython(
                     python=py, root=venv_root, source=_SOURCE_VENV, locks=locks
                 )

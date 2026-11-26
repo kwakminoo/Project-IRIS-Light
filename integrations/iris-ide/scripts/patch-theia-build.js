@@ -130,6 +130,7 @@ const bundleHasCurrentExt =
     bundleText.includes('iris.ide.runFile') &&
     bundleText.includes('IRIS_EXIT:') &&
     bundleText.includes('setDiagnostics') &&
+    bundleText.includes('open editor has unsaved (dirty) changes') &&
     bundleText.includes('iris.pdf') &&
     bundleText.includes('iris-pdf') &&
     bundleText.includes('iris-markdown-preview-breadcrumb');

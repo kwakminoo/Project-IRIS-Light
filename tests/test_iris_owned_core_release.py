@@ -1,5 +1,6 @@
 """Release contracts for the bundled, IRIS-owned engine."""
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -8,7 +9,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from iris.infrastructure.agent_runtime import iris_agent_repo_dir, read_engine_selection
+from iris.engine._home import engine_python
+from iris.infrastructure.agent_runtime import ENGINE_SELECTION_FILE, iris_agent_repo_dir, read_engine_selection
+from iris.system._check_iris_agent_repo_dir import write_owned_slot_fixture
 from iris.system import iris_agent_install as install
 
 
@@ -17,6 +20,22 @@ VENDOR = ROOT / "vendor" / "iris-agent-core"
 
 
 class OwnedCoreReleaseTests(unittest.TestCase):
+    def test_unverified_engine_is_never_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            legacy = home / "hermes-agent"
+            legacy.mkdir()
+            self.assertEqual(iris_agent_repo_dir(home), home / "iris-agent")
+            python = legacy / ("venv/Scripts/python.exe" if sys.platform == "win32" else "venv/bin/python")
+            python.parent.mkdir(parents=True)
+            python.touch()
+            (home / ENGINE_SELECTION_FILE).write_text(json.dumps({"active": legacy.name}), encoding="utf-8")
+            self.assertIsNone(engine_python(home))
+            canonical = home / "iris-agent"
+            legacy.rename(canonical)
+            (home / ENGINE_SELECTION_FILE).write_text("broken JSON", encoding="utf-8")
+            self.assertIsNone(engine_python(home))
+
     def test_shipped_lock_identifies_owned_package(self):
         project = tomllib.loads((VENDOR / "pyproject.toml").read_text(encoding="utf-8"))["project"]
         lock_path = VENDOR / "uv.lock"
@@ -61,10 +80,10 @@ class OwnedCoreReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             previous = home / "iris-agent"
-            previous.mkdir()
+            write_owned_slot_fixture(previous)
             (previous / "old-file").touch()
             candidate = home / "iris-agent.slot-0123456789abcdef"
-            candidate.mkdir()
+            write_owned_slot_fixture(candidate)
             (candidate / "new-file").touch()
             ok, detail = install._activate_staged(home, candidate)
             self.assertTrue(ok, detail)

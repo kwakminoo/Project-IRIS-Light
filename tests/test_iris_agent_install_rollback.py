@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from iris.infrastructure.agent_runtime import iris_agent_repo_dir, read_engine_selection
 from iris.system import iris_agent_install as install
+from iris.system._check_iris_agent_repo_dir import write_owned_slot_fixture
 
 
 class IrisAgentInstallRollbackTests(unittest.TestCase):
@@ -38,25 +39,41 @@ class IrisAgentInstallRollbackTests(unittest.TestCase):
                 self.assertIn(str(model_error) if model_error else ready[1], result.message)
                 self.assertFalse(staging.exists())
                 self.assertEqual(read_engine_selection(home), (None, None))
-                self.assertEqual(iris_agent_repo_dir(home), previous)
+                self.assertEqual(iris_agent_repo_dir(home), home / "iris-agent")
                 self.assertEqual((previous / "sentinel").read_text(encoding="utf-8"), "working")
 
-    def test_rollback_can_select_verified_legacy_recovery_slot(self):
+    def test_rollback_refuses_reference_as_product_engine(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             legacy = home / "hermes-agent"
             current = home / "iris-agent.slot-0123456789abcdef"
             legacy.mkdir()
-            current.mkdir()
-            ok, detail = install._activate_staged(home, current)
-            self.assertTrue(ok, detail)
+            write_owned_slot_fixture(current)
+            install._write_engine_selection(home, current, legacy)
             with (
                 patch("iris.engine._home.checkout_python", return_value=Path(sys.executable)),
                 patch("iris.engine._home._probe_imports", return_value=None),
             ):
-                self.assertEqual(install.rollback_iris_agent(home), legacy.name)
-            self.assertEqual(read_engine_selection(home), (legacy, current))
+                with self.assertRaisesRegex(RuntimeError, "Owned recovery"):
+                    install.rollback_iris_agent(home)
+            self.assertEqual(read_engine_selection(home), (current, legacy))
             self.assertTrue(current.is_dir())
+
+    def test_rollback_probes_owned_recovery_before_writing_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            current = home / "iris-agent.slot-0123456789abcdef"
+            previous = home / "iris-agent.slot-1111111111111111"
+            write_owned_slot_fixture(current)
+            write_owned_slot_fixture(previous)
+            install._write_engine_selection(home, current, previous)
+            with patch.object(install, "_probe_owned_slot", return_value=(False, "bad runtime")):
+                with self.assertRaisesRegex(RuntimeError, "bad runtime"):
+                    install.rollback_iris_agent(home)
+            self.assertEqual(read_engine_selection(home), (current, previous))
+            with patch.object(install, "_probe_owned_slot", return_value=(True, "ready")):
+                self.assertEqual(install.rollback_iris_agent(home), previous.name)
+            self.assertEqual(read_engine_selection(home), (previous, current))
 
     def test_copy_failure_has_no_effect_on_active_engine(self):
         with tempfile.TemporaryDirectory() as tmp:

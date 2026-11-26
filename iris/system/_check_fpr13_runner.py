@@ -1,16 +1,15 @@
-"""13+FPR scenario runner — bundles existing iris ``_check_*`` / verify-iris pieces.
+"""FPR13 evidence by layer, using existing Iris checks and verify-iris diagnostics.
 
-Does not invent a new test framework. Runs known ``python -m iris...`` modules,
-writes a fillable results table under ``.tmp/fpr13/``.
-
-Kinds:
-  contract — offline; any fail → process exit non-zero
-  live     — skipped unless ``IRIS_FPR13_LIVE=1`` (or ``--include-live``)
+L1 unit, L2 contract, L3 integration, L4 product E2E, L5 GUI E2E,
+L6 lifecycle. Startup diagnostics carry no coverage layer. The report retains
+unverified rows regardless of which execution profile is selected.
 
 Run:
   .venv\\Scripts\\python.exe -m iris.system._check_fpr13_runner
   .venv\\Scripts\\python.exe -m iris.system._check_fpr13_runner --contracts-only
   .venv\\Scripts\\python.exe -m iris.system._check_fpr13_runner --include-live
+  .venv\\Scripts\\python.exe -m iris.system._check_fpr13_runner --include-gui
+  .venv\\Scripts\\python.exe -m iris.system._check_fpr13_runner --include-lifecycle
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -31,7 +31,7 @@ REPO = Path(__file__).resolve().parents[2]
 OUT_DIR = REPO / ".tmp" / "fpr13"
 LIVE_ENV = "IRIS_FPR13_LIVE"
 
-# Scenario: {id, title, kind, command, requires, status}
+# kind selects when an executable check runs. layer records what it proves.
 # command = argv after the interpreter (usually ``-m iris...``).
 SCENARIOS: list[dict[str, Any]] = [
     # --- 13 core contracts (FGC 3a + shell speak) ---
@@ -145,41 +145,86 @@ SCENARIOS: list[dict[str, Any]] = [
         "id": "fpr_model_picker_roster",
         "title": "FPR: model picker roster",
         "kind": "contract",
+        "layer": "L1",
         "command": ["-m", "iris.ui.chat._check_model_picker_roster"],
         "requires": [],
     },
-    # --- Live (default skip) — fillable rows for GUI/model evidence ---
+    {
+        "id": "c14_user_branding",
+        "title": "Iris Agent branding on user-facing paths",
+        "kind": "contract",
+        "command": ["-m", "iris.ui._check_hermes_user_branding_p4"],
+        "requires": [],
+    },
     {
         "id": "l01_general_chat",
-        "title": "Live #1: Owned HELLO (headless Engine, no IDE bridge)",
+        "title": "Headless Owned Engine HELLO with local model",
         "kind": "live",
+        "layer": "L3",
         "command": ["-m", "iris.system._check_owned_live_hello"],
         "requires": ["model"],
     },
     {
-        "id": "l02_browser_gui",
-        "title": "Live #2–3: Wiki/Browser GUI path",
+        "id": "doctor_startup",
+        "title": "verify-iris startup diagnostic",
         "kind": "live",
+        "layer": "diagnostic",
         "command": [
             str(REPO / ".cursor" / "skills" / "verify-iris" / "scripts" / "doctor.py"),
         ],
-        "requires": ["gui"],
+        "requires": [],
     },
     {
-        "id": "l03_process_gui",
-        "title": "Live #12: process start→wait via Control",
+        "id": "control_http_contract",
+        "title": "Temporary Control HTTP server and fake invoker contract",
         "kind": "live",
+        "layer": "L2",
         "command": ["-m", "iris.system._check_control_http_contract"],
-        "requires": ["gui", "approval"],
+        "requires": ["loopback bind"],
     },
     {
         "id": "l04_shell_model",
-        "title": "Live: Owned shell.run + marker (tool_choice=required)",
+        "title": "Headless Owned shell marker and native shell action with fixture approval",
         "kind": "live",
+        "layer": "L3",
         "command": ["-m", "iris.system._check_owned_live_shell"],
         "requires": ["model"],
     },
+    {
+        "id": "ide_product_control",
+        "title": "Isolated product Control API and installed IDE workflow",
+        "kind": "product",
+        "layer": "L4",
+        "command": ["-m", "iris.ui._check_local_vibe_smoke"],
+        "requires": ["running isolated IRIS", "installed IDE", "loopback bind"],
+    },
+    {
+        "id": "wiki_browser_gui",
+        "title": "Product Wiki and Browser clicks with local WebEngine navigation",
+        "kind": "gui",
+        "layer": "L5",
+        "command": ["-m", "iris.ui._check_fpr_product_gui", "browser"],
+        "requires": ["interactive Qt desktop", "WebEngine"],
+    },
+    {
+        "id": "process_approval_gui",
+        "title": "Product GUI process approval, start and wait",
+        "kind": "gui",
+        "layer": "L5",
+        "command": ["-m", "iris.ui._check_fpr_product_gui", "process"],
+        "requires": ["interactive Qt desktop", "WebEngine", "loopback bind"],
+    },
+    {
+        "id": "installer_lifecycle",
+        "title": "Clean product install, product update and recovery",
+        "kind": "lifecycle",
+        "layer": "L6",
+        "command": ["-m", "iris.system._check_owned_lifecycle"],
+        "requires": ["isolated home", "installable engine", "local Ollama model"],
+    },
 ]
+for _scenario in SCENARIOS:
+    _scenario.setdefault("layer", "L2")
 
 
 def _python() -> Path:
@@ -193,11 +238,15 @@ def _live_enabled(ns: argparse.Namespace) -> bool:
     return (os.environ.get(LIVE_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _run_one(py: Path, scenario: dict[str, Any], log_dir: Path) -> dict[str, Any]:
+def _run_one(
+    py: Path, scenario: dict[str, Any], log_dir: Path, *, product_home: Path | None = None
+) -> dict[str, Any]:
     row = dict(scenario)
-    row.setdefault("status", "pending")
     cmd = [str(py), *list(scenario["command"])]
     log_path = log_dir / f"{scenario['id']}.log"
+    env = None
+    if product_home is not None:
+        env = {**os.environ, "USERPROFILE": str(product_home), "HOME": str(product_home)}
     t0 = time.monotonic()
     proc = subprocess.run(
         cmd,
@@ -206,6 +255,7 @@ def _run_one(py: Path, scenario: dict[str, Any], log_dir: Path) -> dict[str, Any
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
         **no_window_kwargs(),
     )
     elapsed = round(time.monotonic() - t0, 3)
@@ -217,10 +267,20 @@ def _run_one(py: Path, scenario: dict[str, Any], log_dir: Path) -> dict[str, Any
     )
     log_path.write_text(body, encoding="utf-8")
     row["exit_code"] = int(proc.returncode)
-    row["log_path"] = str(log_path.relative_to(REPO)).replace("\\", "/")
+    row["log_path"] = log_path.as_posix()
     row["elapsed_s"] = elapsed
-    row["status"] = "pass" if proc.returncode == 0 else "fail"
+    row["status"] = "PASS" if proc.returncode == 0 else "FAIL"
     return row
+
+
+def _blocked_reason(scenario: dict[str, Any]) -> str:
+    if "loopback bind" in scenario["requires"]:
+        try:
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+        except OSError as exc:
+            return f"Loopback bind unavailable ({exc})"
+    return ""
 
 
 def _markdown_table(result: dict[str, Any]) -> str:
@@ -230,30 +290,25 @@ def _markdown_table(result: dict[str, Any]) -> str:
         f"- started_at: `{result['started_at']}`",
         f"- summary: `{json.dumps(result['summary'], ensure_ascii=False)}`",
         "",
-        "| id | title | kind | requires | status | exit_code | log | notes |",
+        "| id | title | layer | requires | status | exit_code | log | notes |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for s in result["scenarios"]:
         req = ",".join(s.get("requires") or []) or "—"
-        notes = ""
-        if s.get("status") == "skipped":
-            notes = f"set {LIVE_ENV}=1 or --include-live"
-        elif s.get("status") == "fail":
-            notes = "see log"
         lines.append(
-            "| {id} | {title} | {kind} | {req} | {status} | {exit} | {log} | {notes} |".format(
+            "| {id} | {title} | {layer} | {req} | {status} | {exit} | {log} | {notes} |".format(
                 id=s["id"],
                 title=s["title"].replace("|", "/"),
-                kind=s["kind"],
+                layer=s["layer"],
                 req=req,
                 status=s.get("status", ""),
                 exit="" if s.get("exit_code") is None else s["exit_code"],
                 log=s.get("log_path") or "—",
-                notes=notes,
+                notes=s.get("notes", "").replace("|", "/"),
             )
         )
     lines.append("")
-    lines.append("Fill live rows after enabling live runs; keep contract failures red until fixed.")
+    lines.append("Each PASS covers the evidence layer and scenario in its row.")
     lines.append("")
     return "\n".join(lines)
 
@@ -270,14 +325,29 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=f"Also run live scenarios (same as {LIVE_ENV}=1)",
     )
+    p.add_argument("--include-gui", action="store_true", help="Run UI automation on this desktop")
+    p.add_argument(
+        "--include-lifecycle",
+        action="store_true",
+        help="Run L6 owned install/update/recovery (long; not part of contracts-only)",
+    )
     p.add_argument(
         "--out-dir",
         default="",
         help="Output directory (default: .tmp/fpr13)",
     )
+    p.add_argument(
+        "--product-home",
+        type=Path,
+        help="Home of an already running IRIS instance on a disposable test profile",
+    )
     ns = p.parse_args(argv)
+    if ns.product_home is not None:
+        ns.product_home = ns.product_home.resolve()
+        if ns.product_home == Path.home().resolve() or not ns.product_home.is_dir():
+            p.error("--product-home must be a separate test user home")
 
-    out = Path(ns.out_dir) if ns.out_dir else OUT_DIR
+    out = Path(ns.out_dir).resolve() if ns.out_dir else OUT_DIR
     out.mkdir(parents=True, exist_ok=True)
     log_dir = out / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -289,31 +359,42 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict[str, Any]] = []
     for scenario in SCENARIOS:
         kind = scenario["kind"]
-        if kind == "live" and not run_live:
-            row = dict(scenario)
-            row["status"] = "skipped"
-            row["exit_code"] = None
-            row["log_path"] = ""
-            row["elapsed_s"] = 0
-            rows.append(row)
-            print(f"[skip] {scenario['id']} (live; set {LIVE_ENV}=1)")
+        note = ""
+        if kind == "manual":
+            note = "Requires separate test evidence"
+        elif kind == "live" and not run_live:
+            note = f"Set {LIVE_ENV}=1 or --include-live"
+        elif kind == "gui" and (ns.contracts_only or not ns.include_gui):
+            note = "Use --include-gui on an interactive desktop"
+        elif kind == "lifecycle" and (ns.contracts_only or not ns.include_lifecycle):
+            note = "Use --include-lifecycle (isolated install; long-running)"
+        elif kind == "product" and (ns.contracts_only or ns.product_home is None):
+            note = "Start IRIS with an isolated home and pass --product-home"
+        if note:
+            rows.append(dict(scenario, status="UNVERIFIED", notes=note))
+            print(f"[skip] {scenario['id']} ({note})")
             continue
-        if ns.contracts_only and kind != "contract":
+        if reason := _blocked_reason(scenario):
+            rows.append(dict(scenario, status="BLOCKED", notes=reason))
+            print(f"[blocked] {scenario['id']} ({reason})")
             continue
         print(f"[run ] {scenario['id']} …", flush=True)
-        rows.append(_run_one(py, scenario, log_dir))
+        rows.append(_run_one(py, scenario, log_dir, product_home=ns.product_home if kind == "product" else None))
         print(f"       → {rows[-1]['status']} exit={rows[-1]['exit_code']}", flush=True)
 
-    passed = sum(1 for r in rows if r.get("status") == "pass")
-    failed = sum(1 for r in rows if r.get("status") == "fail")
-    skipped = sum(1 for r in rows if r.get("status") == "skipped")
+    statuses = ("PASS", "FAIL", "UNVERIFIED", "BLOCKED")
     summary = {
         "total": len(rows),
-        "pass": passed,
-        "fail": failed,
-        "skipped": skipped,
         "live_enabled": run_live,
         "python": str(py),
+        **{status.lower(): sum(row["status"] == status for row in rows) for status in statuses},
+        "by_layer": {
+            layer: {
+                status: sum(row["layer"] == layer and row["status"] == status for row in rows)
+                for status in statuses
+            }
+            for layer in dict.fromkeys(row["layer"] for row in rows)
+        },
     }
     result = {
         "started_at": started,
@@ -326,8 +407,8 @@ def main(argv: list[str] | None = None) -> int:
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(_markdown_table(result), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False))
-    print(f"wrote {json_path.relative_to(REPO)} and {md_path.relative_to(REPO)}")
-    return 1 if failed else 0
+    print(f"wrote {json_path} and {md_path}")
+    return 1 if summary["fail"] or summary["blocked"] else 0
 
 
 if __name__ == "__main__":

@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
-from iris.infrastructure.iris_ide_client import IrisIdeClient
+from iris.infrastructure.iris_ide_client import IrisIdeClient, IrisIdeClientError
 
 LOGGER = logging.getLogger(__name__)
 EditorListener = Callable[[dict[str, Any]], None]
@@ -55,11 +57,31 @@ class IdeLink:
         """URL 또는 토큰이 바뀌면 새 클라이언트. 창은 이 객체의 필드를 읽지 않는다."""
         url = self._runtime.bridge_base_url()
         token = self._runtime.bridge_token()
+        if not url or not token:
+            raise IrisIdeClientError("IRIS IDE bridge is not ready", code="connection")
         key = (url, token)
         if self._client is None or key != self._client_key or self._client.timeout != timeout:
             self._client = IrisIdeClient(base_url=url, token=token, timeout=timeout)
             self._client_key = key
         return self._client
+
+    def wait_for_workspace(self, workspace: str, *, timeout: float = 15.0) -> str:
+        """Confirm the requested folder with the authenticated frontend poller."""
+        target = Path(workspace).resolve()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                health = self.client(timeout=0.5).health()
+            except IrisIdeClientError as exc:
+                if exc.code not in ("connection", "timeout"):
+                    return str(exc)
+            else:
+                root = str(health.get("workspace") or "")
+                if health.get("workspace_open") and root and Path(root).resolve() == target:
+                    if health.get("frontend_ready") is True:
+                        return ""
+            time.sleep(0.15)
+        return "IRIS IDE frontend did not become ready for the requested workspace"
 
     def page_identity(self) -> PageIdentity:
         port = int(self._runtime.bridge_port or 0)

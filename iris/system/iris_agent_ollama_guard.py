@@ -152,12 +152,19 @@ def note_after_provider_direct_ok(
     hermes_enabled: bool,
     agent_base_url: str,
 ) -> str:
-    """직접 연결 성공 뒤에 붙일 한 줄. 게이트웨이를 새로 띄우지 않는다."""
+    """직접 연결 성공 뒤에 붙일 한 줄. 게이트웨이를 새로 띄우지 않는다.
+
+    Empty agent_base_url = product sidecar path. Skip :8642 probe/chat
+    (normalize would otherwise resurrect the retired ExternalGateway URL).
+    """
     if not hermes_enabled:
+        return ""
+    base = (agent_base_url or "").strip()
+    if not base:
         return ""
     from iris.system.iris_agent_gateway import probe_gateway_health
 
-    if not probe_gateway_health(agent_base_url, timeout_sec=1.5).ok:
+    if not probe_gateway_health(base, timeout_sec=1.5).ok:
         return "채팅 경로 미확인"
     models = list(getattr(provider, "models", None) or [])
     model = str(models[0] if models else "").strip()
@@ -169,7 +176,7 @@ def note_after_provider_direct_ok(
         from iris.storage.api_providers import runtime_model_id
 
         target = resolve_iris_agent_inference(runtime_model_id(str(provider.id), model), db=db)
-        client = IrisAgentClient(agent_base_url, timeout_sec=20.0)
+        client = IrisAgentClient(base, timeout_sec=20.0)
         client.set_inference_model(target.model, target=target)
         for ev in client.stream_chat(target.model, [{"role": "user", "content": "ping"}]):
             if ev.get("content"):

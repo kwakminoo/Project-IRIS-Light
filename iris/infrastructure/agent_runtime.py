@@ -100,62 +100,50 @@ def read_engine_selection(home: Path) -> tuple[Path | None, Path | None]:
         saved = json.loads((home / ENGINE_SELECTION_FILE).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None, None
-    active = engine_slot_path(home, saved["active"])
-    previous = saved.get("previous")
-    return active, engine_slot_path(home, previous) if previous else None
+    except (OSError, ValueError) as exc:
+        log.warning("Iris Agent selection could not be read: %s", type(exc).__name__)
+        return None, None
+    if not isinstance(saved, dict):
+        return None, None
 
-
-def _newest_owned_slot(base: Path) -> Path | None:
-    """selection 없을 때 SOURCE_MANIFEST 있는 iris-agent.slot-* 중 mtime 최신."""
-    best: Path | None = None
-    best_mtime = float("-inf")
-    try:
-        entries = list(base.iterdir())
-    except OSError:
+    def read_slot(key: str) -> Path | None:
+        name = saved.get(key)
+        if isinstance(name, str):
+            try:
+                return engine_slot_path(home, name)
+            except (OSError, RuntimeError, ValueError):
+                log.warning("Invalid Iris Agent %s slot", key)
         return None
-    for entry in entries:
-        if not entry.is_dir() or not _OWNED_SLOT_NAME.fullmatch(entry.name):
-            continue
-        manifest = entry / "SOURCE_MANIFEST.json"
-        if not manifest.is_file():
+
+    return read_slot("active"), read_slot("previous")
+
+
+def selected_owned_engine(home: Path) -> Path | None:
+    """Resolve only published, integrity-checked Owned candidates."""
+    from iris.engine._home import checkout_python
+    from iris.system.iris_agent_install import verify_owned_core_source
+
+    active, previous = read_engine_selection(home)
+    for candidate in dict.fromkeys((active, home / IRIS_AGENT_CHECKOUT_NAME, previous)):
+        if candidate is None or candidate.name == LEGACY_AGENT_CHECKOUT_NAME:
             continue
         try:
-            mtime = manifest.stat().st_mtime
-        except OSError:
+            engine_slot_path(home, candidate.name)
+            python = checkout_python(candidate)
+            if python is None or not python.parent.resolve().is_relative_to(candidate.resolve()):
+                continue
+            verify_owned_core_source(candidate)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError):
             continue
-        if mtime >= best_mtime:
-            best = entry
-            best_mtime = mtime
-    return best
+        return candidate
+    # An unlisted slot may be an interrupted install or a failed model check.
+    return None
 
 
 def iris_agent_repo_dir(home: Path | None = None) -> Path:
-    """제품 checkout 경로.
-
-    1. selection.active
-    2. ``iris-agent/``
-    3. newest ``iris-agent.slot-*`` with SOURCE_MANIFEST
-    4. hermes-agent only as recovery when no owned tree exists
-    5. else canonical ``iris-agent`` (may not exist yet — probe fails closed)
-    """
+    """Return the selected Owned checkout or the canonical installation path."""
     base = home or iris_agent_home()
-    active, _ = read_engine_selection(base)
-    if active is not None:
-        return active
-    canonical = base / IRIS_AGENT_CHECKOUT_NAME
-    if canonical.is_dir():
-        return canonical
-    owned = _newest_owned_slot(base)
-    if owned is not None:
-        return owned
-    legacy = base / LEGACY_AGENT_CHECKOUT_NAME
-    # ponytail: hermes-agent remains a last-resort recovery path when selection
-    # is missing and no owned iris-agent/ or iris-agent.slot-* exists (rollback
-    # compatibility). NORMAL product path must not prefer hermes over an owned
-    # slot. Cutover/rollback still goes through selection.previous, not this.
-    if legacy.is_dir():
-        return legacy
-    return canonical
+    return selected_owned_engine(base) or base / IRIS_AGENT_CHECKOUT_NAME
 
 
 @dataclass
@@ -577,7 +565,7 @@ def replace_agent_loop_worker(
 
 
 def ensure_iris_agent_runtime(
-    base_url: str = "http://127.0.0.1:8642/v1",
+    base_url: str = "",
     *,
     api_key: str = "",
     command: str = "hermes",
@@ -587,10 +575,10 @@ def ensure_iris_agent_runtime(
     provider: bool = True,
     start_gateway: bool = False,
 ) -> IrisAgentRuntimeEnsureResult:
-    """Iris Agent 수명 supervisor — home → provider → gateway (멱등).
+    """Iris Agent 수명 supervisor — home → provider → optional gateway (멱등).
 
-    setup / HermesHealthWorker / login warm 이 이 심볼만 통해 ensure 한다.
-    Lifetime: keep-background (Iris 종료 후에도 gateway 유지 가능).
+    Product default: start_gateway=False (InternalSidecar). Empty base_url
+    is fine on that path. Opt-in diagnostics pass a URL + start_gateway=True.
     """
     home = ensure_iris_agent_home()
     messages: list[str] = [f"home={home}"]
@@ -706,16 +694,16 @@ if __name__ == "__main__":
         h = Path(tmp)
         assert iris_agent_repo_dir(h) == h / IRIS_AGENT_CHECKOUT_NAME
         (h / LEGACY_AGENT_CHECKOUT_NAME).mkdir()
-        assert iris_agent_repo_dir(h) == h / LEGACY_AGENT_CHECKOUT_NAME
+        assert iris_agent_repo_dir(h) == h / IRIS_AGENT_CHECKOUT_NAME
         slot = h / "iris-agent.slot-aaaaaaaaaaaaaaaa"
         slot.mkdir()
         (slot / "SOURCE_MANIFEST.json").write_text("{}", encoding="utf-8")
-        assert iris_agent_repo_dir(h) == slot
+        assert iris_agent_repo_dir(h) == h / IRIS_AGENT_CHECKOUT_NAME
         (h / IRIS_AGENT_CHECKOUT_NAME).mkdir()
         assert iris_agent_repo_dir(h) == h / IRIS_AGENT_CHECKOUT_NAME
     resolved = iris_agent_repo_dir(home)
     assert (
-        resolved.name in (IRIS_AGENT_CHECKOUT_NAME, LEGACY_AGENT_CHECKOUT_NAME)
+        resolved.name == IRIS_AGENT_CHECKOUT_NAME
         or _OWNED_SLOT_NAME.fullmatch(resolved.name)
     )
     assert iris_agent_home() == product_agent_home()

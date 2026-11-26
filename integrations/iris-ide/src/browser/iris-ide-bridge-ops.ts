@@ -249,6 +249,19 @@ export async function editBuffer(
     return { via: 'editor', applied, path: FileUri.fsPath(editor.uri) };
 }
 
+export async function writeFile(manager: EditorManager, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const doc = widgetFor(manager, args)?.editor?.document;
+    if (!doc) {
+        throw new Error('file must be open in the editor');
+    }
+    if (doc.dirty) {
+        throw new Error('open editor has unsaved (dirty) changes');
+    }
+    const result = await editBuffer(manager, 'applyTextEdit', args);
+    await doc.save();
+    return { ...result, saved: true };
+}
+
 export async function formatDocument(manager: EditorManager, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const widget = widgetFor(manager, args);
     if (!widget?.editor) {

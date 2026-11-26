@@ -41,6 +41,8 @@ class EngineErrorCode(Enum):
     NO_USER_UTTERANCE = "no_user_utterance"
     TOOL_TRANSPORT = "tool_transport"
     TOOL_ERROR_BUDGET = "tool_error_budget"
+    MODEL_OUTPUT_LIMIT = "truncated"
+    MODEL_CONTEXT_OVERFLOW = "context_overflow"
     BILLING = "billing"
     UNKNOWN = "unknown"
 
@@ -57,6 +59,12 @@ _USER_MESSAGES = {
     EngineErrorCode.NO_USER_UTTERANCE: "보낼 사용자 메시지가 없습니다.",
     EngineErrorCode.TOOL_TRANSPORT: "도구 호출에 실패했습니다.",
     EngineErrorCode.TOOL_ERROR_BUDGET: "도구 오류가 안전 제한을 넘어 작업을 중단했습니다.",
+    EngineErrorCode.MODEL_OUTPUT_LIMIT: (
+        "모델의 최대 응답 길이에 도달했습니다. 요청을 나누거나 모델을 변경하세요."
+    ),
+    EngineErrorCode.MODEL_CONTEXT_OVERFLOW: (
+        "모델이 이 대화의 길이를 처리할 수 없습니다. 새 대화에서 다시 시도하세요."
+    ),
     EngineErrorCode.BILLING: (
         "Ollama 클라우드 크레딧이 부족합니다. "
         "요금을 충전하거나 다른 모델로 바꾸세요."

@@ -24,6 +24,8 @@ from iris.engine._home import (
     probe_engine_python,
 )
 from iris.infrastructure.agent_runtime import IRIS_AGENT_CHECKOUT_NAME, load_pinned_sha
+from iris.system import iris_agent_install as install
+from iris.system._check_iris_agent_repo_dir import write_owned_slot_fixture
 
 
 def _child_pids() -> set[int]:
@@ -35,9 +37,9 @@ def _child_pids() -> set[int]:
 
 
 def _write_fake_python(home: Path, *, ok: bool) -> Path:
+    write_owned_slot_fixture(home / IRIS_AGENT_CHECKOUT_NAME)
     if sys.platform == "win32":
         scripts = home / IRIS_AGENT_CHECKOUT_NAME / "venv" / "Scripts"
-        scripts.mkdir(parents=True)
         path = scripts / "python.cmd"
         if ok:
             path.write_text("@echo off\r\necho ok\r\nexit /b 0\r\n", encoding="utf-8")
@@ -48,7 +50,6 @@ def _write_fake_python(home: Path, *, ok: bool) -> Path:
             )
         return path
     bin_dir = home / IRIS_AGENT_CHECKOUT_NAME / "venv" / "bin"
-    bin_dir.mkdir(parents=True)
     path = bin_dir / "python"
     if ok:
         path.write_text("#!/bin/sh\necho ok\nexit 0\n", encoding="utf-8")
@@ -249,3 +250,19 @@ class EnsureReadyInstallTests(TestCase):
             install_into(self.home, runner=runner)
         inst.assert_not_called()
         self.assertEqual(called, [])
+
+    def test_broken_active_python_recovers_previous_before_reinstall(self) -> None:
+        home = Path(self.home)
+        active = home / "iris-agent.slot-1000000000000000"
+        previous = home / "iris-agent.slot-2000000000000000"
+        write_owned_slot_fixture(active)
+        write_owned_slot_fixture(previous)
+        install._write_engine_selection(home, active, previous)
+        bad_python = EngineError(EngineErrorCode.WRONG_PYTHON, "active Python failed")
+        with (
+            patch("iris.engine._home._probe_imports", return_value=bad_python),
+            patch.object(install, "_probe_owned_slot", return_value=(True, "healthy previous")),
+            patch.object(install, "install_iris_agent_with_system_python", side_effect=AssertionError("no reinstall needed")),
+        ):
+            self.assertIsNone(install_into(self.home))
+        self.assertEqual(Path(engine_python(self.home)).parent.parent.parent, previous)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from weakref import WeakSet
@@ -153,6 +154,8 @@ from iris.ui.monitor.live_activity_panel import LiveActivityPanel, UiActivityRel
 from iris.ui.notification.notification_panel import NotificationPanel
 from iris.ui.workers.boot_checks_worker import BootChecksWorker, EmulatorLaunchWorker, IrisIdeLaunchWorker
 from iris.ui.control_bindings import (
+    BridgeCallTimeout,
+    _bridge_call_pumping,
     freeze_turn_execution_context,
     mark_control_ready,
     start_control_surface,
@@ -440,6 +443,7 @@ class MainWindow(QMainWindow):
         self._core_warm_worker: QThread | None = None
         self._emu_launch_worker: EmulatorLaunchWorker | None = None
         self._iris_ide_launch_worker: IrisIdeLaunchWorker | None = None
+        self._iris_ide_launch: tuple[str, Future[str]] | None = None
         self._pending_iris_ide_source = "icon"
         self._learning_worker: LearningProcessWorker | None = None
         self._email_preloaded = False
@@ -2697,44 +2701,15 @@ class MainWindow(QMainWindow):
         """요약을 어느 백엔드로 보낼지. 못 정하면 None(규칙 기반으로 남는다).
 
         해석은 여기 UI 스레드에서 끝낸다 — 워커는 DB를 읽지 않는다.
-        Iris API runtime(`api:…`)은 도구가 필요 없는 한 줄 요청이라 Hermes 경유 없이
-        제공자로 직행한다. Hermes 레지스트리 404(nvidia/…)를 피한다.
+        한 줄 요약은 Hermes/agent 없이 api|ollama 직행 (`resolve_title_route` /
+        `_oneshot_route` 와 동일). 채팅 턴 라우팅은 건드리지 않는다.
         """
-        name = (model or "").strip()
-        if not name:
-            return None
-        parsed = parse_runtime_model_id(name)
-        if parsed is not None:
-            provider_id, api_model = parsed
-            provider = get_api_provider(self._db, provider_id) if self._db else None
-            if provider is None or not (provider.base_url or "").strip():
-                return None
-            return SummaryRoute(
-                backend="api",
-                model=api_model,
-                base_url=provider.base_url,
-                api_key=provider.api_key,
-                auth_style=provider.auth_style,
-            )
-        if self._use_hermes_backend():
-            try:
-                from iris.infrastructure.iris_agent_client import resolve_iris_agent_inference
+        from iris.runtime.backend_route import resolve_title_route
 
-                target = resolve_iris_agent_inference(
-                    name, db=self._db, ollama_base_url=self._settings.ollama_base_url
-                )
-            except Exception:  # noqa: BLE001
-                return None
-            return SummaryRoute(
-                backend=AGENT_BACKEND,
-                model=name,
-                base_url=self._settings.agent_base_url,
-                api_key=self._settings.agent_api_key,
-                command=self._settings.agent_command,
-                target=target,
-            )
-        return SummaryRoute(
-            backend="ollama", model=name, base_url=self._settings.ollama_base_url
+        return resolve_title_route(
+            model,
+            db=self._db,
+            ollama_base_url=self._settings.ollama_base_url,
         )
 
     def _cancel_chat_title(self, conversation_id: int) -> None:
@@ -9815,6 +9790,8 @@ class MainWindow(QMainWindow):
 
     def _close_iris_ide_window(self) -> bool:
         """Theia 런타임 중지 + IRIS IDE 창 파괴."""
+        self._finish_iris_ide_launch("IRIS IDE closed before the workspace became ready")
+        self._iris_ide_launch = None
         try:
             shared_iris_ide_runtime().stop()
         except Exception:
@@ -10132,6 +10109,25 @@ class MainWindow(QMainWindow):
 
         return shared_ide_link().client()
 
+    def _wait_for_iris_ide_workspace(self, workspace: str) -> str:
+        from iris.system.ide_link import shared_ide_link
+
+        launch = self._iris_ide_launch
+        if launch is not None and launch[0] != workspace and not launch[1].done():
+            return "IRIS IDE is opening another workspace"
+
+        def wait() -> str:
+            if launch is not None and launch[0] == workspace:
+                error = launch[1].result(timeout=150.0)
+                if error:
+                    return error
+            return shared_ide_link().wait_for_workspace(workspace)
+
+        try:
+            return _bridge_call_pumping(wait, timeout=166.0)
+        except (BridgeCallTimeout, TimeoutError):
+            return "IRIS IDE workspace readiness timed out"
+
     def _activate_iris_ide_companion_tile(self, *, label: str = "") -> str:
         """IRIS IDE — Iris 본체 8:2 + IDE는 자식 HWND로 좌측 호스트에 도킹.
 
@@ -10313,9 +10309,16 @@ class MainWindow(QMainWindow):
 
     def _on_iris_ide_launch_ok(self, url: str, workspace: str) -> None:
         self._iris_ide_launch_worker = None
+        launch = self._iris_ide_launch
+        if launch is None:
+            return
         self._disarm_explorer_drop_overlay()
         # ponytail: worker→load_theia→QWebEngineView 1틱 지연 — Opening 중 overlay·재진입 회피
-        QTimer.singleShot(0, lambda u=url, ws=workspace: self._load_theia_after_launch(u, ws))
+        def load() -> None:
+            if self._iris_ide_launch is launch:
+                self._load_theia_after_launch(url, workspace)
+
+        QTimer.singleShot(0, load)
 
     def _disarm_explorer_drop_overlay(self) -> None:
         guard = getattr(self, "_explorer_drop_guard", None)
@@ -10344,8 +10347,11 @@ class MainWindow(QMainWindow):
 
     def _on_iris_ide_launch_err(self, err: str) -> None:
         self._iris_ide_launch_worker = None
+        if self._iris_ide_launch is None:
+            return
         self._disarm_explorer_drop_overlay()
         detail = (err or "unknown").strip()
+        self._finish_iris_ide_launch(detail)
         self._chat.append_message_instant("Iris", f"IDE 준비 실패: {detail}")
         self._live_activity.append_instant_line(f"IDE 준비 실패: {detail[:180]}")
         win = self._ensure_iris_ide_window()
@@ -10355,6 +10361,7 @@ class MainWindow(QMainWindow):
 
     def _on_iris_ide_theia_ready(self, ok: bool) -> None:
         if not ok:
+            self._finish_iris_ide_launch("IRIS IDE view failed to load")
             self._chat.append_message_instant("Iris", "IDE 화면 로드에 실패했습니다.")
             self._live_activity.append_instant_line("IDE 화면 로드 실패 (QWebEngine)")
             win = self._ensure_iris_ide_window()
@@ -10365,6 +10372,7 @@ class MainWindow(QMainWindow):
         workspace = (getattr(self, "_pending_iris_ide_workspace", "") or "").strip()
         tile_err = self._activate_iris_ide_companion_tile(label="IRIS IDE")
         if tile_err:
+            self._finish_iris_ide_launch(tile_err)
             self._chat.append_message_instant("Iris", f"IDE 배치 실패: {tile_err}")
             return
         win = self._ensure_iris_ide_window()
@@ -10381,6 +10389,12 @@ class MainWindow(QMainWindow):
             owned=True,
         )
         self._live_activity.append_instant_line("IDE Companion: IRIS IDE")
+        self._finish_iris_ide_launch("")
+
+    def _finish_iris_ide_launch(self, error: str) -> None:
+        launch = self._iris_ide_launch
+        if launch is not None and not launch[1].done():
+            launch[1].set_result(error)
 
     def _open_iris_ide_folder(
         self, folder: str, *, source: str = "chat", from_hero: bool = False
@@ -10393,6 +10407,19 @@ class MainWindow(QMainWindow):
         if not root.is_dir():
             return f"not a directory: {folder}"
         root_s = str(root.resolve())
+        launch = self._iris_ide_launch
+        if launch is not None and not launch[1].done():
+            return "" if launch[0] == root_s else "IDE already launching"
+        if self._iris_ide_launch_worker is not None and self._iris_ide_launch_worker.isRunning():
+            return "IDE already launching"
+        if (
+            self._ui_mode == "ide_companion"
+            and self._ide_session.ide_id == "iris_ide"
+            and self._ide_session.workspace_root == root_s
+            and self._iris_ide_window is not None
+            and self._iris_ide_window.is_theia_loaded()
+        ):
+            return ""
         # sticky profile.project_root 저장 금지 — 작업 루트는 bound workspace 만.
         record_opened_folder(root)
         mgr = shared_iris_ide_runtime()
@@ -10427,8 +10454,6 @@ class MainWindow(QMainWindow):
 
         win = self._ensure_iris_ide_window()
         self._disarm_explorer_drop_overlay()
-        if self._iris_ide_launch_worker is not None and self._iris_ide_launch_worker.isRunning():
-            return "IDE already launching"
         # ponytail: winId/show 다음 setParent는 이 슬롯에서 0xC0000409.
         # HWND는 set_embedded 뒤에 apply_frameless_chrome이 만든다.
         if win.isVisible():
@@ -10436,15 +10461,10 @@ class MainWindow(QMainWindow):
         win.show_loading(f"Opening {root.name}…", show_window=False)
         self._pending_iris_ide_source = source
         self._pending_iris_ide_workspace = root_s
-        # 동기 switch는 UI 멈춤 — 워커로 Theia 기동/전환
-        worker = IrisIdeLaunchWorker(root_s, parent=self)
-        worker.finished_ok.connect(self._on_iris_ide_launch_ok)
-        worker.finished_err.connect(self._on_iris_ide_launch_err)
-        worker.finished.connect(worker.deleteLater)
-        self._iris_ide_launch_worker = worker
-        worker.start()
+        self._iris_ide_launch = (root_s, Future())
         tile_err = self._activate_iris_ide_companion_tile(label=root.name)
         if tile_err:
+            self._finish_iris_ide_launch(tile_err)
             return tile_err
         self._bind_ide_session(
             ide_id="iris_ide",
@@ -10455,6 +10475,12 @@ class MainWindow(QMainWindow):
             source=source,
             owned=True,
         )
+        worker = IrisIdeLaunchWorker(root_s, parent=self)
+        worker.finished_ok.connect(self._on_iris_ide_launch_ok)
+        worker.finished_err.connect(self._on_iris_ide_launch_err)
+        worker.finished.connect(worker.deleteLater)
+        self._iris_ide_launch_worker = worker
+        worker.start()
         if from_hero:
             # 구체는 이미 companion 앵커 — 로그/채팅/파형만 기동 인트로
             QTimer.singleShot(40, self._run_companion_panels_intro)
@@ -11603,6 +11629,9 @@ class MainWindow(QMainWindow):
                 self._email_chat_worker.wait(1500)
             if self._boot_checks_worker is not None and self._boot_checks_worker.isRunning():
                 self._boot_checks_worker.wait(3000)
+            if self._ollama_cleanup_worker is not None and self._ollama_cleanup_worker.isRunning():
+                self._ollama_cleanup_worker.requestInterruption()
+                self._ollama_cleanup_worker.wait(1000)
             if (
                 self._history_embed_worker is not None
                 and self._history_embed_worker.isRunning()

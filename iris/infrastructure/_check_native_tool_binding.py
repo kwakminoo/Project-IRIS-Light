@@ -5,6 +5,7 @@ FIG-04 Wave-1: also asserts host TOOL_RESULT watch line shape (no trajectory).
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import tempfile
@@ -12,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from iris.engine import _sidecar_main as sidecar
 from iris.engine import runtime as runtime_mod
 from iris.engine.runtime import Engine
 from iris.engine.types import EngineHome, InternalSidecar
@@ -23,7 +25,27 @@ _TOOL_RESULT_RE = re.compile(
 )
 
 
+def _check_tool_reply_identity() -> None:
+    ids = {"tool_call_id": "call-1", "turn_id": "turn-1", "session_id": "session-1", "workspace_id": "workspace-1"}
+    result = {"ok": True, "data": {"stdout": "한글\n", "stderr": "warning\n"}}
+    reply = {"t": "tool_result", "id": "request-1", **ids, "result": result}
+
+    def read(payload: dict) -> dict:
+        with (
+            patch("uuid.uuid4", return_value=SimpleNamespace(hex="request-1")),
+            patch.object(sidecar, "_emit"),
+            patch.object(sidecar.sys, "stdin", io.StringIO(json.dumps(payload) + "\n")),
+        ):
+            return json.loads(sidecar._request_native_tool("shell.run", {}, **ids))
+
+    assert read(reply) == result
+    for field in ("id", *ids):
+        forged = read({**reply, field: "mismatch"})
+        assert forged["ok"] is False and "mismatch" in forged["error"], (field, forged)
+
+
 def main() -> None:
+    _check_tool_reply_identity()
     home = {row.model_name: row for row in engine_tool_bindings("home")}
     ide = {row.model_name: row for row in engine_tool_bindings("ide_companion")}
     assert set(home) == {row["name"] for row in engine_tool_schemas("home")}
@@ -49,6 +71,7 @@ def main() -> None:
         for surface, bindings in (("home", home), ("ide_companion", ide)):
             engine = Engine(InternalSidecar(EngineHome(Path(tmp))))
             calls: list[tuple[str, dict]] = []
+            seen_tool_calls: set[str] = set()
             watch_lines: list[str] = []
             engine.bind_tool_handler(
                 lambda action, args: (
@@ -74,8 +97,12 @@ def main() -> None:
                         expected_turn_id="turn-1",
                         expected_session_id="session-1",
                         expected_workspace_id="workspace-1",
+                        seen_tool_calls=seen_tool_calls,
                     )
-                return json.loads("".join(writes))["result"]
+                reply = json.loads("".join(writes))
+                for field in ("id", "tool_call_id", "turn_id", "session_id", "workspace_id"):
+                    assert reply[field] == raw[field], (field, reply)
+                return reply["result"]
 
             for index, model_name in enumerate(sorted(absorbed)):
                 binding = bindings[model_name]
@@ -114,6 +141,10 @@ def main() -> None:
                 ("canonical_action", "terminal"),
                 ("schema_fingerprint", "bad"),
                 ("turn_id", "other-turn"),
+                ("session_id", "other-session"),
+                ("workspace_id", "other-workspace"),
+                ("tool_call_id", "call-0"),
+                ("tool_call_id", ""),
                 ("model_tool_name", "skills_list"),
             ):
                 hostile = dict(base)

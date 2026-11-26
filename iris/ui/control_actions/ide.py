@@ -201,7 +201,11 @@ def register_ide_actions(window: IdeHost, reg: ActionRegistry) -> None:
             return err_result("ide.open_folder", f"not a directory: {path}")
         # 기본=새 창. False면 기존 Cursor(개발용 포함)를 가로채 타일함 — bac8f75 회귀 금지.
         new_window = bool(args.get("new_window", True))
-        err = window._open_ide_folder(str(root), new_window=new_window, source="chat")
+        root_s = str(root.resolve())
+        err = window._open_ide_folder(root_s, new_window=new_window, source="chat")
+        ide_id = getattr(window._ide_session, "ide_id", "")
+        if not err and ide_id == "iris_ide":
+            err = window._wait_for_iris_ide_workspace(root_s)
         ok = not err and window._ui_mode == "ide_companion"
         _log(window, "ide.open_folder", ok)
         if not ok:
@@ -223,6 +227,7 @@ def register_ide_actions(window: IdeHost, reg: ActionRegistry) -> None:
             {
                 "path": str(root.resolve()),
                 "ui_mode": window._ui_mode,
+                "ide_id": ide_id,
                 "ide_hwnd": getattr(window._ide_session, "hwnd", None),
                 "new_window": new_window,
             },

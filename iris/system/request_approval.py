@@ -26,6 +26,8 @@ def normalize_execution_fingerprint(
     command: str | None = None,
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
+    environment_id: str = "",
+    timeout_s: float | None = None,
 ) -> str:
     """Stable hash of the execution request. Any field change → new fingerprint."""
     argv_norm = [str(x) for x in argv] if isinstance(argv, list) else None
@@ -40,6 +42,8 @@ def normalize_execution_fingerprint(
         "cwd": cwd_norm,
         "env": env_items,
     }
+    if environment_id or timeout_s is not None:
+        payload.update(environment_id=environment_id, timeout_s=timeout_s)
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

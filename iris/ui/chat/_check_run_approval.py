@@ -47,6 +47,8 @@ def main() -> int:
     assert allowlist_key("python -c print(1)") == ""
     assert allowlist_key("git status && rm -rf /") == ""
     assert allowlist_key("echo hi | cat") == ""
+    assert allowlist_key("echo one & echo two") == ""
+    assert allowlist_key("echo one >> example.txt") == ""
     # Bare interpreter on allowlist must not auto-run arbitrary code.
     bare_py = ApprovalState(mode_id="use_allowlist", allowlist=("python",))
     assert should_auto_run(bare_py, "python evil.py") is False

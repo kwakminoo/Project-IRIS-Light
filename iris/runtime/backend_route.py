@@ -31,8 +31,8 @@ def resolve_backend_route(
 ) -> BackendRoute | None:
     """지금 설정 기준으로 이 모델을 부를 방법. 못 정하면 None.
 
-    Hermes 가 켜져 있으면 Ollama 이름이든 `api:` id 든 전부 게이트웨이를 거친다.
-    꺼져 있으면 `api:` id 는 등록된 프로바이더로, 나머지는 Ollama 데몬으로 간다.
+    에이전트 채팅용 선택에는 모델 제공자 타깃을 포함한다.
+    일반 채팅은 등록된 API 또는 Ollama로 보낸다.
     """
     name = str(model or "").strip()
     if not name:
@@ -103,6 +103,15 @@ def resolve_title_route(
     )
 
 
+def _oneshot_route(settings: Any, db: Any, model: str) -> BackendRoute | None:
+    """루틴·요약 등 한 번 요청. agent/gateway 없이 api|ollama 만."""
+    return resolve_title_route(
+        model,
+        db=db,
+        ollama_base_url=getattr(settings, "ollama_base_url", "") or "",
+    )
+
+
 def route_for_routine(settings: Any, db: Any, routine: Any, fallback_model: str = ""):
     """루틴이 쓸 경로. 고정 모델이 있으면 그것, 못 쓰면 현재 모델로 물러선다.
 
@@ -110,11 +119,11 @@ def route_for_routine(settings: Any, db: Any, routine: Any, fallback_model: str 
     """
     pinned = (getattr(routine, "model", "") or "").strip()
     wanted = pinned or fallback_model
-    route = resolve_backend_route(settings, db, wanted)
+    route = _oneshot_route(settings, db, wanted)
     if route is not None:
         return route, ""
     if pinned and fallback_model and fallback_model != pinned:
-        route = resolve_backend_route(settings, db, fallback_model)
+        route = _oneshot_route(settings, db, fallback_model)
         if route is not None:
             return route, (
                 f"지정 모델 '{pinned}' 을 쓸 수 없어 '{fallback_model}' 으로 실행합니다."
@@ -145,12 +154,12 @@ def ask_selected_model(
 ) -> str:
     """채팅에서 고른 모델로 한 번 묻고 본문만 받는다.
 
-    Ollama 이름, `api:{제공자}:{모델}`, Hermes 경유를 채팅과 같은 규칙으로 보낸다.
+    Ollama 이름과 `api:{제공자}:{모델}`을 채팅과 같은 규칙으로 해석한다.
     """
     name = str(model or "").strip()
     if not name:
         raise RuntimeError("모델 선택이 필요합니다.")
-    route = resolve_backend_route(settings, db, name)
+    route = _oneshot_route(settings, db, name)
     if route is None:
         raise RuntimeError(
             "선택한 모델로 요청을 보내지 못했습니다. 설정에서 해당 제공자를 확인해 주세요."
@@ -240,7 +249,7 @@ if __name__ == "__main__":
     )
     assert title_api is not None and title_api.backend == "api"
 
-    # Hermes 가 켜져 있으면 전부 게이트웨이로
+    # 에이전트 경로에는 선택한 모델의 타깃이 포함된다.
     hermes_on = SimpleNamespace(
         agent_enabled=True,
         agent_base_url="http://127.0.0.1:8642/v1",
@@ -278,5 +287,32 @@ if __name__ == "__main__":
     # 아무 모델도 없으면 솔직히 실패
     route, note = route_for_routine(ollama_only, None, unpinned, "")
     assert route is None and "정하지 못했" in note
+
+    # one-shot(루틴·요약)은 agent_enabled 여도 gateway/agent 로 가지 않는다.
+    # 채팅 sidecar 용 resolve_backend_route 는 위 hermes_on 에서 agent 를 유지.
+    from unittest.mock import patch
+
+    route, note = route_for_routine(hermes_on, None, SimpleNamespace(model="qwen3:8b"), "")
+    assert note == ""
+    assert route is not None and route.backend == "ollama" and not is_agent_backend(route)
+    assert "8642" not in (route.base_url or "")
+
+    route, note = route_for_routine(
+        hermes_on, mem, SimpleNamespace(model="api:nid:nvidia/nemotron-3-nano"), ""
+    )
+    assert note == ""
+    assert route is not None and route.backend == "api" and not is_agent_backend(route)
+    assert route.base_url == "https://integrate.api.nvidia.com/v1"
+
+    with patch("iris.ui.workers.backend_call.collect_reply", return_value="ok") as collect:
+        ask_selected_model(hermes_on, None, "qwen3:8b", "hi")
+    oneshot = collect.call_args.args[0]
+    assert oneshot.backend == "ollama" and not is_agent_backend(oneshot)
+    assert "8642" not in (oneshot.base_url or "")
+
+    with patch("iris.ui.workers.backend_call.collect_reply", return_value="ok") as collect:
+        ask_selected_model(hermes_on, mem, "api:nid:nvidia/nemotron-3-nano", "hi")
+    oneshot = collect.call_args.args[0]
+    assert oneshot.backend == "api" and oneshot.model == "nvidia/nemotron-3-nano"
 
     print("backend_route self-check ok")

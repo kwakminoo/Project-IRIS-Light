@@ -190,7 +190,7 @@ VISIBLE_CONSOLE_STEPS: frozenset[str] = frozenset(
 )
 
 # Ready 기준 (문서화):
-# - core_ready / 부팅 게이트: verify_core_quick (Ollama 응답·가용 모델·Hermes /health)
+# - core_ready / 부팅 게이트: verify_core_quick (Ollama 응답·가용 모델·EngineReady)
 # - 설정「검사」·core_smoke: verify_core (quick + 채팅 401 + MCP stdio)
 # last_verify 에 최근 검사 수준이 기록되며 HUD/설정에 표시한다.
 
@@ -447,12 +447,16 @@ def needs_setup_wizard(
 def _warm_core_services(
     *,
     ollama_base_url: str,
-    agent_base_url: str = "http://127.0.0.1:8642/v1",
+    agent_base_url: str = "",
     agent_command: str = "iris-agent",
     wait_sec: float = 25.0,
 ) -> None:
-    """재부팅 직후 꺼져 있을 수 있는 Ollama/Iris Agent를 조용히 기동 시도."""
-    base = agent_base_url or "http://127.0.0.1:8642/v1"
+    """재부팅 직후 꺼져 있을 수 있는 Ollama/Iris Agent를 조용히 기동 시도.
+
+    Product warm uses Engine/home only (start_gateway=False). Empty
+    agent_base_url must not resurrect :8642.
+    """
+    base = (agent_base_url or "").strip()
     cmd = agent_command or "iris-agent"
     half = max(8.0, wait_sec / 2)
     if ollama_executable():
@@ -469,22 +473,23 @@ def _warm_core_services(
 def mark_core_ready_if_healthy(
     *,
     ollama_base_url: str = "http://127.0.0.1:11434/v1",
-    agent_base_url: str = "http://127.0.0.1:8642/v1",
+    agent_base_url: str = "",
     agent_command: str = "iris-agent",
     min_model: str = "",
 ) -> bool:
     """부팅 게이트 — True면 시작 프로토콜 없이 runtime boot.
 
     Ready 기준 (quick):
-    - Ollama 응답 + 가용 추론(로컬 모델 또는 클라우드 로그인) + Hermes /health
+    - Ollama 응답 + 가용 추론(로컬 모델 또는 클라우드 로그인) + EngineReady
     - MCP stdio·채팅 401은 포함하지 않음 (느림) — 그건 verify_core(full)
 
     - Ollama/Iris Agent 실행 파일이 없으면 False (위저드).
     - core_ready가 이미 True면 헬스 실패로 플래그를 지우지 않고, 서비스 기동만
       시도한 뒤 True (재부팅 직후 일시 미응답은 일반 부팅에서 복구).
     - core_ready가 아니면 기동 시도 후 verify_core_quick 통과 시에만 core_ready 기록.
+    - Empty agent_base_url stays empty (no :8642 product fallback).
     """
-    base = agent_base_url or "http://127.0.0.1:8642/v1"
+    base = (agent_base_url or "").strip()
     cmd = agent_command or "iris-agent"
     if not ollama_executable() or not iris_agent_executable(cmd):
         return False
@@ -841,7 +846,7 @@ class SetupProtocol:
         self,
         *,
         ollama_base_url: str = "http://127.0.0.1:11434/v1",
-        agent_base_url: str = "http://127.0.0.1:8642/v1",
+        agent_base_url: str = "",
         agent_command: str = "iris-agent",
         min_model: str = "",
         simulate: bool | None = None,
@@ -851,9 +856,12 @@ class SetupProtocol:
         self.ollama_base_url = ollama_base_url
         from iris.infrastructure.iris_agent_client import normalize_iris_agent_openai_base_url
 
-        base = agent_base_url or "http://127.0.0.1:8642/v1"
+        # Product default empty. Normalize only when an opt-in URL is set.
+        base = (agent_base_url or "").strip()
         cmd = agent_command or "iris-agent"
-        self.agent_base_url = normalize_iris_agent_openai_base_url(base)
+        self.agent_base_url = (
+            normalize_iris_agent_openai_base_url(base) if base else ""
+        )
         self.agent_command = cmd
         self.min_model = (min_model or default_min_model()).strip() or DEFAULT_MIN_MODEL
         self.simulate = is_setup_demo() if simulate is None else bool(simulate)

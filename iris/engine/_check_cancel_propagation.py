@@ -47,6 +47,7 @@ def _check_engine_stop_before_forget() -> None:
             token.cancel()
             return ""
 
+        fake.stdout.readline.side_effect = read
         order: list[str] = []
 
         with (
@@ -56,7 +57,6 @@ def _check_engine_stop_before_forget() -> None:
                 return_value=EngineReady(InternalSidecar(home=home), "ready"),
             ),
             patch.object(engine, "_write_turn"),
-            patch("iris.engine.runtime._readline_timeout", side_effect=read),
             patch(
                 "iris.engine.runtime._send_stop",
                 side_effect=lambda *_a, **_k: order.append("stop"),
@@ -159,6 +159,8 @@ def _check_shutdown_not_blocked_by_turn_lock() -> None:
             token.cancel()
             return ""
 
+        fake.stdout.readline.side_effect = blocking_readline
+
         def run_turn_thread() -> None:
             try:
                 list(engine.run_turn(turn))
@@ -174,7 +176,6 @@ def _check_shutdown_not_blocked_by_turn_lock() -> None:
                 return_value=EngineReady(InternalSidecar(home=home), "ready"),
             ),
             patch.object(engine, "_write_turn"),
-            patch("iris.engine.runtime._readline_timeout", side_effect=blocking_readline),
             patch("iris.engine.runtime._send_stop"),
             patch("iris.engine.runtime._terminate_child"),
             patch("iris.engine.runtime._close_pipes"),

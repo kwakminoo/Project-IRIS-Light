@@ -209,7 +209,10 @@ function diskEdit(cmd, args) {
 async function dispatch(cmd, args) {
     switch (cmd) {
         case 'health':
-            return { product: 'IRIS IDE', theia: '1.74.0', workspace: workspaceRoot };
+            return {
+                product: 'IRIS IDE', theia: '1.74.0', workspace: workspaceRoot,
+                workspace_open: workspaceOpen, frontend_ready: Boolean(lastFrontendPollAt),
+            };
         case 'getWorkspace':
             return { root: workspaceRoot, opened: workspaceOpen };
         case 'setWorkspace': {
@@ -289,8 +292,12 @@ async function dispatch(cmd, args) {
             const rel = String(args.path || '');
             const abs = resolvePath(rel);
             fs.mkdirSync(path.dirname(abs), { recursive: true });
-            fs.writeFileSync(abs, String(args.content ?? ''), 'utf8');
+            fs.writeFileSync(abs, String(args.content ?? ''), { encoding: 'utf8', flag: 'wx' });
             return { path: abs, created: true };
+        }
+        case 'writeFile': {
+            const abs = resolvePath(args.path);
+            return await enqueueFrontend(cmd, { abs, text: String(args.content ?? '') }, 8000);
         }
         case 'deleteFile': {
             const abs = resolvePath(String(args.path || ''));

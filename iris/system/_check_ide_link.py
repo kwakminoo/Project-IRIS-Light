@@ -8,7 +8,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from iris.infrastructure.iris_ide_client import IrisIdeClientError
+from iris.infrastructure.iris_ide_client import IrisIdeClient, IrisIdeClientError
 from iris.system.ide_link import IdeLink, editor_path, query_failure
 
 
@@ -501,6 +501,7 @@ def check_reconnect_and_callers() -> None:
 
 
 def main() -> None:
+    check_loopback_origin()
     check_commands()
     check_bad_json()
     check_state_and_subscription()
@@ -512,6 +513,16 @@ def main() -> None:
     check_open_file_budget()
     check_reconnect_and_callers()
     print("ide link ok")
+
+
+def check_loopback_origin() -> None:
+    for origin in ("http://127.0.0.10:3001", "https://127.0.0.1:3001", "http://127.0.0.1:3001/api"):
+        try:
+            IrisIdeClient(base_url=origin)
+        except IrisIdeClientError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid bridge origin: {origin}")
 
 
 if __name__ == "__main__":

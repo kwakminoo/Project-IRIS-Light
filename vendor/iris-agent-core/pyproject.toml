@@ -4,7 +4,7 @@
 
 [project]
 name = "iris-agent-core"
-version = "0.1.1+iris.a382af23"
+version = "0.1.2+iris.a382af23"
 description = "IRIS-owned Agent Core (Hermes-derived MIT). Product install uses this tree; Nous clone is not the default path."
 readme = "README.md"
 # 3.14 is the newest python we know we have wheels for.
@@ -439,8 +439,8 @@ mistral = ["mistralai==2.10.1"]
 # PM on first use; never a core dependency and deliberately
 # NOT in [all].
 otlp = [
-  "opentelemetry-sdk==1.45.1",
-  "opentelemetry-exporter-otlp-proto-http==1.45.1",
+  "opentelemetry-sdk==1.45.2",
+  "opentelemetry-exporter-otlp-proto-http==1.45.2",
 ]
 bedrock = ["boto3==1.43.115"]
 vertex = ["google-auth==2.62.0"]

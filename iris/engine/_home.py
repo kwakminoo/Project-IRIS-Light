@@ -28,19 +28,16 @@ def _engine_pin_sha() -> str:
 # Prefer vendor/iris-agent-runtime/PIN. Legacy name kept for serin tests.
 ENGINE_HERMES_SHA = _engine_pin_sha()
 
-# Dual-accept: F3 rename exposes iris_agent_cli; reverse shim keeps hermes_cli.
 _PROBE_IMPORT = (
-    "import importlib\n"
-    "cli = None\n"
-    "for _n in ('iris_agent_cli', 'hermes_cli'):\n"
-    "    try:\n"
-    "        cli = importlib.import_module(_n)\n"
-    "        break\n"
-    "    except ImportError:\n"
-    "        pass\n"
-    "assert cli is not None, 'neither iris_agent_cli nor hermes_cli'\n"
+    "import sys\n"
+    "from pathlib import Path\n"
+    "import iris_agent_cli, run_agent\n"
     "from run_agent import AIAgent\n"
     "import mcp, ruamel.yaml, dotenv\n"
+    "root = Path(sys.argv[1]).resolve()\n"
+    "assert Path(sys.prefix).resolve() == root / 'venv', 'unexpected engine environment'\n"
+    "assert Path(run_agent.__file__).resolve() == root / 'run_agent.py', 'unexpected agent source'\n"
+    "assert Path(iris_agent_cli.__file__).resolve().is_relative_to(root), 'unexpected CLI source'\n"
     "print('ok')\n"
 )
 
@@ -62,9 +59,10 @@ _POLLUTION_ENV_KEYS = (
 
 
 def engine_python(home: EngineHome) -> EnginePython | None:
-    from iris.infrastructure.agent_runtime import iris_agent_repo_dir
+    from iris.infrastructure.agent_runtime import selected_owned_engine
 
-    return checkout_python(iris_agent_repo_dir(Path(home)))
+    checkout = selected_owned_engine(Path(home))
+    return checkout_python(checkout) if checkout is not None else None
 
 
 def checkout_python(checkout: Path) -> EnginePython | None:
@@ -109,7 +107,7 @@ def _probe_imports(
         return EngineError(EngineErrorCode.NOT_INSTALLED, f"engine python missing: {python}")
     try:
         proc = subprocess.run(
-            [str(python), "-I", "-c", _PROBE_IMPORT],
+            [str(python), "-I", "-c", _PROBE_IMPORT, str(python.parent.parent.parent)],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -133,11 +131,11 @@ def _probe_imports(
     return None
 
 
-def probe_engine_python(home: EngineHome) -> EngineError | None:
+def probe_engine_python(home: EngineHome, *, python: EnginePython | None = None) -> EngineError | None:
     try:
-        python = engine_python(home)
+        python = python or engine_python(home)
         if python is None:
-            return EngineError(EngineErrorCode.NOT_INSTALLED, "engine python is not installed")
+            return EngineError(EngineErrorCode.NOT_INSTALLED, "No verified Owned engine is available. Run IRIS Setup to recover the engine.")
         return _probe_imports(Path(python), home=home)
     except Exception as exc:
         return EngineError(EngineErrorCode.WRONG_PYTHON, str(exc))
@@ -151,14 +149,21 @@ def install_into(
 ) -> EngineError | None:
     if probe_engine_python(home) is None:
         return
-    from iris.infrastructure.agent_runtime import IRIS_AGENT_CHECKOUT_NAME
+    from iris.infrastructure.agent_runtime import IRIS_AGENT_CHECKOUT_NAME, read_engine_selection
 
     # New installs always create under canonical iris-agent.
     dest = Path(home) / IRIS_AGENT_CHECKOUT_NAME
     if runner is not None:
         runner(dest, sha=_engine_pin_sha(), clone=clone)
         return
-    from iris.system.iris_agent_install import install_iris_agent_with_system_python
+    from iris.system.iris_agent_install import install_iris_agent_with_system_python, rollback_iris_agent
+
+    if read_engine_selection(Path(home))[1] is not None:
+        try:
+            rollback_iris_agent(Path(home))
+            return None
+        except (OSError, RuntimeError, ValueError):
+            pass  # No usable recovery slot; materialize the bundled source.
 
     result = install_iris_agent_with_system_python(
         home=Path(home), sha=_engine_pin_sha()

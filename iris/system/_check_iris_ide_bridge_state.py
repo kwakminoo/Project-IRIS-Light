@@ -67,6 +67,10 @@ def _check_empty_editor_state(tmp: Path) -> None:
             time.sleep(0.1)
         assert port, "브리지 포트 확보 실패"
 
+        cold = _post(port, "health")["result"]
+        assert cold.get("workspace_open") is True and cold.get("frontend_ready") is False, cold
+        _post(port, "pollPendingCommands")
+        assert _post(port, "health")["result"].get("frontend_ready") is True
         _post(port, "setEditorState", {})
         assert _post(port, "getActiveEditor")["result"]["editor"] is None, "빈 상태가 {}로 남음"
         assert _post(port, "getOpenEditors")["result"]["editors"] == [], "빈 상태가 [{}]로 남음"

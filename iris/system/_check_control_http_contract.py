@@ -6,6 +6,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
 os.environ["IRIS_CONTROL_TOKEN"] = "contract-check-token"
 os.environ.pop("IRIS_CONTROL_URL", None)
@@ -34,12 +35,12 @@ class _Invoker:
         return fn()
 
 
-def _req(port: int, method: str, path: str, raw: bytes | None) -> tuple[int, dict]:
+def _req(port: int, method: str, path: str, raw: bytes | None, *, token: str = TOKEN) -> tuple[int, dict]:
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}",
         data=raw,
         method=method,
-        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -50,7 +51,15 @@ def _req(port: int, method: str, path: str, raw: bytes | None) -> tuple[int, dic
 
 def main() -> None:
     inv = _Invoker()
-    surface = cs.ControlSurface(invoker=inv, host="127.0.0.1", port=18771, token=TOKEN)
+    external = cs.ControlSurface(invoker=inv, host="0.0.0.0", port=0, token=TOKEN)
+    with patch.object(cs, "ThreadingHTTPServer", side_effect=AssertionError("must reject before binding")):
+        try:
+            external.start()
+        except OSError as exc:
+            assert "127.0.0.1" in str(exc)
+        else:
+            raise AssertionError("external Control host accepted")
+    surface = cs.ControlSurface(invoker=inv, host="127.0.0.1", port=0, token=TOKEN)
     surface.booting = False
     surface.registry.register(
         "ping",
@@ -75,6 +84,10 @@ def main() -> None:
     surface.registry.register("inner", inner, summary="inner")
     port = surface.start()
     try:
+        assert 0 < port <= 65535, "publish the actual dynamically bound Control port"
+        for path in ("/v1/invoke", f"/v1/invoke?token={TOKEN}"):
+            code, body = _req(port, "POST", path, b'{"action":"ping"}', token="wrong")
+            assert code == 401 and body["ok"] is False and RAN == [], (code, body, RAN)
         code, body = _req(port, "POST", "/v1/invoke", b'{"action":"ping","args":{}}')
         assert code == 200 and body["ok"] is True and body["status"] == "success" and RAN == ["ping"], (code, body, RAN)
 

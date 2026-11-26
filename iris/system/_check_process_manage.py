@@ -466,8 +466,7 @@ def _check_finalized_env_reaches_child() -> None:
     """FIG-08: approved FinalizedStartPlan.env must reach the child process.
 
     Fails when manage(start) fingerprints plan.env but drops it at self.start
-    (env vs environment_id mix-up). timeout_s / environment_id stay raw
-    operational fields and are not on FinalizedStartPlan.
+    (env vs environment_id mix-up), or permits changing run policy after approval.
     """
     reset_approval_ledger_for_tests()
     with tempfile.TemporaryDirectory() as td:
@@ -487,6 +486,8 @@ def _check_finalized_env_reaches_child() -> None:
             ],
             "cwd": str(root),
             "env": {marker: value},
+            "environment_id": "approved-profile",
+            "timeout_s": 20,
         }
         plan = finalize_process_start_plan(args, workspace_root=str(root))
         assert isinstance(plan, FinalizedStartPlan), plan
@@ -507,6 +508,10 @@ def _check_finalized_env_reaches_child() -> None:
         denied = rt.manage(swapped, ctx=ctx)
         assert denied.get("ok") is False, denied
         assert "fingerprint" in str(denied.get("error") or ""), denied
+        for changes in ({"environment_id": "other-profile"}, {"timeout_s": 1}):
+            denied = rt.manage({**args, **changes}, ctx=ctx)
+            assert denied.get("ok") is False, denied
+            assert "fingerprint" in str(denied.get("error") or ""), denied
 
         ctx2 = _grant_ctx(
             args, session_id="sess-fig08b", workspace_root=str(root)
@@ -521,6 +526,7 @@ def _check_finalized_env_reaches_child() -> None:
         )
         data = waited.get("data") or {}
         assert waited.get("ok") is True, waited
+        assert data.get("environment_id") == "approved-profile", data
         assert data.get("exit_code") == 0, (
             "child must see FinalizedStartPlan.env; "
             f"exit_code={data.get('exit_code')!r} data={data!r}"

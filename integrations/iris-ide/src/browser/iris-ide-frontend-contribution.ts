@@ -696,10 +696,12 @@ export class IrisIdeFrontendContribution implements FrontendApplicationContribut
 
     protected syncEditor(): void {
         const infos = this.editorInfos();
-        const current = this.infoFromWidget(this.editorManager.currentEditor) || infos[0] || null;
+        // Do not invent an active editor from infos[0] when currentEditor is null
+        // (Explorer/sidebar focus). That made getActiveEditor lie as a.py after openFile(b).
+        const current = this.infoFromWidget(this.editorManager.currentEditor);
         if (!current) {
             this.state.clear();
-            this.pushBridge(null, []);
+            this.pushBridge(null, infos);
             this.pushDiagnostics();
             return;
         }

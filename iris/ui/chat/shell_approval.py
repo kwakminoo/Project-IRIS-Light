@@ -35,9 +35,7 @@ _INTERPRETER_NAMES = frozenset(
 )
 
 # Compound / shell metacharacters → ask (use_allowlist never auto).
-_UNSAFE_SHELL_RE = re.compile(
-    r"(?:&&|\|\||[;|`\n\r]|\$\(|\$\{|(?<![>\d])>(?!>)|(?<![<\d])<(?!<))"
-)
+_UNSAFE_SHELL_RE = re.compile(r"[&;|<>`\n\r]|\$\(|\$\{")
 
 
 @dataclass(frozen=True)

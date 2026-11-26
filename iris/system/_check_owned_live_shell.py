@@ -1,205 +1,200 @@
-"""Live Owned shell.run roundtrip — no IRIS IDE / Cursor companion.
+"""Owned sidecar + local model + normal SpeakTools and shell action (L3).
 
-Asserts live ``iris_agent_repo_dir`` is owned, forces ``tool_choice=required``
-in an isolated EngineHome, binds host ``shell.run``, requires the model to
-call terminal once with ``echo <marker>``. Exit 0 when shell.run ok + marker.
-Does not write live selection / hermes / migration.
+An in-process confirmation callback approves only the fixture command, and a
+card recorder checks output at the shell presenter boundary. No live GUI or
+Control HTTP is involved.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
-import subprocess
+import os
 import time
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from iris.engine import runtime
+from iris.engine._home import checkout_python
 from iris.engine.types import (
     CancelToken,
     ChatTranscript,
     EngineHome,
-    EnginePython,
     InternalSidecar,
     StatelessTurn,
     TurnFinished,
 )
-from iris.infrastructure.agent_runtime import (
-    IRIS_AGENT_CHECKOUT_NAME,
-    LEGACY_AGENT_CHECKOUT_NAME,
-    _OWNED_SLOT_NAME,
-    iris_agent_home,
-    iris_agent_repo_dir,
-)
+from iris.infrastructure.agent_runtime import iris_agent_home, iris_agent_repo_dir
+from iris.infrastructure.agent_tool_registry import speak_invoke_agent_tool
 from iris.infrastructure.iris_agent_client import resolve_iris_agent_inference
-from iris.infrastructure.speak_capability import normalize_speak_invoke
-from iris.system.win_subprocess import no_window_kwargs
+from iris.infrastructure.speak_capability import bind_live_control_surface, set_speak_surface
+from iris.system.control_surface import ActionRegistry
+from iris.system.execution_runtime import ProcessRegistry
+from iris.system.setup_protocol import HERMES_MIN_OLLAMA_NUM_CTX
+from iris.ui.control_actions.shell import register_shell_actions
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / ".tmp" / "owned-live-shell"
 MODEL = "gpt-oss:20b"
-LIVE_SELECTION = iris_agent_home() / "iris-engine-selection.json"
 
 
-def _snapshot_selection() -> dict:
-    exists = LIVE_SELECTION.is_file()
-    return {
-        "exists": exists,
-        "text": LIVE_SELECTION.read_text(encoding="utf-8") if exists else None,
-        "mtime": LIVE_SELECTION.stat().st_mtime if exists else None,
-    }
-
-
-def _assert_owned_repo(repo: Path) -> None:
-    name = repo.name
-    assert name != LEGACY_AGENT_CHECKOUT_NAME, f"live resolve is hermes recovery: {repo}"
-    owned = name == IRIS_AGENT_CHECKOUT_NAME or bool(_OWNED_SLOT_NAME.fullmatch(name))
-    assert owned, f"live resolve is not owned: {repo}"
-    py = repo / "venv" / "Scripts" / "python.exe"
-    assert py.is_file(), f"owned venv python missing: {py}"
-
-
-def _seed_forced_tool_choice(home: Path) -> None:
-    home.mkdir(parents=True, exist_ok=True)
-    path = home / "config.yaml"
-    try:
-        import yaml  # type: ignore
-
-        data: dict = {}
-        if path.is_file():
-            loaded = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
-            if isinstance(loaded, dict):
-                data = loaded
-        agent = data.get("agent") if isinstance(data.get("agent"), dict) else {}
-        agent["tool_choice"] = "required"
-        data["agent"] = agent
-        path.write_text(
-            yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
-    except Exception:  # noqa: BLE001
-        path.write_text("agent:\n  tool_choice: required\n", encoding="utf-8")
-
-
-def _shell_handler(marker: str, calls: list):
-    def handler(action: str, args: dict) -> dict:
-        key, payload = normalize_speak_invoke(action, dict(args or {}))
-        if key != "shell.run":
-            result = {"ok": False, "error": f"unexpected action {key}", "action": key}
-            calls.append({"action": action, "normalized": key, "payload": payload, "result": result})
-            return result
-        command = str(payload.get("command") or "").strip()
-        if not command:
-            result = {"ok": False, "error": "empty command", "action": key}
-            calls.append({"action": action, "normalized": key, "payload": payload, "result": result})
-            return result
-        completed = subprocess.run(
-            ["cmd", "/c", command],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            **no_window_kwargs(),
-        )
-        stdout = (completed.stdout or "") + (completed.stderr or "")
-        result = {
-            "ok": completed.returncode == 0 and marker in stdout,
-            "action": key,
-            "data": {
-                "exit_code": completed.returncode,
-                "stdout": completed.stdout or "",
-                "stderr": completed.stderr or "",
-                "argv": ["cmd", "/c", command],
-                "marker_seen": marker in stdout,
-            },
-        }
-        calls.append({"action": action, "normalized": key, "payload": payload, "result": result})
-        return result
-
-    return handler
+def _snapshot_selection() -> tuple[str, int] | None:
+    path = iris_agent_home() / "iris-engine-selection.json"
+    if not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8"), path.stat().st_mtime_ns
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tool-choice", choices=("auto", "required"), default="required")
+    mode = parser.parse_args().tool_choice
     before = _snapshot_selection()
     repo = iris_agent_repo_dir()
-    _assert_owned_repo(repo)
-    python = repo / "venv" / "Scripts" / "python.exe"
+    python = checkout_python(repo)
+    assert python is not None, f"Owned Python missing: {repo}"
 
-    home = OUT / "shell-home"
-    home.mkdir(parents=True, exist_ok=True)
-    _seed_forced_tool_choice(home)
-    marker = "IRIS_OWNED_" + uuid.uuid4().hex[:12].upper()
-    runtime._WATCH_LOG = home / "shell-watch.log"
-    engine = runtime.Engine(InternalSidecar(home=EngineHome(home)))
-    calls: list = []
-    engine.bind_tool_handler(_shell_handler(marker, calls))
-    prompt = (
-        "Call the function tool named terminal exactly once now. "
-        f'Arguments must include command="echo {marker}". '
-        "Do not write markdown. Do not invent stdout. Wait for the tool result, "
-        "then quote it verbatim."
+    token = uuid.uuid4().hex
+    home = OUT / mode / token
+    workspace = home / "workspace"
+    workspace.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        f"agent:\n  tool_choice: {mode}\nmodel:\n  ollama_num_ctx: {HERMES_MIN_OLLAMA_NUM_CTX}\n",
+        encoding="utf-8",
     )
+    marker = "IRIS_OWNED_" + uuid.uuid4().hex.upper()
+    (workspace / "iris-grounding.txt").write_text(marker + "\n", encoding="utf-8")
+    command = "type iris-grounding.txt" if os.name == "nt" else "cat iris-grounding.txt"
+    args = {"command": command, "cwd": str(workspace)}
+    evidence_path = OUT / f"{mode}-evidence.json"
+    watch = home / "host-watch.log"
+    turn_session = f"grounding-{token}"
+    cards: list[dict] = []
+    chat = SimpleNamespace(
+        insert_tool_block=lambda **card: cards.append(card) or "fixture-card",
+        replace_tool_block=lambda _block, **card: cards.append(card) or True,
+    )
+    window = SimpleNamespace(_ui_mode="home", _chat=chat, _conversation_id=turn_session)
+    registry = ActionRegistry()
+    register_shell_actions(window, registry)
+    process = ProcessRegistry(runs_root=home / "runs")
+    surface = SimpleNamespace(registry=registry, booting=False)
+    engine = runtime.Engine(InternalSidecar(home=EngineHome(home)), staged_python=python)
+    calls: list[tuple[str, dict]] = []
+
+    def invoke(action: str, payload: dict) -> dict:
+        result = (
+            speak_invoke_agent_tool(action, payload)
+            if action == "shell.run" else {"ok": False, "error": "fixture only permits shell.run"}
+        )
+        calls.append((action, result))
+        return result
+
+    engine.bind_tool_handler(invoke)
+    request = (
+        f'Use the local shell in directory "{workspace}" to run `{command}` once. '
+        "Reply with the exact contents printed by the command, with no extra text."
+    )
+    if mode == "required":
+        request = (
+            f"Call terminal once with exactly these arguments: {json.dumps(args)}. "
+            "Reply with the exact stdout text only."
+        )
     turn = StatelessTurn(
-        ChatTranscript.parse([{"role": "user", "content": prompt}]),
+        ChatTranscript.parse([{"role": "user", "content": request}]),
         resolve_iris_agent_inference(MODEL),
         CancelToken(),
         speak_surface="home",
+        session_id=turn_session,
+        workspace_id=str(workspace),
     )
-    eng_py = EnginePython(python)
-    with (
-        patch("iris.engine.runtime.engine_python", return_value=eng_py),
-        patch("iris.engine._home.engine_python", return_value=eng_py),
-        patch("iris.engine.runtime.probe_engine_python", return_value=None),
-        patch("iris.engine.runtime._apply_ollama_options_guard_now", return_value=False),
-    ):
-        start = time.perf_counter()
-        try:
-            ready = engine.ensure_ready()
-            startup = round(time.perf_counter() - start, 3)
+    approval = Mock(side_effect=lambda spec, payload: spec.name == "shell.run" and payload == args)
+    set_speak_surface("home")
+    bind_live_control_surface(surface)
+    try:
+        with (
+            patch.object(runtime, "_WATCH_LOG", watch),
+            patch("iris.system.iris_shell.default_runtime", return_value=process),
+            patch.dict(os.environ, {"IRIS_ENGINE_WATCH_LOG": str(home / "sidecar-watch.log")}),
+        ):
+            denied = speak_invoke_agent_tool("shell.run", args)
+            forged = registry.invoke("shell.run", {**args, "confirm": True})
+            denial_ok = all(
+                out.get("ok") is False and "human confirm required" in out.get("error", "")
+                for out in (denied, forged)
+            )
+            registry.set_human_confirm(approval)
             start = time.perf_counter()
-            events = [(event, time.perf_counter() - start) for event in engine.run_turn(turn)]
-        finally:
-            engine.shutdown()
+            try:
+                ready = engine.ensure_ready()
+                startup = round(time.perf_counter() - start, 3)
+                start = time.perf_counter()
+                events = list(engine.run_turn(turn))
+                elapsed = round(time.perf_counter() - start, 3)
+            finally:
+                engine.shutdown()
+    finally:
+        bind_live_control_surface(None)
 
-    finished = next((e.text for e, _ in events if isinstance(e, TurnFinished)), "")
-    watch = ""
-    watch_path = home / "shell-watch.log"
-    if watch_path.is_file():
-        watch = watch_path.read_text(encoding="utf-8", errors="replace")
-    routed = "TOOL_ROUTE" in watch and ("shell.run" in watch or "terminal" in watch)
-    shell_ok = any(
-        c.get("normalized") == "shell.run"
-        and isinstance(c.get("result"), dict)
-        and c["result"].get("ok") is True
-        and marker in json.dumps(c.get("payload") or {}, ensure_ascii=False)
-        for c in calls
+    finished = next((event.text for event in events if isinstance(event, TurnFinished)), "")
+    method, result = calls[0] if len(calls) == 1 else ("", {})
+    data = result.get("data") or {}
+    shell_ok = (
+        method == "shell.run"
+        and result.get("ok") is True
+        and data.get("exit_code") == 0
+        and data.get("stdout", "").strip() == marker
+        and data.get("stderr") == ""
     )
-    after = _snapshot_selection()
+    correlated = False
+    if watch.is_file():
+        for line in watch.read_text(encoding="utf-8").splitlines():
+            if "TOOL_RESULT " not in line or "action=shell.run ok=true" not in line:
+                continue
+            fields = dict(field.split("=", 1) for field in line.split("TOOL_RESULT ", 1)[1].split())
+            id_pair = f"request_id={fields['request_id']} tool_call_id={fields['tool_call_id']}"
+            correlated = fields["tool_call_id"] != "-" and any(
+                "TOOL_CALL " + id_pair in record
+                and f"session_id={turn_session}" in record
+                and f"workspace_id={workspace}" in record
+                for path in (home / "logs").glob("sidecar-*.log")
+                for record in path.read_text(encoding="utf-8", errors="replace").splitlines()
+            )
+    proof = {
+        "approval_applied": denial_ok and approval.call_count == 1,
+        "tool_correlation_ok": correlated,
+        "stdout_and_stderr_verified": shell_ok,
+        "finished_exactly": finished.strip() == marker,
+        "card_output_verified": any(
+            card.get("phase") == "done" and marker in card.get("output", "") for card in cards
+        ),
+        "selection_untouched": before == _snapshot_selection(),
+    }
     evidence = {
-        "shell_ok": shell_ok,
+        **proof,
         "marker": marker,
-        "routed": routed,
         "resolved_checkout": str(repo),
         "python": str(python),
         "model": MODEL,
         "ready": repr(ready),
         "startup_sec": startup,
-        "seconds": round(events[-1][1], 3) if events else None,
-        "events": [type(e).__name__ for e, _ in events],
-        "terminal": repr(events[-1][0]) if events else None,
-        "finished_preview": (finished or "")[:400],
+        "seconds": elapsed,
+        "events": [type(event).__name__ for event in events],
+        "terminal": repr(events[-1]) if events else None,
         "tool_calls": calls,
-        "forced_tool_choice": "required",
-        "selection_untouched": before == after,
+        "tool_choice": mode,
+        "configured_num_ctx": HERMES_MIN_OLLAMA_NUM_CTX,
         "path": str(home),
     }
-    OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / "evidence.json").write_text(
-        json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    print(json.dumps({k: v for k, v in evidence.items() if k != "tool_calls"}, indent=2, ensure_ascii=False))
-    print(json.dumps({"tool_calls": calls}, indent=2, ensure_ascii=False))
-    return 0 if shell_ok and evidence["selection_untouched"] else 1
+    text = json.dumps(evidence, indent=2)
+    (home / "evidence.json").write_text(text, encoding="utf-8")
+    evidence_path.write_text(text, encoding="utf-8")
+    if mode == "required":
+        (OUT / "evidence.json").write_text(text, encoding="utf-8")
+    print(text)
+    return 0 if all(proof.values()) else 1
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -23,7 +24,7 @@ from PyQt6.QtWidgets import QApplication
 from iris.engine import ContentDelta, TurnFinished
 from iris.engine._home import engine_python
 from iris.engine._sidecar import encode_host_command, parse_turn_event
-from iris.engine.runtime import _read_terminal_file_impl
+from iris.engine.runtime import _read_terminal_file_impl, _send_stop, _terminate_child
 from iris.engine.types import EngineHome
 from iris.infrastructure.agent_runtime import iris_agent_home
 from iris.storage.conversations import history_dicts
@@ -86,6 +87,9 @@ def _check_hang_after_turn_ended_emits_done() -> None:
     """Turn ended then hang: host must still receive done (UDP or terminal file)."""
     udp_sock, udp_port = _bind_check_udp()
     env = _child_env()
+    logs = TemporaryDirectory()
+    env["IRIS_ENGINE_LOG"] = str(Path(logs.name) / "sidecar.log")
+    env["IRIS_ENGINE_WATCH_LOG"] = str(Path(logs.name) / "watch.log")
     env["IRIS_TERMINAL_UDP_PORT"] = str(udp_port)
     proc = subprocess.Popen(
         [_sidecar_python(), str(_SIDECAR_MAIN)],
@@ -119,7 +123,6 @@ def _check_hang_after_turn_ended_emits_done() -> None:
             )
         )
         proc.stdin.flush()
-        texts: list[str] = []
         done_text = None
         deadline = time.monotonic() + 8.0
         while time.monotonic() < deadline and done_text is None:
@@ -135,38 +138,26 @@ def _check_hang_after_turn_ended_emits_done() -> None:
                 if isinstance(event, TurnFinished):
                     done_text = event.text
                     break
-            line = _readline(proc.stdout, 0.15)
-            if line:
-                event = parse_turn_event(json.loads(line))
-                if isinstance(event, TurnFinished):
-                    done_text = event.text
-                    break
-                text = getattr(event, "text", "") or ""
-                if text:
-                    texts.append(text)
             file_line = _read_terminal_file_impl(hello_pid)
             if file_line:
                 event = _parse_terminal_line(file_line)
                 if isinstance(event, TurnFinished):
                     done_text = event.text
                     break
-        assert done_text is not None, f"no done after Turn ended hang; deltas={texts!r}"
-        assert "hang-answer" in (done_text or "".join(texts)), (done_text, texts)
+        assert done_text == "hang-answer", done_text
     finally:
         try:
             udp_sock.close()
         except OSError:
             pass
         if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=5)
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            if stream is None:
-                continue
+            _send_stop(proc)
             try:
-                stream.close()
-            except OSError:
-                continue
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        _terminate_child(proc)
+        logs.cleanup()
 
 
 def _check_worker_turn_finished_emits_finished_ok() -> None:
@@ -229,8 +220,8 @@ def _check_worker_turn_finished_emits_finished_ok() -> None:
     assert ok2 == [""], ok2
 
 
-def _check_worker_prefers_turn_finished_over_short_deltas() -> None:
-    """Short ContentDelta then long TurnFinished: finished_ok must emit the full done text."""
+def _check_worker_prefers_turn_finished_over_deltas(*, final_is_shorter: bool) -> None:
+    """Final text may differ from the accumulated streaming draft in either direction."""
     from iris.engine import EngineHome, InternalSidecar
     from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
     from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker
@@ -249,7 +240,8 @@ def _check_worker_prefers_turn_finished_over_short_deltas() -> None:
         def run_turn(self, turn):
             yield from self._events
 
-    engine = _StubEngine([ContentDelta(short), TurnFinished(long_text)])
+    draft, final = (long_text, short) if final_is_shorter else (short, long_text)
+    engine = _StubEngine([ContentDelta(draft), TurnFinished(final)])
     worker = IrisAgentChatWorker(
         "gemma4:26b-a4b-it-qat",
         [{"role": "user", "content": "hi"}],
@@ -269,7 +261,7 @@ def _check_worker_prefers_turn_finished_over_short_deltas() -> None:
     ):
         worker.run()
     assert failed == [], failed
-    assert ok == [long_text], ok
+    assert ok == [final], ok
 
 
 def _check_empty_finished_persists_placeholder(app: QApplication) -> None:
@@ -296,7 +288,8 @@ def _check_empty_finished_persists_placeholder(app: QApplication) -> None:
 def main() -> None:
     _check_hang_after_turn_ended_emits_done()
     _check_worker_turn_finished_emits_finished_ok()
-    _check_worker_prefers_turn_finished_over_short_deltas()
+    _check_worker_prefers_turn_finished_over_deltas(final_is_shorter=False)
+    _check_worker_prefers_turn_finished_over_deltas(final_is_shorter=True)
     app = QApplication.instance() or QApplication(sys.argv)
     _check_empty_finished_persists_placeholder(app)
     print("sidecar done landing ok")

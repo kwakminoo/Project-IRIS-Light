@@ -26,6 +26,7 @@ import {
     startDebug,
     stopDebug,
     taskState,
+    writeFile,
 } from './iris-ide-bridge-ops';
 
 interface PendingCommand {
@@ -250,6 +251,8 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
                 return saveEvery(this.editorManager);
             case 'reloadFromDisk':
                 return reloadFromDisk(this.editorManager, args);
+            case 'writeFile':
+                return writeFile(this.editorManager, args);
             case 'insertText':
             case 'replaceSelection':
             case 'replaceRange':
@@ -296,19 +299,53 @@ export class IrisIdeBridgePoller implements FrontendApplicationContribution {
             throw new Error(`file not found: ${rel}`);
         }
         const isPdf = uri.path.toString().toLowerCase().endsWith('.pdf');
-        await open(this.openerService, uri, { mode: 'activate' });
         if (isPdf) {
             // IrisPdfOpenHandler owns *.pdf — Monaco binary tabs must not follow.
+            await open(this.openerService, uri, { mode: 'activate' });
             return { path: uri.toString(), opened: true, viewer: 'iris.pdf' };
         }
         const line = Math.max(1, parseInt(String(args.line || 1), 10) || 1);
         const column = Math.max(1, parseInt(String(args.column || 1), 10) || 1);
         const editor = await this.editorManager.open(uri, { mode: 'activate' });
-        if (editor) {
-            const pos = { line: line - 1, character: column - 1 };
-            editor.editor.selection = { start: pos, end: pos } as never;
-            editor.editor.cursor = pos as never;
-            editor.editor.revealPosition(pos as never);
+        if (!editor) {
+            throw new Error('requested editor did not open');
+        }
+        // mode:activate alone can leave EditorManager.currentEditor on the prior tab
+        // (seen after query-less reload). Match terminal reveal: shell owns activation.
+        await this.shell.activateWidget(editor.id);
+        editor.activate();
+        if (typeof editor.node?.focus === 'function') {
+            editor.node.focus();
+        }
+        if (this.editorManager.currentEditor !== editor || !editor.isVisible) {
+            throw new Error('requested editor is not current');
+        }
+        const pos = { line: line - 1, character: column - 1 };
+        editor.editor.selection = { start: pos, end: pos } as never;
+        editor.editor.cursor = pos as never;
+        editor.editor.revealPosition(pos as never);
+        const editorPath = FileUri.fsPath(editor.editor.uri);
+        // openFile contract: bridge getActiveEditor must reflect the opened file.
+        // Relying only on onCurrentEditorChanged misses pushes after query-less reload.
+        if (this.resolveBridge()) {
+            const doc = editor.editor.document as { languageId?: string; dirty?: boolean } | undefined;
+            const languageId = doc?.languageId || 'plaintext';
+            await this.bridgeRequest('setEditorState', {
+                uri: editor.editor.uri.toString(),
+                path: editorPath,
+                languageId,
+                line,
+                column,
+                dirty: Boolean(doc?.dirty),
+                selection: { start: { line, column }, end: { line, column } },
+                editors: [{
+                    uri: editor.editor.uri.toString(),
+                    path: editorPath,
+                    languageId,
+                    line,
+                    column,
+                }],
+            });
         }
         return { path: uri.toString(), opened: true, viewer: 'monaco', line, column };
     }

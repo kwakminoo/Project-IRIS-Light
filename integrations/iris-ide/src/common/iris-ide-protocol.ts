@@ -44,6 +44,7 @@ export const IRIS_BRIDGE_COMMANDS = [
     'saveAll',
     'reloadFromDisk',
     'createFile',
+    'writeFile',
     'deleteFile',
     'renameFile',
     'replaceSelection',
