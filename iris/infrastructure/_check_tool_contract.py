@@ -157,6 +157,32 @@ def main() -> None:
     home_term = {str(s["name"]): s for s in home}["terminal"]["parameters"]
     assert "command" in (home_term.get("properties") or {}), home_term
 
+    # FIG-06: model-facing role split in grant descriptions (behavior contract).
+    home_by_name = {str(s["name"]): s for s in home}
+    term_desc = str(home_by_name["terminal"]["description"]).lower()
+    assert "sync" in term_desc and "simple" in term_desc, term_desc
+    assert "process_manage" in term_desc or "process.manage" in term_desc, term_desc
+    assert "bash -lc" in term_desc or "list literal" in term_desc, term_desc
+    pm_desc = str(home_by_name["process_manage"]["description"]).lower()
+    assert "background" in pm_desc or "long-running" in pm_desc, pm_desc
+    assert "run_id" in pm_desc, pm_desc
+    assert "terminal" in pm_desc or "shell.run" in pm_desc, pm_desc
+    assert "simple" in pm_desc, pm_desc
+    ide_edit_schema = home_by_name.get("ide_edit") or ide_by.get("ide_edit")
+    assert ide_edit_schema is not None, "ide_edit missing from engine schemas"
+    ide_edit_desc = str(ide_edit_schema["description"]).lower()
+    assert "replace_selection" in ide_edit_desc, ide_edit_desc
+    assert "not replace" in ide_edit_desc, ide_edit_desc
+    ide_edit_op = (ide_edit_schema["parameters"].get("properties") or {}).get("op") or {}
+    op_enum = set(ide_edit_op.get("enum") or [])
+    assert op_enum == {
+        "insert",
+        "replace_selection",
+        "replace_range",
+        "apply",
+    }, op_enum
+    assert "replace" not in op_enum
+
     # validate_tool_arguments
     validate_tool_arguments(None, {"q": 1})  # undeclared API still permissive
     validate_tool_arguments(EMPTY_OBJECT_SCHEMA, {})
@@ -309,6 +335,21 @@ def main() -> None:
         "shell.run", {"command": "keep", "cmd": "drop"}
     )
     assert keep_n == "shell.run" and keep_args == {"command": "keep"}
+    # FIG-05: model stringified bash -lc argv list → plain script (measured miss).
+    py_list_n, py_list_args = normalize_speak_invoke(
+        "shell.run", {"cmd": "['bash', '-lc', 'echo MARKER']"}
+    )
+    assert py_list_n == "shell.run"
+    assert py_list_args == {"command": "echo MARKER"}, py_list_args
+    json_list_n, json_list_args = normalize_speak_invoke(
+        "shell.run", {"command": '["bash","-lc","echo MARKER"]'}
+    )
+    assert json_list_n == "shell.run"
+    assert json_list_args == {"command": "echo MARKER"}, json_list_args
+    plain_n, plain_args = normalize_speak_invoke(
+        "shell.run", {"command": "echo MARKER"}
+    )
+    assert plain_n == "shell.run" and plain_args == {"command": "echo MARKER"}
     seen.clear()
     cmd_ok = tools.invoke("shell.run", {"cmd": "echo x"})
     assert cmd_ok.ok is True, cmd_ok
@@ -316,6 +357,12 @@ def main() -> None:
     assert seen and seen[-1][0] == "shell.run"
     assert seen[-1][1] == {"command": "echo x"}
     assert "cmd" not in seen[-1][1]
+    seen.clear()
+    list_ok = tools.invoke(
+        "shell.run", {"cmd": "['bash', '-lc', 'echo MARKER']"}
+    )
+    assert list_ok.ok is True, list_ok
+    assert seen and seen[-1][1] == {"command": "echo MARKER"}, seen
 
     # Model alias: browser.open+url → browser.navigate (open grant has empty schema).
     open_n, open_args = normalize_speak_invoke(

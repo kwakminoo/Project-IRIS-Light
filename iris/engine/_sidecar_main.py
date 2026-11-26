@@ -116,6 +116,23 @@ _NATIVE_TOOL_LOCK = threading.Lock()
 _WATCH_LOG = Path.home() / ".iris-light" / "logs" / "turn_end_watch.log"
 
 
+def _safe_args_summary(raw_args: object) -> str:
+    """Key names + lengths only — never values (secrets stay out of logs)."""
+    if not isinstance(raw_args, dict) or not raw_args:
+        return "-"
+    bits: list[str] = []
+    for key in sorted(raw_args, key=lambda item: str(item)):
+        val = raw_args[key]
+        if isinstance(val, (str, bytes, list, dict, tuple, set)):
+            n = len(val)
+        elif val is None:
+            n = 0
+        else:
+            n = len(str(val))
+        bits.append(f"{key}:{n}")
+    return ",".join(bits)
+
+
 def _watch_trace(msg: str) -> None:
     line = f"pid={os.getpid()} {msg}\n"
 
@@ -278,10 +295,18 @@ def _request_native_tool(
             "args": args,
         }
         logging.getLogger(__name__).info(
-            "TOOL_CALL request_id=%s tool_call_id=%s model_tool_name=%s",
+            "TOOL_CALL request_id=%s tool_call_id=%s model_tool_name=%s "
+            "turn_id=%s session_id=%s workspace_id=%s canonical_action=%s "
+            "schema_fingerprint=%s args=%s",
             request_id,
             tool_call_id,
             model_tool_name,
+            turn_id,
+            session_id,
+            workspace_id,
+            name,
+            schema_fingerprint,
+            _safe_args_summary(args),
         )
         _emit(payload)
         line = sys.stdin.readline()

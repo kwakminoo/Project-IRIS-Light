@@ -679,6 +679,7 @@ class ProcessRegistry:
                     argv=list(plan.argv) if plan.argv else None,
                     shell=plan.shell,
                     cwd=plan.cwd,
+                    env=dict(plan.env) if plan.env else None,
                     env_id=str(raw.get("environment_id") or raw.get("env_id") or ""),
                     timeout_s=float(raw["timeout_s"]) if raw.get("timeout_s") is not None else None,
                     session_id=session_id,

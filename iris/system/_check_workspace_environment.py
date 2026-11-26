@@ -368,25 +368,40 @@ def _check_agent_probe_vs_workspace_run_distinct() -> None:
 def _check_home_without_workspace_defaults() -> None:
     """No bound workspace: allowed default work path is user home / settings — not Agent Home.
 
-    Documented contracts (source scrape + callable):
+    Documented contracts (callable behavior):
     - iris_shell.default_shell_cwd → Path.home()
     - process.manage empty cwd without workspace_root → Path.home()
+    - process.manage empty cwd with workspace_root → that workspace (binding kept)
     - resolve_bound_work_root without bound IDE → error (project write/run refuses Agent Home)
     """
     from iris.system.iris_shell import default_shell_cwd
+    from iris.system.process_start_plan import (
+        FinalizedStartPlan,
+        finalize_process_start_plan,
+    )
     from iris.ui.control_bindings import resolve_bound_work_root
 
     home = Path.home().resolve()
     assert default_shell_cwd() == home
     assert home != agent_core_home()
 
-    runtime_src = (
-        Path(__file__).resolve().parent / "execution_runtime.py"
-    ).read_text(encoding="utf-8")
-    # process.manage: no cwd + no workspace_root → user home (not Agent Home).
-    assert "Path.home().resolve()" in runtime_src
-    compact = runtime_src.replace(" ", "").replace("\n", "")
-    assert "cwd_raw=str(Path.home().resolve())" in compact
+    # process.manage start plan: no cwd + no workspace_root → user home (not Agent Home).
+    plan_home = finalize_process_start_plan(
+        {"action": "start", "shell": "echo ok"},
+        workspace_root=None,
+    )
+    assert isinstance(plan_home, FinalizedStartPlan)
+    assert Path(plan_home.cwd).resolve() == home
+    assert Path(plan_home.cwd).resolve() != Path(agent_core_home()).resolve()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp).resolve()
+        plan_ws = finalize_process_start_plan(
+            {"action": "start", "shell": "echo ok"},
+            workspace_root=str(ws),
+        )
+        assert isinstance(plan_ws, FinalizedStartPlan)
+        assert Path(plan_ws.cwd).resolve() == ws
 
     window = mock.MagicMock()
     window._conversation_id = 0

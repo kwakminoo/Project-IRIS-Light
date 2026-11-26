@@ -6,6 +6,7 @@ No MCP stdio / Control HTTP on the product speak path.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -323,6 +324,68 @@ def resolve_legacy_name(name: str) -> str:
 # Model often sends cmd/shell; SpeakGrant requires command (Final Gate measured).
 _COMMAND_ALIAS_ACTIONS = frozenset({"shell.run", "project.run"})
 _COMMAND_ALIAS_KEYS = ("cmd", "shell")
+_SHELL_LIST_EXES = frozenset({"bash", "sh", "zsh", "dash"})
+
+
+def _parse_string_list_literal(raw: str) -> list[str] | None:
+    """JSON or Python-literal list of strings, else None."""
+    text = (raw or "").strip()
+    if not (text.startswith("[") and text.endswith("]")):
+        return None
+    for loader in (json.loads, ast.literal_eval):
+        try:
+            parsed = loader(text)
+        except (TypeError, ValueError, SyntaxError, json.JSONDecodeError):
+            continue
+        if (
+            isinstance(parsed, list)
+            and parsed
+            and all(isinstance(item, str) for item in parsed)
+        ):
+            return [str(item) for item in parsed]
+    return None
+
+
+def _basename_token(token: str) -> str:
+    cleaned = token.replace("\\", "/").rstrip("/")
+    return cleaned.rsplit("/", 1)[-1].lower()
+
+
+def _script_from_shell_argv(items: list[str]) -> str | None:
+    """bash/sh -c / -lc SCRIPT → SCRIPT. Ambiguous forms stay None."""
+    if len(items) < 3:
+        return None
+    if _basename_token(items[0]) not in _SHELL_LIST_EXES:
+        return None
+    flag = items[1]
+    if flag in ("-c", "-lc") or (
+        flag.startswith("-")
+        and not flag.startswith("--")
+        and "c" in flag
+        and "=" not in flag
+        and len(flag) <= 4
+    ):
+        script = items[2].strip()
+        return script or None
+    if (
+        len(items) >= 4
+        and items[1] in ("-l", "--login")
+        and items[2] == "-c"
+    ):
+        script = items[3].strip()
+        return script or None
+    return None
+
+
+def _coerce_list_literal_command(command: str) -> str:
+    """Unwrap model stringified argv lists at the Speak boundary (FIG-05)."""
+    items = _parse_string_list_literal(command)
+    if items is None:
+        return command
+    script = _script_from_shell_argv(items)
+    if script is not None:
+        return script
+    return command
 
 
 def normalize_speak_invoke(
@@ -331,6 +394,7 @@ def normalize_speak_invoke(
     """Coerce model arg aliases at the Speak/grant boundary (before validate).
 
     - shell.run / project.run: cmd|shell → command (canonical wins); drop alias keys
+    - shell.run / project.run: stringified bash/sh -lc argv list → script string
     - browser.open + url → browser.navigate (open grant/handler has no url field)
     """
     key = (action or "").strip()
@@ -344,6 +408,9 @@ def normalize_speak_invoke(
                     break
         for alias in _COMMAND_ALIAS_KEYS:
             payload.pop(alias, None)
+        cmd = payload.get("command")
+        if isinstance(cmd, str) and cmd.strip():
+            payload["command"] = _coerce_list_literal_command(cmd)
         return key, payload
     if key == "browser.open":
         url = str(payload.get("url") or "").strip()
@@ -559,12 +626,19 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant(
             "project.run",
             ExecKind.SURFACE,
-            "Run in the bound IDE terminal. Required: command and/or file (rel_path). "
+            "Sync simple command in the bound IDE terminal (model name: terminal). "
+            "Prefer this for short one-shot commands like echo — not process_manage. "
+            "Required: command and/or file (rel_path) as a plain string "
+            "(not a Python/JSON list literal, not an unnecessary bash -lc wrapper). "
             "Optional timeout_sec, open_browser, reveal_terminal. Home surface uses shell.run. "
+            "For long-running or background jobs that need run_id, use process.manage. "
             "Session/workspace ACL come from Control context (not tool args).",
             _params(
                 {
-                    "command": {"type": "string"},
+                    "command": {
+                        "type": "string",
+                        "description": "Plain sync simple command string (not bash -lc list literal)",
+                    },
                     "file": {"type": "string"},
                     "rel_path": {"type": "string"},
                     "cwd": {"type": "string"},
@@ -584,7 +658,10 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant(
             "process.manage",
             ExecKind.SURFACE,
-            "Manage Iris Execution Runtime Local Subprocess runs (headless; not a sandbox). "
+            "Long-running or background Iris Execution Runtime Local Subprocess "
+            "(headless; not a sandbox). Track with run_id (status|read_output|wait|cancel). "
+            "Not for sync simple one-shot shell/echo — use terminal "
+            "(shell.run on home, project.run in IDE Companion) instead. "
             "Required: action (start|list|status|read_output|wait|cancel). "
             "start: exactly one of argv (list of strings) XOR shell (string; command alias ok); "
             "returns run_id on success (never ok without a started process). "
@@ -605,7 +682,10 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
                             "start",
                         ],
                     },
-                    "run_id": {"type": "string"},
+                    "run_id": {
+                        "type": "string",
+                        "description": "Background run id from start; required after start",
+                    },
                     "argv": {"type": "array", "items": {"type": "string"}},
                     "shell": {"type": "string"},
                     "command": {"type": "string"},
@@ -623,11 +703,19 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant(
             "shell.run",
             ExecKind.SURFACE,
-            "Run a home-surface shell command (no console window; chat Iris Shell card). "
-            "Required: command. Optional cwd under user home. Use project.run in IDE Companion.",
+            "Sync simple home-surface shell command (model name: terminal; "
+            "no console window; chat Iris Shell card). "
+            "Prefer this for short one-shot commands like echo — not process_manage. "
+            "Required: command as a plain string (Windows example: echo HELLO) — "
+            "not a Python/JSON list literal and not an unnecessary bash -lc wrapper. "
+            "Optional cwd under user home. Use project.run in IDE Companion. "
+            "For long-running or background jobs that need run_id, use process.manage.",
             _params(
                 {
-                    "command": {"type": "string"},
+                    "command": {
+                        "type": "string",
+                        "description": "Plain sync simple command string (not bash -lc list literal)",
+                    },
                     "cwd": {"type": "string"},
                     "timeout_s": {"type": "number", "minimum": 1, "maximum": 300},
                 },
@@ -778,10 +866,21 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant(
             "ide.edit",
             ExecKind.SURFACE,
-            "Edit the open IDE buffer; op and text required",
+            "Edit the open IDE buffer. Supported op only: "
+            "insert|replace_selection|replace_range|apply (not replace). "
+            "text required; optional path/range.",
             _params(
                 {
-                    "op": {"type": "string"},
+                    "op": {
+                        "type": "string",
+                        "enum": [
+                            "insert",
+                            "replace_selection",
+                            "replace_range",
+                            "apply",
+                        ],
+                        "description": "Supported ops only; bare replace is rejected",
+                    },
                     "text": {"type": "string"},
                     "path": {"type": "string"},
                     "range": {"type": "object"},

@@ -1,15 +1,26 @@
-"""Wave 1.3: trusted native binding snapshot and parent validation."""
+"""Wave 1.3: trusted native binding snapshot and parent validation.
+
+FIG-04 Wave-1: also asserts host TOOL_RESULT watch line shape (no trajectory).
+"""
 
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from iris.engine import runtime as runtime_mod
 from iris.engine.runtime import Engine
 from iris.engine.types import EngineHome, InternalSidecar
 from iris.infrastructure.speak_capability import engine_tool_bindings, engine_tool_schemas
+
+_TOOL_RESULT_RE = re.compile(
+    r"^TOOL_RESULT request_id=\S+ tool_call_id=\S+ model_tool_name=\S+ "
+    r"action=\S+ ok=(true|false) error_code=\S+(?: args=\S+)?$"
+)
 
 
 def main() -> None:
@@ -38,6 +49,7 @@ def main() -> None:
         for surface, bindings in (("home", home), ("ide_companion", ide)):
             engine = Engine(InternalSidecar(EngineHome(Path(tmp))))
             calls: list[tuple[str, dict]] = []
+            watch_lines: list[str] = []
             engine.bind_tool_handler(
                 lambda action, args: (
                     calls.append((action, dict(args))),
@@ -52,14 +64,17 @@ def main() -> None:
                         write=lambda text: writes.append(text), flush=lambda: None
                     )
                 )
-                engine._reply_to_tool_request(
-                    sink,
-                    raw,
-                    surface=surface,
-                    expected_turn_id="turn-1",
-                    expected_session_id="session-1",
-                    expected_workspace_id="workspace-1",
-                )
+                with patch.object(
+                    runtime_mod, "_watch_trace", side_effect=watch_lines.append
+                ):
+                    engine._reply_to_tool_request(
+                        sink,
+                        raw,
+                        surface=surface,
+                        expected_turn_id="turn-1",
+                        expected_session_id="session-1",
+                        expected_workspace_id="workspace-1",
+                    )
                 return json.loads("".join(writes))["result"]
 
             for index, model_name in enumerate(sorted(absorbed)):
@@ -111,6 +126,25 @@ def main() -> None:
                     result,
                 )
             assert len(calls) == before, calls
+
+            tool_results = [line for line in watch_lines if line.startswith("TOOL_RESULT ")]
+            assert tool_results, (surface, watch_lines)
+            for line in tool_results:
+                assert _TOOL_RESULT_RE.match(line), line
+            ok_line = next(
+                line for line in tool_results if f"model_tool_name={binding.model_name}" in line and " ok=true " in line
+            )
+            assert "error_code=-" in ok_line, ok_line
+            assert "args=probe:" in next(
+                line for line in tool_results if "args=probe:" in line
+            )
+            bad_line = next(line for line in tool_results if "ok=false" in line)
+            assert "error_code=tool_binding_error" in bad_line, bad_line
+
+    # Safe args summary never embeds values.
+    summary = runtime_mod._safe_args_summary({"token": "supersecrettoken", "n": 12})
+    assert summary == "n:2,token:16", summary
+    assert "supersecrettoken" not in summary
 
     print("native_tool_binding ok")
 

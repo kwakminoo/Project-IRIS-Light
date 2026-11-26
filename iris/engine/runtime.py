@@ -83,11 +83,30 @@ def _apply_ollama_options_guard_now(home: Path) -> bool:
         return False
 
 
+def _safe_args_summary(args: object) -> str:
+    """Key names + lengths only — never values (secrets stay out of watch logs)."""
+    if not isinstance(args, dict) or not args:
+        return "-"
+    bits: list[str] = []
+    for key in sorted(args, key=lambda item: str(item)):
+        val = args[key]
+        if isinstance(val, (str, bytes, list, dict, tuple, set)):
+            n = len(val)
+        elif val is None:
+            n = 0
+        else:
+            n = len(str(val))
+        bits.append(f"{key}:{n}")
+    return ",".join(bits)
+
+
 def _watch_trace(msg: str) -> None:
     # Critical landing lines stay synchronous so measure can see them before exit.
     # Non-critical miss spam stays fire-and-forget to avoid log-lock freezes.
     line = f"pid={os.getpid()} host {msg}\n"
-    critical = msg.startswith(("recv ", "read_turn_events", "run_turn started"))
+    critical = msg.startswith(
+        ("recv ", "read_turn_events", "run_turn started", "TOOL_RESULT ")
+    )
     if not critical:
 
         def _write() -> None:
@@ -643,6 +662,19 @@ class Engine:
                 }
             except Exception as exc:
                 result = {"ok": False, "error": str(exc) or type(exc).__name__}
+        tool_call_id = str(raw.get("tool_call_id") or "").strip()
+        ok = bool(result.get("ok")) if isinstance(result, dict) else False
+        error_code = ""
+        if isinstance(result, dict):
+            error_code = str(result.get("error_code") or "").strip()
+        _watch_trace(
+            f"TOOL_RESULT request_id={request_id or '-'} "
+            f"tool_call_id={tool_call_id or '-'} "
+            f"model_tool_name={model_tool_name or '-'} "
+            f"action={action or '-'} "
+            f"ok={str(ok).lower()} error_code={error_code or '-'} "
+            f"args={_safe_args_summary(args)}"
+        )
         if child.stdin is None:
             raise OSError("sidecar stdin is missing")
         child.stdin.write(

@@ -462,6 +462,72 @@ def _check_plan_change_and_identity_blocks() -> None:
     reset_approval_ledger_for_tests()
 
 
+def _check_finalized_env_reaches_child() -> None:
+    """FIG-08: approved FinalizedStartPlan.env must reach the child process.
+
+    Fails when manage(start) fingerprints plan.env but drops it at self.start
+    (env vs environment_id mix-up). timeout_s / environment_id stay raw
+    operational fields and are not on FinalizedStartPlan.
+    """
+    reset_approval_ledger_for_tests()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        rt = _fresh_rt(root)
+        marker = "IRIS_FIG08_ENV_PROBE"
+        value = "approved-env-value"
+        args = {
+            "action": "start",
+            "argv": [
+                sys.executable,
+                "-c",
+                (
+                    "import os,sys;"
+                    f"sys.exit(0 if os.environ.get({marker!r})=={value!r} else 1)"
+                ),
+            ],
+            "cwd": str(root),
+            "env": {marker: value},
+        }
+        plan = finalize_process_start_plan(args, workspace_root=str(root))
+        assert isinstance(plan, FinalizedStartPlan), plan
+        assert plan.env == ((marker, value),), plan.env
+        bare = finalize_process_start_plan(
+            {k: v for k, v in args.items() if k != "env"},
+            workspace_root=str(root),
+        )
+        assert isinstance(bare, FinalizedStartPlan), bare
+        assert plan.fingerprint() != bare.fingerprint()
+
+        # Post-grant env swap must fail consume (fingerprint covers env).
+        ctx = _grant_ctx(
+            args, session_id="sess-fig08", workspace_root=str(root)
+        )
+        swapped = dict(args)
+        swapped["env"] = {marker: "tampered"}
+        denied = rt.manage(swapped, ctx=ctx)
+        assert denied.get("ok") is False, denied
+        assert "fingerprint" in str(denied.get("error") or ""), denied
+
+        ctx2 = _grant_ctx(
+            args, session_id="sess-fig08b", workspace_root=str(root)
+        )
+        started = rt.manage(args, ctx=ctx2)
+        assert started.get("ok") is True, started
+        run_id = str((started.get("data") or {}).get("run_id") or "")
+        assert run_id, started
+        waited = rt.manage(
+            {"action": "wait", "run_id": run_id, "timeout_s": 15},
+            ctx=make_execution_context(session_id="sess-fig08b"),
+        )
+        data = waited.get("data") or {}
+        assert waited.get("ok") is True, waited
+        assert data.get("exit_code") == 0, (
+            "child must see FinalizedStartPlan.env; "
+            f"exit_code={data.get('exit_code')!r} data={data!r}"
+        )
+    reset_approval_ledger_for_tests()
+
+
 def main() -> None:
     _check_normalize_keeps_shell()
     _check_schema_no_write_stdin()
@@ -472,6 +538,7 @@ def main() -> None:
     _check_finalize_before_consume()
     _check_grant_consume_share_finalized_plan()
     _check_plan_change_and_identity_blocks()
+    _check_finalized_env_reaches_child()
     print("process_manage ok")
 
 
