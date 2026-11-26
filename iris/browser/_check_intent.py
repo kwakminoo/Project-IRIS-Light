@@ -198,11 +198,22 @@ def main() -> int:
     )
     from iris.browser.registry import parse_command
     from iris.browser.types import Actor
+    from iris.infrastructure.speak_capability import normalize_speak_invoke
 
     forged = parse_command(
         {"action": "browser.click", "ref": "g1e0", "source": "human"}
     )
     assert forged.source == Actor.AGENT
+    # Open control ignores url; Speak boundary rewrites open+url → navigate.
+    open_only = parse_command({"action": "browser.open"})
+    assert open_only.kind == "open"
+    rewritten, rewritten_args = normalize_speak_invoke(
+        "browser.open", {"url": "https://example.com"}
+    )
+    assert rewritten == "browser.navigate"
+    assert rewritten_args.get("url") == "https://example.com"
+    nav_cmd = parse_command({"action": rewritten, **rewritten_args})
+    assert nav_cmd.kind == "navigate" and nav_cmd.url == "https://example.com"
 
     from iris.browser.stale_ref import match_node_intent, plan_stale_ref_recovery
 

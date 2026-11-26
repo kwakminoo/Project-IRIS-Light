@@ -11,10 +11,12 @@ from iris.system.execution_context import (
 )
 from iris.ui.control_bindings import trusted_execution_context
 from iris.system.execution_runtime import default_runtime
-from iris.system.request_approval import (
-    default_approval_ledger,
-    fingerprint_from_manage_args,
+from iris.system.process_start_plan import (
+    FinalizeStartFailure,
+    FinalizedStartPlan,
+    finalize_process_start_plan,
 )
+from iris.system.request_approval import default_approval_ledger
 from iris.ui.chat.shell_controller import (
     bind_block,
     bind_run,
@@ -23,17 +25,6 @@ from iris.ui.chat.shell_controller import (
     new_request,
     set_status,
 )
-
-
-def _start_preview(args: dict[str, Any]) -> str:
-    argv = args.get("argv")
-    if isinstance(argv, list) and argv:
-        return " ".join(str(x) for x in argv)
-    for key in ("shell", "command"):
-        text = str(args.get(key) or "").strip()
-        if text:
-            return text
-    return "process.manage start"
 
 
 def _insert_process_shell_box(window: Any, preview: str, *, phase: str = "pending") -> str:
@@ -63,7 +54,7 @@ def _insert_process_shell_box(window: Any, preview: str, *, phase: str = "pendin
 
 
 def _approve_start_nonblocking(
-    window: Any, args: dict[str, Any]
+    window: Any, preview: str
 ) -> tuple[bool | None, str]:
     """shell.run-class gate without HUD.
 
@@ -74,7 +65,6 @@ def _approve_start_nonblocking(
     from iris.ui.chat.shell_gate import take, try_card_confirm
     from iris.ui.control_bindings import _call_on_ui
 
-    preview = _start_preview(args)
     approval = load()
     if should_auto_run(approval, preview):
         return True, _insert_process_shell_box(window, preview, phase="pending")
@@ -111,7 +101,24 @@ def register_process_actions(window: Any, reg: ActionRegistry) -> None:
 
         shell_req = None
         if action == "start":
-            approved, block_id = _approve_start_nonblocking(window, raw)
+            # Same finalized plan as Runtime.manage consume fingerprint.
+            plan = finalize_process_start_plan(
+                raw,
+                workspace_root=str(ctx.workspace_root or "").strip() or None,
+            )
+            if isinstance(plan, FinalizeStartFailure):
+                return err_result(
+                    "process.manage",
+                    plan.error,
+                    {
+                        "error_code": plan.error_code,
+                        "hint": plan.hint,
+                        **(plan.data if isinstance(plan.data, dict) else {}),
+                    },
+                )
+            assert isinstance(plan, FinalizedStartPlan)
+            preview = plan.preview()
+            approved, block_id = _approve_start_nonblocking(window, preview)
             if approved is None:
                 return err_result(
                     "process.manage",
@@ -130,7 +137,7 @@ def register_process_actions(window: Any, reg: ActionRegistry) -> None:
                     {"confirm_required": True, "risk": "high"},
                 )
             # Request-scoped ledger — never set_human_confirm(lambda True).
-            fp = fingerprint_from_manage_args(raw)
+            fp = plan.fingerprint()
             sid = ctx.effective_session_id()
             if not sid:
                 return err_result(
@@ -149,7 +156,7 @@ def register_process_actions(window: Any, reg: ActionRegistry) -> None:
                 request_id=rec.request_id,
                 session_id=sid,
                 workspace_id=str(ctx.workspace_id or ""),
-                command=_start_preview(raw),
+                command=preview,
                 block_id=block_id,
             )
             if block_id:

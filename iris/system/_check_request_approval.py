@@ -137,6 +137,17 @@ def main() -> None:
     assert "lambda _s, _a: True" not in body
     assert "rt.set_human_confirm(" not in body, "HF-04: process.manage must not mutate Runtime confirm"
     assert "tool_call_id=" in body, "FPR-03: grant must bind tool_call_id from ctx"
+    assert "finalize_process_start_plan" in body, "card grant must use finalized plan"
+    assert "plan.fingerprint()" in body, "grant fingerprint must come from finalized plan"
+    assert "fingerprint_from_manage_args" not in body, "raw manage fingerprint must not grant"
+
+    # Runtime consume order: finalize before ledger.consume
+    rt_src = Path(__file__).resolve().parent / "execution_runtime.py"
+    rt_body = rt_src.read_text(encoding="utf-8")
+    fin_at = rt_body.find("finalize_process_start_plan(")
+    consume_at = rt_body.find("default_approval_ledger().consume(")
+    assert fin_at >= 0 and consume_at >= 0, "finalize + consume must both exist"
+    assert fin_at < consume_at, "finalize must run before ledger consume"
 
     print("request_approval ok")
 

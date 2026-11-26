@@ -50,6 +50,7 @@ from iris.engine.types import (
     parse_engine_source,
 )
 from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
+from iris.system.execution_context import bind_host_tool_call_meta
 from iris.system.iris_agent_ollama_guard import (
     apply_ollama_options_guard,
     looks_like_ollama_endpoint,
@@ -630,7 +631,12 @@ class Engine:
                     f"TOOL_ROUTE request_id={request_id} model_tool_name={model_tool_name} "
                     f"action={action} owner=iris"
                 )
-                handled = self._tool_handler(action, args)
+                # Host-verified meta: separate channel from model args (never stuff into args).
+                tool_call_id = str(raw.get("tool_call_id") or "").strip()
+                with bind_host_tool_call_meta(
+                    tool_call_id=tool_call_id, request_id=request_id
+                ):
+                    handled = self._tool_handler(action, args)
                 result = handled if isinstance(handled, dict) else {
                     "ok": False,
                     "error": "native tool returned an invalid result",

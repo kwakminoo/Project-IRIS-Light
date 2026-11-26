@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from iris.infrastructure.speak_capability import (
     PHASE4_ALLOWLIST,
+    SpeakTools,
     current_speak_surface,
     default_speak_tools,
     engine_tool_name,
@@ -48,6 +49,24 @@ def main() -> None:
     assert "terminal" in _schema_names()
     assert engine_tool_name("shell.run") == "terminal"
     assert "shell.run" in _catalog_names()
+
+    # Home shell.run accepts model alias cmd → command (Final Gate measured miss).
+    class _Surf:
+        def invoke(self, action: str, args: dict):
+            return {
+                "ok": True,
+                "action": action,
+                "status": "success",
+                "result": dict(args),
+                "error": None,
+            }
+
+    home_tools = SpeakTools(PHASE4_ALLOWLIST, surface=_Surf())
+    aliased = home_tools.invoke("shell.run", {"cmd": "echo x"})
+    assert aliased.ok is True, aliased
+    assert aliased.action == "shell.run"
+    assert aliased.data.get("command") == "echo x", aliased.data
+    assert "cmd" not in aliased.data
     print("speak_surface_shell ok")
 
 

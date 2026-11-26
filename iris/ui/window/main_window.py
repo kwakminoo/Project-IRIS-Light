@@ -157,6 +157,7 @@ from iris.ui.control_bindings import (
     mark_control_ready,
     start_control_surface,
     stop_control_surface,
+    trusted_execution_context,
 )
 from iris.system.execution_context import (
     ExecutionContext,
@@ -5578,12 +5579,15 @@ class MainWindow(QMainWindow):
             if not attempts:
                 _fail("모든 모델이 할당량 제한 대기 중입니다. 잠시 후 다시 시도해 주세요.")
                 return
-            # Credentials live on shared_engine().source; ctor is model+messages only.
+            # Credentials live on shared_engine().source; session/workspace from turn freeze.
+            _ctx = trusted_execution_context(self)
             worker = IrisAgentChatWorker(
                 target.model or model,
                 messages,
                 target=target,
                 attempts=attempts,
+                session_id=_ctx.effective_session_id(),
+                workspace_id=str(_ctx.workspace_id or _ctx.workspace_root or ""),
                 parent=self,
             )
             self._start_chat_worker(worker, turn.id)

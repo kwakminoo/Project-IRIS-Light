@@ -35,10 +35,11 @@ from iris.system.execution_runtime import (
     default_runtime,
 )
 from iris.system.project_ops import result_from_runtime_record
-from iris.system.request_approval import (
-    default_approval_ledger,
-    fingerprint_from_manage_args,
+from iris.system.process_start_plan import (
+    FinalizedStartPlan,
+    finalize_process_start_plan,
 )
+from iris.system.request_approval import default_approval_ledger
 
 
 def _pid_alive(pid: int) -> bool:
@@ -57,8 +58,12 @@ def _grant_start_ctx(
     permission_scope: str = "session",
 ):
     """HF-04: manage(start) uses ledger approval_reference — not set_human_confirm."""
+    plan = finalize_process_start_plan(
+        args, workspace_root=str(workspace_root or "").strip() or None
+    )
+    assert isinstance(plan, FinalizedStartPlan), plan
     rec = default_approval_ledger().grant(
-        fingerprint=fingerprint_from_manage_args(args),
+        fingerprint=plan.fingerprint(),
         session_id=session_id,
         workspace_id=workspace_id,
     )
@@ -384,16 +389,23 @@ def _check_start_cwd_outside_denied() -> None:
                 # Forged — must be ignored; trusted ctx workspace_root wins.
                 "workspace_root": str(outside),
             }
-            ctx = _grant_start_ctx(
+            # Finalize fails before consume — no grant needed.
+            denied = rt.manage(
                 start_args,
-                session_id="sess-a",
-                workspace_root=str(root / "ws"),
+                ctx=make_execution_context(
+                    session_id="sess-a",
+                    workspace_root=str(root / "ws"),
+                ),
             )
-            denied = rt.manage(start_args, ctx=ctx)
             assert denied.get("ok") is False, denied
-            assert "cwd" in str(denied.get("error") or "").lower() or "path" in str(
-                denied.get("error") or ""
-            ).lower() or "root" in str(denied.get("error") or "").lower(), denied
+            err = str(denied.get("error") or "").lower()
+            data = denied.get("data") or {}
+            assert (
+                "cwd" in err
+                or "path" in err
+                or "root" in err
+                or data.get("error_code") == "cwd_denied"
+            ), denied
         finally:
             try:
                 outside.rmdir()

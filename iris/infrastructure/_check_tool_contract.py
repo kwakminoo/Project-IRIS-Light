@@ -31,6 +31,7 @@ from iris.infrastructure.speak_capability import (
     engine_tool_schemas,
     grants_for_surface,
     iris_tool_contract_from_grant,
+    normalize_speak_invoke,
     resolve_legacy_name,
     validate_tool_arguments,
 )
@@ -244,9 +245,12 @@ def main() -> None:
     assert surface_c.headless_supported is False
 
     # SpeakTools.invoke validates declared schemas (bare → EMPTY)
+    seen: list[tuple[str, dict]] = []
+
     class _Surf:
         def invoke(self, action: str, args: dict) -> dict | None:
             time.sleep(0.001)
+            seen.append((action, dict(args)))
             if action == "project.run":
                 return {
                     "ok": True,
@@ -294,6 +298,39 @@ def main() -> None:
     assert run_ok.call_id == "ctl-1"
     assert run_ok.duration_ms is not None and run_ok.duration_ms >= 0
     assert run_ok.tool_name == "terminal"
+
+    # Model alias: cmd/shell → command before validate (Final Gate shell.run miss).
+    cmd_n, cmd_args = normalize_speak_invoke("shell.run", {"cmd": "echo x"})
+    assert cmd_n == "shell.run"
+    assert cmd_args == {"command": "echo x"}
+    shell_n, shell_args = normalize_speak_invoke("shell.run", {"shell": "echo y"})
+    assert shell_n == "shell.run" and shell_args == {"command": "echo y"}
+    keep_n, keep_args = normalize_speak_invoke(
+        "shell.run", {"command": "keep", "cmd": "drop"}
+    )
+    assert keep_n == "shell.run" and keep_args == {"command": "keep"}
+    seen.clear()
+    cmd_ok = tools.invoke("shell.run", {"cmd": "echo x"})
+    assert cmd_ok.ok is True, cmd_ok
+    assert cmd_ok.error_code is None
+    assert seen and seen[-1][0] == "shell.run"
+    assert seen[-1][1] == {"command": "echo x"}
+    assert "cmd" not in seen[-1][1]
+
+    # Model alias: browser.open+url → browser.navigate (open grant has empty schema).
+    open_n, open_args = normalize_speak_invoke(
+        "browser.open", {"url": "https://example.com"}
+    )
+    assert open_n == "browser.navigate"
+    assert open_args.get("url") == "https://example.com"
+    bare_open_n, bare_open_args = normalize_speak_invoke("browser.open", {})
+    assert bare_open_n == "browser.open" and bare_open_args == {}
+    seen.clear()
+    nav_ok = tools.invoke("browser.open", {"url": "https://example.com"})
+    assert nav_ok.ok is True, nav_ok
+    assert nav_ok.action == "browser.navigate"
+    assert seen and seen[-1][0] == "browser.navigate"
+    assert seen[-1][1].get("url") == "https://example.com"
 
     home_chars = _schema_chars("home")
     ide_chars = _schema_chars("ide_companion")

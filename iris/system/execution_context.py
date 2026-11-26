@@ -6,8 +6,10 @@ be the authority for session ACL, ownership, or workspace_root path policy.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, fields
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 # Keys that invite forgery when accepted from Speak / tool args.
 TRUST_FIELD_KEYS = frozenset(
@@ -26,6 +28,11 @@ TRUST_FIELD_KEYS = frozenset(
         "approval_reference",
         "surface",
     }
+)
+
+# Host-validated per-call meta (separate channel from model args).
+_HOST_TOOL_CALL_META: ContextVar[tuple[str, str] | None] = ContextVar(
+    "iris_host_tool_call_meta", default=None
 )
 
 # Telemetry labels on ProcessRecord.owner — never ACL secrets / privilege tokens.
@@ -107,6 +114,48 @@ def strip_trust_fields(args: Mapping[str, Any] | None) -> dict[str, Any]:
     for key in TRUST_FIELD_KEYS:
         raw.pop(key, None)
     return raw
+
+
+@contextmanager
+def bind_host_tool_call_meta(
+    *, tool_call_id: str = "", request_id: str = ""
+) -> Iterator[None]:
+    """Scope Host-verified tool_call_id/request_id for one Control invoke."""
+    tid = str(tool_call_id or "").strip()
+    rid = str(request_id or "").strip()
+    token = _HOST_TOOL_CALL_META.set((tid, rid) if (tid or rid) else None)
+    try:
+        yield
+    finally:
+        _HOST_TOOL_CALL_META.reset(token)
+
+
+def host_tool_call_meta() -> tuple[str, str]:
+    """Return (tool_call_id, request_id) bound by Host for this call, else empty."""
+    meta = _HOST_TOOL_CALL_META.get()
+    if not meta:
+        return "", ""
+    return str(meta[0] or ""), str(meta[1] or "")
+
+
+def with_host_tool_call_meta(ctx: ExecutionContext) -> ExecutionContext:
+    """Overlay Host-verified call ids onto a trusted ctx (never from model args)."""
+    tid, rid = host_tool_call_meta()
+    if not tid and not rid:
+        return ctx
+    return make_execution_context(
+        session_id=ctx.session_id,
+        conversation_id=ctx.conversation_id,
+        turn_id=ctx.turn_id,
+        tool_call_id=tid or ctx.tool_call_id,
+        request_id=rid or ctx.request_id,
+        workspace_id=ctx.workspace_id,
+        workspace_root=ctx.workspace_root,
+        surface=ctx.surface,
+        principal=ctx.principal,
+        permission_scope=ctx.permission_scope,
+        approval_reference=ctx.approval_reference,
+    )
 
 
 def active_turn_id(window: Any) -> str:

@@ -320,6 +320,39 @@ def resolve_legacy_name(name: str) -> str:
     return _LEGACY_TO_ACTION.get(key, key)
 
 
+# Model often sends cmd/shell; SpeakGrant requires command (Final Gate measured).
+_COMMAND_ALIAS_ACTIONS = frozenset({"shell.run", "project.run"})
+_COMMAND_ALIAS_KEYS = ("cmd", "shell")
+
+
+def normalize_speak_invoke(
+    action: str, args: Mapping[str, Any] | None
+) -> tuple[str, dict[str, Any]]:
+    """Coerce model arg aliases at the Speak/grant boundary (before validate).
+
+    - shell.run / project.run: cmd|shell → command (canonical wins); drop alias keys
+    - browser.open + url → browser.navigate (open grant/handler has no url field)
+    """
+    key = (action or "").strip()
+    payload = dict(args or {})
+    if key in _COMMAND_ALIAS_ACTIONS:
+        if not str(payload.get("command") or "").strip():
+            for alias in _COMMAND_ALIAS_KEYS:
+                raw = payload.get(alias)
+                if raw is not None and str(raw).strip():
+                    payload["command"] = str(raw)
+                    break
+        for alias in _COMMAND_ALIAS_KEYS:
+            payload.pop(alias, None)
+        return key, payload
+    if key == "browser.open":
+        url = str(payload.get("url") or "").strip()
+        if url:
+            # Open control cannot navigate (_parse_open → Open with no url).
+            return "browser.navigate", payload
+    return key, payload
+
+
 def aliases_for_action(action: str) -> frozenset[str]:
     """Legacy iris.* seed ids + absorbed model name for one Control action."""
     key = (action or "").strip()
@@ -1791,7 +1824,7 @@ class SpeakTools:
 
     def invoke(self, action: str, args: dict[str, Any] | None = None) -> ToolResult:
         key = resolve_legacy_name((action or "").strip())
-        payload = dict(args or {})
+        key, payload = normalize_speak_invoke(key, args)
         grant = self._allowlist.grant(key)
         if grant is None:
             return ToolResult(

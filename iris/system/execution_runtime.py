@@ -29,7 +29,11 @@ from iris.system.execution_context import (
 from iris.system.execution_policy import (
     WAIT_MAX_TIMEOUT_S,
     cap_wait_timeout,
-    check_process_start_cwd,
+)
+from iris.system.process_start_plan import (
+    FinalizeStartFailure,
+    finalize_process_start_plan,
+    normalize_process_start_args,
 )
 from iris.system.run_env import build_child_env
 from iris.system.win_subprocess import no_window_kwargs
@@ -59,34 +63,6 @@ _START_XOR_HINT = (
     "Provide exactly one of argv (list of strings) or shell (string; command alias ok)"
 )
 _RUN_ID_HINT = "Pass run_id from a successful start (status|read_output|wait|cancel)"
-
-
-def normalize_process_start_args(
-    raw: Mapping[str, Any],
-) -> tuple[list[str] | None, str | None]:
-    """Boundary parse for process.manage start.
-
-    - list argv kept as argv
-    - non-list argv string → shell only when shell/command absent (never drop shell)
-    - other argv types ignored
-    - shell/command alias: first non-empty wins
-    Caller still enforces XOR before ExecutionRuntime.start.
-    """
-    shell_raw = raw.get("shell")
-    if shell_raw is None or not str(shell_raw).strip():
-        shell_raw = raw.get("command")
-    shell: str | None = str(shell_raw).strip() if shell_raw is not None and str(shell_raw).strip() else None
-
-    argv_raw = raw.get("argv")
-    argv: list[str] | None = None
-    if isinstance(argv_raw, list):
-        if argv_raw:
-            argv = [str(x) for x in argv_raw]
-    elif isinstance(argv_raw, str) and argv_raw.strip():
-        # Invalid type for argv — do not discard a valid shell; else treat as shell.
-        if shell is None:
-            shell = argv_raw.strip()
-    return argv, shell
 
 
 def _manage_err(
@@ -647,16 +623,31 @@ class ProcessRegistry:
                 runs = [r.as_dict() for r in self.list_runs(session_id=sid)]
                 return {"ok": True, "action": "process.manage", "data": {"runs": runs}}
             if action == "start":
+                # Finalize plan BEFORE ledger consume so card grant and consume
+                # share one fingerprint (cwd resolved, argv bound XOR shell).
+                from iris.system.request_approval import default_approval_ledger
+
+                ws_root = ""
+                if ctx is not None and str(ctx.workspace_root or "").strip():
+                    ws_root = str(ctx.workspace_root).strip()
+                plan = finalize_process_start_plan(
+                    raw, workspace_root=ws_root if ws_root else None
+                )
+                if isinstance(plan, FinalizeStartFailure):
+                    return _manage_err(
+                        plan.error,
+                        error_code=plan.error_code,
+                        hint=plan.hint,
+                        data=plan.data,
+                    )
+
                 # HF-04: manage(start) consumes RequestApprovalLedger only.
                 # Product process.manage must not call set_human_confirm.
-                from iris.system.request_approval import (
-                    default_approval_ledger,
-                    fingerprint_from_manage_args,
-                )
-
                 approval_ref = ""
                 if ctx is not None:
-                    approval_ref = str(getattr(ctx, "approval_reference", "") or "").strip()
+                    approval_ref = str(
+                        getattr(ctx, "approval_reference", "") or ""
+                    ).strip()
                 if not approval_ref:
                     return {
                         "ok": False,
@@ -666,7 +657,7 @@ class ProcessRegistry:
                     }
                 ok_c, reason_c = default_approval_ledger().consume(
                     request_id=approval_ref,
-                    fingerprint=fingerprint_from_manage_args(raw),
+                    fingerprint=plan.fingerprint(),
                     session_id=ctx.effective_session_id() if ctx is not None else "",
                     workspace_id=str(getattr(ctx, "workspace_id", "") or ""),
                     tool_call_id=str(getattr(ctx, "tool_call_id", "") or ""),
@@ -678,46 +669,6 @@ class ProcessRegistry:
                         "error": reason_c or "human confirm required",
                         "data": {"confirm_required": True, "risk": "high"},
                     }
-                ws_root = ""
-                if ctx is not None and str(ctx.workspace_root or "").strip():
-                    ws_root = str(ctx.workspace_root).strip()
-                cwd_decision = check_process_start_cwd(
-                    raw.get("cwd"),
-                    workspace_root=ws_root if ws_root else None,
-                )
-                if not cwd_decision.allowed:
-                    return {
-                        "ok": False,
-                        "action": "process.manage",
-                        "error": cwd_decision.reason or "cwd denied",
-                        "data": {},
-                    }
-                cwd_raw = raw.get("cwd")
-                if not str(cwd_raw or "").strip():
-                    if ws_root:
-                        cwd_raw = str(Path(ws_root).expanduser().resolve())
-                    else:
-                        cwd_raw = str(Path.home().resolve())
-                bound_argv, shell = normalize_process_start_args(raw)
-                has_argv = bool(bound_argv)
-                has_shell = bool(shell)
-                if has_argv == has_shell:
-                    return _manage_err(
-                        "start requires exactly one of argv or shell",
-                        error_code="start_xor_required",
-                        hint=_START_XOR_HINT,
-                        data={"argv_present": has_argv, "shell_present": has_shell},
-                    )
-                # Bare python/py or leading .py → WorkspaceEnvironmentResolver (no create).
-                # Shell strings stay as-is; ACL / env scrub below unchanged.
-                if bound_argv:
-                    from iris.system.workspace_env import bind_execution_argv
-
-                    bound_argv = bind_execution_argv(
-                        bound_argv,
-                        project_root=cwd_raw,
-                        allow_create=False,
-                    )
                 session_id = ctx.effective_session_id() if ctx is not None else ""
                 workspace_id = str(ctx.workspace_id or "") if ctx is not None else ""
                 # Telemetry owner from trusted principal/surface — never model args.
@@ -725,9 +676,9 @@ class ProcessRegistry:
                 if ctx is not None:
                     owner = str(ctx.principal or ctx.surface or "").strip()
                 run_id = self.start(
-                    argv=bound_argv if has_argv else None,
-                    shell=shell if has_shell else None,
-                    cwd=cwd_raw,
+                    argv=list(plan.argv) if plan.argv else None,
+                    shell=plan.shell,
+                    cwd=plan.cwd,
                     env_id=str(raw.get("environment_id") or raw.get("env_id") or ""),
                     timeout_s=float(raw["timeout_s"]) if raw.get("timeout_s") is not None else None,
                     session_id=session_id,

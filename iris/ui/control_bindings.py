@@ -33,6 +33,7 @@ from iris.system.execution_context import (
     execution_context_from_control,
     frozen_turn_execution_context,
     store_turn_execution_context,
+    with_host_tool_call_meta,
 )
 from iris.system.ide_launcher import ide_catalog, is_ide_installed
 from iris.system.patch_buffer_sync import IdePatchBufferSync, set_patch_buffer_sync
@@ -342,11 +343,16 @@ def freeze_turn_execution_context(window: Any, turn_id: str) -> ExecutionContext
 
 
 def trusted_execution_context(window: Any) -> ExecutionContext:
-    """Handlers: prefer turn-frozen ctx; else live capture (legacy unscoped)."""
+    """Handlers: prefer turn-frozen ctx; else live capture (legacy unscoped).
+
+    Per-call Host tool_call_id/request_id overlay when bind_host_tool_call_meta is active.
+    """
     frozen = frozen_turn_execution_context(window)
     if frozen is not None:
-        return frozen
-    return capture_execution_context(window, turn_id=active_turn_id(window))
+        return with_host_tool_call_meta(frozen)
+    return with_host_tool_call_meta(
+        capture_execution_context(window, turn_id=active_turn_id(window))
+    )
 
 
 def resolve_bound_work_root(

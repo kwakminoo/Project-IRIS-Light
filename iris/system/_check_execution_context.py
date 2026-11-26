@@ -125,10 +125,11 @@ def _check_legacy_unscoped_denies_cross_session() -> None:
     import sys
 
     with tempfile.TemporaryDirectory() as td:
-        from iris.system.request_approval import (
-            default_approval_ledger,
-            fingerprint_from_manage_args,
+        from iris.system.process_start_plan import (
+            FinalizedStartPlan,
+            finalize_process_start_plan,
         )
+        from iris.system.request_approval import default_approval_ledger
 
         rt = ExecutionRuntime(runs_root=Path(td) / "runs")
         start_args = {
@@ -136,8 +137,10 @@ def _check_legacy_unscoped_denies_cross_session() -> None:
             "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
             "cwd": str(Path.home()),
         }
+        plan = finalize_process_start_plan(start_args)
+        assert isinstance(plan, FinalizedStartPlan), plan
         rec = default_approval_ledger().grant(
-            fingerprint=fingerprint_from_manage_args(start_args),
+            fingerprint=plan.fingerprint(),
             session_id="session_a",
         )
         owner = make_execution_context(
@@ -173,9 +176,12 @@ def _check_consume_binds_final_plan() -> None:
     import tempfile
     from pathlib import Path
 
+    from iris.system.process_start_plan import (
+        FinalizedStartPlan,
+        finalize_process_start_plan,
+    )
     from iris.system.request_approval import (
         default_approval_ledger,
-        fingerprint_from_manage_args,
         reset_approval_ledger_for_tests,
     )
 
@@ -187,7 +193,9 @@ def _check_consume_binds_final_plan() -> None:
             "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
             "cwd": str(Path.home()),
         }
-        fp = fingerprint_from_manage_args(start_args)
+        plan = finalize_process_start_plan(start_args)
+        assert isinstance(plan, FinalizedStartPlan), plan
+        fp = plan.fingerprint()
         rec = default_approval_ledger().grant(
             fingerprint=fp,
             session_id="sess-fpr03",
@@ -236,6 +244,126 @@ def _check_consume_binds_final_plan() -> None:
     reset_approval_ledger_for_tests()
 
 
+def _check_host_tool_call_meta_reaches_execution_context() -> None:
+    """Host-verified tool_call_id/request_id reach ctx; model args cannot override."""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from iris.engine.runtime import Engine
+    from iris.engine.types import EngineHome, InternalSidecar
+
+    win = _FakeWindow(101, r"C:\ws\alpha")
+    win._turn_gate.begin("turn-meta")
+    freeze_turn_execution_context(win, "turn-meta")
+    frozen = frozen_turn_execution_context(win)
+    assert frozen is not None
+    assert not frozen.tool_call_id
+    assert not frozen.request_id
+
+    seen: dict[str, object] = {}
+
+    def handler(action: str, args: dict) -> dict:
+        ctx = trusted_execution_context(win)
+        seen["action"] = action
+        seen["tool_call_id"] = ctx.tool_call_id
+        seen["request_id"] = ctx.request_id
+        seen["args"] = dict(args)
+        return {"ok": True, "action": action}
+
+    with tempfile.TemporaryDirectory() as td:
+        engine = Engine(InternalSidecar(EngineHome(Path(td))))
+        engine.bind_tool_handler(handler)
+        writes: list[str] = []
+        sink = SimpleNamespace(
+            stdin=SimpleNamespace(
+                write=lambda text: writes.append(text), flush=lambda: None
+            )
+        )
+        engine._reply_to_tool_request(
+            sink,
+            {
+                "id": "req-host-1",
+                "name": "process.manage",
+                "tool_call_id": "call-host-1",
+                "args": {
+                    "action": "list",
+                    "tool_call_id": "forged-call",
+                    "request_id": "forged-req",
+                    "session_id": "forged-session",
+                },
+            },
+        )
+        reply = json.loads("".join(writes))
+        assert reply.get("result", {}).get("ok") is True, reply
+
+    assert seen.get("action") == "process.manage", seen
+    assert seen.get("tool_call_id") == "call-host-1", seen
+    assert seen.get("request_id") == "req-host-1", seen
+    args = seen.get("args")
+    assert isinstance(args, dict)
+    # Separate channel: forged trust keys may still sit in raw args here;
+    # ExecutionContext must not take them (Host meta wins).
+    assert seen.get("tool_call_id") != args.get("tool_call_id")
+    assert seen.get("request_id") != args.get("request_id")
+    # After invoke, per-call overlay must not leak into the frozen bag.
+    after = trusted_execution_context(win)
+    assert after.tool_call_id == "", after
+    assert after.request_id == "", after
+
+
+def _check_stateless_turn_carries_captured_session_workspace() -> None:
+    """GUI Worker / turn construction fills StatelessTurn from turn-start capture."""
+    import inspect
+    from pathlib import Path
+
+    from iris.engine.types import CancelToken, StatelessTurn
+    from iris.ui.workers import iris_agent_workers as workers_mod
+    from iris.ui.workers.iris_agent_workers import IrisAgentChatWorker
+
+    src = inspect.getsource(IrisAgentChatWorker._run_internal)
+    assert "session_id=" in src and "workspace_id=" in src, src
+    assert "self._session_id" in src and "self._workspace_id" in src, src
+
+    # Constructor accepts turn-start capture (not empty → random turn_id fallback alone).
+    params = inspect.signature(IrisAgentChatWorker.__init__).parameters
+    assert "session_id" in params, params
+    assert "workspace_id" in params, params
+
+    worker = IrisAgentChatWorker(
+        "probe-model",
+        [{"role": "user", "content": "hi"}],
+        session_id="101",
+        workspace_id=r"C:\ws\alpha",
+    )
+    assert worker._session_id == "101"
+    assert worker._workspace_id == r"C:\ws\alpha"
+
+    # Same shape the worker must put on the engine turn.
+    turn = StatelessTurn(
+        transcript=workers_mod.ChatTranscript.parse(
+            [{"role": "user", "content": "hi"}]
+        ),
+        model=worker._resolve_target(worker._attempts[0]),
+        cancel=CancelToken(),
+        speak_surface="home",
+        session_id=worker._session_id,
+        workspace_id=worker._workspace_id,
+    )
+    assert turn.session_id == "101"
+    assert turn.workspace_id == r"C:\ws\alpha"
+
+    # MainWindow construction site must pass captured identity into the worker.
+    mw_src = Path(__file__).resolve().parents[1] / "ui" / "window" / "main_window.py"
+    text = mw_src.read_text(encoding="utf-8")
+    assert "IrisAgentChatWorker(" in text
+    # session_id= / workspace_id= kwargs near the worker construction.
+    idx = text.index("IrisAgentChatWorker(")
+    chunk = text[idx : idx + 500]
+    assert "session_id=" in chunk, chunk
+    assert "workspace_id=" in chunk, chunk
+
+
 def main() -> None:
     _check_mid_turn_switch_keeps_frozen_acl_fields()
     _check_handlers_prefer_frozen_over_live()
@@ -243,6 +371,8 @@ def main() -> None:
     _check_strip_trust_fields_unchanged()
     _check_legacy_unscoped_denies_cross_session()
     _check_consume_binds_final_plan()
+    _check_host_tool_call_meta_reaches_execution_context()
+    _check_stateless_turn_carries_captured_session_workspace()
     print("execution_context ok")
 
 

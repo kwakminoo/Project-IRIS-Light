@@ -210,12 +210,16 @@ class IrisAgentChatWorker(QThread):
         *,
         target: IrisAgentInferenceTarget | None = None,
         attempts: list[ChatAttempt] | None = None,
+        session_id: str = "",
+        workspace_id: str = "",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._model = model
         self._messages = messages
         self._target = target
+        self._session_id = str(session_id or "").strip()
+        self._workspace_id = str(workspace_id or "").strip()
         self._cancel = False
         self._cancel_token = CancelToken()
         if not attempts:
@@ -339,6 +343,8 @@ class IrisAgentChatWorker(QThread):
                         model=target,
                         cancel=self._cancel_token,
                         speak_surface=current_speak_surface(),
+                        session_id=self._session_id,
+                        workspace_id=self._workspace_id,
                     )
                 except EngineError as exc:
                     last_error = exc.user_message or exc.detail
