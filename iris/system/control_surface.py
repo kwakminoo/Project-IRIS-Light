@@ -13,8 +13,13 @@ import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
-from urllib.parse import urlparse
+from typing import TYPE_CHECKING, Any, Callable, Iterator
+from urllib.parse import parse_qs, urlparse
+
+from iris.system.execution_context import host_tool_cancelled
+
+if TYPE_CHECKING:
+    from iris.system.native_gateway import NativeGateway
 
 HandlerFn = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -200,8 +205,7 @@ def err_result(
     확인된 사실: MCP _http는 이 JSON(HTTP 400)을 재시도하지 않는다.
     액션 내부 TimeoutError는 레지스트리가 status=failed로 감싼다.
     연결 실패는 이 객체가 아니다. 클라이언트가 먼저 끊기면 본문을 쓰지 않는다.
-    status=invalid는 깨진 JSON·비객체 본문이다. 액션은 실행되지 않고, 연결 실패도 아니다.
-    필드 ok/action/result/error는 기존과 같다. status는 failed|timeout|invalid이다.
+    status=invalid는 깨진 JSON·비객체 본문이다. status=cancelled는 호스트 턴 취소로 실행을 거절한 경우다.
     """
     return {"ok": False, "action": action, "status": status, "result": result or {}, "error": error}
 
@@ -336,6 +340,8 @@ class ActionRegistry:
 
     def invoke(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         args = dict(args or {})
+        if host_tool_cancelled():
+            return err_result(name, "agent turn cancelled", status="cancelled")
         spec = self._specs.get(name)
         if spec is None:
             return err_result(name, f"unknown action: {name}")
@@ -353,6 +359,8 @@ class ActionRegistry:
                 if reason == "approval_ui_unavailable":
                     deny["approval_ui_unavailable"] = True
                 return err_result(name, reason, deny)
+            if host_tool_cancelled():
+                return err_result(name, "agent turn cancelled", status="cancelled")
         handler = self._handlers[name]
         try:
             out = handler(args)
@@ -391,12 +399,15 @@ class ControlSurface:
         host: str = "127.0.0.1",
         port: int = 8765,
         token: str = "",
+        gateway: NativeGateway | None = None,
     ) -> None:
         self.registry = ActionRegistry()
         self.invoker = invoker
         self.host = host
         self.port = int(port)
-        self.token = token or resolve_control_token()
+        self.token = token
+        self.gateway = gateway
+        self._gateway_streams = threading.BoundedSemaphore(16)
         self.booting = True
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -407,6 +418,7 @@ class ControlSurface:
             raise OSError("Iris Control must bind to 127.0.0.1")
         if self._httpd is not None:
             return int(self.bound_port or self.port)
+        self.token = self.token or resolve_control_token()
 
         surface = self
 
@@ -458,8 +470,13 @@ class ControlSurface:
                         return
                     raise
 
-            def _read_json(self) -> tuple[dict[str, Any] | None, str | None]:
-                length = int(self.headers.get("Content-Length") or "0")
+            def _read_json(self, max_length: int | None = None) -> tuple[dict[str, Any] | None, str | None]:
+                try:
+                    length = int(self.headers.get("Content-Length") or "0")
+                except ValueError:
+                    return None, "invalid Content-Length"
+                if length < 0 or (max_length is not None and length > max_length):
+                    return None, "invalid request size"
                 if length <= 0:
                     return {}, None
                 try:
@@ -468,13 +485,58 @@ class ControlSurface:
                     if _is_client_gone(exc):
                         return None, "client disconnected"
                     raise
+                if len(raw) != length:
+                    return None, "incomplete request body"
                 return parse_invoke_body(raw)
+
+            def _ndjson(self, events: Iterator[dict]) -> None:
+                if not surface._gateway_streams.acquire(blocking=False):
+                    self._json(429, {"error": "event stream capacity reached"})
+                    return
+                self.close_connection = True
+                try:
+                    self.connection.settimeout(10)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+                    self.send_header("Connection", "close")
+                    self.send_header("Cache-Control", "no-store")
+                    self._cors()
+                    self.end_headers()
+                    for event in events:
+                        self.wfile.write((json.dumps(event) + "\n").encode("utf-8"))
+                        self.wfile.flush()
+                except OSError as exc:
+                    if not _is_client_gone(exc):
+                        raise
+                finally:
+                    surface._gateway_streams.release()
 
             def do_GET(self) -> None:  # noqa: N802
                 if not self._auth_ok():
                     self._json(401, err_result("auth", "unauthorized"))
                     return
-                path = urlparse(self.path).path.rstrip("/") or "/"
+                url = urlparse(self.path)
+                path = url.path.rstrip("/") or "/"
+                if surface.gateway is not None and path.startswith("/v1/agent/"):
+                    if path == "/v1/agent/health":
+                        readiness = (503, {"ready": False}) if surface.booting else surface.gateway.health()
+                        self._json(*readiness)
+                    elif path.startswith("/v1/agent/runs/") and path.endswith("/events"):
+                        try:
+                            after = int(parse_qs(url.query).get("after", ["0"])[0])
+                            if after < 0:
+                                raise ValueError
+                        except ValueError:
+                            self._json(400, {"error": "invalid event cursor"})
+                            return
+                        events = surface.gateway.events(path.split("/")[-2], after)
+                        if events is None:
+                            self._json(404, {"error": "run not found"})
+                        else:
+                            self._ndjson(events)
+                    else:
+                        self._json(*surface.gateway.get(path))
+                    return
                 if path in ("/health", "/v1/ping"):
                     self._json(
                         200,
@@ -506,6 +568,17 @@ class ControlSurface:
                     self._json(401, err_result("auth", "unauthorized"))
                     return
                 path = urlparse(self.path).path.rstrip("/") or "/"
+                if surface.gateway is not None and path.startswith("/v1/agent/"):
+                    if surface.booting:
+                        self._json(503, {"error": "Iris is still booting"})
+                        return
+                    self.connection.settimeout(10)
+                    payload, read_err = self._read_json(max_length=131072)
+                    if read_err or payload is None:
+                        self._json(400, {"error": read_err or "invalid JSON"})
+                    else:
+                        self._json(*surface.gateway.post(path, payload))
+                    return
                 payload, read_err = self._read_json()
                 if path == "/v1/invoke":
                     if read_err or payload is None:
@@ -552,19 +625,24 @@ class ControlSurface:
         if httpd is None:
             raise OSError(f"control surface bind failed on {self.host}:{self.port}+ : {last_err}")
 
+        try:
+            write_control_endpoint(host=self.host, port=bound, token=self.token)
+        except OSError:
+            httpd.server_close()
+            raise
         self._httpd = httpd
         self.bound_port = bound
-        write_control_endpoint(host=self.host, port=bound, token=self.token)
 
         def _serve() -> None:
-            assert self._httpd is not None
-            self._httpd.serve_forever(poll_interval=0.3)
+            httpd.serve_forever(poll_interval=0.3)
 
         self._thread = threading.Thread(target=_serve, name="iris-control-http", daemon=True)
         self._thread.start()
         return bound
 
     def stop(self) -> None:
+        if self.gateway is not None:
+            self.gateway.close()
         httpd = self._httpd
         self._httpd = None
         if httpd is not None:
@@ -576,7 +654,7 @@ class ControlSurface:
                 httpd.server_close()
             except Exception:
                 pass
-        clear_control_endpoint()
+            clear_control_endpoint()
         self.bound_port = None
         t = self._thread
         self._thread = None

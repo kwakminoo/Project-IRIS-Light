@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextvars import copy_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -25,13 +26,13 @@ from iris.system.control_surface import (
     UiThreadTimeout,
     err_result,
     ok_result,
-    resolve_control_token,
 )
 from iris.system.execution_context import (
     ExecutionContext,
     active_turn_id,
     execution_context_from_control,
     frozen_turn_execution_context,
+    host_execution_context,
     store_turn_execution_context,
     with_host_tool_call_meta,
 )
@@ -63,7 +64,8 @@ class _QtInvoker(QObject):
 
     def run(self, fn: Callable[[], Any], timeout: float | None = 15.0) -> Any:
         box: dict[str, Any] = {"event": threading.Event()}
-        self._call.emit(fn, box)
+        context = copy_context()
+        self._call.emit(lambda: context.run(fn), box)
         if timeout is None:
             box["event"].wait()
         elif not box["event"].wait(timeout):
@@ -347,6 +349,9 @@ def trusted_execution_context(window: Any) -> ExecutionContext:
 
     Per-call Host tool_call_id/request_id overlay when bind_host_tool_call_meta is active.
     """
+    host = host_execution_context()
+    if host is not None:
+        return host
     frozen = frozen_turn_execution_context(window)
     if frozen is not None:
         return with_host_tool_call_meta(frozen)
@@ -542,31 +547,47 @@ def _bridge_call_pumping(call: Callable[[], Any], *, timeout: float = 20.0) -> A
 
 
 def start_control_surface(window: MainWindow) -> ControlSurface | None:
-    """Control Surface 기동 + 액션 등록. 실패 시 None (앱은 계속)."""
+    """Desktop 액션을 등록하고 선택적으로 HTTP 리스너를 시작한다."""
     import os
 
     if getattr(window, "_test_mode", False):
         return None
-    if os.environ.get("IRIS_CONTROL_ENABLED", "1").strip() in ("0", "false", "False"):
-        return None
-
+    http_enabled = os.environ.get("IRIS_CONTROL_ENABLED", "1").strip().lower() not in ("0", "false")
     host = (os.environ.get("IRIS_CONTROL_HOST") or "127.0.0.1").strip() or "127.0.0.1"
     try:
         port = int((os.environ.get("IRIS_CONTROL_PORT") or "8765").strip() or "8765")
     except ValueError:
         port = 8765
-    token = resolve_control_token()
-
     qt = _QtInvoker(window)
     invoker = MainThreadInvoker()
     invoker.bind(qt.run)
-    surface = ControlSurface(invoker=invoker, host=host, port=port, token=token)
+    gateway = None
+    if http_enabled and os.environ.get("IRIS_NATIVE_GATEWAY_ENABLED") == "1":
+        from urllib.parse import urlparse
+
+        from iris.engine import shared_engine
+        from iris.engine._home import engine_python
+        from iris.infrastructure.iris_agent_client import resolve_iris_agent_inference
+        from iris.system.native_gateway import NativeGateway
+
+        def resolve_gateway_target():
+            if engine_python(shared_engine().source.home) is None:
+                raise ValueError("gateway requires an installed Owned Core")
+            target = resolve_iris_agent_inference(
+                window._settings.ollama_model, ollama_base_url=window._settings.ollama_base_url,
+            )
+            url = urlparse(target.base_url)
+            if (
+                url.scheme not in ("http", "https")
+                or url.hostname not in ("127.0.0.1", "localhost", "::1")
+                or url.username is not None
+            ):
+                raise ValueError("gateway requires a local inference endpoint")
+            return target
+
+        gateway = NativeGateway(resolve_gateway_target)
+    surface = ControlSurface(invoker=invoker, host=host, port=port, gateway=gateway)
     _register_actions(window, surface)
-    try:
-        bound = surface.start()
-    except OSError as exc:
-        window._live_activity.append_instant_line(f"Iris control: bind failed ({exc})")
-        return None
 
     # ponytail: sync는 UI 스레드에서 하지 않음 — /v1/state 프로브가 같은 스레드 invoker와
     # 데드락 나며 Windows "응답 없음"이 됨. IrisAgentHealthWorker가 백그라운드에서 동기화.
@@ -575,9 +596,13 @@ def start_control_surface(window: MainWindow) -> ControlSurface | None:
     from iris.infrastructure.speak_capability import bind_live_control_surface
 
     bind_live_control_surface(surface)
-    window._live_activity.append_instant_line(
-        f"Iris control: listening on http://{host}:{bound} (SpeakTools only)"
-    )
+    if http_enabled:
+        try:
+            bound = surface.start()
+        except OSError as exc:
+            window._live_activity.append_instant_line(f"Iris control: bind failed ({exc})")
+        else:
+            window._live_activity.append_instant_line(f"Iris control: listening on http://{host}:{bound}")
     return surface
 
 

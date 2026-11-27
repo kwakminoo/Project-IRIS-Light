@@ -480,9 +480,12 @@ class IrisIdeRuntimeManager:
         bridge_js = runtime_install_dir() / "bridge" / "standalone-bridge.js"
         src_bridge = runtime_source_dir() / "bridge" / "standalone-bridge.js"
         # Refresh installed bridge alongside the runtime without rebuilding Theia.
-        if src_bridge.is_file():
-            bridge_js.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_bridge, bridge_js)
+        try:
+            if src_bridge.is_file() and src_bridge.resolve() != bridge_js.resolve():
+                bridge_js.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_bridge, bridge_js)
+        except OSError as exc:
+            return False, f"IRIS IDE bridge sync failed: {exc}"
         if not theia_cli.is_file():
             return False, "IRIS IDE CLI missing — repair/install 필요"
         if not bridge_js.is_file():

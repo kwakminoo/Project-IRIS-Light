@@ -497,6 +497,7 @@ def _install_iris_engine_tools(
 
 _AGENT_CLS: type | None = None
 _AGENT_MISSING = False
+_GATEWAY_WORKER = False
 
 
 def _import_agent_class() -> type:
@@ -881,7 +882,7 @@ def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
         "skip_memory": True,
         "skip_background_review": True,
         "session_db": None,
-        "load_soul_identity": True,
+        "load_soul_identity": not _GATEWAY_WORKER,
         "ephemeral_system_prompt": _TOOL_RESULT_POLICY,
         "stream_delta_callback": on_delta,
         "tool_progress_callback": _on_tool,
@@ -993,9 +994,18 @@ def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
 
 
 def _handle_turn(raw: dict) -> bool:
-    global _TURN_ID
+    global _TURN_ID, _GATEWAY_WORKER
     _TURN_ID = str(raw.get("turn_id") or "")
     try:
+        if raw.get("speak_surface") == "gateway" and not _GATEWAY_WORKER:
+            # Freeze Core config and suppress profile plugins before any Agent import.
+            from agent.safe_worker_policy import _bind_safe_worker_policy
+
+            _bind_safe_worker_policy(safe_mode=True, ignore_user_config=True, config={})
+            _GATEWAY_WORKER = True
+        if _GATEWAY_WORKER and raw.get("speak_surface") != "gateway":
+            _fail("protocol", "gateway sidecar cannot run a desktop turn")
+            return True
         cls = _agent_class()
         if cls is None:
             _fail("unknown", "agent loop is not wired")

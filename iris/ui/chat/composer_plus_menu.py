@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QPointF, Qt, pyqtSignal
@@ -18,6 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from iris.infrastructure.iris_agent_credentials import iris_agent_home
+from iris.mcp.native_manager import NativeMCPManager
 
 
 def _iris_agent_root() -> Path:
@@ -62,34 +62,7 @@ def list_custom_skill_names(*, limit: int = 40) -> list[str]:
 
 
 def list_iris_agent_mcp_names(*, limit: int = 24) -> list[str]:
-    """config.yaml 의 mcp_servers 최상위 키만 (args/env 중첩 키 제외)."""
-    cfg = _iris_agent_root() / "config.yaml"
-    try:
-        if not cfg.is_file():
-            return []
-        text = cfg.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    names: list[str] = []
-    in_block = False
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        if not in_block:
-            if line.strip().startswith("mcp_servers:"):
-                in_block = True
-            continue
-        if line and not line.startswith((" ", "\t")) and not line.strip().startswith("#"):
-            break
-        # 서버명만: mcp_servers 바로 아래 들여쓰기 2칸 키 (중첩 args/env 제외)
-        m = re.match(r"^  ([^\s:#][^:]*)\s*:\s*(?:#.*)?$", line)
-        if not m:
-            continue
-        key = m.group(1).strip().strip("\"'")
-        if key and key not in names:
-            names.append(key)
-        if len(names) >= limit:
-            break
-    return names
+    return [row["name"] for row in NativeMCPManager(home=_iris_agent_root()).catalog()[:limit]]
 
 
 class _MenuRow(QPushButton):

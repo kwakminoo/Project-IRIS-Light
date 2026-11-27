@@ -108,12 +108,15 @@ class IrisIdeLaunchWorker(QThread):
     def run(self) -> None:
         from iris.system.iris_ide_runtime import shared_iris_ide_runtime
 
-        mgr = shared_iris_ide_runtime()
-        ok, err = mgr.start(self._project_root)
-        if not ok:
-            self.finished_err.emit(err)
-            return
-        self.finished_ok.emit(mgr.base_url(), mgr.workspace)
+        try:
+            mgr = shared_iris_ide_runtime()
+            ok, err = mgr.start(self._project_root)
+            if not ok:
+                self.finished_err.emit(err)
+                return
+            self.finished_ok.emit(mgr.base_url(), mgr.workspace)
+        except Exception as exc:
+            self.finished_err.emit(str(exc) or type(exc).__name__)
 
 
 class EmulatorLaunchWorker(QThread):

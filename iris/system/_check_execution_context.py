@@ -357,11 +357,10 @@ def _check_stateless_turn_carries_captured_session_workspace() -> None:
     mw_src = Path(__file__).resolve().parents[1] / "ui" / "window" / "main_window.py"
     text = mw_src.read_text(encoding="utf-8")
     assert "IrisAgentChatWorker(" in text
-    # session_id= / workspace_id= kwargs near the worker construction.
+    # The frozen snapshot supplies session and workspace together.
     idx = text.index("IrisAgentChatWorker(")
     chunk = text[idx : idx + 500]
-    assert "session_id=" in chunk, chunk
-    assert "workspace_id=" in chunk, chunk
+    assert "execution_context=replace(_ctx," in chunk, chunk
 
 
 def main() -> None:

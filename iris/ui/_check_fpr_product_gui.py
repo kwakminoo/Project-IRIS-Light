@@ -9,6 +9,8 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -193,9 +195,32 @@ def _run(root: Path, check) -> None:
             win.close()
 
 
+def _ide(win, root: Path) -> None:
+    from iris.storage.user_profile import load_user_profile, save_user_profile
+    from iris.ui import _check_local_vibe_smoke as smoke
+
+    save_user_profile(win._db, replace(load_user_profile(win._db), preferred_ide="iris_ide"))
+    _until(lambda: win._control_surface is not None and not win._control_surface.booting, timeout=16)
+
+    def approve_fixture(spec, args) -> bool:
+        dest = Path(str(args.get("project_root") or "")).resolve()
+        return (
+            dest.is_relative_to(root) and dest.name.startswith("iris-vibe-smoke-")
+            and (args.get("rel_path") or args.get("file")) == "gugudan.py"
+            and spec.name in ("project.write_file", "project.run")
+        )
+
+    win._control_surface.registry.set_human_confirm(approve_fixture)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(smoke.main, [])
+        _until(pending.done, timeout=120)
+        assert pending.result() == 0, "Product IDE smoke failed"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("scenario", choices=("browser", "process"))
+    scenarios = {"browser": _browser, "process": _process, "ide": _ide}
+    parser.add_argument("scenario", choices=scenarios)
     opts = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="iris-product-gui-", ignore_cleanup_errors=True) as work:
         root = Path(work).resolve()
@@ -211,13 +236,22 @@ def main() -> None:
             LOCALAPPDATA=work,
             PYTHON_DOTENV_DISABLED="1",
             IRIS_AGENT_ENABLED="0",
-            IRIS_CONTROL_ENABLED="1" if opts.scenario == "process" else "0",
+            IRIS_CONTROL_ENABLED="0" if opts.scenario == "browser" else "1",
             IRIS_CONTROL_HOST="127.0.0.1",
             IRIS_CONTROL_PORT="0",
             IRIS_BROWSER_PROFILE=str(root / "browser"),
         )
-        with patch.dict(os.environ, isolated, clear=True):
-            _run(root, _process if opts.scenario == "process" else _browser)
+        if opts.scenario == "ide":
+            isolated.update(TMP=work, TEMP=work)
+        with patch.dict(os.environ, isolated, clear=True), ExitStack() as stack:
+            if opts.scenario == "ide":
+                from iris.system.iris_ide_runtime import runtime_source_dir
+                from iris.ui import _check_local_vibe_smoke as smoke
+
+                stack.enter_context(patch("iris.system.iris_ide_runtime.runtime_install_dir", return_value=runtime_source_dir()))
+                stack.enter_context(patch("tempfile.tempdir", str(root)))
+                stack.enter_context(patch.object(smoke, "OUT", Path(".tmp/wave17-ide-smoke/results.json").resolve()))
+            _run(root, scenarios[opts.scenario])
 
 
 if __name__ == "__main__":

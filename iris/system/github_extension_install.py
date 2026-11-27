@@ -972,24 +972,15 @@ def _write_server(home: Path, name: str, block: dict[str, Any]) -> None:
     if _project_store(home):
         _write_project_mcp(home, name, block)
         return
-    path = home / "config.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = _read_config(home)
-    servers = data.get("mcp_servers")
-    if not isinstance(servers, dict):
-        servers = {}
+    from iris.system.iris_agent_control_sync import edit_mcp_servers
+
     safe = _safe_name(name)
-    if safe in servers and not _same_server(servers.get(safe), block):
-        raise RuntimeError("기존 설정과 달라 덮어쓰지 않습니다")
-    bak = path.with_name("config.yaml.bak-iris-ext")
-    if path.is_file() and not bak.is_file():
-        try:
-            shutil.copy2(path, bak)
-        except OSError:
-            pass
-    servers[safe] = block
-    data["mcp_servers"] = servers
-    _dump_config(path, data)
+    with edit_mcp_servers(home) as servers:
+        if safe in servers:
+            if not _same_server(servers.get(safe), block):
+                raise RuntimeError("기존 설정과 달라 덮어쓰지 않습니다")
+        else:
+            servers[safe] = block
 
 
 def _same_server(current: Any, block: dict[str, Any]) -> bool:
@@ -1022,12 +1013,6 @@ def _read_config(home: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise RuntimeError("config.yaml 형식이 올바르지 않습니다")
     return data
-
-
-def _dump_config(path: Path, data: dict[str, Any]) -> None:
-    import yaml
-
-    path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
 def _mcp_specs(snap: RepoSnapshot, secrets: dict[str, str]) -> list[McpSpec] | str:

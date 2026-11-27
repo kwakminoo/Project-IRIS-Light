@@ -11,6 +11,7 @@ from iris.infrastructure.speak_capability import (
     SpeakSurface,
     assert_engine_tools_match_allowlist,
 )
+from iris.system.execution_context import ExecutionContext
 
 
 class Role(Enum):
@@ -165,6 +166,7 @@ class StatelessTurn:
     speak_surface: SpeakSurface = "home"
     session_id: str = ""
     workspace_id: str = ""
+    execution_context: ExecutionContext | None = None
 
 
 @dataclass(frozen=True)

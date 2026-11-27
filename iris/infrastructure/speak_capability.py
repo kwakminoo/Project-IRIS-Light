@@ -1605,8 +1605,9 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
 _BOUND_SURFACE: Any | None = None
 _ENGINE_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-SpeakSurface = Literal["home", "ide_companion"]
+SpeakSurface = Literal["home", "ide_companion", "gateway"]
 HOME_ONLY_SPEAK_ACTIONS = frozenset({"shell.run"})
+GATEWAY_SPEAK_ACTIONS = frozenset({"ping"})
 _SPEAK_SURFACE: SpeakSurface = "home"
 
 
@@ -1614,6 +1615,8 @@ def normalize_speak_surface(raw: object) -> SpeakSurface:
     value = str(raw or "").strip().lower()
     if value in {"ide_companion", "companion", "ide"}:
         return "ide_companion"
+    if value == "gateway":
+        return "gateway"
     return "home"
 
 
@@ -1623,6 +1626,11 @@ def set_speak_surface(surface: SpeakSurface | str) -> None:
 
 
 def current_speak_surface() -> SpeakSurface:
+    from iris.system.execution_context import host_execution_context
+
+    context = host_execution_context()
+    if context is not None and context.surface in ("home", "ide_companion", "gateway"):
+        return normalize_speak_surface(context.surface)
     return _SPEAK_SURFACE
 
 
@@ -1632,6 +1640,8 @@ def grants_for_surface(
     surf = normalize_speak_surface(surface)
     if surf == "home":
         return allowlist.grants
+    if surf == "gateway":
+        return tuple(grant for grant in allowlist.grants if grant.action in GATEWAY_SPEAK_ACTIONS)
     return tuple(
         grant
         for grant in allowlist.grants
@@ -1961,9 +1971,9 @@ class SpeakTools:
                 data={},
                 error=f"not_allowed: {key or action}",
             )
-        if (
-            current_speak_surface() != "home"
-            and key in HOME_ONLY_SPEAK_ACTIONS
+        surface = current_speak_surface()
+        if (surface != "home" and key in HOME_ONLY_SPEAK_ACTIONS) or (
+            surface == "gateway" and key not in GATEWAY_SPEAK_ACTIONS
         ):
             return ToolResult(
                 ok=False,

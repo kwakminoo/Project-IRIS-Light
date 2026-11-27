@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, fields
-from typing import Any, Iterator, Mapping
+from dataclasses import dataclass, fields, replace
+from typing import Any, Callable, Iterator, Mapping
 
 # Keys that invite forgery when accepted from Speak / tool args.
 TRUST_FIELD_KEYS = frozenset(
@@ -27,12 +27,8 @@ TRUST_FIELD_KEYS = frozenset(
         "permission_scope",
         "approval_reference",
         "surface",
+        "schema_fingerprint",
     }
-)
-
-# Host-validated per-call meta (separate channel from model args).
-_HOST_TOOL_CALL_META: ContextVar[tuple[str, str] | None] = ContextVar(
-    "iris_host_tool_call_meta", default=None
 )
 
 # Telemetry labels on ProcessRecord.owner — never ACL secrets / privilege tokens.
@@ -54,12 +50,26 @@ class ExecutionContext:
     principal: str = ""
     permission_scope: str = "session"
     approval_reference: str = ""
+    source: str = ""
+    run_id: str = ""
+    schema_fingerprint: str = ""
 
     def effective_session_id(self) -> str:
         return str(self.session_id or self.conversation_id or "").strip()
 
     def is_admin(self) -> bool:
         return str(self.permission_scope or "").strip().lower() in ADMIN_SCOPES
+
+
+@dataclass(frozen=True)
+class _HostToolCall:
+    tool_call_id: str
+    request_id: str
+    context: ExecutionContext | None
+    cancelled: Callable[[], bool] | None
+
+
+_HOST_TOOL_CALL_META: ContextVar[_HostToolCall | None] = ContextVar("iris_host_tool_call_meta", default=None)
 
 
 def make_execution_context(**kwargs: Any) -> ExecutionContext:
@@ -118,12 +128,20 @@ def strip_trust_fields(args: Mapping[str, Any] | None) -> dict[str, Any]:
 
 @contextmanager
 def bind_host_tool_call_meta(
-    *, tool_call_id: str = "", request_id: str = ""
+    *, tool_call_id: str = "", request_id: str = "",
+    execution_context: ExecutionContext | None = None,
+    run_id: str = "", schema_fingerprint: str = "",
+    cancelled: Callable[[], bool] | None = None,
 ) -> Iterator[None]:
-    """Scope Host-verified tool_call_id/request_id for one Control invoke."""
+    """Scope one host-validated invocation across native dispatch and UI policy."""
     tid = str(tool_call_id or "").strip()
     rid = str(request_id or "").strip()
-    token = _HOST_TOOL_CALL_META.set((tid, rid) if (tid or rid) else None)
+    if execution_context is not None:
+        execution_context = replace(
+            execution_context, tool_call_id=tid, request_id=rid,
+            run_id=run_id, schema_fingerprint=schema_fingerprint,
+        )
+    token = _HOST_TOOL_CALL_META.set(_HostToolCall(tid, rid, execution_context, cancelled))
     try:
         yield
     finally:
@@ -135,7 +153,17 @@ def host_tool_call_meta() -> tuple[str, str]:
     meta = _HOST_TOOL_CALL_META.get()
     if not meta:
         return "", ""
-    return str(meta[0] or ""), str(meta[1] or "")
+    return meta.tool_call_id, meta.request_id
+
+
+def host_execution_context() -> ExecutionContext | None:
+    meta = _HOST_TOOL_CALL_META.get()
+    return meta.context if meta else None
+
+
+def host_tool_cancelled() -> bool:
+    meta = _HOST_TOOL_CALL_META.get()
+    return bool(meta is not None and meta.cancelled is not None and meta.cancelled())
 
 
 def with_host_tool_call_meta(ctx: ExecutionContext) -> ExecutionContext:
@@ -143,19 +171,7 @@ def with_host_tool_call_meta(ctx: ExecutionContext) -> ExecutionContext:
     tid, rid = host_tool_call_meta()
     if not tid and not rid:
         return ctx
-    return make_execution_context(
-        session_id=ctx.session_id,
-        conversation_id=ctx.conversation_id,
-        turn_id=ctx.turn_id,
-        tool_call_id=tid or ctx.tool_call_id,
-        request_id=rid or ctx.request_id,
-        workspace_id=ctx.workspace_id,
-        workspace_root=ctx.workspace_root,
-        surface=ctx.surface,
-        principal=ctx.principal,
-        permission_scope=ctx.permission_scope,
-        approval_reference=ctx.approval_reference,
-    )
+    return replace(ctx, tool_call_id=tid or ctx.tool_call_id, request_id=rid or ctx.request_id)
 
 
 def active_turn_id(window: Any) -> str:
@@ -186,19 +202,7 @@ def store_turn_execution_context(
     if not tid:
         raise ValueError("turn_id required to freeze ExecutionContext")
     if str(ctx.turn_id or "").strip() != tid:
-        ctx = make_execution_context(
-            session_id=ctx.session_id,
-            conversation_id=ctx.conversation_id,
-            turn_id=tid,
-            tool_call_id=ctx.tool_call_id,
-            request_id=ctx.request_id,
-            workspace_id=ctx.workspace_id,
-            workspace_root=ctx.workspace_root,
-            surface=ctx.surface,
-            principal=ctx.principal,
-            permission_scope=ctx.permission_scope,
-            approval_reference=ctx.approval_reference,
-        )
+        ctx = replace(ctx, turn_id=tid)
     meta = getattr(window, "_turn_execution_meta", None)
     if not isinstance(meta, dict):
         meta = {}

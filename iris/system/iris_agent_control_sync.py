@@ -13,11 +13,17 @@ import json
 import os
 import shutil
 import sys
+import tempfile
+from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from threading import RLock
+from typing import Any, Iterator
 
 from iris.infrastructure.agent_runtime import iris_agent_home
+
+_MCP_CONFIG_LOCK = RLock()
 
 
 SKILL_NAMES = (
@@ -452,10 +458,44 @@ def _mcp_equivalent(a: Any, b: Any) -> bool:
     return True
 
 
+@contextmanager
+def edit_mcp_servers(home: Path | None = None) -> Iterator[dict[str, Any]]:
+    """Edit the existing MCP mapping without rewriting invalid settings."""
+    import yaml
+
+    path = iris_agent_config_path(home)
+    with _MCP_CONFIG_LOCK:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        if data is None:
+            data = {}
+        if not isinstance(data, dict) or not isinstance(data.get("mcp_servers", {}), dict):
+            raise ValueError("config.yaml의 mcp_servers 설정 형식이 올바르지 않습니다")
+        servers = data.setdefault("mcp_servers", {})
+        before = deepcopy(servers)
+        yield servers
+        if servers == before:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        backup = path.with_name("config.yaml.bak-iris")
+        if path.is_file() and not backup.exists():
+            shutil.copy2(path, backup)
+        staged = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+                staged = Path(stream.name)
+                yaml.safe_dump(data, stream, sort_keys=False, allow_unicode=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            staged.replace(path)
+        finally:
+            if staged is not None:
+                staged.unlink(missing_ok=True)
+
+
 def ensure_mcp_in_config(
     repo: Path | None = None, *, home: Path | None = None
 ) -> tuple[bool, bool, str]:
-    """Upsert mobile-mcp; always scrub mcp_servers.iris-control.
+    """Register the default mobile-mcp if absent and scrub the retired iris-control entry.
 
     Returns (posture_ok, any_changed, message). posture_ok means iris-control
     is absent and SpeakTools owns the speak path.
@@ -469,63 +509,21 @@ def ensure_mcp_in_config(
             "PyYAML 패키지(모듈) 없음 — `.venv`에서 `pip install PyYAML` 후 다시 시도",
         )
 
-    repo = repo or project_root()
-    path = iris_agent_config_path(home)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    desired_mobile = desired_mobile_mcp_block()
-
-    if path.is_file():
-        raw = path.read_text(encoding="utf-8", errors="replace")
-        try:
-            data = yaml.safe_load(raw) or {}
-        except Exception as exc:  # noqa: BLE001
-            return False, False, f"config.yaml parse error: {exc}"
-        if not isinstance(data, dict):
-            data = {}
-    else:
-        data = {}
-
-    servers = data.get("mcp_servers")
-    if not isinstance(servers, dict):
-        servers = {}
-        data["mcp_servers"] = servers
-
-    current_iris = servers.get("iris-control")
-    iris_absent = current_iris is None
-    mobile_same = _mcp_equivalent(servers.get("mobile-mcp"), desired_mobile)
-    _ = repo
-    if iris_absent and mobile_same:
-        msg = "SpeakTools product path; mobile-mcp already installed"
-        if not shutil.which("npx"):
-            msg += "; warning: npx not found (Node 20+ required for mobile-mcp)"
-        return True, False, msg
-
-    bak = path.with_name("config.yaml.bak-iris")
-    if path.is_file() and not bak.is_file():
-        try:
-            shutil.copy2(path, bak)
-        except OSError:
-            pass
-
     updated: list[str] = []
-    if current_iris is not None:
-        servers.pop("iris-control", None)
-        updated.append("iris-control-removed")
-    if not mobile_same:
-        servers["mobile-mcp"] = desired_mobile
-        updated.append("mobile-mcp")
-    data["mcp_servers"] = servers
     try:
-        path.write_text(
-            yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        return False, False, f"config.yaml write failed: {exc}"
-    msg = "SpeakTools product sync: " + ", ".join(updated)
+        with edit_mcp_servers(home) as servers:
+            if "iris-control" in servers:
+                del servers["iris-control"]
+                updated.append("iris-control-removed")
+            if "mobile-mcp" not in servers:
+                servers["mobile-mcp"] = desired_mobile_mcp_block()
+                updated.append("mobile-mcp")
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        return False, False, f"config.yaml update failed: {type(exc).__name__}"
+    msg = "SpeakTools product sync: " + ", ".join(updated) if updated else "SpeakTools product path; mobile-mcp already registered"
     if not shutil.which("npx"):
         msg += "; warning: npx not found (Node 20+ required for mobile-mcp)"
-    return True, True, msg
+    return True, bool(updated), msg
 
 
 _IRIS_DISABLED_TOOLSETS = ("terminal", "browser")
@@ -887,7 +885,7 @@ def probe_mcp_server(name: str, cfg: Any) -> dict[str, Any]:
             req = urllib.request.Request(url, method="GET")
             headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {}
             for hk, hv in headers.items():
-                req.add_header(str(hk), str(hv))
+                req.add_unredirected_header(str(hk), str(hv))
             with urllib.request.urlopen(req, timeout=float(cfg.get("connect_timeout") or 5)) as resp:
                 out["ok"] = True
                 out["detail"] = f"HTTP {resp.status}"
@@ -973,10 +971,10 @@ def verify_install(repo: Path | None = None, *, home: Path | None = None) -> Syn
             "iris-control MCP still listed on SpeakTools path (sync should scrub it)"
         )
     mobile_block = servers.get("mobile-mcp") if isinstance(servers, dict) else None
-    report.mobile_mcp_installed = _mcp_equivalent(mobile_block, desired_mobile_mcp_block())
+    report.mobile_mcp_installed = isinstance(mobile_block, dict)
     if not report.mobile_mcp_installed:
         report.ok = False
-        report.errors.append("mcp mobile-mcp not present or stale")
+        report.errors.append("mcp mobile-mcp not present or invalid")
     if not shutil.which("npx"):
         report.messages.append(
             "npx not found - install Node 20+ so Iris Agent can spawn mobile-mcp"

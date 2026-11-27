@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from iris.engine.tool_surface import (
     IRIS_EAGER_MODEL_TOOLS,
     assemble_iris_model_tools,
@@ -13,19 +15,23 @@ def main() -> None:
     assert "terminal" in IRIS_EAGER_MODEL_TOOLS
     assert "search_files" not in IRIS_EAGER_MODEL_TOOLS
 
-    def schema(name: str, summary: str = "") -> dict:
+    def schema(name: str, summary: str = "", required: tuple[str, ...] = ()) -> dict:
         return {
             "type": "function",
             "function": {
                 "name": name,
                 "description": summary or name,
-                "parameters": {"type": "object", "properties": {}},
+                "parameters": {
+                    "type": "object",
+                    "properties": {key: {"type": "string"} for key in required},
+                    "required": list(required),
+                },
             },
         }
 
     tools = [
         schema("terminal", "shell"),
-        schema("search_files", "find files by name"),
+        schema("search_files", "find files by name", ("root", "query")),
         schema("write_file", "write"),
         schema("browser_navigate", "open url"),
     ]
@@ -53,6 +59,7 @@ def main() -> None:
         deferred_defs=deferred,
     )
     assert found is not None and "search_files" in found, found
+    assert json.loads(found)["tools"]["search_files"]["required"] == ["root", "query"], found
     print("tool_surface ok", f"visible={len(names)}", f"deferred={len(deferred_names)}")
 
 

@@ -19,10 +19,11 @@ import tempfile
 import threading
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from threading import Lock, Timer
 from types import SimpleNamespace
-from typing import Callable, Iterator
+from typing import TYPE_CHECKING, Callable, Iterator, Mapping
 
 from iris.engine._home import (
     _probe_imports,
@@ -50,13 +51,20 @@ from iris.engine.types import (
     parse_engine_source,
 )
 from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
-from iris.system.execution_context import bind_host_tool_call_meta
+from iris.system.execution_context import (
+    ExecutionContext,
+    bind_host_tool_call_meta,
+    strip_trust_fields,
+)
 from iris.system.iris_agent_ollama_guard import (
     apply_ollama_options_guard,
     looks_like_ollama_endpoint,
     ollama_options_guard_present,
 )
 from iris.system.win_subprocess import no_window_kwargs
+
+if TYPE_CHECKING:
+    from iris.infrastructure.speak_capability import EngineToolBinding
 
 _SIDECAR_MAIN = Path(__file__).resolve().parent / "_sidecar_main.py"
 _HELLO_TIMEOUT_SEC = 5.0
@@ -597,6 +605,9 @@ class Engine:
         expected_session_id: str = "",
         expected_workspace_id: str | None = None,
         seen_tool_calls: set[str] | None = None,
+        execution_context: ExecutionContext | None = None,
+        bindings: Mapping[str, EngineToolBinding] | None = None,
+        cancel: CancelToken | None = None,
     ) -> None:
         request_id = str(raw.get("id") or "").strip()
         tool_call_id = str(raw.get("tool_call_id") or "")
@@ -608,14 +619,16 @@ class Engine:
         if not isinstance(args, dict):
             args = {}
         binding_error = ""
+        schema_fingerprint = ""
         action = name
         model_tool_name = str(raw.get("model_tool_name") or "").strip()
-        if surface is not None:
+        if surface is not None and bindings is None:
             from iris.infrastructure.speak_capability import engine_tool_bindings
 
             bindings = {
                 row.model_name: row for row in engine_tool_bindings(str(surface))
             }
+        if bindings is not None:
             binding = bindings.get(model_tool_name)
             if binding is None:
                 binding_error = f"unknown model tool binding: {model_tool_name or '<empty>'}"
@@ -635,6 +648,7 @@ class Engine:
                 binding_error = "duplicate tool call identity"
             else:
                 action = binding.canonical_action
+                schema_fingerprint = binding.fingerprint
         if binding_error:
             result = {
                 "ok": False,
@@ -651,6 +665,8 @@ class Engine:
             }
         elif self._tool_handler is None:
             result = {"ok": False, "error": "native tool bridge is not bound"}
+        elif cancel is not None and cancel.cancelled():
+            result = {"ok": False, "error": "agent turn cancelled", "status": "cancelled"}
         else:
             try:
                 _watch_trace(
@@ -661,9 +677,13 @@ class Engine:
                 if seen_tool_calls is not None:
                     seen_tool_calls.add(tool_call_id)
                 with bind_host_tool_call_meta(
-                    tool_call_id=tool_call_id, request_id=request_id
+                    tool_call_id=tool_call_id, request_id=request_id,
+                    execution_context=execution_context,
+                    run_id=(execution_context.run_id if execution_context else "") or expected_turn_id,
+                    schema_fingerprint=schema_fingerprint,
+                    cancelled=cancel.cancelled if cancel is not None else None,
                 ):
-                    handled = self._tool_handler(action, args)
+                    handled = self._tool_handler(action, strip_trust_fields(args))
                 result = handled if isinstance(handled, dict) else {
                     "ok": False,
                     "error": "native tool returned an invalid result",
@@ -724,6 +744,7 @@ class Engine:
         turn_id: str = "",
         session_id: str = "",
         workspace_id: str = "",
+        execution_context: ExecutionContext | None = None,
     ) -> Iterator[TurnEvent]:
         # The previous turn may finish over UDP while stdout is still blocked.
         # Keep one reader per child so it cannot steal the next turn's delta.
@@ -741,11 +762,12 @@ class Engine:
         handled_tool_requests: set[str] = set()
         seen_tool_calls: set[str] = set()
         try:
-            while True:
-                if cancel.cancelled():
-                    self._stop_and_forget()
-                    yield TurnCancelled()
-                    return
+            bindings = None
+            if surface is not None:
+                from iris.infrastructure.speak_capability import engine_tool_bindings
+
+                bindings = {row.model_name: row for row in engine_tool_bindings(str(surface))}
+            while not cancel.cancelled():
                 line = ""
                 if udp_sock is not None:
                     try:
@@ -785,9 +807,7 @@ class Engine:
                             last_miss_log = now
                             _watch_trace(f"terminal_udp miss hello_pid={hello_pid}")
                         if cancel.cancelled():
-                            self._stop_and_forget()
-                            yield TurnCancelled()
-                            return
+                            break
                         if stdout_closed and child.poll() is not None:
                             self._forget_if_current(child)
                             yield TurnFailed(
@@ -801,15 +821,14 @@ class Engine:
                             )
                             return
                         continue
+                if cancel.cancelled():
+                    break
                 try:
                     raw = json.loads(line)
                 except json.JSONDecodeError:
                     _watch_trace(f"json_fail line_len={len(line)}")
                     continue
-                if (
-                    turn_id and isinstance(raw, dict) and raw.get("t") != "tool_request"
-                    and raw.get("turn_id") != turn_id
-                ):
+                if turn_id and isinstance(raw, dict) and raw.get("turn_id") != turn_id:
                     continue
                 idle_deadline = time.monotonic() + _TURN_IDLE_SEC
                 if isinstance(raw, dict) and raw.get("t") == "tool_request":
@@ -827,6 +846,9 @@ class Engine:
                             expected_session_id=session_id,
                             expected_workspace_id=workspace_id,
                             seen_tool_calls=seen_tool_calls,
+                            execution_context=execution_context,
+                            bindings=bindings,
+                            cancel=cancel,
                         )
                     except (OSError, ValueError) as exc:
                         self._forget_if_current(child)
@@ -856,6 +878,8 @@ class Engine:
                 yield event
                 if isinstance(event, (TurnFinished, TurnFailed, TurnCancelled)):
                     return
+            self._stop_and_forget()
+            yield TurnCancelled()
         finally:
             if udp_sock is not None:
                 try:
@@ -874,33 +898,30 @@ class Engine:
                 yield TurnFailed(ready.error)
                 return
             turn_id = uuid.uuid4().hex
-            session_id = turn.session_id or turn_id
-            workspace_id = turn.workspace_id
+            context = turn.execution_context
+            session_id = (context.effective_session_id() if context else turn.session_id) or turn_id
+            workspace_id = context.workspace_id if context else turn.workspace_id
+            if context is not None:
+                context = replace(
+                    context, turn_id=context.turn_id or turn_id, session_id=session_id,
+                    conversation_id=context.conversation_id or session_id,
+                    surface=turn.speak_surface,
+                )
             with self._lock:
                 if self._turn_active:
-                    yield TurnFailed(
-                        EngineError(EngineErrorCode.PROTOCOL, "engine turn already in progress")
-                    )
-                    return
+                    raise EngineError(EngineErrorCode.PROTOCOL, "engine turn already in progress")
                 child = self._child
                 if child is None or child.poll() is not None:
                     self._forget_child()
-                    yield TurnFailed(
-                        EngineError(EngineErrorCode.SPAWN_FAILED, "sidecar child is missing")
-                    )
-                    return
+                    raise EngineError(EngineErrorCode.SPAWN_FAILED, "sidecar child is missing")
                 keep_pid = int(child.pid) if child.pid else None
                 hello_pid = self._child_hello_pid
                 try:
                     udp_sock, udp_port = _bind_terminal_udp()
                 except OSError as exc:
-                    yield TurnFailed(
-                        EngineError(
-                            EngineErrorCode.SPAWN_FAILED,
-                            f"terminal udp bind failed: {exc}",
-                        )
-                    )
-                    return
+                    raise EngineError(
+                        EngineErrorCode.SPAWN_FAILED, f"terminal udp bind failed: {exc}"
+                    ) from exc
                 try:
                     self._write_turn(
                         child,
@@ -916,13 +937,9 @@ class Engine:
                     except OSError:
                         pass
                     self._forget_child()
-                    yield TurnFailed(
-                        EngineError(
-                            EngineErrorCode.SPAWN_FAILED,
-                            f"sidecar stdin closed: {exc}",
-                        )
-                    )
-                    return
+                    raise EngineError(
+                        EngineErrorCode.SPAWN_FAILED, f"sidecar stdin closed: {exc}"
+                    ) from exc
                 self._turn_active = True
                 _watch_trace(
                     f"run_turn started popen_pid={keep_pid} hello_pid={hello_pid} "
@@ -939,10 +956,13 @@ class Engine:
                     turn_id=turn_id,
                     session_id=session_id,
                     workspace_id=workspace_id,
+                    execution_context=context,
                 )
             finally:
                 with self._lock:
                     self._turn_active = False
+        except EngineError as exc:
+            yield TurnFailed(exc)
         except Exception as exc:
             yield TurnFailed(EngineError(EngineErrorCode.UNKNOWN, str(exc)))
 

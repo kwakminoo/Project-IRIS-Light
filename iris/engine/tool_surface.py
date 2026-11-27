@@ -267,14 +267,15 @@ def dispatch_iris_bridge(
         for query in queries or []:
             matches = _search_deferred(deferred_defs, query, limit=limit)
             for match in matches:
-                row = by_name.get(match)
+                row = by_name[match]
+                parameters = row["function"].get("parameters") or {}
                 tools_map.setdefault(
                     match,
                     {
                         "source": "iris",
                         "source_name": "iris",
-                        "description": (_tool_description(row) if row else "")[:500],
-                        "required": [],
+                        "description": _tool_description(row)[:500],
+                        "required": parameters.get("required", []),
                     },
                 )
             results.append({"query": query, "matches": matches})

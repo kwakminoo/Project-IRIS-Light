@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from weakref import WeakSet
 import json
@@ -5561,8 +5561,7 @@ class MainWindow(QMainWindow):
                 messages,
                 target=target,
                 attempts=attempts,
-                session_id=_ctx.effective_session_id(),
-                workspace_id=str(_ctx.workspace_id or _ctx.workspace_root or ""),
+                execution_context=replace(_ctx, source="desktop", principal="iris.desktop"),
                 parent=self,
             )
             self._start_chat_worker(worker, turn.id)

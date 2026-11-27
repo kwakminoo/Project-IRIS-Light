@@ -38,6 +38,7 @@ from iris.infrastructure.iris_agent_client import (
     resolve_iris_agent_inference,
 )
 from iris.infrastructure.speak_capability import current_speak_surface
+from iris.system.execution_context import ExecutionContext
 from iris.system.iris_agent_control_sync import sync_iris_control
 
 from iris.infrastructure.agent_runtime import (
@@ -212,6 +213,7 @@ class IrisAgentChatWorker(QThread):
         attempts: list[ChatAttempt] | None = None,
         session_id: str = "",
         workspace_id: str = "",
+        execution_context: ExecutionContext | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -220,6 +222,8 @@ class IrisAgentChatWorker(QThread):
         self._target = target
         self._session_id = str(session_id or "").strip()
         self._workspace_id = str(workspace_id or "").strip()
+        self._execution_context = execution_context
+        self._speak_surface = current_speak_surface()
         self._cancel = False
         self._cancel_token = CancelToken()
         if not attempts:
@@ -342,9 +346,10 @@ class IrisAgentChatWorker(QThread):
                         transcript=ChatTranscript.parse(attempt.messages),
                         model=target,
                         cancel=self._cancel_token,
-                        speak_surface=current_speak_surface(),
+                        speak_surface=self._speak_surface,
                         session_id=self._session_id,
                         workspace_id=self._workspace_id,
+                        execution_context=self._execution_context,
                     )
                 except EngineError as exc:
                     last_error = exc.user_message or exc.detail

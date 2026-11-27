@@ -17,7 +17,7 @@ from iris.system.node_runtime import is_node_ready
 from iris.system.setup_protocol import OPTIONAL_IDS
 
 
-def check_bridge_recovery() -> None:
+def check_bridge_recovery(*, in_source: bool = False) -> None:
     from iris.system import iris_ide_runtime as runtime
 
     with TemporaryDirectory() as temp:
@@ -31,7 +31,7 @@ def check_bridge_recovery() -> None:
         with (
             patch.object(runtime, "iris_state_dir", return_value=root),
             patch.object(runtime, "runtime_install_dir", return_value=root),
-            patch.object(runtime, "runtime_source_dir", return_value=root / "unused"),
+            patch.object(runtime, "runtime_source_dir", return_value=root if in_source else root / "unused"),
             patch.object(runtime, "_free_port", side_effect=range(8000, 8004)),
             patch.object(runtime.subprocess, "Popen", side_effect=processes) as launch,
             patch.object(runtime.subprocess, "run"),
@@ -52,8 +52,23 @@ def check_bridge_recovery() -> None:
             assert not runtime.runtime_state_path().exists()
 
 
+def check_launch_failure_signal() -> None:
+    from iris.ui.workers.boot_checks_worker import IrisIdeLaunchWorker
+
+    worker = IrisIdeLaunchWorker()
+    errors = []
+    worker.finished_err.connect(errors.append)
+    manager = Mock()
+    manager.start.side_effect = PermissionError("bridge locked")
+    with patch("iris.system.iris_ide_runtime.shared_iris_ide_runtime", return_value=manager):
+        worker.run()
+    assert len(errors) == 1 and "bridge locked" in errors[0], errors
+
+
 def main() -> None:
+    check_launch_failure_signal()
     check_bridge_recovery()
+    check_bridge_recovery(in_source=True)
     assert "iris_ide" in OPTIONAL_IDS
     assert runtime_source_dir().joinpath("package.json").is_file()
     mgr = IrisIdeRuntimeManager()

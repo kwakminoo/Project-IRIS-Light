@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from iris.infrastructure.iris_agent_credentials import iris_agent_home
+from iris.mcp.native_manager import NativeMCPManager
 from iris.ui.settings.hud_dialog import (
     configure_hud_dialog,
     make_hint,
@@ -95,43 +96,16 @@ def list_iris_agent_skills(*, limit: int = 80) -> list[tuple[str, str, Path]]:
 
 def list_iris_agent_mcps(*, limit: int = 40) -> list[tuple[str, str]]:
     """(name, description)."""
-    cfg = iris_agent_root() / "config.yaml"
-    if not cfg.is_file():
-        return []
-    try:
-        import yaml
-
-        data = yaml.safe_load(cfg.read_text(encoding="utf-8", errors="replace")) or {}
-        servers = data.get("mcp_servers") if isinstance(data, dict) else None
-        if not isinstance(servers, dict):
-            return []
-        out: list[tuple[str, str]] = []
-        for name, block in servers.items():
-            key = str(name).strip()
-            if not key:
-                continue
-            if key in _KNOWN_MCP_DESC:
-                desc = _KNOWN_MCP_DESC[key]
-            elif isinstance(block, dict):
-                cmd = str(block.get("command") or "").strip()
-                args = block.get("args") if isinstance(block.get("args"), list) else []
-                arg_s = " ".join(str(a) for a in args[:4])
-                if len(args) > 4:
-                    arg_s += " …"
-                desc = f"{cmd} {arg_s}".strip() or "(설정됨)"
-            else:
-                desc = "(설정됨)"
-            if len(desc) > 160:
-                desc = desc[:157] + "…"
-            out.append((key, desc))
-            if len(out) >= limit:
-                break
-        return out
-    except Exception:
-        # fallback: keys only
-        from iris.ui.chat.composer_plus_menu import list_iris_agent_mcp_names
-
-        return [(n, _KNOWN_MCP_DESC.get(n, "(config.yaml)")) for n in list_iris_agent_mcp_names(limit=limit)]
+    labels = {
+        "disabled": "비활성",
+        "invalid_config": "설정 형식 오류",
+        "unsupported_transport": "지원하지 않는 전송 방식",
+        "unsupported_auth": "지원하지 않는 인증 방식",
+    }
+    return [
+        (row["name"], labels.get(row["status"]) or _KNOWN_MCP_DESC.get(row["name"], row["transport"]))
+        for row in NativeMCPManager(home=iris_agent_root()).catalog()[:limit]
+    ]
 
 
 def _sync_wiki_catalog() -> None:
@@ -171,34 +145,13 @@ def add_mcp_server(name: str, command: str, args_text: str) -> None:
     cmd = (command or "").strip()
     if not cmd:
         raise ValueError("command가 비어 있습니다")
-    try:
-        import yaml
-    except ImportError as exc:
-        raise RuntimeError("PyYAML 필요") from exc
-    path = iris_agent_root() / "config.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_file():
-        data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
-        if not isinstance(data, dict):
-            data = {}
-    else:
-        data = {}
-    servers = data.get("mcp_servers")
-    if not isinstance(servers, dict):
-        servers = {}
-    args = [a for a in args_text.split() if a]
-    servers[safe] = {
+    NativeMCPManager(home=iris_agent_root()).register(safe, {
         "command": cmd,
-        "args": args,
+        "args": args_text.split(),
         "enabled": True,
         "timeout": 120,
         "connect_timeout": 60,
-    }
-    data["mcp_servers"] = servers
-    path.write_text(
-        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    })
 
 
 def _card_qss() -> str:
@@ -491,7 +444,7 @@ class McpDialog(QDialog):
         QMessageBox.information(
             self,
             "MCP 추가",
-            "config.yaml에 저장했습니다.\nIris Agent gateway 재연결을 권장합니다.",
+            "MCP 서버 설정을 저장했습니다.",
         )
 
 

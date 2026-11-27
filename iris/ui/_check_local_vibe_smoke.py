@@ -50,10 +50,10 @@ def invoke(action: str, args: dict | None = None, *, timeout: float = 180.0) -> 
         return {"http": 0, "ok": False, "error": str(exc)}
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ide", choices=("iris_ide", "cursor"), default="iris_ide")
-    expected_ide = parser.parse_args().ide
+    expected_ide = parser.parse_args(argv).ide
     root = Path(tempfile.mkdtemp(prefix="iris-vibe-smoke-")).resolve()
     code = "\n".join(
         [
