@@ -184,6 +184,15 @@ class SidecarTurnPipeTests(TestCase):
 
 
 class EngineTurnPipeTests(TestCase):
+    def test_terminal_udp_cannot_block_dispatch_behind_streamed_events(self) -> None:
+        from iris.engine.runtime import _bind_terminal_udp
+
+        sock, _ = _bind_terminal_udp()
+        with sock:
+            self.assertEqual(sock.gettimeout(), 0)
+            with self.assertRaises(BlockingIOError):
+                sock.recv(65536)
+
     def setUp(self) -> None:
         self._tmp = TemporaryDirectory()
         self.home = EngineHome(Path(self._tmp.name))

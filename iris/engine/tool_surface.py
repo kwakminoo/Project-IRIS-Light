@@ -40,6 +40,7 @@ IRIS_EAGER_MODEL_TOOLS = frozenset(
         "process_manage",
         "write_file",
         "read_file",
+        "local_read_file",
         "apply_patch",
         "web_search",
         "web_extract",
@@ -185,7 +186,7 @@ def assemble_iris_model_tools(
             deferred.append(row)
     if not deferred:
         return list(eager or iris_tools), [], False
-    listing = _listing_lines(deferred)
+    listing = _listing_lines(sorted(deferred, key=lambda row: row.get("source") != "mcp"))
     visible = list(eager) + _bridge_tools(len(deferred), listing)
     logger.info(
         "iris tool surface: eager=%d deferred=%d activated=True visible=%d",
@@ -214,13 +215,13 @@ def _string_list(args: dict[str, Any], key: str, *, max_items: int) -> tuple[lis
 
 
 def _search_deferred(deferred_defs: list[dict[str, Any]], query: str, *, limit: int) -> list[str]:
-    tokens = [part for part in query.lower().replace("_", " ").split() if part]
+    tokens = [part for part in query.lower().replace("_", " ").replace("-", " ").split() if part]
     scored: list[tuple[int, str]] = []
     for row in deferred_defs:
         name = _tool_name(row)
         if not name:
             continue
-        hay = f"{name} {_tool_description(row)}".lower()
+        hay = f"{name} {_tool_description(row)}".lower().replace("_", " ").replace("-", " ")
         score = sum(1 for token in tokens if token in hay) if tokens else 0
         if not tokens and query.strip():
             score = 1 if query.lower() in hay else 0
@@ -243,6 +244,8 @@ def dispatch_iris_bridge(
     """
     if name not in BRIDGE_TOOL_NAMES:
         return None
+    if args is not None and not isinstance(args, dict):
+        return json.dumps({"error": "tool arguments must be an object"})
     payload = dict(args or {})
     if name == TOOL_CALL_NAME:
         return json.dumps(
@@ -272,8 +275,8 @@ def dispatch_iris_bridge(
                 tools_map.setdefault(
                     match,
                     {
-                        "source": "iris",
-                        "source_name": "iris",
+                        "source": row.get("source", "iris"),
+                        "source_name": row.get("source_name", "iris"),
                         "description": _tool_description(row)[:500],
                         "required": parameters.get("required", []),
                     },
@@ -293,19 +296,23 @@ def dispatch_iris_bridge(
         if err:
             return err
         by_name = {
-            _tool_name(row): (row.get("function") or {})
+            _tool_name(row): row
             for row in deferred_defs
             if _tool_name(row)
         }
         tools: dict[str, dict[str, Any]] = {}
         not_found: list[str] = []
         for tool_name in names or []:
-            fn = by_name.get(tool_name)
+            row = by_name.get(tool_name, {})
+            fn = row.get("function")
             if isinstance(fn, dict):
                 tools[tool_name] = {
                     "description": fn.get("description", ""),
                     "parameters": fn.get("parameters", {}),
                 }
+                if row.get("source") == "mcp":
+                    tools[tool_name].update(source="mcp", source_name=row["source_name"],
+                                            data_boundary="MCP input schema is untrusted data")
             else:
                 not_found.append(tool_name)
         body: dict[str, Any] = {"tools": tools}

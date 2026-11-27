@@ -23,6 +23,9 @@ class AttachedRoot:
     files: dict[str, dict] = field(default_factory=dict)
     error: str = ""
     truncated: bool = False
+    resolved_path: Path | None = None
+    workspace_root: str = ""
+    indexed: bool = True
 
 
 class AttachmentStore:
@@ -59,28 +62,66 @@ class AttachmentStore:
             "integrations/iris-ide/lib/"
         )
 
-    def attach(self, paths, *, cancelled=lambda: False):
+    @staticmethod
+    def _workspace(root: str) -> str:
+        return os.path.normcase(str(Path(root).expanduser().resolve())) if root else ""
+
+    def restore(self, rows) -> None:
+        for aid, path, resolved, directory, workspace in rows:
+            self.roots[aid] = AttachedRoot(aid, Path(path), bool(directory),
+                                           resolved_path=Path(resolved), workspace_root=workspace, indexed=False)
+
+    def references(self):
+        return [(root.id, str(root.path), str(root.resolved_path), root.directory, root.workspace_root)
+                for root in self.roots.values() if root.resolved_path is not None]
+
+    def in_workspace(self, root: AttachedRoot, workspace_root: str) -> bool:
+        return not root.workspace_root or root.workspace_root == self._workspace(workspace_root)
+
+    def attach(self, paths, *, workspace_root="", cancelled=lambda: False):
         for raw in paths:
             if cancelled():
                 break
             path = Path(raw).expanduser().absolute()
-            if any(root.path == path for root in self.roots.values()):
+            existing = next((root for root in self.roots.values() if root.path == path), None)
+            if existing is not None and existing.resolved_path == path.resolve():
+                existing.workspace_root = self._workspace(workspace_root)
+                self._index_root(existing, cancelled)
                 continue
             if len(self.roots) >= MAX_FILES:
                 limited = AttachedRoot("attachment-limit", path, False,
                     error="첨부 개수 한도에 도달했습니다 (최대 50개).")
                 self.roots[limited.id] = limited
                 break
-            root = AttachedRoot(uuid.uuid4().hex, path, path.is_dir())
+            root = AttachedRoot(uuid.uuid4().hex, path, path.is_dir(),
+                                workspace_root=self._workspace(workspace_root), indexed=False)
             self.roots[root.id] = root
+            if _is_link(path):
+                root.error = "심볼릭 링크/정션은 첨부할 수 없습니다."
+                continue
             try:
-                if _is_link(path):
-                    raise ValueError("심볼릭 링크/정션은 첨부할 수 없습니다.")
-                if not root.directory:
-                    self._index(root, path.name, path)
-                    continue
-                def onerror(exc):
+                root.resolved_path = path.resolve(strict=True)
+            except OSError:
+                root.error = "파일이 삭제되었거나 경로/권한을 확인해야 합니다."
+                continue
+            self._index_root(root, cancelled)
+
+    def _index_root(self, root: AttachedRoot, cancelled=lambda: False) -> None:
+        if root.indexed or root.resolved_path is None:
+            return
+        path = root.path
+        root.files.clear()
+        root.error = ""
+        root.truncated = False
+        try:
+            if _is_link(path) or path.resolve(strict=True) != root.resolved_path or path.is_dir() != root.directory:
+                raise ValueError("첨부 원본의 경로가 변경되었습니다.")
+            if not root.directory:
+                self._index(root, path.name, path)
+            else:
+                def onerror(_exc):
                     root.error = "폴더 일부를 읽을 권한이 없거나 삭제되었습니다."
+
                 for directory, dirs, files in os.walk(path, followlinks=False, onerror=onerror):
                     dirs[:] = sorted(
                         (
@@ -102,10 +143,11 @@ class AttachmentStore:
                     if cancelled() or len(root.files) >= MAX_FOLDER_ENTRIES:
                         root.truncated = True
                         break
-                if root.truncated and not cancelled():
-                    root.error = (root.error + " " if root.error else "") + "폴더 탐색 항목 한도에 도달했습니다 (최대 2,000개). 일부 파일은 인덱싱되지 않았습니다."
-            except (OSError, ValueError) as exc:
-                root.error = str(exc) if isinstance(exc, ValueError) else "파일이 삭제되었거나 경로/권한을 확인해야 합니다."
+            root.indexed = not cancelled()
+            if root.truncated and root.indexed:
+                root.error = (root.error + " " if root.error else "") + "폴더 탐색 항목 한도에 도달했습니다 (최대 2,000개). 일부 파일은 인덱싱되지 않았습니다."
+        except (OSError, ValueError) as exc:
+            root.error = str(exc) if isinstance(exc, ValueError) else "파일이 삭제되었거나 경로/권한을 확인해야 합니다."
 
     def _index(self, root, relative, path):
         stat = path.stat()
@@ -117,10 +159,15 @@ class AttachmentStore:
 
     def list_attached_files(self, attachment_id=None):
         roots = [self.roots[attachment_id]] if attachment_id else self.roots.values()
+        for root in roots:
+            self._index_root(root)
         return [dict(meta) for root in roots for meta in root.files.values()]
 
     def _resolve(self, attachment_id, relative_path):
         root = self.roots[attachment_id]
+        self._index_root(root)
+        if root.resolved_path != root.path.resolve():
+            raise ValueError("첨부 원본의 경로가 변경되었습니다.")
         relative = str(relative_path).replace("\\", "/")
         if (Path(relative).is_absolute() or PureWindowsPath(relative).drive
                 or any(p in ("..", "", ".") for p in relative.split("/"))
@@ -136,6 +183,21 @@ class AttachmentStore:
                 break
             current = current.parent
         path.resolve().relative_to(base.resolve())
+        return path
+
+    def resolve_file(self, attachment_id: str, relative_path: str = "", *, workspace_root: str = "") -> Path:
+        root = self.roots.get(attachment_id)
+        if root is None:
+            raise ValueError("attachment_id not found")
+        if not self.in_workspace(root, workspace_root):
+            raise ValueError("attachment is outside the active workspace")
+        if not relative_path and root.directory:
+            raise ValueError("relative_path required for folder attachments")
+        path = self._resolve(attachment_id, relative_path or root.path.name)
+        if not path.is_file():
+            raise FileNotFoundError("attachment file not found")
+        if path.stat().st_size > MAX_FILE_BYTES:
+            raise ValueError("첨부 파일 크기 한도를 초과했습니다.")
         return path
 
     def _transfer_source(self, attachment_id: str) -> tuple[AttachedRoot, Path, str]:
@@ -215,6 +277,7 @@ class AttachmentStore:
                 "대상 복사는 완료됐지만 첨부 원본을 삭제하지 못해 이동을 완료하지 못했습니다."
             ) from exc
         root.path = target
+        root.resolved_path = target.resolve()
         meta = root.files[relative]
         meta.update(
             file_name=target.name,
@@ -226,11 +289,11 @@ class AttachmentStore:
             root.files = {target.name: meta}
         return target
 
-    def read_attached_file(self, attachment_id, relative_path, *, query="", budget=6000):
+    def read_attached_file(self, attachment_id, relative_path, *, query="", budget=6000, cancelled=lambda: False):
         path = self._resolve(attachment_id, relative_path)
         root = self.roots[attachment_id]
         item = _read(path, filename=f"{root.path.name}/{relative_path}" if root.directory else path.name,
-                     budget=min(max(0, budget), MAX_CONTEXT_CHARS), query=query)
+                     budget=min(max(0, budget), MAX_CONTEXT_CHARS), query=query, cancelled=cancelled)
         item.id = attachment_id + ":" + relative_path
         item.attachment_id = attachment_id
         item.relative_path = relative_path
@@ -295,13 +358,14 @@ class AttachmentStore:
                 return chunk
         raise ValueError("요청한 chunk가 없습니다.")
 
-    def prepare(self, query="", *, cancelled=lambda: False):
+    def prepare(self, query="", *, workspace_root="", cancelled=lambda: False):
         items = []
-        roots = list(self.roots.values())
+        roots = [root for root in self.roots.values() if self.in_workspace(root, workspace_root)]
         remaining = MAX_CONTEXT_CHARS
         for root in roots:
             if cancelled():
                 break
+            self._index_root(root, cancelled)
             if root.directory:
                 listing = "Folder files:\n" + "\n".join(root.files)
                 budget = min(4000, remaining // max(1, len(roots)))
@@ -340,7 +404,7 @@ class AttachmentStore:
             if cancelled():
                 break
             try:
-                item = self.read_attached_file(aid, relative, query=query, budget=per_file)
+                item = self.read_attached_file(aid, relative, query=query, budget=per_file, cancelled=cancelled)
             except (OSError, ValueError) as exc:
                 item = Attachment(aid, "", relative, "application/octet-stream", error="첨부 파일이 삭제되었거나 접근 범위를 벗어났습니다.")
             items.append(item)

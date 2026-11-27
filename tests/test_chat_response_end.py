@@ -6,16 +6,25 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QEvent
+from PyQt6.QtGui import QTextDocument
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.chat.chat_display import assistant_visible_text
 from iris.ui.chat.chat_blocks import parse_copy_anchor
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
 from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisPanel
+
+
+def _transcript_text(panel: ChatPanel) -> str:
+    document = QTextDocument()
+    document.setHtml(panel.transcript()._transcript_inner_html())
+    return document.toPlainText()
 
 
 class ResponseEndTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QApplication.instance() or QApplication([])
+        ensure_qt_webengine_ready()
+        cls.app = QApplication.instance() or QApplication(["iris-response-end-tests"])
 
     def test_response_types_across_chunk_boundaries_and_completion_modes(self):
         cases = [
@@ -45,8 +54,8 @@ class ResponseEndTests(unittest.TestCase):
                             panel.finish_typing()
                             workspace.end_iris(final)
                             workspace.chat.finish_typing()
-                            main = panel._log.toPlainText()
-                            other = workspace._log.toPlainText()
+                            main = _transcript_text(panel)
+                            other = _transcript_text(workspace.chat)
                             self.assertIn("이전 메시지", main)
                             self.assertNotIn("**Iris", main)
                             self.assertEqual(main.count("Iris:"), 1)
@@ -75,7 +84,7 @@ class ResponseEndTests(unittest.TestCase):
         panel.append_stream_chunk(source)
         panel.end_stream_message(source)
         panel.finish_typing()
-        href = re.search(r'href="(iris-copy://[^"]+)"', panel._log.toHtml())[1]
+        href = re.search(r'href="(iris-copy://[^"]+)"', panel.transcript()._transcript_inner_html())[1]
         self.assertEqual(parse_copy_anchor(href), 'literal `\n')
         panel.close()
 
@@ -86,19 +95,19 @@ class ResponseEndTests(unittest.TestCase):
         panel.append_stream_chunk(source)
         self.assertEqual(panel._typing_text, source)
         self.assertEqual(panel._typing_index, 0)
-        self.assertNotIn(source, panel._log.toPlainText())
+        self.assertNotIn(source, _transcript_text(panel))
         self.assertTrue(panel._typing_timer.isActive())
         panel._typing_timer.stop()
         panel._type_next_chunk()
-        self.assertIn("가", panel._log.toPlainText())
-        self.assertNotIn(source, panel._log.toPlainText())
+        self.assertEqual(panel._typing_index, 1)
+        self.assertNotIn(source, _transcript_text(panel))
         panel.end_stream_message(source)
         self.assertTrue(panel._typing_timer.isActive())
-        self.assertNotIn(source, panel._log.toPlainText())
+        self.assertNotIn(source, _transcript_text(panel))
         while panel._typing_text:
             panel._typing_timer.stop()
             panel._type_next_chunk()
-        self.assertIn(source, panel._log.toPlainText())
+        self.assertIn(source, _transcript_text(panel))
         panel.close()
 
 

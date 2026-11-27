@@ -6,8 +6,10 @@ import unittest
 from PyQt6.QtWidgets import QApplication
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.chat.composer_attachments import attachment_filename
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
 
-APP = QApplication.instance() or QApplication([])
+ensure_qt_webengine_ready()
+APP = QApplication.instance() or QApplication(["iris-ide-attachment-tests"])
 
 
 class IdeChatAttachmentTests(unittest.TestCase):

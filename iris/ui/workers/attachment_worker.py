@@ -7,10 +7,11 @@ class AttachmentWorker(QThread):
     prepared = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, paths, *, workspace_root="", query="", store=None, image_reader=None, parent=None):
+    def __init__(self, paths, *, workspace_root="", owner_workspace="", query="", store=None, image_reader=None, parent=None):
         super().__init__(parent)
         self.paths = tuple(paths)
         self.workspace_root = workspace_root
+        self.owner_workspace = owner_workspace
         self.query = query
         self.store = store
         self.image_reader = image_reader
@@ -24,6 +25,7 @@ class AttachmentWorker(QThread):
         token = bind_chat_image_reader(self.image_reader)
         try:
             result = prepare_attachments(self.paths, workspace_root=self.workspace_root, query=self.query,
+                                         owner_workspace=self.owner_workspace,
                                          cancelled=self.isInterruptionRequested, store=self.store)
             if not self.isInterruptionRequested():
                 self.prepared.emit(result)

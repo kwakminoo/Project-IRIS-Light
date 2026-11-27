@@ -74,8 +74,8 @@ def _check_chip_exposes_manifest() -> None:
         body = prepared.model_content("요약해줘")
         assert "attachment_id" in body, body
         assert "total_pages" in body, body
-        assert "content.extract" in body, body
-        assert "Attachment path:" in body, body
+        assert "content_extract" in body, body
+        assert str(pdf) not in body, body
 
 
 def _check_resolve_attachment_id() -> None:

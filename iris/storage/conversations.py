@@ -413,6 +413,13 @@ def ensure_chat_schema(db: Database) -> None:
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_conv "
         "ON chat_messages(conversation_id, id)"
     )
+    db._execute("""
+        CREATE TABLE IF NOT EXISTS chat_attachment_refs (
+            conversation_id INTEGER NOT NULL, attachment_id TEXT NOT NULL,
+            path TEXT NOT NULL, resolved_path TEXT NOT NULL, directory INTEGER NOT NULL,
+            workspace_root TEXT NOT NULL DEFAULT '', PRIMARY KEY (conversation_id, attachment_id)
+        )
+    """)
     cols = {
         str(row["name"])
         for row in db._execute("PRAGMA table_info(chat_conversations)").fetchall()
@@ -757,6 +764,7 @@ def clear_conversation_messages(db: Database, conversation_id: int) -> None:
         "DELETE FROM chat_messages WHERE conversation_id = ?",
         (int(conversation_id),),
     )
+    db._execute("DELETE FROM chat_attachment_refs WHERE conversation_id = ?", (int(conversation_id),))
     db._execute(
         "UPDATE chat_conversations SET title = ?, title_locked = 0, updated_at = ? WHERE id = ?",
         (DEFAULT_TITLE, _now(), int(conversation_id)),
@@ -770,6 +778,7 @@ def delete_conversation(db: Database, conversation_id: int) -> None:
         "DELETE FROM chat_messages WHERE conversation_id = ?",
         (int(conversation_id),),
     )
+    db._execute("DELETE FROM chat_attachment_refs WHERE conversation_id = ?", (int(conversation_id),))
     db._execute(
         "DELETE FROM chat_conversations WHERE id = ?",
         (int(conversation_id),),

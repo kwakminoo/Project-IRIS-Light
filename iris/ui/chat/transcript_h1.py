@@ -434,6 +434,8 @@ class H1TranscriptHost(QWidget):
         self._stream_parts: dict[str, _StreamPart] = {}
         self._stream_order: list[str] = []
         self._page_ready = False
+        self._page_loading = False
+        self._paint_pending = False
         self._scroll_y_cache = 0
         self._scroll_max_cache = 0
         self._slot = QWidget(self)
@@ -1049,6 +1051,8 @@ class H1TranscriptHost(QWidget):
         self._slot = None
         self._view = view
         self._page_ready = False
+        self._page_loading = False
+        self._paint_pending = False
         view.setZoomFactor(self._PAGE_ZOOM)
         view.installEventFilter(self)
         view.loadFinished.connect(self._on_page_load_finished)
@@ -1061,10 +1065,14 @@ class H1TranscriptHost(QWidget):
         navigations) must not clear _page_ready or the next land uses setHtml
         and yanks scroll.
         """
+        self._page_loading = False
         if not ok:
             return
         self._page_ready = True
         self.reset_page_zoom()
+        if self._paint_pending:
+            self._paint_pending = False
+            self._render()
 
     def _transcript_inner_html(self) -> str:
         self._code_seq = 0
@@ -1104,7 +1112,12 @@ class H1TranscriptHost(QWidget):
             "return true;"
             "})();"
         )
-        view.page().runJavaScript(script)
+        view.page().runJavaScript(script, self._on_transcript_patch_result)
+
+    def _on_transcript_patch_result(self, applied: object) -> None:
+        if applied is False and self._page_ready:
+            self._page_ready = False
+            self._render()
 
     def _render(self) -> None:
         """Paint DOM when WebEngine is available; otherwise keep turns in memory.
@@ -1118,6 +1131,11 @@ class H1TranscriptHost(QWidget):
         if self._page_ready:
             self._patch_transcript_dom(view)
             return
+        if self._page_loading:
+            self._paint_pending = True
+            return
+        self._page_loading = True
+        self._paint_pending = False
         view.setHtml(self._page_html(), QUrl("about:blank"))
 
     def _page_html(self) -> str:

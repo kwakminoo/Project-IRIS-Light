@@ -29,6 +29,7 @@ from iris.runtime.user_turn_dispatcher import UserTurnDispatcher
 from iris.storage.database import Database
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.window.main_window import MainWindow
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
 from iris.ui.workspaces.ide_companion_page import IdeCompanionPage
 from tests.test_attachment_pipeline import create_fixtures
 
@@ -49,6 +50,7 @@ class DispatchHarness(QObject):
     _format_user_turn_content = MainWindow._format_user_turn_content
     _chat_messages_with_project_context = MainWindow._chat_messages_with_project_context
     _on_attachment_failed = MainWindow._on_attachment_failed
+    _forget_attachment_worker = MainWindow._forget_attachment_worker
     _log_user_input = MainWindow._log_user_input
 
     @property
@@ -73,7 +75,7 @@ class DispatchHarness(QObject):
         self._live_activity = Mock()
         self.payloads = []
         self.failures = []
-        for method in ["_try_open_at_path_refs", "_try_local_pinned_status", "_try_local_ide_control", "_try_local_wiki_save", "_try_local_pdf_save", "_try_local_extension_install", "_try_local_workspace_control", "_route_to_workspace_chat", "_handle_image_code_pipe"]:
+        for method in ["_try_open_at_path_refs", "_try_local_pinned_status", "_try_local_ide_control", "_try_local_wiki_save", "_try_local_pdf_save", "_try_local_lab_dump", "_try_local_extension_install", "_try_local_workspace_control", "_route_to_workspace_chat", "_handle_image_code_pipe"]:
             setattr(self, method, Mock(return_value=False))
         for method in ["_refresh_context_gauge", "_stop_tts_playback", "_begin_auto_tts_response", "_sync_voice_conversation_state"]:
             setattr(self, method, Mock())
@@ -127,7 +129,8 @@ def run(backend="hermes", *, mode_filter="all", format_filter="all", method_filt
     (folder / "app.py").write_text("CODE: FOLDER-7777", encoding="utf-8")
     (folder / "node_modules").mkdir(exist_ok=True)
     (folder / "node_modules" / "ignore.txt").write_text("DO_NOT_INCLUDE", encoding="utf-8")
-    app = QApplication.instance() or QApplication([])
+    ensure_qt_webengine_ready()
+    app = QApplication.instance() or QApplication(["iris-attachment-check"])
     panel = ChatPanel()
     panel.set_workspace_root(str(OUT))
     main = QWidget()

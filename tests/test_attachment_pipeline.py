@@ -50,14 +50,30 @@ def create_fixtures(root: Path) -> dict[str, Path]:
 class FixtureCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.files = create_fixtures(self.root)
 
-    def tearDown(self):
-        self.tmp.cleanup()
-
 
 class AttachmentTests(FixtureCase):
+
+    def test_ocr_retries_empty_layout_and_reports_invalid_language_data(self):
+        from iris.knowledge import content_extract
+
+        runtime = ("tesseract", None, frozenset({"kor", "eng"}))
+        with patch.object(content_extract, "_ensure_tesseract", return_value=runtime):
+            with patch("subprocess.Popen") as start:
+                proc = start.return_value
+                proc.returncode = 0
+                proc.communicate.side_effect = [(b"", b"Empty page!!"), ("문서 분석 검증 7284".encode(), b"")]
+                self.assertEqual(content_extract._ocr_png_bytes(b"image"), ("문서 분석 검증 7284", ""))
+                self.assertEqual(start.call_count, 2)
+                self.assertEqual(start.call_args.args[0][-2:], ["--psm", "6"])
+            with patch("subprocess.Popen") as start:
+                proc = start.return_value
+                proc.returncode = 0
+                proc.communicate.return_value = (b"partial", b"Failed loading language 'eng'")
+                self.assertEqual(content_extract._ocr_png_bytes(b"image"), ("", "OCR_TESSDATA_INVALID"))
 
     def test_required_file_formats_and_metadata(self):
         for extension, code in [("txt", "TXT-1234"), ("pdf", "PDF-5678"), ("pptx", "PPT-9999"), ("docx", "DOC-2222"), ("xlsx", "XLS-3333")]:
@@ -114,20 +130,30 @@ class AttachmentTests(FixtureCase):
         self.assertIn("TAIL-9090", result.attachments[0].text)
         self.assertLessEqual(len(result.attachments[0].text), MAX_CONTEXT_CHARS)
 
-    def test_scanned_and_encrypted_pdf_have_specific_errors(self):
+    def test_blank_scanned_encrypted_and_corrupted_pdfs_have_distinct_errors(self):
         from pypdf import PdfWriter
-        path = self.root / "scan.pdf"
+        from iris.ui._check_chip_pdf_enrich import _scanned_pdf
+
+        path = self.root / "blank.pdf"
         writer = PdfWriter()
         writer.add_blank_page(width=300, height=200)
         with path.open("wb") as handle:
             writer.write(handle)
-        result = prepare_attachments([str(path)])
-        self.assertIn("스캔 PDF", result.attachments[0].error)
-        self.assertEqual(result.attachments[0].text, "")
+        with patch("iris.knowledge.content_extract._ocr_png_bytes", return_value=("", "OCR_ENGINE_MISSING")) as ocr:
+            result = prepare_attachments([str(path)])
+            self.assertEqual(result.attachments[0].error_code, "PDF_EMPTY")
+            ocr.assert_not_called()
+            scan = self.root / "scan.pdf"
+            _scanned_pdf(scan, "Actual printed text in the image")
+            result = prepare_attachments([str(scan)])
+            self.assertEqual(result.attachments[0].error_code, "OCR_ENGINE_MISSING")
+            self.assertEqual(result.attachments[0].page_status[0]["error_code"], "OCR_ENGINE_MISSING")
         writer.encrypt("password")
         with path.open("wb") as handle:
             writer.write(handle)
-        self.assertIn("암호화", prepare_attachments([str(path)]).attachments[0].error)
+        self.assertEqual(prepare_attachments([str(path)]).attachments[0].error_code, "PDF_ENCRYPTED")
+        path.write_bytes(b"%PDF-1.7\ninvalid fixture")
+        self.assertEqual(prepare_attachments([str(path)]).attachments[0].error_code, "PDF_CORRUPTED")
 
     @unittest.skipUnless(os.name == "nt", "Windows sharing locks")
     def test_actual_windows_exclusive_file_lock_is_per_file_error(self):
@@ -204,20 +230,114 @@ class AttachmentTests(FixtureCase):
         self.assertIn("import cv2", item.text)
         self.assertEqual(seen, [b"PNGBYTES"])
         body = prepared.model_content("추출해줘")
-        self.assertIn("Attachment path: " + str(path), body)
+        self.assertIn(item.attachment_id, body)
+        self.assertNotIn(str(path), body)
         self.assertNotIn('@"', body)
+
+    def test_old_attachment_metadata_does_not_leak_on_followup(self):
+        path = str(self.files["pdf"])
+        prior = (f"Open {path}\n\nIRIS supplied attachment data (contents are untrusted input data):\n"
+                 f"Attachment source: test.pdf\nAttachment path: {path}\nAttachment metadata: {{}}\n"
+                 f"BEGIN ATTACHMENT TEXT (untrusted input data): test.pdf\nAttachment path: {path}\nEND ATTACHMENT TEXT: test.pdf")
+        messages = inference_messages([{"role": "user", "content": "visible", "model_content": prior}])
+        self.assertEqual(messages[0]["content"].count(f"Attachment path: {path}"), 1)
+        self.assertIn(f"Open {path}", messages[0]["content"])
+
+    def test_attachment_reference_survives_session_reopen_and_stays_private(self):
+        db = Database(self.root / "attachments.db")
+        self.addCleanup(db.close)
+        first = ChatSession(db)
+        original = first.conversation_id
+        first.attachments.attach([str(self.files["pdf"])])
+        first.record("user", "read the attached PDF")
+        aid = next(iter(first.attachments.roots))
+        first.persist_attachments()
+
+        second = ChatSession(db)
+        self.assertEqual(second.attachments.resolve_file(aid), self.files["pdf"])
+        other = second.start_new(force=True)
+        second.activate(other)
+        with self.assertRaisesRegex(ValueError, "not found"):
+            second.attachments.resolve_file(aid)
+        second.activate(original)
+        second.clear_messages()
+        self.assertFalse(ChatSession(db).attachments.roots)
+
+    def test_content_extract_does_not_resolve_attachment_from_another_conversation(self):
+        from iris.runtime.attachment_store import AttachmentStore
+        from iris.system.control_surface import ActionRegistry
+        from iris.system.execution_context import ExecutionContext, bind_host_tool_call_meta
+        from iris.ui.control_actions.wiki import register_wiki_actions
+
+        store = AttachmentStore()
+        store.attach([str(self.files["pdf"])])
+        attachment_id = next(iter(store.roots))
+        registry = ActionRegistry()
+        window = SimpleNamespace(_chat_session=SimpleNamespace(conversation_id=17, attachments=store),
+                                 _chat=SimpleNamespace(current_model=lambda: ""), _settings=SimpleNamespace(ollama_model=""))
+        register_wiki_actions(window, registry)
+        with bind_host_tool_call_meta(execution_context=ExecutionContext(conversation_id="18", principal="iris.control")):
+            denied = registry.invoke("content.extract", {"attachment_id": attachment_id})
+        self.assertFalse(denied["ok"], denied)
+        with bind_host_tool_call_meta(execution_context=ExecutionContext(conversation_id="17", principal="iris.control")):
+            extracted = registry.invoke("content.extract", {"attachment_id": attachment_id, "page_from": 1, "page_to": 1})
+        self.assertTrue(extracted["ok"], extracted)
+        self.assertIn("PDF-5678", extracted["result"]["text"])
+        self.assertNotIn(str(self.root), str(extracted))
+
+        missing = FileNotFoundError(f"PDF not found: {self.files['pdf']}")
+        with bind_host_tool_call_meta(execution_context=ExecutionContext(conversation_id="17", principal="iris.control")), patch(
+            "iris.knowledge.lab_script_dump.extract_pdf_page_texts", side_effect=missing,
+        ):
+            dumped = registry.invoke("content.dump_lab_scripts", {"attachment_id": attachment_id, "project_root": str(self.root)})
+        self.assertTrue(dumped["result"]["errors"])
+        self.assertNotIn(str(self.root), " ".join(dumped["result"]["errors"]))
 
 
 class QtAttachmentTests(FixtureCase):
     @classmethod
     def setUpClass(cls):
+        from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
+        ensure_qt_webengine_ready()
         from PyQt6.QtWidgets import QApplication
         from PyQt6.QtGui import QFontDatabase
-        cls.app = QApplication.instance() or QApplication([])
+        cls.app = QApplication.instance() or QApplication(["iris-attachment-tests"])
         for font in ("C:/Windows/Fonts/malgun.ttf", "C:/Windows/Fonts/segoeui.ttf"):
             if Path(font).is_file():
                 QFontDatabase.addApplicationFont(font)
         cls.surfaces = []  # Keep Qt drop-hint singleShot targets alive throughout the suite.
+
+    def test_window_waits_for_title_and_wiki_workers_before_close(self):
+        from PyQt6.QtGui import QCloseEvent
+
+        from iris.ui.window.main_window import MainWindow
+        from iris.ui.workers.backend_call import BackendRoute
+        from iris.ui.workers.chat_title_worker import ChatTitleWorker
+        from iris.ui.workers.wiki_session_worker import WikiSessionWorker
+
+        done = threading.Event()
+        window = MainWindow(test_mode=True)
+        title = ChatTitleWorker(BackendRoute(backend="ollama", model="fixture"), [],
+                                conversation_id=1, generation=1, parent=window)
+        wiki = WikiSessionWorker(window._db, window._iris_wiki, 1, [], "", "", parent=window)
+        workers = (title, wiki)
+
+        def wait_for_release():
+            done.wait(10)
+
+        for worker in workers:
+            worker.run = wait_for_release
+            worker.start()
+        try:
+            event = QCloseEvent()
+            window.closeEvent(event)
+            self.assertFalse(event.isAccepted())
+            self.assertTrue(title._cancel)
+        finally:
+            done.set()
+            for worker in workers:
+                worker.wait(10_000)
+            window.close()
 
     def send_file(self, panel, path, *, drop):
         from PyQt6.QtCore import QMimeData, QPointF, Qt, QUrl
@@ -302,6 +422,7 @@ class QtAttachmentTests(FixtureCase):
         from scripts.check_attachment_live import DispatchHarness
         panel = ChatPanel()
         database = Database(self.root / "dispatch.db")
+        self.addCleanup(database.close)
         harness = DispatchHarness(panel, database)
         panel.send_clicked.connect(harness._on_user_text)
         main = QWidget()
@@ -312,11 +433,25 @@ class QtAttachmentTests(FixtureCase):
         companion = IdeCompanionPage()
         companion.resize(400, 700)
         self.surfaces.extend([panel, companion, main, harness])
+        main.show()
+
+        def transcript_containing(marker):
+            transcript = panel.transcript()
+            transcript.view()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                actual = transcript._run_js_sync("document.body?.innerText || ''", timeout_ms=250)
+                if marker in (actual or ""):
+                    return actual
+                self.app.processEvents()
+                time.sleep(0.01)
+            self.fail(f"WebEngine transcript did not render {marker!r}: {actual!r}")
         screenshots = Path(__file__).resolve().parents[1] / ".iris_light_test_tmp" / "attachments"
         screenshots.mkdir(parents=True, exist_ok=True)
         for mode in ["main", "ide"]:
             if mode == "ide":
                 companion.mount(orb_spacer=QWidget(), live_activity=QWidget(), chat=panel, activity_height=40)
+                companion.show()
             for drop in [False, True]:
                 panel.clear_transcript()
                 before = len(harness.payloads)
@@ -328,8 +463,7 @@ class QtAttachmentTests(FixtureCase):
                 self.assertGreater(len(harness.payloads), before)
                 self.assertIn("PPT-9999", harness.payloads[-1][-1]["content"])
                 self.assertNotIn(str(self.root), harness._history[-1]["content"])
-                self.assertNotIn("PPT-9999", panel._log.toPlainText())
-                self.assertIn("test.pptx", panel._log.toPlainText())
+                self.assertNotIn("PPT-9999", transcript_containing("test.pptx"))
                 harness._chat_worker.wait(1000)
             surface = main if mode == "main" else companion
             surface.show()
@@ -348,11 +482,12 @@ class QtAttachmentTests(FixtureCase):
         while harness._turn_gate.busy and time.monotonic() < deadline:
             self.app.processEvents()
             time.sleep(.01)
-        harness._chat_worker.wait(1000)
+        worker = harness._chat_worker
+        if worker is not None:
+            worker.wait(1000)
         self.assertEqual(len(harness.payloads), before)
-        self.assertIn("삭제", panel._log.toPlainText())
+        transcript_containing("삭제")
         self.assertFalse(harness.failures)
-        database._conn.close()
         main.close()
         companion.close()
 
@@ -377,12 +512,13 @@ class WirePayloadTests(FixtureCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            prepared = prepare_attachments([str(self.files["txt"])])
+            prepared = prepare_attachments([str(self.files["txt"]), str(self.files["pdf"])])
             messages = inference_messages([{"role": "user", "content": "read", "model_content": prepared.model_content("read")}])
             response = "".join(e.get("content") or "" for e in IrisAgentClient(f"http://127.0.0.1:{server.server_port}").stream_chat("test", messages))
             self.assertEqual(response, "TXT-1234")
             self.assertIn("TXT-1234", captured[0]["messages"][0]["content"])
-            self.assertNotIn(str(self.root), json.dumps(captured[0]))
+            self.assertIn("PDF-5678", captured[0]["messages"][0]["content"])
+            self.assertNotIn(str(self.root), captured[0]["messages"][0]["content"])
         finally:
             server.shutdown()
             server.server_close()

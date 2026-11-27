@@ -110,16 +110,24 @@ class WikiSaveFlowTests(unittest.TestCase):
             assert len(str(data["text"])) > 80_000
 
     def test_vision_reads_each_image_page(self):
+        import io
+
         import pymupdf
+        from PIL import Image, ImageDraw
 
         import iris.knowledge.content_extract as content_extract
         from iris.knowledge.content_extract import read_pdf_pages
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "scan.pdf"
+            image = Image.new("RGB", (400, 200), "white")
+            ImageDraw.Draw(image).text((30, 80), "Printed text in the scanned image", fill="black")
+            stream = io.BytesIO()
+            image.save(stream, format="PNG")
             doc = pymupdf.open()
-            doc.new_page()
-            doc.new_page()
+            for _ in range(2):
+                page = doc.new_page()
+                page.insert_image(page.rect, stream=stream.getvalue())
             doc.save(path)
             doc.close()
             calls: list[int] = []

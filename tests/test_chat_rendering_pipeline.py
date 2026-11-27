@@ -12,12 +12,14 @@ from iris.core.activity_privacy import prepare_chat_text
 from iris.ui.chat.markdown_normalization import normalize_markdown_source
 from iris.ui.chat.chat_renderer import render_iris_message
 from iris.ui.chat.chat_panel import ChatPanel
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
 from iris.system.iris_agent_gateway import _serialized_lifecycle, GatewayDiagnosis
 
 class RenderingPipelineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QApplication.instance() or QApplication([])
+        ensure_qt_webengine_ready()
+        cls.app = QApplication.instance() or QApplication(["iris-rendering-tests"])
 
     def test_malformed_model_markdown_becomes_rich_document(self):
         source = ("설명입니다.---### 제목\n내용입니다.#### **1단계: SYN**\n"
@@ -60,14 +62,35 @@ class RenderingPipelineTests(unittest.TestCase):
         self.assertEqual(panel._typing_text, source)
         panel.end_stream_message(source)
         panel.finish_typing()
-        self.assertIn("이전 사용자 메시지", panel._log.toPlainText())
-        self.assertNotIn("&#xC640;", panel._log.toPlainText())
-        self.assertNotIn("###", panel._log.toPlainText())
-        self.assertIn("iris-copy://", panel._log.toHtml())
+        panel.show()
+        transcript = panel.transcript()
+        transcript.view()
+
+        def wait_for(script, expected):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                value = transcript._run_js_sync(script, timeout_ms=250)
+                if expected(value):
+                    return value
+                self.app.processEvents()
+                time.sleep(.01)
+            self.fail(f"Unexpected WebEngine state: {value!r}")
+
+        text = wait_for("document.body.innerText", lambda value: "이전 사용자 메시지" in (value or ""))
+        self.assertNotIn("&#xC640;", text)
+        self.assertNotIn("###", text)
+        from iris.ui.chat.chat_blocks import parse_copy_anchor
+
+        href = wait_for("document.querySelector('a[href^=\"iris-copy://\"]')?.getAttribute('href')", bool)
+        self.assertEqual(parse_copy_anchor(href), "if True:\n    print(1)\n")
         panel.append_error_message("Hermes 요청 실패", "command: internal\nstderr: failure")
-        self.assertNotIn("command: internal", panel._log.toPlainText())
-        self.assertIn("자세히 보기", panel._log.toPlainText())
+        text = wait_for("document.body.innerText", lambda value: "자세히 보기" in (value or ""))
+        self.assertNotIn("command: internal", text)
         self.assertIn("command: internal", panel._log._error_details["1"])
+        self.assertTrue(transcript._run_js_sync("document.getElementById('transcript').remove(); true"))
+        panel.append_message_instant("You", "뷰 재연결 확인")
+        recovered = wait_for("document.body.innerText", lambda value: "뷰 재연결 확인" in (value or ""))
+        self.assertIn("이전 사용자 메시지", recovered)
         panel.close()
 
     def test_qt_parser_fallback_supports_tables(self):

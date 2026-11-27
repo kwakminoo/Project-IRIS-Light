@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -69,20 +70,26 @@ def _parse_skill_description(text: str) -> str:
     return ""
 
 
-def list_iris_agent_skills(*, limit: int = 80) -> list[tuple[str, str, Path]]:
+def list_iris_agent_skills(*, limit: int = 80, include_disabled: bool = False) -> list[tuple[str, str, Path]]:
     """(name, description, skill.md path)."""
     root = iris_agent_root() / "skills"
     if not root.is_dir():
         return []
     out: list[tuple[str, str, Path]] = []
     seen: set[str] = set()
+    from iris.runtime.attachment_context import _is_link
+    from iris.system.execution_policy import check_path_allowed
+
+    disabled = set() if include_disabled else _disabled_skills()
     for path in sorted(root.rglob("SKILL.md")):
         name = path.parent.name.strip()
-        if not name or name in seen:
+        if (not name or name in seen or name.casefold() in disabled or _is_link(path)
+                or not check_path_allowed(root, path).allowed):
             continue
         seen.add(name)
         try:
-            raw = path.read_text(encoding="utf-8", errors="replace")
+            with path.open(encoding="utf-8", errors="replace") as stream:
+                raw = stream.read(4096)
         except OSError:
             raw = ""
         desc = _parse_skill_description(raw)
@@ -92,6 +99,18 @@ def list_iris_agent_skills(*, limit: int = 80) -> list[tuple[str, str, Path]]:
         if len(out) >= limit:
             break
     return out
+
+
+def _disabled_skills() -> set[str]:
+    import yaml
+
+    from iris.system.iris_agent_control_sync import iris_agent_config_path
+
+    try:
+        config = yaml.safe_load(iris_agent_config_path(iris_agent_root()).read_text(encoding="utf-8")) or {}
+        return {str(name).casefold() for name in (config.get("skills", {}).get("disabled", ()) or ())}
+    except (OSError, AttributeError, TypeError, yaml.YAMLError):
+        return set()
 
 
 def list_iris_agent_mcps(*, limit: int = 40) -> list[tuple[str, str]]:
@@ -138,7 +157,54 @@ def add_custom_skill(name: str, description: str) -> Path:
     return md
 
 
-def add_mcp_server(name: str, command: str, args_text: str) -> None:
+def manage_iris_agent_skill(operation: str, name: str, text: str = "") -> dict:
+    from uuid import uuid4
+
+    from iris.runtime.attachment_context import _is_link
+    from iris.system.execution_policy import check_path_allowed
+    from iris.system.iris_agent_control_sync import edit_iris_agent_config
+
+    if not re.fullmatch(r"[\w-]{1,80}", name) or operation not in {"create", "update", "enable", "disable", "remove"}:
+        raise ValueError("invalid skill name or operation")
+    root = iris_agent_root()
+    location = root / "skills" / "custom"
+    catalog = {key.casefold(): path for key, _description, path in list_iris_agent_skills(limit=500, include_disabled=True)}
+    custom = location / name.lower()
+    existing = catalog.get(name.casefold())
+    if operation in {"enable", "disable"}:
+        if existing is None:
+            raise ValueError("registered skill not found")
+        with edit_iris_agent_config(root) as config:
+            skills = config.setdefault("skills", {})
+            if not isinstance(skills, dict) or not isinstance(skills.get("disabled", []), list):
+                raise ValueError("invalid disabled-skills configuration")
+            disabled = [item for item in skills.get("disabled", []) if str(item).casefold() != name.casefold()]
+            if operation == "disable":
+                disabled.append(name.casefold())
+            skills["disabled"] = disabled
+    else:
+        if (_is_link(location) or _is_link(custom) or _is_link(custom / "SKILL.md")
+                or not check_path_allowed(root, custom, write=True).allowed):
+            raise ValueError("linked custom skill paths are unavailable")
+        if operation == "create" and (existing is not None or custom.exists()):
+            raise ValueError("skill already exists")
+        if operation != "create" and existing != custom / "SKILL.md":
+            raise ValueError("operation requires a custom skill")
+        if operation == "remove":
+            archive = root / "archived-skills"
+            if _is_link(archive) or not check_path_allowed(root, archive, write=True).allowed:
+                raise ValueError("skill archive is outside the profile")
+            archive.mkdir(exist_ok=True)
+            custom.rename(archive / f"{name}-{uuid4().hex[:10]}")
+        else:
+            if not text.strip() or len(text) > 12000:
+                raise ValueError("skill text must have 1 to 12,000 characters")
+            add_custom_skill(name, text)
+    _sync_wiki_catalog()
+    return {"name": name, "operation": operation}
+
+
+def add_mcp_server(name: str, command: str, args_text: str, *, model_enabled: bool = False) -> None:
     safe = re.sub(r"[^\w\-]+", "-", name.strip(), flags=re.UNICODE).strip("-")
     if not safe:
         raise ValueError("MCP 이름이 비어 있습니다")
@@ -149,6 +215,7 @@ def add_mcp_server(name: str, command: str, args_text: str) -> None:
         "command": cmd,
         "args": args_text.split(),
         "enabled": True,
+        "model_enabled": model_enabled,
         "timeout": 120,
         "connect_timeout": 60,
     })
@@ -371,8 +438,7 @@ class McpDialog(QDialog):
         root.addWidget(make_title("MCP Servers"))
         root.addWidget(
             make_hint(
-                "Iris Agent config.yaml의 mcp_servers입니다. 「사용」으로 채팅에 넣고, "
-                "추가 후 Iris Agent gateway 재연결을 권장합니다."
+                "등록된 MCP를 「사용」으로 채팅에 넣을 수 있습니다. 모델에 허용한 서버의 도구는 호출할 때 확인합니다."
             )
         )
 
@@ -394,6 +460,8 @@ class McpDialog(QDialog):
         add_lay.addWidget(self._name_edit)
         add_lay.addWidget(self._cmd_edit)
         add_lay.addWidget(self._args_edit)
+        self._model_enabled = QCheckBox("이 명령이 실행되는 것을 신뢰하고 모델의 도구 검색을 허용")
+        add_lay.addWidget(self._model_enabled)
         row = QHBoxLayout()
         row.addStretch(1)
         add_btn = QPushButton("추가")
@@ -432,6 +500,7 @@ class McpDialog(QDialog):
                 self._name_edit.text(),
                 self._cmd_edit.text(),
                 self._args_edit.text(),
+                model_enabled=self._model_enabled.isChecked(),
             )
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "MCP 추가", str(exc))
@@ -439,6 +508,7 @@ class McpDialog(QDialog):
         self._name_edit.clear()
         self._cmd_edit.clear()
         self._args_edit.clear()
+        self._model_enabled.setChecked(False)
         self._reload()
         _sync_wiki_catalog()
         QMessageBox.information(

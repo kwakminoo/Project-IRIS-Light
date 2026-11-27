@@ -29,8 +29,25 @@ class ChatSession:
         self.db = db
         self.conversation_id = ensure_active_conversation(db)
         self.history: list[dict[str, str]] = history_dicts(db, self.conversation_id)
+        self.attachments = self._load_attachments(self.conversation_id)
+
+    def _load_attachments(self, conversation_id: int):
         from .attachment_store import AttachmentStore
-        self.attachments = AttachmentStore()
+
+        store = AttachmentStore()
+        store.restore(self.db._execute("""
+            SELECT attachment_id, path, resolved_path, directory, workspace_root FROM chat_attachment_refs
+            WHERE conversation_id = ? ORDER BY rowid
+        """, (conversation_id,)).fetchall())
+        return store
+
+    def persist_attachments(self) -> None:
+        refs = self.attachments.references()
+        cid = self.conversation_id
+        with self.db._lock, self.db._conn as conn:
+            conn.execute("DELETE FROM chat_attachment_refs WHERE conversation_id = ?", (cid,))
+            conn.executemany("INSERT INTO chat_attachment_refs VALUES (?, ?, ?, ?, ?, ?)",
+                             [(cid, *ref) for ref in refs])
 
     def record(self, role: str, content: str, *, model_content: str = "") -> str | None:
         """메모리에 먼저 넣고 DB에 쓴다. DB에 못 쓰면 메모리에서도 빼서 다음 턴에 안 남긴다."""
@@ -56,8 +73,7 @@ class ChatSession:
 
     def activate(self, conversation_id: int) -> None:
         if int(conversation_id) != self.conversation_id:
-            from .attachment_store import AttachmentStore
-            self.attachments = AttachmentStore()
+            self.attachments = self._load_attachments(int(conversation_id))
         self.conversation_id = int(conversation_id)
         set_active_conversation_id(self.db, self.conversation_id)
         self.history = history_dicts(self.db, self.conversation_id)

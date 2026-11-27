@@ -563,6 +563,7 @@ def start_control_surface(window: MainWindow) -> ControlSurface | None:
     invoker.bind(qt.run)
     gateway = None
     if http_enabled and os.environ.get("IRIS_NATIVE_GATEWAY_ENABLED") == "1":
+        from sqlite3 import Error as StorageError
         from urllib.parse import urlparse
 
         from iris.engine import shared_engine
@@ -585,7 +586,13 @@ def start_control_surface(window: MainWindow) -> ControlSurface | None:
                 raise ValueError("gateway requires a local inference endpoint")
             return target
 
-        gateway = NativeGateway(resolve_gateway_target)
+        try:
+            gateway = NativeGateway(
+                resolve_gateway_target,
+                allow_control_token=os.environ.get("IRIS_NATIVE_GATEWAY_ALLOW_CONTROL_TOKEN", "1") != "0",
+            )
+        except (OSError, StorageError):
+            window._live_activity.append_instant_line("Iris Gateway: 저장소를 열지 못했습니다.")
     surface = ControlSurface(invoker=invoker, host=host, port=port, gateway=gateway)
     _register_actions(window, surface)
 
@@ -729,7 +736,7 @@ def _call_on_ui_unbounded(window: MainWindow, fn: Callable[[], Any]) -> Any:
 
 def _confirm_body(spec: Any, args: dict[str, Any]) -> str:
     bits = [spec.summary or spec.name]
-    for key in ("to", "destination", "subject", "text", "url", "value", "name"):
+    for key in ("operation", "name", "to", "destination", "subject", "text", "url", "value"):
         if args.get(key):
             bits.append(f"{key}={args[key]}")
     return "\n".join(bits)[:800]

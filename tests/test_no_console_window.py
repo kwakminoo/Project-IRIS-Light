@@ -179,14 +179,24 @@ class AttachmentConsoleGuardTests(TestCase):
         self.assertIn("def _shell_thumbnail", body)
 
     def test_tesseract_spawn_uses_no_window(self) -> None:
-        body = (
-            Path(__file__).resolve().parents[1]
-            / "iris"
-            / "knowledge"
-            / "content_extract.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("def _hide_tesseract_console", body)
-        self.assertIn("no_window_kwargs()", body)
+        from iris.knowledge import content_extract
+
+        flag = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch.object(subprocess, "CREATE_NO_WINDOW", flag, create=True),
+            mock.patch.object(content_extract, "_tesseract_runtime", None),
+            mock.patch.object(content_extract, "_resolve_tesseract_cmd", return_value="tesseract.exe"),
+            mock.patch.object(content_extract, "_installed_tessdata", return_value=None),
+            mock.patch("subprocess.run") as probe,
+            mock.patch("subprocess.Popen") as spawn,
+        ):
+            probe.return_value.stdout = b"List of available languages (2):\neng\nkor\n"
+            spawn.return_value.returncode = 0
+            spawn.return_value.communicate.return_value = b"recognized", b""
+            self.assertEqual(content_extract._ocr_png_bytes(b"image"), ("recognized", ""))
+            self.assertEqual(probe.call_args.kwargs["creationflags"] & flag, flag)
+            self.assertEqual(spawn.call_args.kwargs["creationflags"] & flag, flag)
 
     def test_ide_bridge_git_uses_windows_hide(self) -> None:
         root = Path(__file__).resolve().parents[1]

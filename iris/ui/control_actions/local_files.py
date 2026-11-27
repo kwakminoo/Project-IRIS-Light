@@ -29,8 +29,18 @@ def _allowed(window: Any, path: Path) -> bool:
     except Exception:
         pass
     store = getattr(getattr(window, "_chat_session", None), "attachments", None)
+    from iris.runtime.attachment_store import AttachmentStore
+    from iris.ui.control_bindings import trusted_execution_context
+
+    scope = trusted_execution_context(window)
     for root in getattr(store, "roots", {}).values():
         attached = Path(root.path)
+        if isinstance(store, AttachmentStore) and (
+            not store.in_workspace(root, scope.workspace_root)
+            or attached.resolve() != root.resolved_path
+            or scope.effective_session_id() != str(getattr(window._chat_session, "conversation_id", ""))
+        ):
+            continue
         if path.resolve() == attached.resolve() or (root.directory and _inside(path, attached)):
             return True
     return False

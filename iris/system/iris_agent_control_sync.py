@@ -459,8 +459,8 @@ def _mcp_equivalent(a: Any, b: Any) -> bool:
 
 
 @contextmanager
-def edit_mcp_servers(home: Path | None = None) -> Iterator[dict[str, Any]]:
-    """Edit the existing MCP mapping without rewriting invalid settings."""
+def edit_iris_agent_config(home: Path | None = None) -> Iterator[dict[str, Any]]:
+    """Atomically update the product's YAML config and preserve the initial backup."""
     import yaml
 
     path = iris_agent_config_path(home)
@@ -468,12 +468,11 @@ def edit_mcp_servers(home: Path | None = None) -> Iterator[dict[str, Any]]:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
         if data is None:
             data = {}
-        if not isinstance(data, dict) or not isinstance(data.get("mcp_servers", {}), dict):
-            raise ValueError("config.yaml의 mcp_servers 설정 형식이 올바르지 않습니다")
-        servers = data.setdefault("mcp_servers", {})
-        before = deepcopy(servers)
-        yield servers
-        if servers == before:
+        if not isinstance(data, dict):
+            raise ValueError("config.yaml 설정 형식이 올바르지 않습니다")
+        before = deepcopy(data)
+        yield data
+        if data == before:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         backup = path.with_name("config.yaml.bak-iris")
@@ -490,6 +489,18 @@ def edit_mcp_servers(home: Path | None = None) -> Iterator[dict[str, Any]]:
         finally:
             if staged is not None:
                 staged.unlink(missing_ok=True)
+
+
+@contextmanager
+def edit_mcp_servers(home: Path | None = None) -> Iterator[dict[str, Any]]:
+    """Edit the existing MCP mapping without rewriting invalid settings."""
+    with edit_iris_agent_config(home) as data:
+        servers = data.get("mcp_servers", {})
+        if not isinstance(servers, dict):
+            raise ValueError("config.yaml의 mcp_servers 설정 형식이 올바르지 않습니다")
+        yield servers
+        if servers or "mcp_servers" in data:
+            data["mcp_servers"] = servers
 
 
 def ensure_mcp_in_config(
@@ -793,14 +804,18 @@ def ensure_skills_installed(
 
 def load_mcp_servers_config(home: Path | None = None) -> dict[str, Any]:
     try:
+        return parse_mcp_servers_config(iris_agent_config_path(home).read_bytes())
+    except OSError:
+        return {}
+
+
+def parse_mcp_servers_config(contents: bytes) -> dict[str, Any]:
+    try:
         import yaml
     except ImportError:
         return {}
-    path = iris_agent_config_path(home)
-    if not path.is_file():
-        return {}
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+        data = yaml.safe_load(contents.decode("utf-8", errors="replace")) or {}
     except Exception:
         return {}
     servers = data.get("mcp_servers") if isinstance(data, dict) else None

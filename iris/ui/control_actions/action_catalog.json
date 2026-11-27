@@ -229,20 +229,14 @@
   },
   {
     "name": "content.dump_lab_scripts",
-    "summary": "From a lecture PDF path, parse every practice/lab program label and write source files under the project (default labs/). Returns written paths and labels only — not PDF text. Prefer this over content.extract + project.write_file when the user wants all labs as files. Pass Attachment absolute path.",
+    "summary": "Extract lab programs from a lecture PDF attachment and write the scripts under the project. Use attachment_id and, for a folder attachment, relative_path.",
     "risk": "medium",
     "confirm_required": false
   },
   {
     "name": "content.extract",
-    "summary": "Extract text from PDF/Office/text/image/URL. Args: source|path|url or attachment_id; optional page_from/page_to (1-based). Returns total_pages, page_status, incomplete when truncated or unread pages remain.",
+    "summary": "Read an attached document by attachment_id, with relative_path for a folder attachment. Supports an authorized source path or URL, optional page_from/page_to and ocr_language.",
     "risk": "low",
-    "confirm_required": false
-  },
-  {
-    "name": "content.dump_lab_scripts",
-    "summary": "From a lecture PDF path, parse every practice/lab program label and write source files under the project (default labs/). Returns written paths and labels only — not PDF text. Prefer this over content.extract + project.write_file when the user wants all labs as files. Pass Attachment absolute path.",
-    "risk": "medium",
     "confirm_required": false
   },
   {
@@ -806,6 +800,30 @@
   {
     "name": "ui.open_user_profile",
     "summary": "Open user profile dialog",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "skill.list",
+    "summary": "List installed IRIS skills",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "skill.manage",
+    "summary": "Change a registered skill as requested (use operation and name)",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
+    "name": "skill.view",
+    "summary": "Read a registered skill and its text resources",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "vision.analyze_attachment",
+    "summary": "Analyze an authorized image or PDF page with the local vision model",
     "risk": "low",
     "confirm_required": false
   },

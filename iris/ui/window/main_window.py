@@ -2725,6 +2725,8 @@ class MainWindow(QMainWindow):
         이전 채팅 결과를 취소하고, 화면 밖 채팅은 제목을 못 받는다.
         제목은 Hermes 없이 api/ollama 직행. 실패 시 휴리스틱만 쓴다.
         """
+        if getattr(self, "_worker_close_pending", False):
+            return
         from iris.runtime.backend_route import resolve_title_route
         from iris.storage.chat_title import title_exchange, title_messages
         from iris.storage.conversations import (
@@ -3261,7 +3263,7 @@ class MainWindow(QMainWindow):
 
     def _schedule_wiki_session_close(self, next_id: int | None = None, *, force: bool = False) -> None:
         """떠나기 전에 대화 묶음을 에피소드와 특성 노트로 남긴다. 창은 기다리지 않는다."""
-        if self._test_mode:
+        if self._test_mode or getattr(self, "_worker_close_pending", False):
             return
         if not force and next_id is not None and int(next_id) == int(self._conversation_id):
             return
@@ -5064,7 +5066,8 @@ class MainWindow(QMainWindow):
             return
         attached_store = self._chat_session.attachments
         if turn.attachments or attached_store.roots:
-            from iris.knowledge.page_vision import transcribe_images
+            from iris.knowledge.page_vision import is_local_document_vision, transcribe_images
+            from iris.ui.control_bindings import trusted_execution_context
             from iris.ui.workers.attachment_worker import AttachmentWorker
 
             spec = self._material_vision_spec(model)
@@ -5086,9 +5089,10 @@ class MainWindow(QMainWindow):
             worker = AttachmentWorker(
                 turn.attachments,
                 workspace_root=self._current_project_root(),
+                owner_workspace=trusted_execution_context(self).workspace_root,
                 query=text,
                 store=attached_store,
-                image_reader=_read_image,
+                image_reader=_read_image if is_local_document_vision(spec) else None,
                 parent=self,
             )
             self._chat_worker = worker
@@ -5100,17 +5104,20 @@ class MainWindow(QMainWindow):
             worker.failed.connect(
                 lambda err, tid=turn.id: self._on_attachment_failed(err, tid)
             )
+            worker.finished.connect(lambda w=worker: self._forget_attachment_worker(w))
             worker.start()
             return
         self._continue_user_turn(turn, model, owns)
 
     def _on_attachment_failed(self, error: str, turn_id: str) -> None:
-        if self._is_current_turn(turn_id):
+        if not getattr(self, "_worker_close_pending", False) and self._is_current_turn(turn_id):
             self._chat.show_attach_notice(error)
             self._chat.append_message_instant('Iris', error)
             self._finish_current_turn(turn_id, open_followup=False)
 
     def _continue_user_turn(self, turn: UserTurn, model: str, owns: bool, prepared=None) -> None:
+        if getattr(self, "_worker_close_pending", False):
+            return
         if not self._enter_owning(turn.id):
             return
         try:
@@ -5118,11 +5125,24 @@ class MainWindow(QMainWindow):
         finally:
             self._leave_owning()
 
+    def _forget_attachment_worker(self, worker: QThread) -> None:
+        for slot in self._runs.all_slots():
+            if slot.worker is worker:
+                slot.worker = None
+        worker.deleteLater()
+
     def _continue_user_turn_bound(self, turn: UserTurn, model: str, owns: bool, prepared=None) -> None:
         text = (turn.text or '').strip()
         shown = self._format_user_turn_content(turn)
         showing = self._showing_bound()
         if prepared is not None:
+            if turn.attachments and showing:
+                from sqlite3 import Error as StorageError
+
+                try:
+                    self._chat_session.persist_attachments()
+                except (OSError, StorageError):
+                    self._live_activity.append_instant_line("첨부 참조를 저장하지 못했습니다.")
             if showing and prepared.notices:
                 self._chat.show_attach_notice('\n'.join(prepared.notices))
             for notice in prepared.notices:
@@ -11539,8 +11559,39 @@ class MainWindow(QMainWindow):
         MainWindow._arm_lifecycle_trace.done = True
         app.aboutToQuit.connect(lambda: trace("[APP] QApplication.aboutToQuit"))
 
+    def _closing_workers(self) -> list[QThread]:
+        from iris.ui.workers.attachment_worker import AttachmentWorker
+        from iris.ui.workers.wiki_session_worker import WikiSessionWorker
+
+        # Cancelled title workers can already be absent from the conversation map.
+        return [
+            child
+            for worker_type in (AttachmentWorker, ChatTitleWorker, WikiSessionWorker)
+            for child in self.findChildren(worker_type)
+            if child.isRunning()
+        ]
+
+    def _close_after_background_workers(self) -> None:
+        if self._closing_workers():
+            QTimer.singleShot(100, self._close_after_background_workers)
+        else:
+            self.close()
+
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         from iris.ui.workers.ollama_workers import stop_ollama_login_watch
+
+        workers = self._closing_workers()
+        if workers:
+            event.ignore()
+            if not getattr(self, "_worker_close_pending", False):
+                self._worker_close_pending = True
+                self.setEnabled(False)
+                for worker in workers:
+                    cancel = getattr(worker, "request_cancel", None)
+                    if cancel is not None:
+                        cancel()
+                self._close_after_background_workers()
+            return
 
         self._stop_email_idle_worker()
         stop_ollama_login_watch(self)
@@ -11643,10 +11694,6 @@ class MainWindow(QMainWindow):
             ):
                 self._handoff_summary_worker.request_cancel()
                 self._handoff_summary_worker.wait(2000)
-            for worker in list(self._chat_title_workers.values()):
-                if worker.isRunning():
-                    worker.request_cancel()
-                    worker.wait(2000)
             self._chat_title_workers.clear()
             if self._routine_worker is not None and self._routine_worker.isRunning():
                 self._routine_worker.request_cancel()

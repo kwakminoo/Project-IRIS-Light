@@ -36,29 +36,14 @@ def _page_limit(raw: object) -> int:
     return min(n, _PAGE_CAP)
 
 
-def resolve_attachment_source(store: Any, attachment_id: str) -> str:
-    """AttachmentStore roots/list_attached_files → absolute path. Missing → ValueError."""
+def resolve_attachment_source(store: Any, attachment_id: str, *, relative_path: str = "", workspace_root: str = "") -> str:
+    """Resolve the host-owned attachment or indexed file in a folder attachment."""
     aid = str(attachment_id or "").strip()
     if not aid:
         raise ValueError("attachment_id required")
     if store is None:
-        raise ValueError(f"attachment_id not found: {aid}")
-    root = getattr(store, "roots", {}).get(aid)
-    if root is not None:
-        if getattr(root, "directory", False):
-            raise ValueError(
-                "attachment_id points to a folder; pass a file attachment_id"
-            )
-        return str(root.path)
-    list_fn = getattr(store, "list_attached_files", None)
-    if callable(list_fn):
-        for meta in list_fn() or []:
-            if str(meta.get("attachment_id") or "") != aid:
-                continue
-            full = str(meta.get("full_path") or "").strip()
-            if full:
-                return full
-    raise ValueError(f"attachment_id not found: {aid}")
+        raise ValueError("attachment_id not found")
+    return str(store.resolve_file(aid, relative_path, workspace_root=workspace_root))
 
 
 def _truthy(raw: object) -> bool:
@@ -190,11 +175,11 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             or ""
         ).strip()
 
-    def _summary_and_vision(args: dict[str, Any]):
-        from iris.knowledge.page_vision import transcribe_images
+    def _summary_and_vision(args: dict[str, Any], *, local_document: bool = False):
+        from iris.knowledge.page_vision import is_local_document_vision, transcribe_images
         from iris.knowledge.wiki_summarize import summarize_for_wiki
 
-        model = _model_name(args)
+        model = _model_name({} if local_document else args)
         if not model:
             return None, None
         base = (window._settings.ollama_base_url or "http://127.0.0.1:11434/v1").strip()
@@ -222,7 +207,10 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             except Exception:
                 pass
 
-        def _vision(pngs: list[bytes]) -> str:
+        if local_document and not is_local_document_vision(spec):
+            return _sum, None
+
+        def _vision(pngs: list[bytes], *, prompt: str = "") -> str:
             return transcribe_images(
                 pngs,
                 model=str(spec.get("model") or model),
@@ -230,6 +218,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
                 api_base_url=str(spec.get("api_base_url") or ""),
                 api_key=str(spec.get("api_key") or ""),
                 auth_style=str(spec.get("auth_style") or "bearer"),
+                prompt=prompt,
             )
 
         return _sum, _vision
@@ -354,25 +343,48 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             },
         )
 
+    def _checked_content_source(args: dict[str, Any]) -> str:
+        from iris.knowledge.content_extract import _looks_like_url
+        from iris.ui.control_bindings import capture_execution_context, trusted_execution_context
+        from iris.ui.control_actions.local_files import _allowed
+
+        attachment_id = str(args.get("attachment_id") or "").strip()
+        context = trusted_execution_context(window)
+        if context.surface == "gateway":
+            raise ValueError("Desktop document scope required")
+        if attachment_id:
+            session = getattr(window, "_chat_session", None)
+            store = getattr(session, "attachments", None)
+            current = str(getattr(session, "conversation_id", "") or "")
+            owner = context.conversation_id or context.effective_session_id()
+            if (not current or owner != current or context.principal not in {"iris.control", "iris.desktop", "desktop"}
+                    or (context.workspace_id and context.workspace_id != capture_execution_context(window).workspace_id)):
+                raise ValueError("attachment is outside the active conversation or workspace")
+            return resolve_attachment_source(store, attachment_id, relative_path=str(args.get("relative_path") or ""),
+                                             workspace_root=context.workspace_root)
+        source = str(args.get("source") or args.get("path") or args.get("url") or "").strip().strip('"').strip("'")
+        if not source:
+            raise ValueError("source required (file path, http(s) URL, or attachment_id)")
+        if not _looks_like_url(source):
+            path = Path(source).expanduser()
+            if not path.is_absolute() or not _allowed(window, path):
+                raise ValueError("file is outside the configured local read scope")
+        return source
+
     def content_extract(args: dict[str, Any]) -> dict[str, Any]:
         from iris.knowledge.content_extract import (
+            DocumentExtractionError,
             UnsupportedAttachmentTypeError,
             extract_from_source,
         )
+        from iris.system.execution_context import host_tool_cancelled
 
         attachment_id = str(args.get("attachment_id") or "").strip()
-        source = str(args.get("source") or args.get("path") or args.get("url") or "").strip()
-        if attachment_id:
-            store = getattr(getattr(window, "_chat_session", None), "attachments", None)
-            try:
-                source = resolve_attachment_source(store, attachment_id)
-            except ValueError as exc:
-                return err_result("content.extract", str(exc))
-        if not source:
-            return err_result(
-                "content.extract",
-                "source required (file path, http(s) URL, or attachment_id)",
-            )
+        try:
+            source = _checked_content_source(args)
+        except (ValueError, OSError) as exc:
+            error = str(exc) if isinstance(exc, ValueError) else "첨부 원본을 읽을 수 없습니다."
+            return err_result("content.extract", error)
 
         def _optional_int(key: str) -> int | None:
             raw = args.get(key)
@@ -386,10 +398,13 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         try:
             page_from = _optional_int("page_from")
             page_to = _optional_int("page_to")
+            ocr_language = args.get("ocr_language", "kor+eng")
+            if ocr_language not in ("kor+eng", "kor", "eng"):
+                raise ValueError("ocr_language must be kor+eng, kor, or eng")
         except ValueError as exc:
             return err_result("content.extract", str(exc))
 
-        _sum, vision = _summary_and_vision(args)
+        _sum, vision = _summary_and_vision(args, local_document=True)
         _ = _sum
         try:
             data = extract_from_source(
@@ -397,6 +412,8 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
                 page_from=page_from,
                 page_to=page_to,
                 vision_reader=vision,
+                cancelled=host_tool_cancelled,
+                ocr_language=ocr_language,
             )
         except UnsupportedAttachmentTypeError as exc:
             return err_result(
@@ -408,14 +425,22 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
                     "scope": "attachment_extract",
                 },
             )
-        except (ValueError, OSError, RuntimeError, FileNotFoundError) as exc:
-            return err_result("content.extract", str(exc))
+        except DocumentExtractionError as exc:
+            from iris.runtime.attachment_context import _compact_page_status
+
+            return err_result("content.extract", str(exc), {
+                "error_code": exc.code, "recoverable": exc.recoverable, "stage": exc.stage,
+                "total_pages": exc.total_pages, "page_status": _compact_page_status(exc.page_status),
+            })
+        except (ValueError, OSError, RuntimeError) as exc:
+            message = "첨부에서 내용을 읽지 못했습니다." if attachment_id else str(exc)
+            return err_result("content.extract", message)
         _log(window, "content.extract", True)
         payload: dict[str, Any] = {
             "kind": data["kind"],
             "title": data["title"],
             "text": data["text"],
-            "source": data["source"],
+            "source": str(args.get("relative_path") or Path(source).name) if attachment_id else data["source"],
             "truncated": bool(data.get("truncated")),
             "incomplete": bool(data.get("incomplete")),
             "ocr_used": bool(data.get("ocr_used")),
@@ -426,18 +451,22 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             payload["attachment_id"] = attachment_id
         if data.get("kind") == "pdf" or data.get("total_pages") is not None:
             payload["total_pages"] = int(data.get("total_pages") or 0)
-            payload["page_status"] = list(data.get("page_status") or [])
+            if attachment_id:
+                from iris.runtime.attachment_context import _compact_page_status
+
+                payload["page_status"] = _compact_page_status(data.get("page_status"))
+            else:
+                payload["page_status"] = list(data.get("page_status") or [])
         return ok_result("content.extract", payload)
 
     def content_dump_lab_scripts(args: dict[str, Any]) -> dict[str, Any]:
         from iris.knowledge.lab_script_dump import dump_lab_scripts, to_hermes_summary
 
-        source = str(args.get("source") or args.get("path") or "").strip()
-        if not source:
-            return err_result(
-                "content.dump_lab_scripts",
-                "source required (Attachment absolute PDF path)",
-            )
+        by_attachment = bool(str(args.get("attachment_id") or "").strip())
+        try:
+            source = _checked_content_source(args)
+        except (ValueError, OSError):
+            return err_result("content.dump_lab_scripts", "첨부 원본 또는 읽기 범위의 PDF가 필요합니다.")
         root = str(args.get("project_root") or args.get("root") or "").strip()
         if not root:
             getter = getattr(window, "_current_project_root", None)
@@ -452,7 +481,7 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
                 "project_root required (or open a project in Iris)",
             )
         out_dir = str(args.get("out_dir") or args.get("out_subdir") or "labs").strip() or "labs"
-        _sum, vision = _summary_and_vision(args)
+        _sum, vision = _summary_and_vision(args, local_document=by_attachment)
         _ = _sum
         vision_bytes = None
         if vision is not None:
@@ -469,53 +498,52 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
                 vision_reader=vision_bytes,
             )
         except (ValueError, OSError, RuntimeError) as exc:
-            return err_result("content.dump_lab_scripts", str(exc))
+            message = "첨부 PDF의 실습 스크립트를 내보내지 못했습니다." if by_attachment else str(exc)
+            return err_result("content.dump_lab_scripts", message)
         _log(window, "content.dump_lab_scripts", True)
-        return ok_result("content.dump_lab_scripts", to_hermes_summary(result).to_dict())
+        summary = to_hermes_summary(result).to_dict()
+        if by_attachment and summary["errors"]:
+            summary["errors"] = ["첨부 PDF를 읽는 중 또는 프로젝트에 저장하는 중 일부 작업이 실패했습니다."]
+        return ok_result("content.dump_lab_scripts", summary)
 
-    def content_dump_lab_scripts(args: dict[str, Any]) -> dict[str, Any]:
-        from iris.knowledge.lab_script_dump import dump_lab_scripts, to_hermes_summary
+    def vision_analyze_attachment(args: dict[str, Any]) -> dict[str, Any]:
+        from iris.knowledge.content_extract import _page_png, _png_bytes
+        from iris.runtime.attachment_context import IMAGE_EXTENSIONS
+        from iris.system.execution_context import host_tool_cancelled
+        from iris.system.execution_policy import format_tool_payload_for_model
 
-        source = str(args.get("source") or args.get("path") or "").strip()
-        if not source:
-            return err_result(
-                "content.dump_lab_scripts",
-                "source required (Attachment absolute PDF path)",
-            )
-        root = str(args.get("project_root") or args.get("root") or "").strip()
-        if not root:
-            getter = getattr(window, "_current_project_root", None)
-            if callable(getter):
-                try:
-                    root = str(getter() or "")
-                except Exception:
-                    root = ""
-        if not root:
-            return err_result(
-                "content.dump_lab_scripts",
-                "project_root required (or open a project in Iris)",
-            )
-        out_dir = str(args.get("out_dir") or args.get("out_subdir") or "labs").strip() or "labs"
-        _sum, vision = _summary_and_vision(args)
-        _ = _sum
-        vision_bytes = None
-        if vision is not None:
-
-            def _bytes_reader(png: bytes, _v=vision) -> str:
-                return str(_v([png]) or "").strip()
-
-            vision_bytes = _bytes_reader
+        attachment_id = str(args.get("attachment_id") or "").strip()
+        if not attachment_id:
+            return err_result("vision.analyze_attachment", "attachment_id required")
         try:
-            result = dump_lab_scripts(
-                source,
-                root,
-                out_subdir=out_dir,
-                vision_reader=vision_bytes,
-            )
-        except (ValueError, OSError, RuntimeError) as exc:
-            return err_result("content.dump_lab_scripts", str(exc))
-        _log(window, "content.dump_lab_scripts", True)
-        return ok_result("content.dump_lab_scripts", to_hermes_summary(result).to_dict())
+            source = Path(_checked_content_source(args))
+        except (ValueError, OSError):
+            return err_result("vision.analyze_attachment", "attached document is outside the active scope or unavailable")
+        _sum, vision = _summary_and_vision({}, local_document=True)
+        if vision is None:
+            return err_result("vision.analyze_attachment", "local vision unavailable", {"error_code": "VISION_UNAVAILABLE"})
+        if host_tool_cancelled():
+            return err_result("vision.analyze_attachment", "cancelled")
+        page = args.get("page", 1)
+        try:
+            if source.suffix.lower() == ".pdf":
+                import pymupdf
+
+                with pymupdf.open(source) as document:
+                    if document.needs_pass or type(page) is not int or not 1 <= page <= document.page_count:
+                        return err_result("vision.analyze_attachment", "page unavailable")
+                    png = _page_png(document[page - 1])
+            elif source.suffix.lower().lstrip(".") in IMAGE_EXTENSIONS:
+                png = _png_bytes(source.read_bytes())
+            else:
+                return err_result("vision.analyze_attachment", "PDF or image attachment required")
+            text = vision([png], prompt=str(args.get("question") or "")[:1000]).strip()
+        except (ValueError, OSError, RuntimeError):
+            text = ""
+        if host_tool_cancelled() or not text:
+            return err_result("vision.analyze_attachment", "local vision returned no result", {"error_code": "VISION_FAILED"})
+        return ok_result("vision.analyze_attachment", {"attachment_id": attachment_id,
+                         "filename": source.name, "page": page, "text": format_tool_payload_for_model(text[:12000])})
 
     def wiki_import_content(args: dict[str, Any]) -> dict[str, Any]:
         from iris.knowledge.content_extract import UnsupportedAttachmentTypeError
@@ -852,11 +880,13 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
         summary="Extract text from PDF/Office/text/image/URL. Args: source|path|url or attachment_id; optional page_from/page_to (1-based). Returns total_pages, page_status, incomplete when truncated or unread pages remain.",
         risk="low",
     )
+    reg.register("vision.analyze_attachment", vision_analyze_attachment,
+                 summary="Analyze an authorized image or PDF page with the local vision model")
 
     reg.register(
         "content.dump_lab_scripts",
         content_dump_lab_scripts,
-        summary="From a lecture PDF path, parse every practice/lab program label and write source files under the project (default labs/). Returns written paths and labels only — not PDF text. Prefer this over content.extract + project.write_file when the user wants all labs as files. Pass Attachment absolute path.",
+        summary="Extract lab programs from a lecture PDF attachment and write the scripts under the project. Use attachment_id and, for a folder attachment, relative_path.",
         risk="medium",
     )
 

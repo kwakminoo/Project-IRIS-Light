@@ -34,6 +34,7 @@ def main() -> None:
         schema("search_files", "find files by name", ("root", "query")),
         schema("write_file", "write"),
         schema("browser_navigate", "open url"),
+        {**schema("mcp_demo_get_status", "Get status from demo MCP"), "source": "mcp", "source_name": "demo"},
     ]
     visible, deferred, activated = assemble_iris_model_tools(tools, context_length=64000)
     names = {
@@ -60,6 +61,11 @@ def main() -> None:
     )
     assert found is not None and "search_files" in found, found
     assert json.loads(found)["tools"]["search_files"]["required"] == ["root", "query"], found
+    external = json.loads(dispatch_iris_bridge("tool_search", {"queries": ["demo get status"]}, deferred_defs=deferred))
+    assert external["results"][0]["matches"][0] == "mcp_demo_get_status"
+    assert external["tools"]["mcp_demo_get_status"]["source_name"] == "demo"
+    details = json.loads(dispatch_iris_bridge("tool_describe", {"names": ["mcp_demo_get_status"]}, deferred_defs=deferred))
+    assert details["tools"]["mcp_demo_get_status"]["source"] == "mcp"
     print("tool_surface ok", f"visible={len(names)}", f"deferred={len(deferred_names)}")
 
 

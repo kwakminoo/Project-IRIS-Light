@@ -7,6 +7,9 @@ import os
 import re
 import shutil
 import sys
+from contextvars import ContextVar
+from threading import Lock
+from time import monotonic
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -29,15 +32,14 @@ _HWP_SUFFIXES = {".hwp", ".hwpx"}
 _LAYER_MIN = 40
 _OCR_KEEP = 8
 VISION_PAGE_CAP = 4
-_TESSDATA_LANGS = ("eng", "osd", "kor")
-_TESSDATA_URL = "https://github.com/tesseract-ocr/tessdata/raw/main/{lang}.traineddata"
+_TESSDATA_LANGS = ("kor", "eng")
 _WIN_TESSERACT_CANDIDATES = (
     Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
     Path(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
 )
-_tesseract_ready = False
-_tessdata_dir: Path | None = None
-_ocr_unavailable = ""
+_tesseract_runtime: tuple[str, Path | None, frozenset[str]] | None = None
+_ocr_setup_lock = Lock()
+_ocr_cancelled = ContextVar("iris_ocr_cancelled", default=lambda: False)
 
 # 웹 Setup 다운로드 오류와 분리 — 도움말: https://iris-light-site.vercel.app/#install
 _SETUP_HELP = "https://iris-light-site.vercel.app/#install"
@@ -61,6 +63,38 @@ class UnsupportedAttachmentTypeError(ValueError):
             f"설치 파일은 {_SETUP_HELP} 또는 GitHub Releases에서 받으세요."
         )
         self.suffix = suffix
+
+
+_DOCUMENT_ERRORS = {
+    "PDF_EMPTY": "PDF에 읽을 내용이 없습니다.",
+    "PDF_ENCRYPTED": "암호화된 PDF입니다. 암호를 해제한 파일을 첨부하세요.",
+    "PDF_CORRUPTED": "PDF 파일이 손상됐거나 올바른 PDF가 아닙니다.",
+    "PDF_PAGE_LIMIT": "PDF 페이지가 너무 많습니다. 페이지 범위를 나누어 읽으세요.",
+    "PDF_PAGE_RANGE_INVALID": "PDF 페이지 범위가 문서에 없습니다.",
+    "PDF_RENDER_FAILED": "PDF 페이지를 렌더링하지 못했습니다.",
+    "OCR_ENGINE_MISSING": "OCR 실행 파일을 찾을 수 없습니다. IRIS의 Tesseract 설치 안내를 확인하세요.",
+    "OCR_LANGUAGE_MISSING": "OCR 언어팩이 없습니다. IRIS의 Tesseract 설치 안내를 확인하세요.",
+    "OCR_TESSDATA_INVALID": "OCR 언어팩을 읽을 수 없습니다. Tesseract 언어팩을 다시 설치하세요.",
+    "OCR_TIMEOUT": "OCR 처리 시간이 초과됐습니다.",
+    "OCR_NO_TEXT": "스캔 PDF 또는 이미지에서 글자를 읽지 못했습니다.",
+    "OCR_FAILED": "OCR 중 오류가 발생했습니다.",
+    "VISION_FAILED": "비전 모델에서 내용을 읽지 못했습니다.",
+    "EXTRACTION_CANCELLED": "문서 읽기가 취소되었습니다.",
+    "FILE_NOT_FOUND": "파일이 삭제되었거나 경로가 존재하지 않습니다.",
+    "FILE_ACCESS_DENIED": "파일을 읽을 권한이 없습니다.",
+    "FILE_LOCKED": "파일이 다른 프로그램에서 잠겨 있습니다.",
+    "EXTRACTION_LIMIT": "첨부 파일 크기 한도를 초과했습니다.",
+}
+
+
+class DocumentExtractionError(ValueError):
+    def __init__(self, code: str, *, total_pages: int = 0, page_status: list[dict] | None = None) -> None:
+        super().__init__(_DOCUMENT_ERRORS[code])
+        self.code = code
+        self.total_pages = total_pages
+        self.page_status = page_status or []
+        self.stage = "ocr" if code.startswith("OCR_") else "vision" if code.startswith("VISION_") else "extraction"
+        self.recoverable = code not in {"PDF_CORRUPTED", "PDF_EMPTY"}
 
 
 _SKIP_HTML = {"script", "style", "noscript", "nav", "header", "footer", "aside"}
@@ -135,16 +169,19 @@ def _looks_like_url(source: str) -> bool:
     return p.scheme in ("http", "https") and bool(p.netloc)
 
 
-def _extract_pdf_text_pypdf(path: Path) -> str:
+def _open_pypdf(path: Path):
+    from pypdf import PdfReader
+    from pypdf.errors import PdfReadError
+
     try:
-        from pypdf import PdfReader
-    except ImportError as exc:
-        raise RuntimeError("pypdf not installed — run: pip install pypdf") from exc
-    reader = PdfReader(str(path))
-    parts: list[str] = []
-    for page in reader.pages:
-        parts.append(page.extract_text() or "")
-    return "\n\n".join(p.strip() for p in parts if p and p.strip())
+        reader = PdfReader(str(path))
+    except FileNotFoundError as exc:
+        raise DocumentExtractionError("FILE_NOT_FOUND") from exc
+    except (PdfReadError, ValueError, OSError) as exc:
+        raise DocumentExtractionError("PDF_CORRUPTED") from exc
+    if reader.is_encrypted:
+        raise DocumentExtractionError("PDF_ENCRYPTED")
+    return reader
 
 
 def _resolve_tesseract_cmd() -> str:
@@ -158,18 +195,12 @@ def _resolve_tesseract_cmd() -> str:
     found = shutil.which("tesseract")
     if found:
         return found
-    raise RuntimeError(
-        "OCR 실패 (pdf-ocr): Tesseract OCR이 설치되지 않았습니다. "
-        "Windows: scripts\\setup_tesseract.ps1 실행 또는 "
-        "winget install UB-Mannheim.TesseractOCR"
-    )
+    raise DocumentExtractionError("OCR_ENGINE_MISSING")
 
 
 def _iris_tessdata_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CONFIG_HOME") or str(Path.home())
-    d = Path(base) / "iris" / "tesseract" / "tessdata"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return Path(base) / "iris" / "tesseract" / "tessdata"
 
 
 def _system_tessdata_dir(tesseract_cmd: str) -> Path | None:
@@ -178,117 +209,113 @@ def _system_tessdata_dir(tesseract_cmd: str) -> Path | None:
     return cand if cand.is_dir() else None
 
 
-def _download_tessdata(lang: str, dest: Path) -> None:
-    url = _TESSDATA_URL.format(lang=lang)
-    req = Request(url, headers={"User-Agent": "iris-tesseract-bootstrap/1.0"})
-    with urlopen(req, timeout=120) as resp:
-        dest.write_bytes(resp.read())
+def _installed_tessdata(tesseract_cmd: str) -> Path | None:
+    prefix = os.environ.get("TESSDATA_PREFIX", "").strip()
+    if prefix:
+        directory = Path(prefix)
+        if not directory.is_dir():
+            raise DocumentExtractionError("OCR_TESSDATA_INVALID")
+        return directory
+    for directory in (_iris_tessdata_dir(), _system_tessdata_dir(tesseract_cmd)):
+        if directory and all((directory / f"{lang}.traineddata").is_file() for lang in _TESSDATA_LANGS):
+            return directory
+    # The system installation can locate its compiled-in tessdata path on Linux.
+    return None
 
 
-def _bootstrap_tessdata(tesseract_cmd: str) -> Path:
-    """ponytail: user-writable tessdata; copy eng/osd from install, fetch kor."""
-    user = _iris_tessdata_dir()
-    sys_dir = _system_tessdata_dir(tesseract_cmd)
-    for lang in _TESSDATA_LANGS:
-        dest = user / f"{lang}.traineddata"
-        if dest.is_file() and dest.stat().st_size > 1024:
-            continue
-        if sys_dir:
-            src = sys_dir / f"{lang}.traineddata"
-            if src.is_file():
-                shutil.copy2(src, dest)
-                continue
-        if lang == "kor":
-            try:
-                _download_tessdata(lang, dest)
-            except (OSError, URLError) as exc:
-                raise RuntimeError(
-                    "OCR 실패 (pdf-ocr): tessdata 다운로드에 실패했습니다. "
-                    "scripts\\setup_tesseract.ps1 을 실행하세요."
-                ) from exc
-    missing = [lang for lang in _TESSDATA_LANGS if not (user / f"{lang}.traineddata").is_file()]
-    if missing:
-        raise RuntimeError(
-            "OCR 실패 (pdf-ocr): tessdata 언어 팩이 없습니다 — "
-            + ", ".join(missing)
-            + ". scripts\\setup_tesseract.ps1 을 실행하세요."
-        )
-    return user
+def _ensure_tesseract() -> tuple[str, Path | None, frozenset[str]]:
+    from subprocess import DEVNULL, PIPE, TimeoutExpired, run
+    from iris.system.win_subprocess import no_window_kwargs
 
-
-def _hide_tesseract_console(pytesseract: object) -> None:
-    """tesseract.exe는 콘솔 프로그램이라 SW_HIDE만으로는 창이 깜빡인다."""
-    module = pytesseract.pytesseract  # type: ignore[attr-defined]
-    if getattr(module, "_iris_no_window", False):
-        return
-    original = module.subprocess_args
-
-    def _args(include_stdout: bool = True) -> dict:
-        kwargs = original(include_stdout)
-        from iris.system.win_subprocess import no_window_kwargs
-
-        kwargs.update(no_window_kwargs())
-        return kwargs
-
-    module.subprocess_args = _args
-    module._iris_no_window = True
-
-
-def _configure_tesseract(pytesseract: object) -> None:
-    global _tessdata_dir
-    _hide_tesseract_console(pytesseract)
-    cmd = _resolve_tesseract_cmd()
-    pytesseract.pytesseract.tesseract_cmd = cmd  # type: ignore[attr-defined]
-    _tessdata_dir = _bootstrap_tessdata(cmd)
-
-
-def _ensure_tesseract() -> None:
-    global _tesseract_ready
-    try:
-        import pytesseract
-    except ImportError as exc:
-        raise RuntimeError(
-            "PDF OCR에 pytesseract가 필요합니다 — pip install pytesseract pymupdf"
-        ) from exc
-    if not _tesseract_ready:
-        _configure_tesseract(pytesseract)
-        _tesseract_ready = True
-    try:
-        pytesseract.get_tesseract_version()
-    except pytesseract.TesseractNotFoundError as exc:
-        raise RuntimeError(
-            "OCR 실패 (pdf-ocr): Tesseract 실행 파일을 찾을 수 없습니다. "
-            "TESSERACT_CMD 환경 변수로 tesseract.exe 경로를 지정하거나 "
-            "scripts\\setup_tesseract.ps1 을 실행하세요."
-        ) from exc
+    global _tesseract_runtime
+    with _ocr_setup_lock:
+        if _tesseract_runtime is not None:
+            return _tesseract_runtime
+        cmd = _resolve_tesseract_cmd()
+        tessdata = _installed_tessdata(cmd)
+        command = [cmd, "--list-langs"]
+        if tessdata is not None:
+            command.extend(["--tessdata-dir", str(tessdata)])
+        try:
+            result = run(command, stdout=PIPE, stderr=DEVNULL, timeout=5, **no_window_kwargs())
+        except TimeoutExpired as exc:
+            raise DocumentExtractionError("OCR_TIMEOUT") from exc
+        except OSError as exc:
+            raise DocumentExtractionError("OCR_ENGINE_MISSING") from exc
+        available = frozenset(result.stdout.decode("utf-8", errors="replace").splitlines())
+        if not available.intersection(_TESSDATA_LANGS):
+            raise DocumentExtractionError("OCR_LANGUAGE_MISSING")
+        _tesseract_runtime = cmd, tessdata, available
+        return _tesseract_runtime
 
 
 def _page_png(page: object, *, dpi: int = 130) -> bytes:
-    pix = page.get_pixmap(dpi=dpi)  # type: ignore[attr-defined]
+    import pymupdf
+
+    longest = max(float(page.rect.width), float(page.rect.height), 1.0)  # type: ignore[attr-defined]
+    scale = min(dpi / 72, 4096 / longest)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale))  # type: ignore[attr-defined]
     return pix.tobytes("png")
 
 
-def _ocr_png_bytes(png: bytes) -> tuple[str, str]:
-    """(text, error). Tesseract가 없어도 예외를 올리지 않는다."""
-    global _ocr_unavailable
-    if _ocr_unavailable:
-        return "", _ocr_unavailable
-    import io
+def _ocr_png_bytes(png: bytes, *, language: str = "kor+eng") -> tuple[str, str]:
+    """Bound the lifetime of the external OCR process."""
+    from subprocess import PIPE, Popen, TimeoutExpired
+    from tempfile import TemporaryFile
+    from iris.system.win_subprocess import no_window_kwargs
 
+    cancelled = _ocr_cancelled.get()
+    if cancelled():
+        return "", "EXTRACTION_CANCELLED"
     try:
-        _ensure_tesseract()
-        import pytesseract
-        from PIL import Image
-    except (RuntimeError, ImportError) as exc:
-        _ocr_unavailable = str(exc)
-        return "", _ocr_unavailable
-    tess_cfg = f"--tessdata-dir {_tessdata_dir.as_posix()}" if _tessdata_dir else ""
+        cmd, tessdata, available = _ensure_tesseract()
+    except DocumentExtractionError as exc:
+        return "", exc.code
+    if not set(language.split("+")).issubset(available):
+        return "", "OCR_LANGUAGE_MISSING"
+    command = [cmd, "stdin", "stdout", "-l", language]
+    if tessdata is not None:
+        command.extend(["--tessdata-dir", str(tessdata)])
+    deadline = monotonic() + 12
+    with TemporaryFile() as source:
+        source.write(png)
+        for layout in ([], ["--psm", "6"]):
+            if cancelled():
+                return "", "EXTRACTION_CANCELLED"
+            if monotonic() >= deadline:
+                return "", "OCR_TIMEOUT"
+            source.seek(0)
+            try:
+                proc = Popen(command + layout, stdin=source, stdout=PIPE, stderr=PIPE, **no_window_kwargs())
+            except OSError:
+                return "", "OCR_ENGINE_MISSING"
+            with proc:
+                while True:
+                    try:
+                        stdout, stderr = proc.communicate(timeout=0.15)
+                        break
+                    except TimeoutExpired:
+                        error = "EXTRACTION_CANCELLED" if cancelled() else "OCR_TIMEOUT" if monotonic() >= deadline else ""
+                        if error:
+                            proc.kill()
+                            proc.communicate()
+                            return "", error
+            if b"Failed loading language" in stderr:
+                return "", "OCR_TESSDATA_INVALID"
+            if proc.returncode:
+                return "", "OCR_FAILED"
+            text = stdout.decode("utf-8", errors="replace").strip()
+            if text or b"Empty page!!" not in stderr:
+                return text, ""
+    return "", ""
+
+
+def _ocr_for_document(png: bytes, language: str, cancelled) -> tuple[str, str]:
+    token = _ocr_cancelled.set(cancelled)
     try:
-        image = Image.open(io.BytesIO(png))
-        text = pytesseract.image_to_string(image, lang="kor+eng", config=tess_cfg).strip()
-    except Exception as exc:  # noqa: BLE001
-        return "", str(exc)
-    return text, ""
+        return _ocr_png_bytes(png) if language == "kor+eng" else _ocr_png_bytes(png, language=language)
+    finally:
+        _ocr_cancelled.reset(token)
 
 
 def _page_window(
@@ -317,20 +344,58 @@ def _page_status(
     has_images: bool = False,
     error: str = "",
 ) -> dict[str, object]:
-    return {
+    row = {
         "page": int(page),
         "kind": str(kind),
         "chars": int(chars),
         "has_images": bool(has_images),
-        "error": str(error or ""),
+        "error": _DOCUMENT_ERRORS.get(error, ""),
     }
+    if error:
+        row["error_code"] = error
+    return row
 
 
 def _incomplete_from_status(page_status: list[dict[str, object]], *, truncated: bool = False) -> bool:
     if truncated:
         return True
     bad = {"empty", "failed", "unread"}
-    return any(str(row.get("kind") or "") in bad for row in page_status)
+    return any(str(row.get("kind") or "") in bad or row.get("error_code") for row in page_status)
+
+
+def _read_pypdf_pages(path: Path, *, page_from, page_to, page_limit, cancelled) -> dict[str, object]:
+    reader = _open_pypdf(path)
+    total = len(reader.pages)
+    if not total:
+        raise DocumentExtractionError("PDF_EMPTY")
+    if total > 4000:
+        raise DocumentExtractionError("PDF_PAGE_LIMIT", total_pages=total)
+    start, end = _page_window(total, page_from=page_from, page_to=page_to, page_limit=page_limit)
+    if not 1 <= start <= end <= total:
+        raise DocumentExtractionError("PDF_PAGE_RANGE_INVALID", total_pages=total)
+    status = [_page_status(number, kind="unread") for number in range(1, total + 1)]
+    parts = []
+    for number in range(start, end + 1):
+        if cancelled():
+            raise DocumentExtractionError("EXTRACTION_CANCELLED", total_pages=total, page_status=status)
+        from pypdf.errors import PdfReadError
+
+        try:
+            page = reader.pages[number - 1]
+            text = str(page.extract_text() or "").strip()
+            has_images = bool(page.images)
+            error = "PDF_RENDER_FAILED" if has_images else "" if text else "PDF_EMPTY"
+        except (PdfReadError, OSError, ValueError):
+            text, has_images, error = "", False, "PDF_RENDER_FAILED"
+        status[number - 1] = _page_status(number, kind="text" if text else "empty", chars=len(text),
+                                          has_images=has_images, error=error)
+        if text:
+            parts.append(f"[쪽 {number}]\n{text}")
+    if not parts:
+        code = "PDF_RENDER_FAILED" if any(row.get("error_code") == "PDF_RENDER_FAILED" for row in status) else "PDF_EMPTY"
+        raise DocumentExtractionError(code, total_pages=total, page_status=status)
+    return {"text": "\n\n".join(parts), "total_pages": total, "page_status": status,
+            "ocr_used": False, "vision_used": False, "incomplete": _incomplete_from_status(status)}
 
 
 def read_pdf_pages(
@@ -341,230 +406,126 @@ def read_pdf_pages(
     page_to: int | None = None,
     vision_reader=None,
     vision_all: bool = False,
+    cancelled=lambda: False,
+    ocr_language: str = "kor+eng",
 ) -> dict[str, object]:
-    """쪽마다 글자 층 → OCR → (있으면) 비전. 본문이 없으면 ValueError.
-
-    page_from/page_to 는 1-based inclusive. 범위 밖 쪽은 kind=unread.
-    vision_all 이면 글자 층·OCR이 비는 쪽을 세고, 한 장씩 순서대로 읽는다.
-    끄면 채팅 발췌처럼 최대 VISION_PAGE_CAP 장을 한 번에 보낸다.
-    """
+    """Extract selected pages in order and keep failures with their own page."""
+    fallback = {"page_from": page_from, "page_to": page_to, "page_limit": page_limit, "cancelled": cancelled}
     try:
         import pymupdf
-    except ImportError as exc:
-        raise RuntimeError("PDF에 pymupdf가 필요합니다 — pip install pymupdf") from exc
+    except ImportError:
+        return _read_pypdf_pages(path, **fallback)
 
-    page_texts: list[str] = []
+    if cancelled():
+        raise DocumentExtractionError("EXTRACTION_CANCELLED")
     try:
-        from pypdf import PdfReader
+        doc = pymupdf.open(str(path))
+    except (FileNotFoundError, pymupdf.FileNotFoundError) as exc:
+        raise DocumentExtractionError("FILE_NOT_FOUND") from exc
+    except pymupdf.EmptyFileError as exc:
+        raise DocumentExtractionError("PDF_EMPTY") from exc
+    except PermissionError as exc:
+        code = "FILE_LOCKED" if getattr(exc, "winerror", None) in (32, 33) else "FILE_ACCESS_DENIED"
+        raise DocumentExtractionError(code) from exc
+    except (pymupdf.FileDataError, RuntimeError):
+        return _read_pypdf_pages(path, **fallback)
 
-        page_texts = [(page.extract_text() or "") for page in PdfReader(str(path)).pages]
-    except Exception as exc:
-        low = str(exc).lower()
-        if "password" in low or "encrypted" in low:
-            raise ValueError("암호가 걸린 PDF는 읽지 못했습니다.") from exc
-        page_texts = []
-
-    doc = pymupdf.open(str(path))
-    try:
+    with doc:
+        if doc.needs_pass or doc.is_encrypted:
+            raise DocumentExtractionError("PDF_ENCRYPTED")
         total = int(doc.page_count)
-        start, end = _page_window(
-            total, page_from=page_from, page_to=page_to, page_limit=page_limit
-        )
-        page_status: list[dict[str, object]] = [
-            _page_status(number, kind="unread") for number in range(1, total + 1)
-        ]
+        if not total:
+            raise DocumentExtractionError("PDF_EMPTY")
+        start, end = _page_window(total, page_from=page_from, page_to=page_to, page_limit=page_limit)
+        if not 1 <= start <= end <= total:
+            raise DocumentExtractionError("PDF_PAGE_RANGE_INVALID", total_pages=total)
+        # A bounded manifest keeps malformed or exceptionally long documents out of the model payload.
+        if total > 4000:
+            raise DocumentExtractionError("PDF_PAGE_LIMIT", total_pages=total)
+        status = [_page_status(number, kind="unread") for number in range(1, total + 1)]
         parts: list[str] = []
-        vision: list[bytes] = []
-        vision_indexes: list[int] = []
-        ocr_used = False
-        ocr_error = ""
-        vision_needed = 0
-        short_layers: list[tuple[int, str, bool]] = []
-        for index in range(max(0, start - 1), end):
-            number = index + 1
-            raw = page_texts[index] if index < len(page_texts) else ""
-            layer = raw.strip()
+        ocr_used = vision_used = False
+        vision_calls = 0
+        pypdf_fallback = None
+        tried_pypdf = False
+        for index in range(start - 1, end):
+            if cancelled():
+                raise DocumentExtractionError("EXTRACTION_CANCELLED", total_pages=total, page_status=status)
             page = doc[index]
+            number = index + 1
+            error = ""
+            has_images = False
+            layer = ""
+            kind = "empty"
+            body = ""
             try:
+                layer = page.get_text().strip()
                 has_images = bool(page.get_images())
-            except Exception:
-                has_images = False
-            rich_layer = _letters(layer) >= _LAYER_MIN
-            # Hybrid: text layer alone is not enough when the page embeds images.
-            if rich_layer and not has_images:
-                parts.append(f"[쪽 {number}]\n{layer}")
-                page_status[index] = _page_status(
-                    number, kind="text", chars=len(layer), has_images=False
-                )
-                continue
-            try:
-                png = _page_png(page)
-            except Exception as exc:  # noqa: BLE001
-                page_status[index] = _page_status(
-                    number,
-                    kind="failed",
-                    chars=len(layer),
-                    has_images=has_images,
-                    error=str(exc),
-                )
-                if layer:
-                    parts.append(f"[쪽 {number}]\n{layer}")
-                continue
-            ocr_text, err = _ocr_png_bytes(png)
-            if err:
-                ocr_error = ocr_error or err
-            ocr_body = ocr_text.strip() if _letters(ocr_text) >= _OCR_KEEP else ""
-            if ocr_body:
-                ocr_used = True
-                if rich_layer and has_images:
-                    body = f"{layer}\n\n{ocr_body}"
-                    parts.append(f"[쪽 {number}]\n{body}")
-                    page_status[index] = _page_status(
-                        number, kind="hybrid", chars=len(body), has_images=True
-                    )
+                marks = page.get_bboxlog()
+                if not layer and not has_images:
+                    if not tried_pypdf:
+                        tried_pypdf = True
+                        try:
+                            pypdf_fallback = _open_pypdf(path)
+                        except DocumentExtractionError:
+                            pass
+                    if pypdf_fallback is not None:
+                        layer = str(pypdf_fallback.pages[index].extract_text() or "").strip()
+                if not layer and not has_images and not marks:
+                    error = "PDF_EMPTY"
+                elif layer and not has_images and (_letters(layer) >= _LAYER_MIN or all("text" in mark[0] for mark in marks)):
+                    kind, body = "text", layer
                 else:
-                    parts.append(f"[쪽 {number}]\n{ocr_body}")
-                    page_status[index] = _page_status(
-                        number, kind="ocr", chars=len(ocr_body), has_images=has_images
-                    )
-                continue
-            if layer:
-                short_layers.append((number, layer, has_images))
-            if vision_reader is None:
-                if layer:
-                    parts.append(f"[쪽 {number}]\n{layer}")
-                    page_status[index] = _page_status(
-                        number,
-                        kind="text",
-                        chars=len(layer),
-                        has_images=has_images,
-                        error=err,
-                    )
-                else:
-                    vision_needed += 1
-                    page_status[index] = _page_status(
-                        number,
-                        kind="empty",
-                        has_images=has_images,
-                        error=err or ocr_error,
-                    )
-                continue
-            vision_needed += 1
-            if vision_all:
-                one = ""
-                try:
-                    one = str(vision_reader([png]) or "").strip()
-                except Exception as exc:  # noqa: BLE001
-                    ocr_error = ocr_error or str(exc)
-                    page_status[index] = _page_status(
-                        number,
-                        kind="failed",
-                        chars=len(layer),
-                        has_images=has_images,
-                        error=str(exc),
-                    )
-                    if layer:
-                        parts.append(f"[쪽 {number}]\n{layer}")
-                    continue
-                if one:
-                    if rich_layer and has_images:
-                        body = f"{layer}\n\n[이미지]\n{one}"
-                        parts.append(f"[쪽 {number}]\n{body}")
+                    png = _page_png(page)
+                    ocr, error = _ocr_for_document(png, ocr_language, cancelled)
+                    if cancelled():
+                        raise DocumentExtractionError("EXTRACTION_CANCELLED", total_pages=total, page_status=status)
+                    if _letters(ocr) >= _OCR_KEEP:
+                        ocr_used = True
+                        kind = "hybrid" if layer else "ocr"
+                        body = layer + "\n\n" + ocr.strip() if layer else ocr.strip()
                     else:
-                        body = one
-                        parts.append(f"[쪽 {number} 이미지]\n{one}")
-                    page_status[index] = _page_status(
-                        number, kind="vision", chars=len(body), has_images=has_images
-                    )
-                elif layer:
-                    parts.append(f"[쪽 {number}]\n{layer}")
-                    page_status[index] = _page_status(
-                        number, kind="text", chars=len(layer), has_images=has_images
-                    )
-                else:
-                    page_status[index] = _page_status(
-                        number, kind="empty", has_images=has_images, error=err
-                    )
-                continue
-            if len(vision) < VISION_PAGE_CAP:
-                vision.append(png)
-                vision_indexes.append(number)
-                page_status[index] = _page_status(
-                    number, kind="unread", has_images=has_images, error="vision_pending"
-                )
-            elif layer:
-                parts.append(f"[쪽 {number}]\n{layer}")
-                page_status[index] = _page_status(
-                    number, kind="text", chars=len(layer), has_images=has_images
-                )
-            else:
-                page_status[index] = _page_status(
-                    number, kind="empty", has_images=has_images, error=err
-                )
-        vision_used = any(
-            part.startswith("[쪽 ") and " 이미지]" in part.split("\n", 1)[0] for part in parts
-        )
-        if vision and vision_reader is not None:
-            try:
-                transcribed = str(vision_reader(vision) or "").strip()
-            except Exception as exc:  # noqa: BLE001
-                transcribed = ""
-                ocr_error = ocr_error or str(exc)
-            if transcribed:
-                vision_used = True
-                label = ", ".join(str(number) for number in vision_indexes)
-                parts.append(f"[쪽 {label} 이미지]\n{transcribed}")
-                share = max(1, len(transcribed) // max(1, len(vision_indexes)))
-                for number in vision_indexes:
-                    page_status[number - 1] = _page_status(
-                        number,
-                        kind="vision",
-                        chars=share,
-                        has_images=True,
-                    )
-            else:
-                for number, layer, has_images in short_layers:
-                    if number not in vision_indexes:
-                        continue
-                    parts.append(f"[쪽 {number}]\n{layer}")
-                    page_status[number - 1] = _page_status(
-                        number, kind="text", chars=len(layer), has_images=has_images
-                    )
-                for number in vision_indexes:
-                    if str(page_status[number - 1].get("kind")) == "unread":
-                        page_status[number - 1] = _page_status(
-                            number,
-                            kind="empty",
-                            has_images=True,
-                            error=ocr_error,
-                        )
-        text = "\n\n".join(part for part in parts if part.strip()).strip()
-        notes: list[str] = []
-        if end < total and (page_from is None and page_to is None and page_limit):
-            notes.append(f"앞 {end}쪽만 읽었습니다. 전체 {total}쪽.")
-        elif page_from is not None or page_to is not None:
+                        error = (error if error in _DOCUMENT_ERRORS else "OCR_FAILED") if error else "OCR_NO_TEXT"
+                        kind, body = ("text", layer) if layer else ("failed", "")
+                        if vision_reader is not None and (vision_all or vision_calls < VISION_PAGE_CAP):
+                            vision_calls += 1
+                            try:
+                                vision = str(vision_reader([png]) or "").strip()
+                            except Exception:
+                                error = "VISION_FAILED"
+                            else:
+                                if vision:
+                                    kind, vision_used, error = "vision", True, ""
+                                    body = layer + "\n\n[이미지]\n" + vision if layer else vision
+            except DocumentExtractionError:
+                raise
+            except (RuntimeError, ValueError, OSError):
+                kind, body, error = "failed", layer, "PDF_RENDER_FAILED"
+            status[index] = _page_status(number, kind=kind, chars=len(body), has_images=has_images, error=error)
+            if body:
+                suffix = " 이미지" if kind == "vision" and not layer else ""
+                parts.append(f"[쪽 {number}{suffix}]\n{body}")
+        if cancelled():
+            raise DocumentExtractionError("EXTRACTION_CANCELLED", total_pages=total, page_status=status)
+        text = "\n\n".join(parts).strip()
+        notes = []
+        if page_from is not None or page_to is not None:
             notes.append(f"{start}–{end}쪽만 읽었습니다. 전체 {total}쪽.")
-        if vision_needed and not vision_used and vision_reader is None:
-            notes.append(
-                f"글자가 없는 이미지 쪽 {vision_needed}장은 OCR이 비어 있고, 비전 읽기가 없습니다."
-            )
-        incomplete = _incomplete_from_status(page_status)
+        elif end < total:
+            notes.append(f"앞 {end}쪽만 읽었습니다. 전체 {total}쪽.")
         if not text:
-            reason = ocr_error or "이미지로만 된 PDF에서 글자를 읽지 못했습니다."
-            if notes:
-                reason = f"{reason} {' '.join(notes)}"
-            raise ValueError(reason)
+            errors = [str(row["error_code"]) for row in status if row.get("error_code")]
+            code = next((code for code in errors if code != "PDF_EMPTY"), "PDF_EMPTY")
+            raise DocumentExtractionError(code, total_pages=total, page_status=status)
         return {
             "text": text,
             "ocr_used": ocr_used,
             "vision_used": vision_used,
             "note": " ".join(notes),
             "total_pages": total,
-            "page_status": page_status,
-            "incomplete": incomplete,
+            "page_status": status,
+            "incomplete": _incomplete_from_status(status),
         }
-    finally:
-        doc.close()
 
 
 def extract_pdf_text(path: Path) -> str:
@@ -787,6 +748,8 @@ def extract_from_source(
     page_to: int | None = None,
     vision_reader=None,
     vision_all: bool = False,
+    cancelled=lambda: False,
+    ocr_language: str = "kor+eng",
 ) -> dict[str, object]:
     """파일 경로 또는 http(s) URL → {kind, title, text, source, truncated, …}.
 
@@ -796,6 +759,8 @@ def extract_from_source(
     src = (source or "").strip().strip('"').strip("'")
     if not src:
         raise ValueError("source required (file path or http(s) URL)")
+    if cancelled():
+        raise DocumentExtractionError("EXTRACTION_CANCELLED")
 
     if _looks_like_url(src):
         title, text = fetch_url_text(src)
@@ -825,6 +790,8 @@ def extract_from_source(
             page_to=page_to,
             vision_reader=vision_reader,
             vision_all=vision_all,
+            cancelled=cancelled,
+            ocr_language=ocr_language,
         )
         text, truncated = _truncate(str(data.get("text") or ""), limit=char_limit)
         note = str(data.get("note") or "").strip()
@@ -858,15 +825,22 @@ def extract_from_source(
         }
 
     if suffix in _IMAGE_SUFFIXES:
-        if vision_reader is None:
-            raise ValueError("이미지 파일이라 글자 층이 없습니다. 비전 읽기가 연결되어 있지 않습니다.")
+        vision_used = False
         try:
             png = _png_bytes(path.read_bytes())
-            text = str(vision_reader([png]) or "").strip()
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"이미지에서 내용을 읽지 못했습니다: {exc}") from exc
-        if len(text) < 8:
-            raise ValueError("이미지에서 내용을 읽지 못했습니다.")
+        except (OSError, ValueError) as exc:
+            raise DocumentExtractionError("OCR_FAILED") from exc
+        text, error = _ocr_for_document(png, ocr_language, cancelled)
+        if cancelled():
+            raise DocumentExtractionError("EXTRACTION_CANCELLED")
+        if not text and vision_reader is not None:
+            try:
+                text = str(vision_reader([png]) or "").strip()
+            except Exception as exc:
+                raise DocumentExtractionError("VISION_FAILED") from exc
+            vision_used = bool(text)
+        if not text:
+            raise DocumentExtractionError(error if error in _DOCUMENT_ERRORS else "OCR_NO_TEXT")
         text, truncated = _truncate(text, limit=char_limit)
         return {
             "kind": "image",
@@ -874,7 +848,8 @@ def extract_from_source(
             "text": text,
             "source": str(path.resolve()),
             "truncated": truncated,
-            "vision_used": True,
+            "vision_used": vision_used,
+            "ocr_used": not vision_used,
             "incomplete": truncated,
         }
 

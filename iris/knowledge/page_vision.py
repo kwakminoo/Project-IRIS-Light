@@ -3,12 +3,27 @@
 from __future__ import annotations
 
 import base64
+from urllib.parse import urlsplit
 
 _PROMPT = (
     "다음은 자료 페이지 이미지다. 보이는 글자를 페이지 순서대로 옮겨 적어라. "
     "글자가 없으면 그림이 무엇을 보여 주는지 짧게 적어라. "
     "보이지 않는 내용은 만들지 마라. 설명 제목은 붙이지 마라."
 )
+
+
+def is_local_document_vision(spec: dict[str, str]) -> bool:
+    from iris.infrastructure.iris_agent_errors import is_cloud_runtime_name
+
+    model = spec.get("model", "").strip()
+    if not model or is_cloud_runtime_name(model):
+        return False
+    try:
+        target = urlsplit(spec.get("api_base_url") or spec.get("ollama_base_url", ""))
+        return (target.scheme in ("http", "https") and target.hostname in ("127.0.0.1", "::1", "localhost")
+                and target.username is None and target.port is not None)
+    except ValueError:
+        return False
 
 
 def _ask(prompt: str) -> str:

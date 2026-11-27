@@ -51,6 +51,7 @@ from iris.engine.types import (
     parse_engine_source,
 )
 from iris.infrastructure.iris_agent_client import IrisAgentInferenceTarget
+from iris.mcp.native_manager import MCPToolBinding, NativeMCPManager
 from iris.system.execution_context import (
     ExecutionContext,
     bind_host_tool_call_meta,
@@ -65,6 +66,7 @@ from iris.system.win_subprocess import no_window_kwargs
 
 if TYPE_CHECKING:
     from iris.infrastructure.speak_capability import EngineToolBinding
+    from iris.system.control_surface import ActionSpec
 
 _SIDECAR_MAIN = Path(__file__).resolve().parent / "_sidecar_main.py"
 _HELLO_TIMEOUT_SEC = 5.0
@@ -228,7 +230,7 @@ def _sidecar_env(home: EngineHome, python: Path) -> dict[str, str]:
 def _bind_terminal_udp() -> tuple[socket.socket, int]:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("127.0.0.1", 0))
-    sock.settimeout(0.5)
+    sock.setblocking(False)
     port = int(sock.getsockname()[1])
     return sock, port
 
@@ -463,6 +465,7 @@ class Engine:
         # True while a turn owns the child for I/O outside _lock. Shutdown ignores it.
         self._turn_active = False
         self._tool_handler: Callable[[str, dict[str, object]], dict[str, object]] | None = None
+        self._mcp_approval: Callable[[ActionSpec, dict], bool] | None = None
 
     @property
     def source(self) -> EngineSource:
@@ -477,6 +480,9 @@ class Engine:
         self, handler: Callable[[str, dict[str, object]], dict[str, object]]
     ) -> None:
         self._tool_handler = handler
+
+    def bind_mcp_approval(self, handler: Callable[[ActionSpec, dict], bool]) -> None:
+        self._mcp_approval = handler
 
     def ensure_ready(self) -> EngineEnsureResult:
         try:
@@ -570,6 +576,7 @@ class Engine:
         turn_id: str = "",
         session_id: str = "",
         workspace_id: str = "",
+        mcp_bindings: tuple[MCPToolBinding, ...] = (),
     ) -> None:
         if child.stdin is None:
             raise OSError("sidecar stdin is missing")
@@ -592,6 +599,8 @@ class Engine:
             fields["api_key"] = api_key
         if terminal_udp_port is not None:
             fields["terminal_udp_port"] = int(terminal_udp_port)
+        if mcp_bindings:
+            fields["mcp_bindings"] = [row.model_projection() for row in mcp_bindings]
         child.stdin.write(encode_host_command("turn", **fields))
         child.stdin.flush()
 
@@ -606,7 +615,7 @@ class Engine:
         expected_workspace_id: str | None = None,
         seen_tool_calls: set[str] | None = None,
         execution_context: ExecutionContext | None = None,
-        bindings: Mapping[str, EngineToolBinding] | None = None,
+        bindings: Mapping[str, EngineToolBinding | MCPToolBinding] | None = None,
         cancel: CancelToken | None = None,
     ) -> None:
         request_id = str(raw.get("id") or "").strip()
@@ -615,9 +624,8 @@ class Engine:
         session_id = str(raw.get("session_id") or "")
         workspace_id = str(raw.get("workspace_id") or "")
         name = str(raw.get("name") or "").strip()
-        args = raw.get("args")
-        if not isinstance(args, dict):
-            args = {}
+        args = raw.get("args", {})
+        binding = None
         binding_error = ""
         schema_fingerprint = ""
         action = name
@@ -663,6 +671,8 @@ class Engine:
                 "ok": False,
                 "error": "invalid native tool request",
             }
+        elif not isinstance(args, dict):
+            result = {"ok": False, "error": "tool arguments must be an object", "error_code": "invalid_arguments"}
         elif self._tool_handler is None:
             result = {"ok": False, "error": "native tool bridge is not bound"}
         elif cancel is not None and cancel.cancelled():
@@ -683,7 +693,12 @@ class Engine:
                     schema_fingerprint=schema_fingerprint,
                     cancelled=cancel.cancelled if cancel is not None else None,
                 ):
-                    handled = self._tool_handler(action, strip_trust_fields(args))
+                    if isinstance(binding, MCPToolBinding):
+                        handled = NativeMCPManager(home=self._source.home).invoke_binding(
+                            binding, args, human_confirm=self._mcp_approval,
+                        )
+                    else:
+                        handled = self._tool_handler(action, strip_trust_fields(args))
                 result = handled if isinstance(handled, dict) else {
                     "ok": False,
                     "error": "native tool returned an invalid result",
@@ -745,6 +760,7 @@ class Engine:
         session_id: str = "",
         workspace_id: str = "",
         execution_context: ExecutionContext | None = None,
+        mcp_bindings: tuple[MCPToolBinding, ...] = (),
     ) -> Iterator[TurnEvent]:
         # The previous turn may finish over UDP while stdout is still blocked.
         # Keep one reader per child so it cannot steal the next turn's delta.
@@ -766,7 +782,7 @@ class Engine:
             if surface is not None:
                 from iris.infrastructure.speak_capability import engine_tool_bindings
 
-                bindings = {row.model_name: row for row in engine_tool_bindings(str(surface))}
+                bindings = {row.model_name: row for row in (*engine_tool_bindings(str(surface)), *mcp_bindings)}
             while not cancel.cancelled():
                 line = ""
                 if udp_sock is not None:
@@ -780,7 +796,7 @@ class Engine:
                             # dropped datagram still lands. UDP won; discard it.
                             _read_terminal_file_impl(hello_pid)
                             _watch_trace(f"recv udp bytes={len(data)}")
-                    except socket.timeout:
+                    except (socket.timeout, BlockingIOError):
                         pass
                     except OSError as exc:
                         _watch_trace(f"udp recv err {exc!r}")
@@ -820,6 +836,8 @@ class Engine:
                                 EngineError(EngineErrorCode.TURN_IDLE, "sidecar event timed out")
                             )
                             return
+                        if udp_sock is not None:
+                            time.sleep(_CANCEL_POLL_SEC)
                         continue
                 if cancel.cancelled():
                     break
@@ -907,6 +925,14 @@ class Engine:
                     conversation_id=context.conversation_id or session_id,
                     surface=turn.speak_surface,
                 )
+            mcp_bindings = ()
+            gateway = turn.speak_surface == "gateway"
+            if (context is not None and self._tool_handler is not None
+                    and (not gateway or (self._mcp_approval is not None and context.permission_scope == "gateway.mcp"))):
+                mcp_bindings = NativeMCPManager(home=self._source.home).model_bindings(turn.cancel.cancelled, gateway=gateway)
+                if turn.cancel.cancelled():
+                    yield TurnCancelled()
+                    return
             with self._lock:
                 if self._turn_active:
                     raise EngineError(EngineErrorCode.PROTOCOL, "engine turn already in progress")
@@ -930,6 +956,7 @@ class Engine:
                         turn_id=turn_id,
                         session_id=session_id,
                         workspace_id=workspace_id,
+                        mcp_bindings=mcp_bindings,
                     )
                 except (OSError, ValueError) as exc:
                     try:
@@ -957,6 +984,7 @@ class Engine:
                     session_id=session_id,
                     workspace_id=workspace_id,
                     execution_context=context,
+                    mcp_bindings=mcp_bindings,
                 )
             finally:
                 with self._lock:

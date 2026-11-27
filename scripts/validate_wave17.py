@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -126,26 +127,34 @@ def live(out, mode, attempts):
     from iris.infrastructure.speak_capability import bind_live_control_surface
     from iris.mcp.native_manager import NativeMCPManager
     from iris.system.control_surface import ActionRegistry
+    from iris.system.execution_context import ExecutionContext
     from iris.ui.control_actions.local_files import register_local_file_actions
 
     py = engine_python(EngineHome(iris_agent_home()))
     if py is None:
         raise RuntimeError("No verified Owned Core Python")
-    target = resolve_iris_agent_inference(MODEL)
-    if target.base_url != "http://127.0.0.1:11434/v1":
+    target = resolve_iris_agent_inference(
+        MODEL, ollama_base_url=os.environ.get("IRIS_WAVE17_OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"),
+    )
+    if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}/v1", target.base_url):
         raise RuntimeError("Expected the local Ollama fixture endpoint")
+    target = replace(target, api_key="ollama")
     results = []
     for number in range(1, attempts + 1):
+        from uuid import uuid4
+
         home = out / f"{mode}-{number:02}"
         home.mkdir()
         (home / "config.yaml").write_text("agent:\n  tool_choice: auto\nmodel:\n  ollama_num_ctx: 64000\n", encoding="utf-8")
         calls = []
+        registry = ActionRegistry()
+        remote = mode in {"mcp", "mixed"}
         engine = Engine(InternalSidecar(home=EngineHome(home)), staged_python=py)
-        if mode == "mcp":
+        if remote:
             script = home / "fixture.py"
             script.write_text(MCP_SERVER, encoding="utf-8")
             manager = NativeMCPManager(home=home)
-            manager.register("iridium-fixture", {"command": str(py), "args": [str(script)]})
+            manager.register("iridium-fixture", {"command": str(py), "args": [str(script)], "model_enabled": True})
             discovery = manager.discover("iridium-fixture", timeout=12)
             assert discovery["status"] == "connected", discovery
             assert [row["name"] for row in discovery["tools"]] == ["fetch_iridium_validation_code"], discovery
@@ -156,21 +165,28 @@ def live(out, mode, attempts):
             assert control.stdout.strip() == call_file.read_text(encoding="utf-8").strip()
             call_file.unlink()
             expected = ""
-            prompt = "Get a fresh iridium validation code from the connected iridium validation service and report the exact code."
-        else:
-            from uuid import uuid4
+            def approve_fixture(spec, preview):
+                allowed = spec.name == "MCP" and spec.summary == "iridium-fixture → fetch_iridium_validation_code" and preview == {"text": "{}"}
+                calls.append({"action": "mcp.approval", "ok": allowed})
+                return allowed
 
+            registry.set_human_confirm(approve_fixture)
+            prompt = "Get a fresh iridium validation code from the connected iridium validation service and report the exact code."
+        if mode != "mcp":
             workspace = home / "workspace"
             workspace.mkdir()
             expected = "IRIS-NATIVE-" + uuid4().hex
-            (workspace / "iridium-inventory.txt").write_text(expected, encoding="utf-8")
+            inventory_file = workspace / "iridium-inventory.txt"
+            inventory_file.write_text(expected, encoding="utf-8")
             attachments = SimpleNamespace(roots={"fixture": SimpleNamespace(path=str(workspace), directory=True)})
             window = SimpleNamespace(_chat_session=SimpleNamespace(attachments=attachments))
-            registry = ActionRegistry()
             register_local_file_actions(window, registry)
-            bind_live_control_surface(SimpleNamespace(registry=registry, booting=False))
-            prompt = (f'In the attached directory "{workspace}", find the inventory file with iridium in its filename. '
-                      "Then read that file and reply with its exact contents.")
+            if mode == "mixed":
+                prompt = (f'First read the attached text file "{inventory_file}". Then obtain a fresh validation '
+                          "code from the connected iridium service. Return the two unchanged values on separate lines, file first.")
+            else:
+                prompt = (f'In the attached directory "{workspace}", find the inventory file with iridium in its filename. '
+                          "Then read that file and reply with its exact contents.")
 
         def invoke(action, payload):
             result = speak_invoke_agent_tool(action, payload)
@@ -178,18 +194,25 @@ def live(out, mode, attempts):
             return result
 
         engine.bind_tool_handler(invoke)
+        bind_live_control_surface(SimpleNamespace(registry=registry, booting=False))
         start = time.perf_counter()
         try:
             with patch.object(runtime, "_WATCH_LOG", home / "host-watch.log"):
-                turn = StatelessTurn(ChatTranscript.parse([{"role": "user", "content": prompt}]), target, CancelToken())
+                turn = StatelessTurn(ChatTranscript.parse([{"role": "user", "content": prompt}]), target, CancelToken(),
+                                     execution_context=ExecutionContext(session_id=f"wave17-{mode}", source="desktop"))
                 events = list(engine.run_turn(turn))
         finally:
             engine.shutdown()
             bind_live_control_surface(None)
         answer = next((event.text for event in events if isinstance(event, TurnFinished)), "")
-        if mode == "mcp":
+        if remote:
             markers = call_file.read_text(encoding="utf-8").splitlines() if call_file.exists() else []
-            ok = bool(markers and markers[-1] == answer.strip())
+            success_actions = [row["action"] for row in calls if row["ok"]]
+            if mode == "mixed":
+                ok = (len(markers) == 1 and 0 <= answer.find(expected) < answer.find(markers[0])
+                      and success_actions == ["local.read_file", "mcp.approval"])
+            else:
+                ok = len(markers) == 1 and markers[0] == answer.strip() and "mcp.approval" in success_actions
         else:
             markers = [expected]
             ok = (expected == answer.strip() and [row["action"] for row in calls if row["ok"]] ==
@@ -198,11 +221,14 @@ def live(out, mode, attempts):
                "seconds": round(time.perf_counter() - start, 3), "calls": calls, "markers": markers,
                "answer": answer, "events": [type(event).__name__ for event in events],
                "terminal_type": type(events[-1]).__name__ if events else None}
-        if mode == "mcp":
+        if remote:
             row.update(discovery=discovery, direct_sdk_control="PASS", model_mcp_invocations=len(markers))
+        if mode == "mixed":
+            row["local_marker"] = expected
         results.append(row)
         write_json(out / f"{mode}-results.json", results)
-        print(json.dumps(row, ensure_ascii=False), flush=True)
+        print(json.dumps({key: row[key] for key in ("attempt", "status", "seconds", "calls", "answer", "terminal_type")}),
+              flush=True)
     return 0 if all(row["status"] == "PASS" for row in results) else 1
 
 
@@ -302,7 +328,6 @@ def gui_chat(out):
                         errors.append(error)
                     finally:
                         window.close()
-                        app.quit()
 
                 QTimer.singleShot(0, drive)
                 assert app.exec() == 0
@@ -333,7 +358,7 @@ def gui_product_home(out):
         gui.main()
 
 
-def gateway_restart(out):
+def gateway_restart(out, *, scoped_mcp=False):
     from urllib.error import HTTPError
     from urllib.request import Request, urlopen
 
@@ -350,12 +375,23 @@ def gateway_restart(out):
     agent_home.mkdir()
     engine = Engine(InternalSidecar(home=EngineHome(agent_home)), staged_python=py)
     fixture_token = "wave17-fixture-token"
-    target = resolve_iris_agent_inference(MODEL)
-    assert target.base_url == "http://127.0.0.1:11434/v1", "Expected the local Ollama fixture endpoint"
+    target = resolve_iris_agent_inference(
+        MODEL, ollama_base_url=os.environ.get("IRIS_WAVE17_OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"),
+    )
+    assert re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}/v1", target.base_url), "Expected Ollama on loopback"
+    target = replace(target, api_key="ollama")
+    if scoped_mcp:
+        from iris.mcp.native_manager import NativeMCPManager
+
+        script = agent_home / "fixture.py"
+        script.write_text(MCP_SERVER, encoding="utf-8")
+        NativeMCPManager(home=agent_home).register("iridium-fixture", {
+            "command": str(py), "args": [str(script)], "model_enabled": True, "gateway_enabled": True,
+        })
 
     def surface():
         return ControlSurface(invoker=MainThreadInvoker(), port=0, token=fixture_token,
-                              gateway=NativeGateway(lambda: target))
+                              gateway=NativeGateway(lambda: target, db_path=out / "gateway.db"))
 
     def request(port, path, *, token=fixture_token, payload=None):
         headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -383,16 +419,45 @@ def gateway_restart(out):
             proof["unauthenticated"] = request(port, "/v1/agent/health", token="")[0]
             proof["incorrect_token"] = request(port, "/v1/agent/health", token="wrong-fixture-token")[0]
             proof["ready"] = request(port, "/v1/agent/health")[0]
+            client_token = fixture_token
             marker = "IRIS-W17-RESTART"
-            code, run = request(port, "/v1/agent/runs", payload={"message": f"Reply with exactly {marker}"})
+            message = f"Reply with exactly {marker}"
+            if scoped_mcp:
+                issued, token = request(port, "/v1/agent/tokens", payload={"scopes": ["read", "run", "mcp"]})
+                assert issued == 201, "scoped fixture token was not issued"
+                client_token = token["token"]
+                message = "Get a fresh iridium validation code from the connected iridium validation service and report the exact code."
+            code, run = request(port, "/v1/agent/runs", token=client_token, payload={"message": message})
             assert code == 202, run
             run_path = "/v1/agent/runs/" + run["run_id"]
             session_path = "/v1/agent/sessions/" + run["session_id"]
-            code, events = request(port, run_path + "/events")
+            if scoped_mcp:
+                approval_path = run_path + "/approval"
+                deadline = time.monotonic() + 90
+                while time.monotonic() < deadline:
+                    code, pending = request(port, approval_path)
+                    if code == 200:
+                        break
+                    code, status = request(port, run_path, token=client_token)
+                    if code != 200 or status["status"] != "running":
+                        raise RuntimeError("model turn ended before approval")
+                    time.sleep(.25)
+                else:
+                    raise RuntimeError("scoped MCP approval did not arrive")
+                assert pending["arguments_preview"] == "{}", pending
+                approval = {"approval_id": pending["approval_id"], "decision": "approve"}
+                proof["scoped_approval_denied"] = request(port, approval_path, token=client_token, payload=approval)[0]
+                proof["control_approval"] = request(port, approval_path, payload=approval)[0]
+                proof["legacy_cross_session"] = request(port, session_path)[0]
+            code, events = request(port, run_path + "/events", token=client_token)
             assert code == 200 and events, (code, events)
             proof["stream_events"] = [row["type"] for row in events]
+            if scoped_mcp:
+                codes = script.with_suffix(".calls").read_text(encoding="utf-8").splitlines()
+                assert len(codes) == 1, codes
+                marker = codes[0]
             proof["grounded_reply"] = events[-1]["type"] == "finished" and marker in events[-1].get("text", "")
-            proof["same_process_session"] = request(port, session_path)[0]
+            proof["same_process_session"] = request(port, session_path, token=client_token)[0]
         finally:
             start = time.perf_counter()
             first.stop()
@@ -403,15 +468,27 @@ def gateway_restart(out):
         port = second.start()
         try:
             second.booting = False
-            proof["after_restart_session"] = request(port, session_path)[0]
-            proof["after_restart_run"] = request(port, run_path)[0]
+            proof["after_restart_session"] = request(port, session_path, token=client_token)[0]
+            proof["after_restart_run"] = request(port, run_path, token=client_token)[0]
+            search_path = "/v1/agent/sessions/search?q=" + marker
+            search_status, matches = request(port, search_path, token=client_token)
+            proof["after_restart_search"] = search_status == 200 and any(
+                hit["session_id"] == run["session_id"] and hit["role"] == "assistant"
+                for hit in matches.get("hits", ())
+            )
+            if scoped_mcp:
+                proof["legacy_cross_search"] = request(port, search_path) == (200, {"hits": []})
         finally:
             second.stop()
     write_json(out / "gateway-result.json", proof)
     assert proof["booting"] == 503 and proof["ready"] == 200 and proof["grounded_reply"], proof
     assert proof["same_process_session"] == 200, proof
     assert proof["unauthenticated"] == proof["incorrect_token"] == 401, proof
-    return 0 if proof["after_restart_session"] == proof["after_restart_run"] == 200 else 1
+    if scoped_mcp:
+        assert proof["scoped_approval_denied"] == 401 and proof["control_approval"] == 200, proof
+        assert proof["legacy_cross_session"] == 404 and "approval_resolved" in proof["stream_events"], proof
+        assert proof["legacy_cross_search"], proof
+    return 0 if proof["after_restart_session"] == proof["after_restart_run"] == 200 and proof["after_restart_search"] else 1
 
 
 def mcp_timeout(out):
@@ -430,8 +507,8 @@ def mcp_timeout(out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("inventory", "mcp", "native", "gui-chat", "gui-product-home",
-                                         "gateway-restart", "mcp-timeout"))
+    parser.add_argument("mode", choices=("inventory", "mcp", "native", "mixed", "gui-chat", "gui-product-home",
+                                         "gateway-restart", "gateway-mcp", "mcp-timeout"))
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--attempts", type=int, default=1)
     args = parser.parse_args()
@@ -451,6 +528,8 @@ def main():
     os.environ["PYTHON_DOTENV_DISABLED"] = "1"
     if args.mode == "gateway-restart":
         return gateway_restart(out)
+    if args.mode == "gateway-mcp":
+        return gateway_restart(out, scoped_mcp=True)
     if args.mode == "mcp-timeout":
         mcp_timeout(out)
         return 0

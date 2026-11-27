@@ -516,6 +516,7 @@ def run_hud_confirm(
     lay.addLayout(top)
 
     body_lab = QLabel(body)
+    body_lab.setTextFormat(Qt.TextFormat.PlainText)
     body_lab.setObjectName("HudConfirmBody")
     body_lab.setWordWrap(True)
     lay.addWidget(body_lab)

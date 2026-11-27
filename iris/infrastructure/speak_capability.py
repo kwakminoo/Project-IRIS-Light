@@ -72,6 +72,7 @@ EMPTY_SCHEMA_ACTIONS: frozenset[str] = frozenset(
         "learning.start",
         "learning.stop",
         "learning.status",
+        "skill.list",
         "voice.mic_off",
         "voice.mic_on",
         "voice.toggle_mic",
@@ -208,6 +209,8 @@ class EngineToolBinding:
     description: str
     input_schema: Mapping[str, Any]
     fingerprint: str
+    source: str = "iris"
+    source_name: str = "iris"
 
 
 class ActionCatalogView(Protocol):
@@ -564,7 +567,7 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant(
             "local.read_file",
             ExecKind.SURFACE,
-            "Read one absolute local text file within the configured read scope "
+            "Read an attached or absolute local text file within the configured read scope "
             "(optional start_line/end_line 1-based inclusive; max_bytes truncation)",
             _params(
                 {
@@ -1339,21 +1342,40 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
             ),
         ),
         SpeakGrant("calendar.status", ExecKind.SURFACE, "Get selected calendar day and events"),
+        SpeakGrant("skill.list", ExecKind.SURFACE, "List installed IRIS skills"),
+        SpeakGrant(
+            "skill.view", ExecKind.SURFACE, "Read an installed skill and its relative text resources",
+            _params({"name": {"type": "string"}, "resource": {"type": "string"}}, required=["name"]),
+        ),
+        SpeakGrant(
+            "skill.manage", ExecKind.SURFACE, "Create, update, enable, disable, or archive a skill with user approval",
+            _params({"operation": {"type": "string", "enum": ["create", "update", "enable", "disable", "remove"]},
+                     "name": {"type": "string"}, "text": {"type": "string"}}, required=["operation", "name"]),
+        ),
         SpeakGrant(
             "content.extract",
             ExecKind.SURFACE,
-            "Extract text from a PDF, URL, file, or chat attachment_id; optional page_from/page_to",
+            "Read a chat attachment by attachment_id and optional relative_path, or an authorized file or URL. Optional page_from/page_to.",
             _params(
                 {
                     "source": {"type": "string"},
                     "path": {"type": "string"},
                     "url": {"type": "string"},
                     "attachment_id": {"type": "string"},
+                    "relative_path": {"type": "string"},
                     "page_from": {"type": "integer", "minimum": 1},
                     "page_to": {"type": "integer", "minimum": 1},
+                    "ocr_language": {"type": "string", "enum": ["kor+eng", "kor", "eng"]},
                 },
                 additional=True,
             ),
+        ),
+        SpeakGrant(
+            "vision.analyze_attachment", ExecKind.SURFACE,
+            "Analyze an image attachment or one PDF page with the local vision model",
+            _params({"attachment_id": {"type": "string"}, "relative_path": {"type": "string"},
+                     "page": {"type": "integer", "minimum": 1}, "question": {"type": "string"}},
+                    required=["attachment_id"]),
         ),
         SpeakGrant("email.open_compose", ExecKind.SURFACE, "Open the email compose screen"),
         SpeakGrant(
@@ -1486,8 +1508,8 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant(
             "project.read_file",
             ExecKind.SURFACE,
-            "Read a UTF-8 file in the bound IDE project (rel_path or path; "
-            "optional start_line/end_line/max_bytes)",
+            "Read a UTF-8 file relative to the bound IDE project (rel_path or path; "
+            "optional start_line/end_line/max_bytes). For an attachment, use local_read_file.",
             _params(
                 {
                     "rel_path": {"type": "string"},
@@ -1570,6 +1592,7 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
                     "path": {"type": "string"},
                     "attachment_id": {"type": "string"},
                     "project_root": {"type": "string"},
+                    "relative_path": {"type": "string"},
                     "out_dir": {"type": "string"},
                 },
             ),
@@ -1607,7 +1630,7 @@ _ENGINE_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 SpeakSurface = Literal["home", "ide_companion", "gateway"]
 HOME_ONLY_SPEAK_ACTIONS = frozenset({"shell.run"})
-GATEWAY_SPEAK_ACTIONS = frozenset({"ping"})
+GATEWAY_SPEAK_ACTIONS = frozenset({"ping", "get_catalog"})
 _SPEAK_SURFACE: SpeakSurface = "home"
 
 

@@ -450,6 +450,7 @@ class ControlSurface:
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Content-Length", str(len(raw)))
                     self.send_header("Connection", "close")
+                    self.send_header("Cache-Control", "no-store")
                     self._cors()
                     self.end_headers()
                     self.wfile.write(raw)
@@ -512,15 +513,30 @@ class ControlSurface:
                     surface._gateway_streams.release()
 
             def do_GET(self) -> None:  # noqa: N802
-                if not self._auth_ok():
-                    self._json(401, err_result("auth", "unauthorized"))
-                    return
                 url = urlparse(self.path)
                 path = url.path.rstrip("/") or "/"
                 if surface.gateway is not None and path.startswith("/v1/agent/"):
+                    auth = self.headers.get("Authorization", "")
+                    control = self._auth_ok()
+                    approval_run = surface.gateway.approval_run_id(path)
+                    if approval_run:
+                        self._json(*(surface.gateway.approval(approval_run) if control else (401, {"error": "unauthorized"})))
+                        return
+                    code, principal = surface.gateway.authorize(auth, control=control, scope="read")
+                    if code != 200:
+                        self._json(code, err_result("auth", "gateway access denied"))
+                        return
                     if path == "/v1/agent/health":
                         readiness = (503, {"ready": False}) if surface.booting else surface.gateway.health()
                         self._json(*readiness)
+                    elif path == "/v1/agent/sessions/search":
+                        try:
+                            queries = parse_qs(url.query, keep_blank_values=True, max_num_fields=8).get("q", [])
+                        except ValueError:
+                            queries = []
+                        self._json(*surface.gateway.search_sessions(
+                            queries[0] if len(queries) == 1 else "", principal=principal,
+                        ))
                     elif path.startswith("/v1/agent/runs/") and path.endswith("/events"):
                         try:
                             after = int(parse_qs(url.query).get("after", ["0"])[0])
@@ -529,13 +545,22 @@ class ControlSurface:
                         except ValueError:
                             self._json(400, {"error": "invalid event cursor"})
                             return
-                        events = surface.gateway.events(path.split("/")[-2], after)
+                        events = surface.gateway.events(path.split("/")[-2], after, principal=principal)
                         if events is None:
                             self._json(404, {"error": "run not found"})
                         else:
-                            self._ndjson(events)
+                            def authorized_events():
+                                for event in events:
+                                    if surface.gateway.authorize(auth, control=control, scope="read") != (200, principal):
+                                        return
+                                    yield event
+
+                            self._ndjson(authorized_events())
                     else:
-                        self._json(*surface.gateway.get(path))
+                        self._json(*surface.gateway.get(path, principal=principal))
+                    return
+                if not self._auth_ok():
+                    self._json(401, err_result("auth", "unauthorized"))
                     return
                 if path in ("/health", "/v1/ping"):
                     self._json(
@@ -564,11 +589,22 @@ class ControlSurface:
                 self._json(404, err_result("http", f"not found: {path}"))
 
             def do_POST(self) -> None:  # noqa: N802
-                if not self._auth_ok():
-                    self._json(401, err_result("auth", "unauthorized"))
-                    return
                 path = urlparse(self.path).path.rstrip("/") or "/"
                 if surface.gateway is not None and path.startswith("/v1/agent/"):
+                    control = self._auth_ok()
+                    auth = self.headers.get("Authorization", "")
+                    token_management = path == "/v1/agent/tokens" or path.startswith("/v1/agent/tokens/")
+                    approval_run = surface.gateway.approval_run_id(path)
+                    if token_management or approval_run:
+                        code, principal = (200 if control else 401), ""
+                    else:
+                        code, principal = surface.gateway.authorize(
+                            auth, control=control,
+                            scope="cancel" if path.endswith("/cancel") else "run",
+                        )
+                    if code != 200:
+                        self._json(code, err_result("auth", "gateway access denied"))
+                        return
                     if surface.booting:
                         self._json(503, {"error": "Iris is still booting"})
                         return
@@ -576,8 +612,17 @@ class ControlSurface:
                     payload, read_err = self._read_json(max_length=131072)
                     if read_err or payload is None:
                         self._json(400, {"error": read_err or "invalid JSON"})
+                    elif token_management:
+                        self._json(*surface.gateway.manage_token(path, payload))
+                    elif approval_run:
+                        self._json(*surface.gateway.approval(approval_run, payload))
                     else:
-                        self._json(*surface.gateway.post(path, payload))
+                        allow_mcp = (path == "/v1/agent/runs"
+                                     and surface.gateway.authorize(auth, control=control, scope="mcp") == (200, principal))
+                        self._json(*surface.gateway.post(path, payload, principal=principal, allow_mcp=allow_mcp))
+                    return
+                if not self._auth_ok():
+                    self._json(401, err_result("auth", "unauthorized"))
                     return
                 payload, read_err = self._read_json()
                 if path == "/v1/invoke":

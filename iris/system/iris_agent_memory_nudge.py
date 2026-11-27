@@ -9,10 +9,10 @@ from iris.browser.observation import browser_teaching_block
 from iris.system.iris_agent_control_sync import iris_agent_home
 
 # Bump when nudge text changes. Lower runtime markers must not skip as "already present".
-_NUDGE_VERSION = 43
+_NUDGE_VERSION = 44
 _MARKER = f"<!-- iris-control-nudge-v{_NUDGE_VERSION} -->"
 
-_BLOCK = """<!-- iris-control-nudge-v43 -->
+_BLOCK = """<!-- iris-control-nudge-v44 -->
 ## Iris Light UI control
 
 When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open a project / 아이리스 라이트 작업 시작:
@@ -60,8 +60,8 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 15f. Open VSX for the project open in IRIS IDE: `ide.marketplace_search` (`query`) then `ide.marketplace_install` (`id` as publisher.name). Install downloads the VSIX into the IDE deployedPlugins folder. Do not claim installed unless ok and result.package exists. Do not say a PDF tab is already open. If reload is reloaded, say the IDE is restarting to load the extension. If reload is not_running, say it loads the next time IRIS IDE starts. plugin.loaded true is the only signal the plugin host has the extension. Do not say a viewer opened when loaded is false. Name-only requests are not installed. Project plan/progress: `ide.project_log` (`plan`, `decision`, `issue`, `progress`).
 15g. Read and change the open IRIS IDE like an editor, not from an empty success: `ide.diagnostics` (reported false is not "no problems"; empty list is clean only when reported true), `ide.symbols`/`ide.references`/`ide.definition` (ok needs queried true; empty items then means none), `ide.edit` (ok only via=editor; disk append is not a selection replace and fails), `ide.save` (ok only for editor buffer flush; disk-only is failure), `ide.task`, `ide.debug` (start needs a launch name; no session is not success). Do not claim a fix, a save, or a debug session without ok.
 15d. Image attachment → code file: `project.write_image_code` (`image` path, `rel_path`). If the target file is unknown, ask. Never claim the file was written without ok.
-15e. If the user message contains `[자료 본문]` or PDF attachment metadata (`attachment_id`, `total_pages`, `page_status`, `incomplete`), treat that as a partial read. Answer from the excerpt you have. For more PDF body call SpeakTools `content.extract` with `attachment_id` (or Attachment path) and optional `page_from`/`page_to` (1-based inclusive). When `incomplete` or `truncated` is true, do not claim you read the whole PDF — fetch the needed page ranges first. Do not ask for page screenshots first. Do not say you cannot read PDF. HWP is unsupported. Saving a chat as a PDF file stays 15b (`note.export_pdf` only).
-15h. Lecture PDF + create every practice/lab script (`실습 전부 만들어`, `프로그램 N-M 파일로`, dump labs): prefer optional SpeakTools `content.dump_lab_scripts` with the Attachment absolute path (optional `out_dir=labs`). No app keyword intercept. For general PDF Q&A or missing pages use `content.extract` + page ranges (15e), not a full re-dump into chat. dump_lab returns written paths/labels only — never program bodies. List those paths in the reply.
+15e. When PDF metadata says `incomplete` or `truncated`, use the excerpt as evidence and fetch the needed pages with `content.extract` and `attachment_id`. Send `relative_path` for a file inside an attached folder and optional 1-based `page_from` and `page_to`. Use `vision.analyze_attachment` for a visual question about one PDF page or image. Report any pages still unread.
+15h. For extracting all practice or lab scripts from a lecture PDF, use `content.dump_lab_scripts` with `attachment_id`, optional `relative_path`, and `out_dir` (defaults to `labs`). List the written paths and labels from the tool result.
 
 16. Email / 메일: `workspace_open_email` opens the screen; then `email_list_accounts` lists accounts, followed by `email_list_messages` (today=true or since=YYYY-MM-DD) / `email_read_message` / `email_open_compose` / `email_send` (skill iris-email). Never invent inbox contents.
 
@@ -69,7 +69,7 @@ When the user asks to open IDE / start coding / Companion / "ide 켜줘" / open 
 
 18. Mic off/on: `voice.mic_off` / `voice.mic_on` (status: `voice.mic_status`). Do not claim mic tools are missing.
 
-19. If SpeakTools/control actions are missing from your tool list: tell the user Iris Agent tools are offline (Iris app must be running; restart Iris Agent gateway), do not invent tool calls.
+19. Use `tool_search` to find deferred IRIS or connected MCP tools and `tool_describe` for their exact argument schemas. Report an unavailable tool if the current catalog cannot resolve it.
 
 20. Open a file only with `ide.open_file` after SpeakTools `get_state` and `project.list_files`. Relative `path` is the bound workspace, not the shell cwd. The folder action is `ide.open_folder` (there is no project.open_folder). If the file is missing, say so. Do not create another file or say it opened.
 
