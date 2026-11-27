@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,8 @@ IRIS_EAGER_MODEL_TOOLS = frozenset(
         "chat_new_session",
     }
 )
+
+_COMPACT_TOOLS = ("search_files", "local_read_file", "content_extract", "read_file", "terminal")
 
 
 def _tool_name(tool_def: dict[str, Any]) -> str:
@@ -163,36 +166,58 @@ def _listing_lines(deferred: list[dict[str, Any]], *, max_chars: int = 3500) -> 
     return "\n".join(lines)
 
 
+def _schema_bytes(rows: list[dict[str, Any]]) -> int:
+    return len(json.dumps(rows, ensure_ascii=False).encode("utf-8"))
+
+
 def assemble_iris_model_tools(
     iris_tools: list[dict[str, Any]],
     *,
     context_length: int | None = None,
+    user_message: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
-    """Return ``(model_visible_tools, deferred_tools, activated)``.
-
-    ``context_length`` is accepted for call-site compatibility; activation is
-    driven by whether any non-eager Iris tools exist.
-    """
-    _ = context_length
-    eager: list[dict[str, Any]] = []
-    deferred: list[dict[str, Any]] = []
+    """Project the immutable tool bindings into a provider-sized prompt."""
+    tools = {}
     for row in iris_tools:
         name = _tool_name(row)
-        if not name or name in BRIDGE_TOOL_NAMES:
-            continue
-        if name in IRIS_EAGER_MODEL_TOOLS:
-            eager.append(row)
-        else:
-            deferred.append(row)
+        if name and name not in BRIDGE_TOOL_NAMES:
+            tools[name] = row
+
+    compact = context_length is not None and context_length <= 16_384
+    names = [name for name in tools if name in IRIS_EAGER_MODEL_TOOLS]
+    if compact:
+        words = set(re.findall(r"[^\W_]+", user_message[:8000].casefold()))
+        relevant = []
+        for name, row in tools.items():
+            if row.get("source") != "mcp":
+                continue
+            service_words = set(re.findall(r"[^\W_]+", str(row.get("source_name", "")).casefold()))
+            if service_words & words:
+                relevant.append(name)
+        names = [*relevant[:2], *(name for name in _COMPACT_TOOLS if name in tools)]
+
+    # ponytail: UTF-8 size is a conservative schema proxy until providers expose token counts.
+    budget = max(_schema_bytes(_bridge_tools(len(tools), "")), (context_length or 64_000) * 3 // 5)
+    eager: list[dict[str, Any]] = []
+    for name in names:
+        candidate = [*eager, tools[name]]
+        if _schema_bytes(candidate + _bridge_tools(len(tools) - len(candidate), "")) <= budget:
+            eager = candidate
+    eager_names = {_tool_name(row) for row in eager}
+    deferred = [row for name, row in tools.items() if name not in eager_names]
     if not deferred:
-        return list(eager or iris_tools), [], False
-    listing = _listing_lines(sorted(deferred, key=lambda row: row.get("source") != "mcp"))
-    visible = list(eager) + _bridge_tools(len(deferred), listing)
+        return eager, [], False
+    listing = "" if compact else _listing_lines(sorted(deferred, key=lambda row: row.get("source") != "mcp"))
+    visible = eager + _bridge_tools(len(deferred), listing)
+    if _schema_bytes(visible) > budget:
+        visible = eager + _bridge_tools(len(deferred), "")
     logger.info(
-        "iris tool surface: eager=%d deferred=%d activated=True visible=%d",
+        "iris tool surface: context=%s schema_bytes=%d budget_bytes=%d eager=%d deferred=%d",
+        context_length,
+        _schema_bytes(visible),
+        budget,
         len(eager),
         len(deferred),
-        len(visible),
     )
     return visible, deferred, True
 

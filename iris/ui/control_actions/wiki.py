@@ -37,7 +37,11 @@ def _page_limit(raw: object) -> int:
 
 
 def resolve_attachment_source(store: Any, attachment_id: str, *, relative_path: str = "", workspace_root: str = "") -> str:
-    """Resolve the host-owned attachment or indexed file in a folder attachment."""
+    """Resolve the host-owned attachment or indexed file in a folder attachment.
+
+    `attachment_id` may be the canonical id or a unique attached file basename
+    (duplicate names raise ambiguous with candidate ids).
+    """
     aid = str(attachment_id or "").strip()
     if not aid:
         raise ValueError("attachment_id required")

@@ -106,11 +106,50 @@ def _check_resolve_attachment_id() -> None:
         assert resolve_attachment_source(store2, aid) == resolved
 
 
+def _check_attachment_id_filename_disambiguation() -> None:
+    """Filename-as-id (201p FAIL shape) resolves uniquely; duplicates stay ambiguous."""
+    from iris.runtime.attachment_store import AttachmentStore
+    from iris.ui.control_actions.wiki import resolve_attachment_source
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        unique = root / "lecture.pdf"
+        _multi_page_pdf(unique, ["U1", "U2"])
+        store = AttachmentStore()
+        store.attach([str(unique)])
+        aid = next(iter(store.roots))
+        assert store.canonicalize_attachment_ref("lecture.pdf") == aid
+        assert store.canonicalize_attachment_ref("LECTURE.PDF") == aid
+        by_name = resolve_attachment_source(store, "lecture.pdf")
+        assert Path(by_name).resolve() == unique.resolve(), by_name
+
+        left = root / "a" / "dup.pdf"
+        right = root / "b" / "dup.pdf"
+        left.parent.mkdir()
+        right.parent.mkdir()
+        _multi_page_pdf(left, ["L"])
+        _multi_page_pdf(right, ["R"])
+        dup_store = AttachmentStore()
+        dup_store.attach([str(left), str(right)])
+        assert len(dup_store.roots) == 2, dup_store.roots
+        try:
+            dup_store.canonicalize_attachment_ref("dup.pdf")
+            raise AssertionError("expected duplicate basename to be ambiguous")
+        except ValueError as exc:
+            message = str(exc)
+            assert "ambiguous" in message, message
+            for mid in dup_store.roots:
+                assert mid in message, (mid, message)
+        for mid in list(dup_store.roots):
+            assert dup_store.canonicalize_attachment_ref(mid) == mid
+
+
 def main() -> None:
     _check_page_range_only()
     _check_incomplete_when_unread_remain()
     _check_chip_exposes_manifest()
     _check_resolve_attachment_id()
+    _check_attachment_id_filename_disambiguation()
     print("pdf_page_range self-check ok")
 
 

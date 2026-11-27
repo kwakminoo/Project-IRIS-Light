@@ -134,6 +134,13 @@ def test_model_bindings_are_scoped_and_approval_cannot_outlive_config(tmp_path):
         bind_live_control_surface(None)
 
 
+def test_schema_fingerprint_refused_after_approval(tmp_path):
+    """After approve, a live schema mismatch must refuse — not run the tool."""
+    from iris.mcp._check_schema_refuse_after_approval import check_schema_refuse_after_approval
+
+    check_schema_refuse_after_approval(tmp_path)
+
+
 def test_owned_stdio_sdk_discovers_resources_without_invoking_tools(tmp_path):
     import yaml
 

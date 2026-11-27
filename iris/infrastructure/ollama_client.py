@@ -13,8 +13,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from iris.runtime.stream_usage import parse_stream_usage
-
 OLLAMA_CLOUD_CATALOG_URL = "https://ollama.com/api/tags"
 OLLAMA_HTTP_USER_AGENT = "Iris-Light/1.0"
 OLLAMA_CHAT_CONTEXT_CAP = 64_000
@@ -353,7 +351,10 @@ class OllamaClient:
 
     def model_context_length(self, runtime_name: str, *, default: int = 128_000) -> int:
         """모델 컨텍스트 윈도우 토큰 수 (/api/show model_info)."""
-        data = self.show_model(runtime_name)
+        return self._advertised_context(self.show_model(runtime_name)) or default
+
+    @staticmethod
+    def _advertised_context(data: dict[str, Any]) -> int | None:
         info = data.get("model_info") if isinstance(data.get("model_info"), dict) else {}
         for key, val in info.items():
             if str(key).endswith(".context_length"):
@@ -363,7 +364,34 @@ class OllamaClient:
                         return n
                 except (TypeError, ValueError):
                     continue
-        return default
+        return None
+
+    def openai_context_budget(self, model: str) -> tuple[int | None, int | None, int, bool | None] | None:
+        """Report advertised, observed, and conservatively budgeted windows for local /v1 chat."""
+        metadata = self.show_model(model, timeout_sec=self.timeout_sec)
+        if not metadata:
+            return None
+        maximum = self._advertised_context(metadata)
+        override = re.search(r"^num_ctx\s+([1-9]\d*)\s*$", str(metadata.get("parameters", "")), re.M)
+        # A runner from a previous native request may be replaced on the next /v1 call.
+        budget = int(override[1]) if override else 4096
+        if maximum is not None:
+            budget = min(budget, maximum)
+        loaded = None
+        try:
+            rows = self._get_json("/api/ps", include_cloud_key=False).get("models") or []
+            aliases = {model, f"{model}:latest"}
+            for row in rows:
+                if isinstance(row, dict) and row.get("name") in aliases:
+                    value = row.get("context_length")
+                    if type(value) is int and value > 0:
+                        loaded = value
+                        break
+        except (RuntimeError, OSError, ValueError, AttributeError):
+            pass
+        capabilities = metadata.get("capabilities")
+        tools = supports_tools_capability(capabilities) if isinstance(capabilities, list) else None
+        return maximum, loaded, budget, tools
 
     def model_supports_tools(self, runtime_name: str, *, timeout_sec: float = 15.0) -> bool:
         """Ollama /api/show capabilities에 'tools'가 있으면 True.
@@ -534,6 +562,8 @@ class OllamaClient:
             "options": {"num_ctx": num_ctx, "num_predict": -1},
         }
         from iris.runtime.attachment_context import trace_payload
+        from iris.runtime.stream_usage import parse_stream_usage
+
         trace_payload("ollama", payload)
         req = Request(
             f"{self.base_url}/api/chat",
@@ -651,13 +681,13 @@ class OllamaClient:
         except URLError as e:
             raise RuntimeError(f"Ollama 연결 실패: {e.reason}") from e
 
-    def _get_json(self, path: str) -> dict[str, Any]:
-        return self._get_json_url(f"{self.base_url}{path}")
+    def _get_json(self, path: str, *, include_cloud_key: bool = True) -> dict[str, Any]:
+        return self._get_json_url(f"{self.base_url}{path}", include_cloud_key=include_cloud_key)
 
-    def _get_json_url(self, url: str) -> dict[str, Any]:
+    def _get_json_url(self, url: str, *, include_cloud_key: bool = True) -> dict[str, Any]:
         req = Request(url, method="GET")
         req.add_header("User-Agent", OLLAMA_HTTP_USER_AGENT)
-        api_key = os.environ.get("OLLAMA_API_KEY", "").strip()
+        api_key = os.environ.get("OLLAMA_API_KEY", "").strip() if include_cloud_key else ""
         if api_key:
             req.add_header("Authorization", f"Bearer {api_key}")
         try:

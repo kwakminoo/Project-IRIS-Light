@@ -39,6 +39,12 @@ class ChatScrollTests(unittest.TestCase):
         QApplication.sendEvent(viewport, event)
         self.settle()
 
+    @unittest.skip(
+        "FRC-06: asserts hidden `_log` scrollbar/fade; "
+        "use iris.ui.chat._check_transcript_scroll and "
+        "iris.ui.chat._check_frc06_panel_land "
+        "(docs/code-review/wave17-frc06-legacy-test-matrix-2026-11-27.md)"
+    )
     def test_main_and_companion(self):
         wheel_distances = []
         for mode in ("main", "ide", "email", "calendar"):

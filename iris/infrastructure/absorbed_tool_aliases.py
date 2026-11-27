@@ -10,12 +10,10 @@ from dataclasses import dataclass
 from typing import Mapping
 
 # Hermes tool names with no Iris Control replacement (strip from schemas only).
+# skills_list / skill_view / vision_analyze absorbed below (FRC-02).
 STRIP_ONLY_NAMES: frozenset[str] = frozenset(
     {
-        "vision_analyze",
         "image_generate",
-        "skills_list",
-        "skill_view",
         "skill_manage",
         "text_to_speech",
         "todo_list",
@@ -56,6 +54,10 @@ ABSORBED_TOOLS: tuple[AbsorbedTool, ...] = (
     AbsorbedTool("apply_patch", action="project.apply_patch"),
     AbsorbedTool("web_search", action="web.run_search"),
     AbsorbedTool("web_extract", action="web.run_extract"),
+    # FRC-02: Hermes familiar names → existing Speak/Control actions (no new surface).
+    AbsorbedTool("skills_list", action="skill.list"),
+    AbsorbedTool("skill_view", action="skill.view"),
+    AbsorbedTool("vision_analyze", action="vision.analyze_attachment"),
 )
 
 

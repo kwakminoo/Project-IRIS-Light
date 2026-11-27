@@ -17,7 +17,8 @@ from iris.system.iris_agent_control_sync import (
 
 
 def _main() -> None:
-    listed = speak_invoke_agent_tool("wiki.list_notes", {"limit": 1})
+    # wiki.list_notes grant is zero-arg (EMPTY_OBJECT_SCHEMA); limit belongs to wiki.search.
+    listed = speak_invoke_agent_tool("wiki.list_notes", {})
     assert listed.get("ok") is True, listed
     assert listed.get("call_path") == "native", listed
     assert listed.get("bridge") == "none", listed

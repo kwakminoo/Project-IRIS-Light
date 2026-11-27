@@ -185,15 +185,42 @@ class AttachmentStore:
         path.resolve().relative_to(base.resolve())
         return path
 
+    def canonicalize_attachment_ref(self, attachment_id: str) -> str:
+        """Exact attachment_id, or a unique file-root display name.
+
+        Models sometimes pass the PDF filename where attachment_id belongs.
+        Folder roots stay id-only (relative_path still required at resolve).
+        """
+        aid = str(attachment_id or "").strip()
+        if not aid:
+            raise ValueError("attachment_id required")
+        if aid in self.roots:
+            return aid
+        needle = Path(aid).name.casefold() or aid.casefold()
+        hits: dict[str, str] = {}
+        for root in self.roots.values():
+            if root.directory or root.error:
+                continue
+            name = root.path.name
+            if name.casefold() == needle or name.casefold() == aid.casefold():
+                hits[root.id] = name
+        if len(hits) == 1:
+            return next(iter(hits))
+        if len(hits) > 1:
+            labeled = ", ".join(f"{mid}:{name}" for mid, name in hits.items())
+            raise ValueError(f"attachment_id ambiguous; use one of: {labeled}")
+        raise ValueError("attachment_id not found")
+
     def resolve_file(self, attachment_id: str, relative_path: str = "", *, workspace_root: str = "") -> Path:
-        root = self.roots.get(attachment_id)
+        aid = self.canonicalize_attachment_ref(attachment_id)
+        root = self.roots.get(aid)
         if root is None:
             raise ValueError("attachment_id not found")
         if not self.in_workspace(root, workspace_root):
             raise ValueError("attachment is outside the active workspace")
         if not relative_path and root.directory:
             raise ValueError("relative_path required for folder attachments")
-        path = self._resolve(attachment_id, relative_path or root.path.name)
+        path = self._resolve(aid, relative_path or root.path.name)
         if not path.is_file():
             raise FileNotFoundError("attachment file not found")
         if path.stat().st_size > MAX_FILE_BYTES:

@@ -35,6 +35,7 @@ import logging
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def _load_local_helper(name: str):
@@ -445,16 +446,47 @@ def _install_iris_engine_tools(
             row.fingerprint,
         )
 
-    context_length = None
-    try:
-        from iris.system.setup_protocol import HERMES_MIN_OLLAMA_NUM_CTX
+    compressor = getattr(agent, "context_compressor", None)
+    context_length = getattr(compressor, "context_length", None)
+    supports_tools = None
+    endpoint = str(trusted.get("base_url") or "")
+    parsed = urlsplit(endpoint)
+    model = str(trusted.get("model") or "")
+    if (
+        model and not model.endswith(":cloud")
+        and parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+        and not parsed.username and not parsed.password and parsed.path.rstrip("/") == "/v1"
+    ):
+        from iris.infrastructure.ollama_client import OllamaClient
 
-        context_length = int(HERMES_MIN_OLLAMA_NUM_CTX)
-    except Exception:
-        context_length = None
+        report = OllamaClient(endpoint, timeout_sec=2).openai_context_budget(model)
+        if report is not None:
+            maximum, loaded, context_length, supports_tools = report
+            if compressor is not None:
+                compressor.context_length = context_length
+            if context_length <= 8192 and hasattr(agent, "_build_system_prompt"):
+                from agent.system_prompt import _context_files_part, _identity_parts
+
+                def build_compact_prompt(system_message=None):
+                    identity, soul_loaded = _identity_parts(agent, context_length)
+                    project = _context_files_part(agent, context_length, soul_loaded)
+                    return "\n\n".join(part for part in (*identity, system_message, *project) if part)
+
+                # ponytail: small Ollama runners use the product tool guide and Core identity/project files.
+                agent._build_system_prompt = build_compact_prompt
+            logging.getLogger(__name__).info(
+                "CONTEXT_BUDGET model=%s maximum=%s loaded=%s input_output_window=%d tools=%s",
+                model, maximum, loaded, context_length, supports_tools,
+            )
+    messages = trusted.get("messages") or ()
+    user_message = next(
+        (row.get("content", "") for row in reversed(messages) if row.get("role") == "user"),
+        "",
+    )
     model_visible, deferred_defs, _activated = tool_surface.assemble_iris_model_tools(
         iris_tools,
         context_length=context_length,
+        user_message=user_message if isinstance(user_message, str) else "",
     )
     snapshot = MappingProxyType(dict(bindings))
     deferred_snapshot = tuple(deferred_defs)
@@ -517,7 +549,7 @@ def _install_iris_engine_tools(
 
     # Drop Core schemas preloaded during construction; providers see Iris eager
     # tools plus the tool_search bridge when the long tail is deferred.
-    agent.tools = model_visible
+    agent.tools = model_visible if supports_tools is not False else []
     agent.valid_tool_names = set(snapshot) | set(tool_surface.BRIDGE_TOOL_NAMES)
     return tuple(snapshot)
 
@@ -922,8 +954,8 @@ def _run_agent_turn(cls: type, history: list, user: str, raw: dict) -> None:
         services = sorted({row["source_name"] for row in external})
         wanted["ephemeral_system_prompt"] += (
             "\nConnected MCP services: " + ", ".join(services)[:480] + ". "
-            "For requests involving a connected service, start with tool_search using the service name "
-            "or requested capability. Use tool_describe for its arguments and tool_call to get its current result."
+            "For a connected service, call its visible tool or find it with tool_search using the "
+            "service name or capability, then use tool_describe and tool_call."
         )
     model = raw.get("model")
     if isinstance(model, str) and model:

@@ -47,10 +47,17 @@ def _assert_memory_nudge_speak_tools_product() -> None:
                 "MEMORY must not teach iris-control MCP or COMPAT: " + head[:160]
             )
     item19 = block.split("\n19.", 1)[-1].split("\n20.", 1)[0]
-    assert "SpeakTools" in item19 or "control" in item19.lower(), item19
+    # FRC-01 compact path: item19 may teach tool_search/tool_describe instead of
+    # naming SpeakTools/control; still forbid iris-control MCP teaching.
+    assert (
+        "SpeakTools" in item19
+        or "control" in item19.lower()
+        or ("tool_search" in item19 and "tool_describe" in item19)
+    ), item19
     assert "IRIS_CONTROL_MCP_COMPAT" not in item19, item19
     assert "mcp__iris_control__" not in item19, item19
     assert "Iris Control MCP is offline" not in item19, item19
+    assert "iris-control" not in item19.lower(), item19
     teach = browser_teaching_block()
     assert "iris_invoke" not in teach, teach[:200]
     assert "SpeakTools" in teach or "control" in teach.lower()

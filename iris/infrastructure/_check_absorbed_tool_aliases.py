@@ -62,6 +62,26 @@ def main() -> None:
     assert action_to_model_name("project.apply_patch") == "apply_patch"
     assert resolve_action("unknown_tool", "home") is None
 
+    # FRC-02 absorption of existing Speak/Control actions
+    assert "skills_list" not in strip
+    assert "skill_view" not in strip
+    assert "vision_analyze" not in strip
+    assert "skills_list" in model_names()
+    assert "skill_view" in model_names()
+    assert "vision_analyze" in model_names()
+    assert resolve_action("skills_list", "home") == "skill.list"
+    assert resolve_action("skill_view", "home") == "skill.view"
+    assert resolve_action("vision_analyze", "home") == "vision.analyze_attachment"
+    assert action_to_model_name("skill.list") == "skills_list"
+    assert action_to_model_name("skill.view") == "skill_view"
+    assert action_to_model_name("vision.analyze_attachment") == "vision_analyze"
+    # Still strip / not absorbed this session
+    assert "skill_manage" in strip
+    assert "session_search" in strip
+    assert "clarify" in strip
+    assert resolve_action("session_search", "home") is None
+    assert resolve_action("clarify", "home") is None
+
     print("absorbed_tool_aliases ok")
 
 

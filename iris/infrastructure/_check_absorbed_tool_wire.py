@@ -17,11 +17,9 @@ _HERMES_CORE_LEFTOVERS = frozenset(
     {
         # process_manage absorbed → process.manage (U05); not a leftover
         # patch absorbed → apply_patch / project.apply_patch (U06); leftover name must not survive
+        # skills_list / skill_view / vision_analyze absorbed (FRC-02); not leftovers
         "patch",
-        "vision_analyze",
         "image_generate",
-        "skills_list",
-        "skill_view",
         "skill_manage",
         "browser_exec",
         "browser_cdp",
@@ -106,6 +104,9 @@ def _simulate_install(surface: str, preload: list[str]) -> set[str]:
             "apply_patch": {"patch": "x"},
             "web_search": {"query": "x"},
             "web_extract": {"url": "https://example.test"},
+            "skills_list": {},
+            "skill_view": {"name": "demo"},
+            "vision_analyze": {"attachment_id": "att-1"},
         }
         results = {
             name: model_tools_mod.handle_function_call(
@@ -113,7 +114,7 @@ def _simulate_install(surface: str, preload: list[str]) -> set[str]:
             )
             for name, args in calls.items()
         }
-        unavailable = model_tools_mod.handle_function_call("skills_list", {})
+        unavailable = model_tools_mod.handle_function_call("clarify", {})
         mcp_mod.refresh_agent_mcp_tools(agent)
     finally:
         sidecar._request_native_tool = original_request
@@ -155,6 +156,9 @@ def _simulate_install(surface: str, preload: list[str]) -> set[str]:
         "apply_patch": "project.apply_patch",
         "web_search": "web.run_search",
         "web_extract": "web.run_extract",
+        "skills_list": "skill.list",
+        "skill_view": "skill.view",
+        "vision_analyze": "vision.analyze_attachment",
     }
     assert [action for action, _args, _meta in native_calls] == [
         expected_actions[name] for name in calls
@@ -167,7 +171,14 @@ def _simulate_install(surface: str, preload: list[str]) -> set[str]:
         assert meta["session_id"] == "session-1", meta
         assert meta["workspace_id"] == "workspace-1", meta
     assert "TOOL_NOT_AVAILABLE" in unavailable, unavailable
-    assert "skills_list" not in visible
+    # FRC-02 names are deferred (not IRIS_EAGER); bindings still install them.
+    assert "skills_list" in installed_set
+    assert "skill_view" in installed_set
+    assert "vision_analyze" in installed_set
+    assert "skill_list" not in installed_set
+    assert "vision_analyze_attachment" not in installed_set
+    assert "skill_list" not in visible
+    assert "vision_analyze_attachment" not in visible
     assert "memory" not in visible, "late Hermes refresh replaced native snapshot"
     assert getattr(agent, "_skip_mcp_refresh", False) is True
     try:
@@ -246,6 +257,11 @@ def main() -> None:
     assert "apply_patch" in home
     assert "patch" not in home  # alias only — no dual schema
     assert "settings_get" in home
+    assert "skills_list" in home
+    assert "skill_list" not in home
+    assert "skill_view" in home
+    assert "vision_analyze" in home
+    assert "vision_analyze_attachment" not in home
 
     set_speak_surface("ide_companion")
     ide = _names("ide_companion")
@@ -257,10 +273,23 @@ def main() -> None:
     assert "process_manage" in ide
     assert "apply_patch" in ide
     assert "patch" not in ide
+    assert "skills_list" in ide
+    assert "skill_view" in ide
+    assert "vision_analyze" in ide
+    assert "skill_list" not in ide
+    assert "vision_analyze_attachment" not in ide
 
     preload = sorted(
         _HERMES_CORE_LEFTOVERS
-        | {"terminal", "write_file", "process_manage", "apply_patch", "skills_list"}
+        | {
+            "terminal",
+            "write_file",
+            "process_manage",
+            "apply_patch",
+            "skills_list",
+            "skill_view",
+            "vision_analyze",
+        }
     )
     for surface in ("home", "ide_companion"):
         visible = _simulate_install(surface, preload)
@@ -271,7 +300,9 @@ def main() -> None:
         assert "process_manage" in visible
         assert "apply_patch" in visible
         assert "patch" not in visible
-        assert "skills_list" not in visible
+        assert "skill_list" not in visible
+        assert "vision_analyze_attachment" not in visible
+        # Deferred absorb names must still be installable (checked inside simulate).
 
     print(
         "absorbed_tool_wire ok",
