@@ -79,12 +79,22 @@ def _check_product_workers_have_no_external_branch() -> None:
     assert "ExternalGateway" not in text
 
 
+def _check_product_runtime_has_no_external_gateway() -> None:
+    # Source scan — must not import runtime (residue breaks that import).
+    path = ROOT / "iris" / "engine" / "runtime.py"
+    text = path.read_text(encoding="utf-8-sig")
+    assert "ExternalGateway" not in text, (
+        "iris.engine.runtime must not import or reference ExternalGateway"
+    )
+
+
 def main() -> None:
     _check_parse_ignores_external_flag()
-    _check_env_cannot_reopen_external()
     _check_engine_source_type_is_sidecar_only()
     _check_settings_has_no_external_product_flag()
     _check_product_workers_have_no_external_branch()
+    _check_product_runtime_has_no_external_gateway()
+    _check_env_cannot_reopen_external()
     print("iris_agent_sidecar_only ok")
 
 
