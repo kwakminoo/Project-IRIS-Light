@@ -38,9 +38,16 @@ def check_apply_env_to_hermes_script_retired() -> None:
     assert not path.exists(), path
 
 
+def check_sidecar_cleanup_is_owned() -> None:
+    from iris.engine import runtime
+
+    assert not hasattr(runtime, "_kill_stray_sidecars")
+
+
 if __name__ == "__main__":
     check_supervisor_default_no_gateway()
     check_sidecar_only_engine_source()
     check_product_no_gateway_spawn_module()
     check_apply_env_to_hermes_script_retired()
+    check_sidecar_cleanup_is_owned()
     print("gateway legacy isolated ok")

@@ -144,6 +144,26 @@ def register_routine_actions(window: Any, reg: ActionRegistry) -> None:
         _log(window, "routine.run", True)
         return ok_result("routine.run", {"id": routine.id, "name": routine.name})
 
+    def routine_manage(args: dict[str, Any]) -> dict[str, Any]:
+        """Dispatcher only — forwards to create|list|update|delete|run (no duplicate body)."""
+        raw = args if isinstance(args, dict) else {}
+        op = str(raw.get("operation") or "").strip().lower()
+        forwarded = {k: v for k, v in raw.items() if k != "operation"}
+        if op == "create":
+            return routine_create(forwarded)
+        if op == "list":
+            return routine_list(forwarded)
+        if op == "update":
+            return routine_update(forwarded)
+        if op == "delete":
+            return routine_delete(forwarded)
+        if op == "run":
+            return routine_run(forwarded)
+        return err_result(
+            "routine.manage",
+            f"unknown operation: {op or '(empty)'} (create|list|update|delete|run)",
+        )
+
     reg.register(
         "routine.create",
         routine_create,
@@ -188,5 +208,14 @@ def register_routine_actions(window: Any, reg: ActionRegistry) -> None:
         "routine.run",
         routine_run,
         summary="Run a routine right now without waiting for its schedule",
+        risk="medium",
+    )
+    reg.register(
+        "routine.manage",
+        routine_manage,
+        summary=(
+            "Hermes cronjob_manage absorb: operation=create|list|update|delete|run. "
+            "Dispatcher only — same handlers as routine.create/list/update/delete/run."
+        ),
         risk="medium",
     )

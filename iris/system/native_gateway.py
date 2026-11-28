@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import hashlib
+import hmac
+import json
 from pathlib import Path
 from sqlite3 import Error as StorageError
 from threading import Condition, Thread, Timer
@@ -35,6 +38,8 @@ _LOCAL_PRINCIPAL = "iris.local_gateway"
 _DEFAULT_TOKEN_SCOPES = frozenset({"read", "run", "cancel"})
 _TOKEN_SCOPES = _DEFAULT_TOKEN_SCOPES | {"mcp"}
 _APPROVAL_TTL_SEC = 90
+_WEBHOOK_TTL_SEC = 300
+_WEBHOOK_MAX_MESSAGE = 8000
 
 
 @dataclass
@@ -111,6 +116,95 @@ class NativeGateway:
                 return 400, {"error": "invalid token scope or expiration"}
             result = self._store.issue_token(ttl, sorted(set(scopes)), rotate=token_id)
             return (200 if token_id else 201, result) if result is not None else (404, {"error": "not found"})
+
+    def manage_connector(self, path: str, payload: dict) -> tuple[int, dict]:
+        with self._changed:
+            if self._closed:
+                return 503, {"error": "gateway is shutting down"}
+            suffix = path.removeprefix(f"{_PREFIX}/connectors").strip("/")
+            if not suffix:
+                name, channels = payload.get("name"), payload.get("channels")
+                if (
+                    payload.keys() != {"name", "channels"}
+                    or not isinstance(name, str)
+                    or not 1 <= len(name.strip()) <= 80
+                    or not isinstance(channels, list)
+                    or not channels
+                    or len(channels) > 32
+                    or any(not isinstance(channel, str) or not 1 <= len(channel) <= 128 for channel in channels)
+                ):
+                    return 400, {"error": "name and allowed channels required"}
+                return 201, self._store.register_connector(name.strip(), sorted(set(channels)))
+            parts = suffix.split("/")
+            if len(parts) != 2 or parts[1] not in {"disconnect", "reconnect", "revoke"} or payload:
+                return 404, {"error": "not found"}
+            status = {"disconnect": "disconnected", "reconnect": "connected", "revoke": "revoked"}[parts[1]]
+            if not self._store.set_connector_status(parts[0], status):
+                return 404, {"error": "not found"}
+            return 200, {"connector_id": parts[0], "status": status}
+
+    def webhook(self, path: str, payload: dict, headers: dict[str, str]) -> tuple[int, dict]:
+        parts = path.removeprefix(f"{_PREFIX}/connectors/").split("/")
+        if len(parts) != 2 or parts[1] != "events":
+            return 404, {"error": "not found"}
+        connector_id = parts[0]
+        required = {"event_id", "channel_id", "actor_id", "thread_id", "message"}
+        if (
+            payload.keys() != required
+            or any(not isinstance(payload[key], str) for key in required)
+            or not all(payload[key] for key in ("event_id", "channel_id", "actor_id", "message"))
+            or any(len(payload[key]) > 128 for key in ("event_id", "channel_id", "actor_id", "thread_id"))
+            or len(payload["message"]) > _WEBHOOK_MAX_MESSAGE
+        ):
+            return 400, {"error": "invalid connector event"}
+        if headers.get("x-iris-connector", "") != connector_id:
+            return 401, {"error": "invalid connector signature"}
+        try:
+            stamp = int(headers.get("x-iris-timestamp", ""))
+        except ValueError:
+            return 401, {"error": "invalid connector signature"}
+        nonce = headers.get("x-iris-nonce", "")
+        signature = headers.get("x-iris-signature", "")
+        if abs(time() - stamp) > _WEBHOOK_TTL_SEC or not 8 <= len(nonce) <= 128 or len(signature) != 64:
+            return 401, {"error": "invalid connector signature"}
+        connector = self._store.connector(connector_id)
+        if connector is None or connector["status"] != "connected":
+            return 401, {"error": "invalid connector signature"}
+        channels = json.loads(connector["channels"])
+        if payload["channel_id"] not in channels:
+            return 403, {"error": "channel not allowed"}
+        canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        material = str(stamp).encode() + b"." + nonce.encode() + b"." + canonical
+        expected = hmac.new(bytes(connector["secret_digest"]), material, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return 401, {"error": "invalid connector signature"}
+        external_key = json.dumps(
+            [payload["channel_id"], payload["actor_id"], payload["thread_id"]],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        with self._changed:
+            try:
+                accepted = self._store.accept_connector_event(
+                    connector_id, payload["event_id"], nonce, external_key
+                )
+            except FileExistsError:
+                return 409, {"error": "duplicate connector event"}
+            except OverflowError:
+                return 429, {"error": "connector rate limit exceeded"}
+            if accepted is None:
+                return 401, {"error": "connector unavailable"}
+            principal, session_id = accepted
+            code, opened = self._start(
+                {"message": payload["message"], **({"session_id": session_id} if session_id else {})},
+                principal,
+                allow_mcp=False,
+            )
+            if code == 202:
+                self._store.bind_connector_event(
+                    connector_id, payload["event_id"], external_key, opened["session_id"], opened["run_id"]
+                )
+            return code, opened
 
     @staticmethod
     def approval_run_id(path: str) -> str:

@@ -1,5 +1,6 @@
 """Settings sections must never be shown as temporary top-level windows."""
 
+import sys
 from unittest import TestCase
 
 from PyQt6.QtCore import QEvent, QObject
@@ -22,7 +23,7 @@ class _ShowObserver(QObject):
 class SettingsSectionVisibilityTests(TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QApplication.instance() or QApplication([])
+        cls.app = QApplication.instance() or QApplication(sys.argv)
 
     def test_sections_are_parented_before_becoming_visible(self):
         for expanded in (True, False):

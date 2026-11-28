@@ -593,9 +593,15 @@ class ControlSurface:
                 if surface.gateway is not None and path.startswith("/v1/agent/"):
                     control = self._auth_ok()
                     auth = self.headers.get("Authorization", "")
+                    webhook_event = path.startswith("/v1/agent/connectors/") and path.endswith("/events")
                     token_management = path == "/v1/agent/tokens" or path.startswith("/v1/agent/tokens/")
+                    connector_management = path == "/v1/agent/connectors" or (
+                        path.startswith("/v1/agent/connectors/") and not webhook_event
+                    )
                     approval_run = surface.gateway.approval_run_id(path)
-                    if token_management or approval_run:
+                    if webhook_event:
+                        code, principal = 200, ""
+                    elif token_management or connector_management or approval_run:
                         code, principal = (200 if control else 401), ""
                     else:
                         code, principal = surface.gateway.authorize(
@@ -609,11 +615,16 @@ class ControlSurface:
                         self._json(503, {"error": "Iris is still booting"})
                         return
                     self.connection.settimeout(10)
-                    payload, read_err = self._read_json(max_length=131072)
+                    payload, read_err = self._read_json(max_length=32768 if webhook_event else 131072)
                     if read_err or payload is None:
                         self._json(400, {"error": read_err or "invalid JSON"})
                     elif token_management:
                         self._json(*surface.gateway.manage_token(path, payload))
+                    elif connector_management:
+                        self._json(*surface.gateway.manage_connector(path, payload))
+                    elif webhook_event:
+                        headers = {key.lower(): value for key, value in self.headers.items()}
+                        self._json(*surface.gateway.webhook(path, payload, headers))
                     elif approval_run:
                         self._json(*surface.gateway.approval(approval_run, payload))
                     else:

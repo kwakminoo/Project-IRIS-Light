@@ -18,18 +18,21 @@ _HERMES_CORE_LEFTOVERS = frozenset(
         # process_manage absorbed → process.manage (U05); not a leftover
         # patch absorbed → apply_patch / project.apply_patch (U06); leftover name must not survive
         # skills_list / skill_view / vision_analyze absorbed (FRC-02); not leftovers
+        # skill_manage / session_search absorbed (FFC-03 Unit 4a); not leftovers
+        # todo_list absorbed (FFC-03 Unit 4b → todo.manage); not leftovers
+        # clarify absorbed (FFC-03 Unit 4c → clarify.manage); not leftovers
+        # delegate_task absorbed (FFC-03 Unit 4d → delegate.manage); not leftovers
+        # image_generate / text_to_speech / cronjob_manage / computer_use /
+        # manage_connections absorbed (FFC-03 Unit 5); execute_code = INTERNAL_ALIAS
         "patch",
-        "image_generate",
-        "skill_manage",
         "browser_exec",
         "browser_cdp",
         "browser_dialog",
         "browser_vault",
-        "text_to_speech",
-        "todo_list",
         "shell_run",
         "project_run",
         "project_write_file",
+        "execute_code",  # internal alias only — must not dual-emit
     }
 )
 
@@ -107,6 +110,16 @@ def _simulate_install(surface: str, preload: list[str]) -> set[str]:
             "skills_list": {},
             "skill_view": {"name": "demo"},
             "vision_analyze": {"attachment_id": "att-1"},
+            "session_search": {"query": "demo"},
+            "skill_manage": {"operation": "list"},
+            "todo_list": {"operation": "list"},
+            "clarify": {"operation": "open", "question_id": "q1", "question_text": "ok?"},
+            "delegate_task": {"operation": "aggregate"},
+            "cronjob_manage": {"operation": "list"},
+            "manage_connections": {},
+            "computer_use": {},
+            "image_generate": {},
+            "text_to_speech": {},
         }
         results = {
             name: model_tools_mod.handle_function_call(
@@ -114,7 +127,9 @@ def _simulate_install(surface: str, preload: list[str]) -> set[str]:
             )
             for name, args in calls.items()
         }
-        unavailable = model_tools_mod.handle_function_call("clarify", {})
+        # execute_code is INTERNAL_ALIAS only — not schema-bound; product dispatch refuses.
+        unavailable = model_tools_mod.handle_function_call("execute_code", {"command": "echo x"})
+        strip_memory = model_tools_mod.handle_function_call("memory", {})
         mcp_mod.refresh_agent_mcp_tools(agent)
     finally:
         sidecar._request_native_tool = original_request
@@ -159,6 +174,16 @@ def _simulate_install(surface: str, preload: list[str]) -> set[str]:
         "skills_list": "skill.list",
         "skill_view": "skill.view",
         "vision_analyze": "vision.analyze_attachment",
+        "session_search": "chat.search_past",
+        "skill_manage": "skill.manage",
+        "todo_list": "todo.manage",
+        "clarify": "clarify.manage",
+        "delegate_task": "delegate.manage",
+        "cronjob_manage": "routine.manage",
+        "manage_connections": "connections.status",
+        "computer_use": "computer.surfaces",
+        "image_generate": "image.status",
+        "text_to_speech": "voice.tts_status",
     }
     assert [action for action, _args, _meta in native_calls] == [
         expected_actions[name] for name in calls
@@ -171,14 +196,33 @@ def _simulate_install(surface: str, preload: list[str]) -> set[str]:
         assert meta["session_id"] == "session-1", meta
         assert meta["workspace_id"] == "workspace-1", meta
     assert "TOOL_NOT_AVAILABLE" in unavailable, unavailable
-    # FRC-02 names are deferred (not IRIS_EAGER); bindings still install them.
+    assert "TOOL_NOT_AVAILABLE" in strip_memory, strip_memory
+    # FRC-02 / FFC-03 names: bindings install; underscore legacy names stay out.
     assert "skills_list" in installed_set
     assert "skill_view" in installed_set
     assert "vision_analyze" in installed_set
+    assert "session_search" in installed_set
+    assert "skill_manage" in installed_set
+    assert "todo_list" in installed_set
+    assert "clarify" in installed_set
+    assert "delegate_task" in installed_set
+    assert "cronjob_manage" in installed_set
+    assert "manage_connections" in installed_set
+    assert "computer_use" in installed_set
+    assert "image_generate" in installed_set
+    assert "text_to_speech" in installed_set
+    assert "execute_code" not in installed_set  # INTERNAL_ALIAS — no dual schema
     assert "skill_list" not in installed_set
     assert "vision_analyze_attachment" not in installed_set
+    assert "chat_search_past" not in installed_set
+    assert "clarify_manage" not in installed_set
+    assert "delegate_manage" not in installed_set
     assert "skill_list" not in visible
     assert "vision_analyze_attachment" not in visible
+    assert "chat_search_past" not in visible
+    assert "clarify_manage" not in visible
+    assert "delegate_manage" not in visible
+    assert "execute_code" not in visible
     assert "memory" not in visible, "late Hermes refresh replaced native snapshot"
     assert getattr(agent, "_skip_mcp_refresh", False) is True
     try:
@@ -262,6 +306,27 @@ def main() -> None:
     assert "skill_view" in home
     assert "vision_analyze" in home
     assert "vision_analyze_attachment" not in home
+    assert "session_search" in home
+    assert "chat_search_past" not in home
+    assert "skill_manage" in home
+    assert "todo_list" in home
+    assert "todo_manage" not in home
+    assert "clarify" in home
+    assert "clarify_manage" not in home
+    assert "delegate_task" in home
+    assert "delegate_manage" not in home
+    assert "cronjob_manage" in home
+    assert "routine_manage" not in home
+    assert "manage_connections" in home
+    assert "connections_status" not in home
+    assert "computer_use" in home
+    assert "computer_surfaces" not in home
+    assert "image_generate" in home
+    assert "image_status" not in home
+    assert "text_to_speech" in home
+    assert "voice_tts_status" not in home
+    assert "execute_code" not in home  # INTERNAL_ALIAS — no dual schema
+    assert "memory" not in home
 
     set_speak_surface("ide_companion")
     ide = _names("ide_companion")
@@ -278,6 +343,22 @@ def main() -> None:
     assert "vision_analyze" in ide
     assert "skill_list" not in ide
     assert "vision_analyze_attachment" not in ide
+    assert "session_search" in ide
+    assert "chat_search_past" not in ide
+    assert "skill_manage" in ide
+    assert "todo_list" in ide
+    assert "todo_manage" not in ide
+    assert "clarify" in ide
+    assert "clarify_manage" not in ide
+    assert "delegate_task" in ide
+    assert "delegate_manage" not in ide
+    assert "cronjob_manage" in ide
+    assert "manage_connections" in ide
+    assert "computer_use" in ide
+    assert "image_generate" in ide
+    assert "text_to_speech" in ide
+    assert "execute_code" not in ide
+    assert "memory" not in ide
 
     preload = sorted(
         _HERMES_CORE_LEFTOVERS
@@ -289,6 +370,16 @@ def main() -> None:
             "skills_list",
             "skill_view",
             "vision_analyze",
+            "session_search",
+            "skill_manage",
+            "todo_list",
+            "clarify",
+            "delegate_task",
+            "cronjob_manage",
+            "manage_connections",
+            "computer_use",
+            "image_generate",
+            "text_to_speech",
         }
     )
     for surface in ("home", "ide_companion"):

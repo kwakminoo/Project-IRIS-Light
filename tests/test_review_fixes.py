@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 from unittest import TestCase, mock
@@ -123,7 +124,7 @@ class ReviewDialogTests(TestCase):
 
         from iris.ui.learning.skill_review_dialog import SkillReviewDialog
 
-        app = QApplication.instance() or QApplication([])
+        app = QApplication.instance() or QApplication(sys.argv)
         skill = Skill(
             skill_id="s",
             steps=[SkillStep(kind="type", text="안녕 IRIS 내일 봐")],

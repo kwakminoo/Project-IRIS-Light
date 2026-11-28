@@ -464,6 +464,16 @@ def main() -> int:
     decide("gate-timeout", "run")
     assert take("gate-timeout", timeout=0.05) == ""
 
+    from iris.ui.chat.shell_gate import cancel_pending_approvals
+
+    arm("close-pending")
+    arm("close-decided")
+    decide("close-decided", "run")
+    cancel_pending_approvals()
+    decide("close-pending", "run")
+    assert take("close-pending") == "skip"
+    assert take("close-decided") == "run"
+
     print("shell_gate ok")
     return 0
 

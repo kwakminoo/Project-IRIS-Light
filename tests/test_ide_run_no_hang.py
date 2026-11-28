@@ -19,7 +19,6 @@ import threading
 import time
 import types
 import unittest
-from pathlib import Path
 
 from iris.system.control_surface import ActionRegistry
 from iris.ui import control_bindings
@@ -52,8 +51,10 @@ class _FakeBridgeClient:
         self.token = "test-token"
         self._run = run_terminal_command
 
-    def run_terminal_command(self, command: str, *, cwd: str = "", argv=None) -> dict:
-        return self._run(command, cwd=cwd, argv=argv, client=self)
+    def append_terminal_output(
+        self, text: str, *, cwd: str = "", run_id: str = "", stream: str = ""
+    ) -> dict:
+        return self._run(text, cwd=cwd, run_id=run_id, stream=stream, client=self)
 
 
 class _FakeSurface:
@@ -64,6 +65,7 @@ class _FakeSurface:
 def _make_window(tmp_root: str, run_terminal_command):
     win = types.SimpleNamespace()
     win._get_bound_ide_session = lambda refresh=True: _FakeSession(tmp_root)
+    win._wait_for_iris_ide_workspace = lambda workspace: ""
     win._iris_ide_bridge_client = lambda: _FakeBridgeClient(run_terminal_command)
     win._live_activity = _FakeLiveActivity()
     win._db = None
@@ -75,7 +77,7 @@ def _invoke_project_run(tmp_root: str, run_terminal_command, **extra_args):
     window = _make_window(tmp_root, run_terminal_command)
     control_bindings._register_actions(window, surface)  # type: ignore[arg-type]
     surface.registry.set_human_confirm(lambda spec, args: True)
-    args = {"project_root": tmp_root, "command": "print(1)", "reveal_terminal": True}
+    args = {"project_root": tmp_root, "command": "echo IRIS_IDE_RUN_FIXTURE", "reveal_terminal": True}
     args.update(extra_args)
     return surface.registry.invoke("project.run", args)
 
@@ -93,16 +95,11 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
     def test_successful_run_reports_ok_and_output(self) -> None:
         """정상 실행되는 경우: t0 UnboundLocalError 없이 성공 결과가 반환돼야 한다."""
 
-        def run_terminal_command(command, *, cwd, argv, client):
-            # project.run이 시작 때 로그를 지우므로, 브리지 응답 시점에 다시 쓴다.
-            log = Path(cwd) / ".iris" / "last_run.log"
-            log.parent.mkdir(parents=True, exist_ok=True)
-            log.write_text("hello from bridge\nIRIS_EXIT:0\n", encoding="utf-8")
+        def run_terminal_command(command, *, cwd, client, **kwargs):
             return {
-                "command": command,
-                "queued": True,
+                "appended": True,
                 "via": "theia_terminal",
-                "cwd": cwd,
+                "revealed": True,
             }
 
         result = _invoke_project_run(self.root, run_terminal_command)
@@ -110,20 +107,20 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
         payload = result.get("result") or {}
         self.assertEqual(payload.get("via"), "theia_terminal")
         self.assertEqual(payload.get("ide_terminal"), "ok")
+        self.assertIn("IRIS_IDE_RUN_FIXTURE", payload.get("stdout_tail", ""))
         self.assertFalse(payload.get("timed_out"))
         self.assertFalse(payload.get("running"))
 
     def test_bridge_exception_returns_clean_error_not_unboundlocalerror(self) -> None:
         """IDE 실행 중 오류 발생: 예전엔 t0 UnboundLocalError로 원인이 가려졌다."""
 
-        def run_terminal_command(command, *, cwd, argv, client):
+        def run_terminal_command(command, *, cwd, client, **kwargs):
             raise ConnectionRefusedError("bridge not reachable")
 
         result = _invoke_project_run(self.root, run_terminal_command)
-        self.assertFalse(result.get("ok"))
-        self.assertIn("bridge not reachable", str(result.get("error")))
-        self.assertNotIn("t0", str(result.get("error")))
-        self.assertNotIn("UnboundLocalError", str(result.get("error")))
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual((result.get("result") or {}).get("via"), "execution_runtime")
+        self.assertEqual((result.get("result") or {}).get("ide_terminal"), "failed")
 
     def test_bridge_disconnected_fails_fast(self) -> None:
         """IDE와 연결되지 않은 경우: 클라이언트 생성 자체가 실패해도 즉시 에러."""
@@ -140,10 +137,11 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
         t0 = time.monotonic()
         result = surface.registry.invoke(
             "project.run",
-            {"project_root": self.root, "command": "print(1)", "reveal_terminal": True},
+            {"project_root": self.root, "command": "echo IRIS_IDE_RUN_FIXTURE", "reveal_terminal": True},
         )
         elapsed = time.monotonic() - t0
-        self.assertFalse(result.get("ok"))
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual((result.get("result") or {}).get("ide_terminal"), "failed")
         self.assertLess(elapsed, 2.0, "disconnected bridge must fail fast, not hang")
 
     def test_hung_bridge_call_times_out_instead_of_blocking_forever(self) -> None:
@@ -155,7 +153,7 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()  # 테스트 종료 후 스레드가 계속 남아있지 않도록
 
-        def run_terminal_command(command, *, cwd, argv, client):
+        def run_terminal_command(command, *, cwd, client, **kwargs):
             started.set()
             release.wait(60.0)  # 응답 없는 브릿지 흉내 — 테스트가 끝날 때까지 반환하지 않음
             return {"output": "too late"}
@@ -168,12 +166,8 @@ class ProjectRunBridgeNoHangTests(unittest.TestCase):
         )
         elapsed = time.monotonic() - t0
         self.assertTrue(started.wait(1.0), "worker thread never started")
-        self.assertFalse(result.get("ok"))
-        err = str(result.get("error") or "")
-        self.assertTrue(
-            "did not respond" in err or "bridge call timeout" in err,
-            err,
-        )
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual((result.get("result") or {}).get("ide_terminal"), "failed")
         # bridge_call_pumping timeout=18s + 여유
         self.assertLess(elapsed, 22.0, "project.run must not hang past its own timeout budget")
         release.set()  # 백그라운드 스레드 정리

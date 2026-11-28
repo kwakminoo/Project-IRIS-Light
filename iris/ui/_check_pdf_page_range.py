@@ -144,12 +144,45 @@ def _check_attachment_id_filename_disambiguation() -> None:
             assert dup_store.canonicalize_attachment_ref(mid) == mid
 
 
+def _check_content_extract_echoes_canonical_id() -> None:
+    """content.extract success payload echoes store-canonical id for basename refs."""
+    from unittest.mock import MagicMock
+
+    from iris.runtime.attachment_store import AttachmentStore
+    from iris.system.control_surface import ActionRegistry
+    from iris.ui.control_actions.wiki import register_wiki_actions
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf = Path(tmp) / "lecture.pdf"
+        _multi_page_pdf(pdf, ["ECHO1", "ECHO2"])
+        store = AttachmentStore()
+        store.attach([str(pdf)])
+        aid = next(iter(store.roots))
+        cid = "conv-echo-canonical"
+        window = MagicMock()
+        window._conversation_id = cid
+        window._chat_session = SimpleNamespace(attachments=store, conversation_id=cid)
+        window._chat.current_model.return_value = ""
+        window._saved_model = ""
+        window._settings.ollama_model = ""
+        window._get_bound_ide_session = MagicMock(return_value=None)
+
+        reg = ActionRegistry()
+        register_wiki_actions(window, reg)
+        out = reg.invoke("content.extract", {"attachment_id": "lecture.pdf", "page_from": 1, "page_to": 1})
+        assert out.get("ok") is True, out
+        result = out.get("result") or {}
+        assert result.get("attachment_id") == aid, (result.get("attachment_id"), aid)
+        assert result.get("attachment_id") != "lecture.pdf", result
+
+
 def main() -> None:
     _check_page_range_only()
     _check_incomplete_when_unread_remain()
     _check_chip_exposes_manifest()
     _check_resolve_attachment_id()
     _check_attachment_id_filename_disambiguation()
+    _check_content_extract_echoes_canonical_id()
     print("pdf_page_range self-check ok")
 
 

@@ -7,6 +7,7 @@ import json
 from secrets import token_urlsafe
 from contextlib import closing
 from pathlib import Path
+from sqlite3 import IntegrityError
 from time import time
 from uuid import uuid4
 
@@ -44,6 +45,20 @@ class GatewayStore:
                     token_id TEXT PRIMARY KEY, digest TEXT NOT NULL UNIQUE, principal TEXT NOT NULL,
                     scopes TEXT NOT NULL, expires_at REAL NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS gateway_connectors (
+                    connector_id TEXT PRIMARY KEY, name TEXT NOT NULL, principal TEXT NOT NULL UNIQUE,
+                    secret_digest BLOB NOT NULL, channels TEXT NOT NULL, status TEXT NOT NULL,
+                    token_id TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS gateway_connector_events (
+                    connector_id TEXT NOT NULL, event_id TEXT NOT NULL, nonce TEXT NOT NULL,
+                    received_at REAL NOT NULL, session_id TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (connector_id, event_id), UNIQUE (connector_id, nonce)
+                );
+                CREATE TABLE IF NOT EXISTS gateway_connector_sessions (
+                    connector_id TEXT NOT NULL, external_key TEXT NOT NULL, session_id TEXT NOT NULL,
+                    PRIMARY KEY (connector_id, external_key)
+                );
             """)
             for row in db.execute("SELECT run_id FROM gateway_runs WHERE status = 'running'").fetchall():
                 run_id = row["run_id"]
@@ -59,7 +74,9 @@ class GatewayStore:
         """, (digest, time())).fetchone()
         return (row["principal"], frozenset(json.loads(row["scopes"]))) if row is not None else None
 
-    def issue_token(self, ttl: int, scopes: list[str], *, rotate: str = "") -> dict | None:
+    def issue_token(
+        self, ttl: int, scopes: list[str], *, rotate: str = "", principal: str = ""
+    ) -> dict | None:
         secret = token_urlsafe(32)
         digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()
         expires = time() + ttl
@@ -73,10 +90,106 @@ class GatewayStore:
                 db.execute("UPDATE gateway_tokens SET digest = ?, expires_at = ?, revoked = 0 WHERE token_id = ?",
                            (digest, expires, token_id))
             else:
-                principal, token_id = uuid4().hex, uuid4().hex
+                principal, token_id = principal or uuid4().hex, uuid4().hex
                 db.execute("INSERT INTO gateway_tokens VALUES (?, ?, ?, ?, ?, 0)",
                            (token_id, digest, principal, json.dumps(scopes), expires))
         return {"token_id": token_id, "principal": principal, "token": secret, "scopes": scopes, "expires_at": expires}
+
+    def register_connector(self, name: str, channels: list[str]) -> dict:
+        secret = token_urlsafe(32)
+        secret_digest = hashlib.sha256(secret.encode("utf-8")).digest()
+        connector_id, principal = uuid4().hex, uuid4().hex
+        token = self.issue_token(30 * 86400, ["read", "cancel"], principal=principal)
+        assert token is not None
+        stamp = time()
+        with self._db._lock, self._db._conn as db:
+            db.execute(
+                "INSERT INTO gateway_connectors VALUES (?, ?, ?, ?, ?, 'connected', ?, ?, ?)",
+                (
+                    connector_id,
+                    name,
+                    principal,
+                    secret_digest,
+                    json.dumps(channels),
+                    token["token_id"],
+                    stamp,
+                    stamp,
+                ),
+            )
+        return {
+            "connector_id": connector_id,
+            "principal": principal,
+            "secret": secret,
+            "token": token["token"],
+            "channels": channels,
+            "status": "connected",
+        }
+
+    def set_connector_status(self, connector_id: str, status: str) -> bool:
+        with self._db._lock, self._db._conn as db:
+            row = db.execute(
+                "SELECT token_id, status FROM gateway_connectors WHERE connector_id = ?",
+                (connector_id,),
+            ).fetchone()
+            if row is None or row["status"] == "revoked":
+                return False
+            db.execute(
+                "UPDATE gateway_connectors SET status = ?, updated_at = ? WHERE connector_id = ?",
+                (status, time(), connector_id),
+            )
+            if status == "revoked":
+                db.execute(
+                    "UPDATE gateway_tokens SET revoked = 1 WHERE token_id = ?", (row["token_id"],)
+                )
+            return True
+
+    def connector(self, connector_id: str):
+        return self._db._execute(
+            "SELECT * FROM gateway_connectors WHERE connector_id = ?", (connector_id,)
+        ).fetchone()
+
+    def accept_connector_event(
+        self, connector_id: str, event_id: str, nonce: str, external_key: str
+    ) -> tuple[str, str] | None:
+        """Reserve one authenticated event and return its principal/session mapping."""
+        with self._db._lock, self._db._conn as db:
+            row = db.execute(
+                "SELECT principal, status FROM gateway_connectors WHERE connector_id = ?",
+                (connector_id,),
+            ).fetchone()
+            if row is None or row["status"] != "connected":
+                return None
+            recent = db.execute(
+                "SELECT count(*) FROM gateway_connector_events WHERE connector_id = ? AND received_at > ?",
+                (connector_id, time() - 60),
+            ).fetchone()[0]
+            if recent >= 60:
+                raise OverflowError("connector rate limit exceeded")
+            mapped = db.execute(
+                "SELECT session_id FROM gateway_connector_sessions WHERE connector_id = ? AND external_key = ?",
+                (connector_id, external_key),
+            ).fetchone()
+            try:
+                db.execute(
+                    "INSERT INTO gateway_connector_events(connector_id, event_id, nonce, received_at) VALUES (?, ?, ?, ?)",
+                    (connector_id, event_id, nonce, time()),
+                )
+            except IntegrityError as exc:
+                raise FileExistsError("duplicate connector event") from exc
+            return row["principal"], (mapped["session_id"] if mapped is not None else "")
+
+    def bind_connector_event(
+        self, connector_id: str, event_id: str, external_key: str, session_id: str, run_id: str
+    ) -> None:
+        with self._db._lock, self._db._conn as db:
+            db.execute(
+                "INSERT OR IGNORE INTO gateway_connector_sessions VALUES (?, ?, ?)",
+                (connector_id, external_key, session_id),
+            )
+            db.execute(
+                "UPDATE gateway_connector_events SET session_id = ?, run_id = ? WHERE connector_id = ? AND event_id = ?",
+                (session_id, run_id, connector_id, event_id),
+            )
 
     def revoke_token(self, token_id: str) -> bool:
         with self._db._lock, self._db._conn as db:

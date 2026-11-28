@@ -736,6 +736,11 @@ def _call_on_ui_unbounded(window: MainWindow, fn: Callable[[], Any]) -> Any:
 
 def _confirm_body(spec: Any, args: dict[str, Any]) -> str:
     bits = [spec.summary or spec.name]
+    if spec.name.startswith("memory."):
+        for key in ("scope", "type", "id", "revision", "content"):
+            if key in args:
+                bits.append(f"{key}={args[key]}")
+        return "\n".join(bits)[:800]
     for key in ("operation", "name", "to", "destination", "subject", "text", "url", "value"):
         if args.get(key):
             bits.append(f"{key}={args[key]}")
@@ -895,6 +900,13 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     from iris.ui.control_actions.ide import register_ide_actions
     from iris.ui.control_actions.learning import register_learning_actions
     from iris.ui.control_actions.local_files import register_local_file_actions
+    from iris.ui.control_actions.memory import register_memory_actions
+    from iris.ui.control_actions.todo import register_todo_actions
+    from iris.ui.control_actions.clarify import register_clarify_actions
+    from iris.ui.control_actions.delegate import register_delegate_actions
+    from iris.ui.control_actions.connections import register_connections_actions
+    from iris.ui.control_actions.computer import register_computer_actions
+    from iris.ui.control_actions.provider_status import register_provider_status_actions
     from iris.ui.control_actions.profile import register_profile_actions
     from iris.ui.control_actions.project import register_project_actions
     from iris.ui.control_actions.session import register_session_actions
@@ -910,6 +922,14 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     register_session_actions(window, reg, surface)
     register_attachment_actions(window, reg)
     register_local_file_actions(window, reg)
+    if window._db is not None:
+        register_memory_actions(window._db, reg)
+    register_todo_actions(reg)
+    register_clarify_actions(reg)
+    register_delegate_actions(reg)
+    register_connections_actions(reg)
+    register_computer_actions(reg)
+    register_provider_status_actions(window, reg)
     register_shell_actions(window, reg)
     register_process_actions(window, reg)
     register_web_actions(window, reg)
@@ -932,11 +952,23 @@ def _register_actions(window: MainWindow, surface: ControlSurface) -> None:
     from iris.ui.settings.hud_dialog import run_hud_confirm
 
     def _human_confirm(spec: Any, args: dict[str, Any]) -> bool:
+        memory_before = ""
+        if spec.name in ("memory.update", "memory.delete"):
+            from iris.storage.memory import MemoryStore
+
+            context = host_execution_context()
+            if context is None or context.inference_scope != "local_ollama" or window._db is None:
+                return False
+            record = MemoryStore(window._db).get(context, args.get("id"))
+            if record is None or record["revision"] != args.get("revision"):
+                return False
+            memory_before = f"\n현재 기억: {record['content'][:160]}"
+
         def _ask() -> bool:
             return run_hud_confirm(
                 None,
                 title=spec.name,
-                body=_confirm_body(spec, args),
+                body=_confirm_body(spec, args) + memory_before,
                 hint="모델이 확인을 대신할 수 없습니다.",
                 badge="CONFIRM",
                 ok_text="실행",

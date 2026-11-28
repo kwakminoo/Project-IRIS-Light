@@ -74,6 +74,8 @@ class AttachmentTests(FixtureCase):
                 proc.returncode = 0
                 proc.communicate.return_value = (b"partial", b"Failed loading language 'eng'")
                 self.assertEqual(content_extract._ocr_png_bytes(b"image"), ("", "OCR_TESSDATA_INVALID"))
+                proc.communicate.return_value = (b"IRIS OCR TEST", b"Failed loading language 'chi_tra'")
+                self.assertEqual(content_extract._ocr_png_bytes(b"image"), ("IRIS OCR TEST", ""))
 
     def test_required_file_formats_and_metadata(self):
         for extension, code in [("txt", "TXT-1234"), ("pdf", "PDF-5678"), ("pptx", "PPT-9999"), ("docx", "DOC-2222"), ("xlsx", "XLS-3333")]:

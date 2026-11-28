@@ -2317,6 +2317,7 @@ class ChatPanel(QWidget):
         models: list["OllamaModelInfo"] | list[str],
         *,
         selected: str = "",
+        ollama_online: bool = True,
     ) -> None:
         """Ollama 모델 목록으로 콤보 갱신 (표시=catalog, 값=runtime)."""
         from iris.infrastructure.ollama_client import OllamaModelInfo, display_name_from_runtime
@@ -2333,6 +2334,7 @@ class ChatPanel(QWidget):
             self._model_guard_prev_index = 0
             return
 
+        from iris.infrastructure.iris_agent_errors import is_cloud_runtime_name
         from iris.infrastructure.model_descriptions import describe_model
         from iris.storage.api_providers import is_api_runtime_model
 
@@ -2378,10 +2380,19 @@ class ChatPanel(QWidget):
                         )
                     )
 
-        if selected and not any(selected in (m.label, m.runtime) for m in built):
-            built.append(
-                PickerModel(runtime=selected, label=display_name_from_runtime(selected))
-            )
+        if selected and not any(selected == m.runtime for m in built):
+            alias = f"{selected}:latest"
+            matching = next((m for m in built if not m.is_api and m.runtime == alias), None)
+            if matching is not None:
+                from dataclasses import replace
+
+                built[built.index(matching)] = replace(matching, runtime=selected)
+            else:
+                label = display_name_from_runtime(selected)
+                if not is_api_runtime_model(selected) and not is_cloud_runtime_name(selected):
+                    state = "미설치" if ollama_online else "Ollama 연결 실패"
+                    label = f"{selected} ({state})"
+                built.append(PickerModel(runtime=selected, label=label))
 
         built.sort(key=picker_sort_key)
 

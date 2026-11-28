@@ -16,6 +16,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from iris.knowledge.extraction_cache import (
+    default_engine_probe,
+    fingerprint_for,
+    get as extraction_cache_get,
+    make_key as extraction_cache_make_key,
+    put as extraction_cache_put,
+)
+
 _MAX_CHARS = 80_000
 _TEXT_SUFFIXES = {".md", ".markdown", ".txt", ".csv", ".json", ".log"}
 _CODE_SUFFIXES = {
@@ -271,7 +279,8 @@ def _ocr_png_bytes(png: bytes, *, language: str = "kor+eng") -> tuple[str, str]:
         cmd, tessdata, available = _ensure_tesseract()
     except DocumentExtractionError as exc:
         return "", exc.code
-    if not set(language.split("+")).issubset(available):
+    languages = language.split("+")
+    if not set(languages).issubset(available):
         return "", "OCR_LANGUAGE_MISSING"
     command = [cmd, "stdin", "stdout", "-l", language]
     if tessdata is not None:
@@ -300,7 +309,11 @@ def _ocr_png_bytes(png: bytes, *, language: str = "kor+eng") -> tuple[str, str]:
                             proc.kill()
                             proc.communicate()
                             return "", error
-            if b"Failed loading language" in stderr:
+            if b"Failed loading language" in stderr and (
+                proc.returncode or any(
+                    f"Failed loading language '{name}'".encode() in stderr for name in languages
+                )
+            ):
                 return "", "OCR_TESSDATA_INVALID"
             if proc.returncode:
                 return "", "OCR_FAILED"
@@ -739,6 +752,35 @@ def _extract_ooxml(path: Path) -> str:
     return text
 
 
+def _extraction_cache_lookup(
+    path: Path,
+    *,
+    memo,
+    attachment_id: str,
+    page_from: int | None,
+    page_to: int | None,
+    page_limit: int | None,
+    ocr_language: str,
+    vision_all: bool,
+    char_limit: int | None,
+    kind: str,
+):
+    """Return (key, hit_or_None). Caller skips when memo is None / vision active."""
+    fp = fingerprint_for(
+        path,
+        page_from=page_from,
+        page_to=page_to,
+        page_limit=page_limit,
+        ocr_language=ocr_language,
+        vision_all=vision_all,
+        char_limit=char_limit,
+        engine_probe=default_engine_probe(),
+        kind=kind,
+    )
+    key = extraction_cache_make_key(memo, fp, attachment_id=attachment_id or "")
+    return key, extraction_cache_get(memo, key)
+
+
 def extract_from_source(
     source: str,
     *,
@@ -750,6 +792,8 @@ def extract_from_source(
     vision_all: bool = False,
     cancelled=lambda: False,
     ocr_language: str = "kor+eng",
+    memo=None,
+    attachment_id: str = "",
 ) -> dict[str, object]:
     """파일 경로 또는 http(s) URL → {kind, title, text, source, truncated, …}.
 
@@ -782,7 +826,26 @@ def extract_from_source(
     if suffix in _HWP_SUFFIXES:
         raise ValueError("한글(HWP) 파일은 아직 본문을 읽지 못합니다.")
 
+    # FFC-05: vision paths are never cached (graft from Candidate A).
+    use_cache = memo is not None and vision_reader is None and not vision_all
+
     if suffix in _PDF_SUFFIXES:
+        cache_key = None
+        if use_cache:
+            cache_key, hit = _extraction_cache_lookup(
+                path,
+                memo=memo,
+                attachment_id=attachment_id,
+                page_from=page_from,
+                page_to=page_to,
+                page_limit=page_limit,
+                ocr_language=ocr_language,
+                vision_all=vision_all,
+                char_limit=char_limit,
+                kind="pdf",
+            )
+            if hit is not None:
+                return hit
         data = read_pdf_pages(
             path,
             page_limit=page_limit,
@@ -799,7 +862,7 @@ def extract_from_source(
             text = f"{note}\n\n{text}"
         page_status = list(data.get("page_status") or [])
         incomplete = _incomplete_from_status(page_status, truncated=truncated)
-        return {
+        result = {
             "kind": "pdf",
             "title": source_display_title(path, meta=_pdf_metadata_title(path), text=text),
             "text": text,
@@ -812,6 +875,9 @@ def extract_from_source(
             "page_status": page_status,
             "incomplete": incomplete,
         }
+        if use_cache and cache_key is not None:
+            extraction_cache_put(memo, cache_key, result)
+        return result
 
     if suffix in _OFFICE_SUFFIXES:
         text, truncated = _truncate(_extract_ooxml(path), limit=char_limit)
@@ -825,6 +891,22 @@ def extract_from_source(
         }
 
     if suffix in _IMAGE_SUFFIXES:
+        cache_key = None
+        if use_cache:
+            cache_key, hit = _extraction_cache_lookup(
+                path,
+                memo=memo,
+                attachment_id=attachment_id,
+                page_from=page_from,
+                page_to=page_to,
+                page_limit=page_limit,
+                ocr_language=ocr_language,
+                vision_all=vision_all,
+                char_limit=char_limit,
+                kind="image",
+            )
+            if hit is not None:
+                return hit
         vision_used = False
         try:
             png = _png_bytes(path.read_bytes())
@@ -842,7 +924,7 @@ def extract_from_source(
         if not text:
             raise DocumentExtractionError(error if error in _DOCUMENT_ERRORS else "OCR_NO_TEXT")
         text, truncated = _truncate(text, limit=char_limit)
-        return {
+        result = {
             "kind": "image",
             "title": path.name,
             "text": text,
@@ -852,6 +934,9 @@ def extract_from_source(
             "ocr_used": not vision_used,
             "incomplete": truncated,
         }
+        if use_cache and cache_key is not None:
+            extraction_cache_put(memo, cache_key, result)
+        return result
 
     if suffix in _TEXT_SUFFIXES or suffix in _CODE_SUFFIXES or suffix == "":
         text = path.read_text(encoding="utf-8", errors="replace")

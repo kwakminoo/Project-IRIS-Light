@@ -78,7 +78,7 @@ def _process(win, root: Path) -> None:
             with exc:
                 return json.load(exc)
 
-    def click_pending(scheme: str, request) -> None:
+    def click_pending(scheme: str, request, *, click: bool = True) -> None:
         pending = False
         locations = []
 
@@ -96,6 +96,8 @@ def _process(win, root: Path) -> None:
             if view is None or not view.isVisible():
                 return False
             if locations:
+                if not click:
+                    return True
                 x, y = locations.pop()
                 zoom = view.zoomFactor()
                 target = view.focusProxy() or view
@@ -158,8 +160,55 @@ def _process(win, root: Path) -> None:
         _until(pending.done)
         output = pending.result()
         assert output["ok"] and output["result"]["text"].strip() == marker, output
+        closing_args = {**start_args, "env": {"IRIS_FPR_PROCESS_MARKER": "UNAPPROVED"}}
+        pending = pool.submit(invoke, "start", **closing_args)
+        click_pending("iris-run://", pending, click=False)
+        assert win.close(), "Window refused to close with an approval pending"
+        _until(pending.done, timeout=3)
+        cancelled = pending.result()
+        assert not cancelled["ok"] and cancelled["error"] == "cancelled", cancelled
     assert result_file.read_text(encoding="utf-8") == marker
-    print("Product Control process start: Skip refused, Run consumed approval, wait and stdout passed")
+    print("Product Control process start: Skip refused, Run consumed approval, close cancelled pending approval")
+
+
+def _ocr_shutdown(win, root: Path) -> None:
+    import subprocess
+    from threading import Event
+
+    from iris.knowledge._check_ocr_cancel import _scanned_pdf
+
+    scan = root / "shutdown-scan.pdf"
+    _scanned_pdf(scan, "IRIS OCR SHUTDOWN 7284")
+    release = Event()
+    spawned = []
+    finished = []
+    real_popen = subprocess.Popen
+
+    def observe_ocr(args, *a, **kw):
+        child = real_popen(args, *a, **kw)
+        if isinstance(args, list) and args[1:3] == ["stdin", "stdout"]:
+            spawned.append(child)
+            release.wait(5)
+        return child
+
+    with patch.object(subprocess, "Popen", side_effect=observe_ocr):
+        try:
+            win._chat.set_models(["gpt-oss:20b"], selected="gpt-oss:20b")
+            assert win._attach_os_drop_paths([str(scan)])
+            win._chat.set_input_text("Read the attached scan.")
+            win._chat.submit_input()
+            _until(lambda: bool(spawned))
+            workers = win._closing_workers()
+            assert workers, "Expected an active attachment worker during OCR"
+            for worker in workers:
+                worker.finished.connect(lambda worker=worker: finished.append(worker))
+            assert not win.close(), "Window must wait for the attachment worker"
+        finally:
+            release.set()
+        _until(lambda: not win.isVisible())
+        assert set(finished) == set(workers), "Expected every active worker to finish before close"
+        assert all(child.poll() is not None for child in spawned)
+    print("Attachment OCR shutdown: worker and real OCR process exited")
 
 
 def _run(root: Path, check) -> None:
@@ -192,7 +241,8 @@ def _run(root: Path, check) -> None:
             _until(lambda: win.windowOpacity() > 0.9 and win._intro is not None)
             check(win, root)
         finally:
-            win.close()
+            if win.isVisible():
+                win.close()
 
 
 def _ide(win, root: Path) -> None:
@@ -219,9 +269,14 @@ def _ide(win, root: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    scenarios = {"browser": _browser, "process": _process, "ide": _ide}
+    scenarios = {"browser": _browser, "process": _process, "ide": _ide, "ocr-shutdown": _ocr_shutdown}
     parser.add_argument("scenario", choices=scenarios)
     opts = parser.parse_args()
+    ocr_runtime = None
+    if opts.scenario == "ocr-shutdown":
+        from iris.knowledge.content_extract import _ensure_tesseract
+
+        ocr_runtime = _ensure_tesseract()
     with tempfile.TemporaryDirectory(prefix="iris-product-gui-", ignore_cleanup_errors=True) as work:
         root = Path(work).resolve()
         # Keep native user paths and any inherited provider credentials out of the fixture.
@@ -244,6 +299,8 @@ def main() -> None:
         if opts.scenario == "ide":
             isolated.update(TMP=work, TEMP=work)
         with patch.dict(os.environ, isolated, clear=True), ExitStack() as stack:
+            if ocr_runtime is not None:
+                stack.enter_context(patch("iris.knowledge.content_extract._ensure_tesseract", return_value=ocr_runtime))
             if opts.scenario == "ide":
                 from iris.system.iris_ide_runtime import runtime_source_dir
                 from iris.ui import _check_local_vibe_smoke as smoke

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from unittest import TestCase, mock
 
@@ -239,7 +240,7 @@ class StartupAndClosedPinTests(TestCase):
         from iris.monitoring.screen_capture import CaptureResult
         from iris.ui.monitor.unified_monitor_panel import UnifiedMonitorPanel, _WindowSnap
 
-        app = QApplication.instance() or QApplication([])
+        app = QApplication.instance() or QApplication(sys.argv)
         panel = UnifiedMonitorPanel()
         panel._timer.stop()
         store = PinStore()

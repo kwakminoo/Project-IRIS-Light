@@ -120,6 +120,21 @@ def test_cancellation_during_pipe_wait_prevents_tool_dispatch(tmp_path):
     stop.assert_called_once()
 
 
+def test_document_tool_result_summarizes_unread_pages_only_on_model_wire(tmp_path):
+    engine = Engine(InternalSidecar(home=EngineHome(tmp_path)))
+    child = SimpleNamespace(stdin=StringIO())
+    read_page = {"page": 87, "kind": "text", "chars": 15, "has_images": False}
+    statuses = [read_page if page == 87 else {"page": page, "kind": "unread"} for page in range(1, 202)]
+    full_data = {"kind": "pdf", "text": "page 87 marker", "total_pages": 201,
+                 "incomplete": True, "page_status": statuses}
+    engine.bind_tool_handler(lambda _action, _args: {"ok": True, "data": full_data})
+    engine._reply_to_tool_request(child, {"id": "document", "name": "content.extract", "args": {}})
+
+    result = json.loads(child.stdin.getvalue())["result"]["data"]
+    assert result == {**full_data, "page_status": [read_page], "unread_pages": 200}
+    assert full_data["page_status"] == statuses and len(full_data["page_status"]) == 201
+
+
 def test_rejected_concurrent_turn_does_not_hold_engine_lock(tmp_path):
     engine = Engine(InternalSidecar(home=EngineHome(tmp_path)))
     engine._turn_active = True

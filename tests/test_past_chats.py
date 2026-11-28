@@ -10,7 +10,12 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
+
+ensure_qt_webengine_ready()
+
 from PyQt6.QtCore import QCoreApplication, Qt
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
@@ -42,6 +47,21 @@ from iris.storage.database import Database  # noqa: E402
 from iris.storage.failover_prefs import save_history_settings  # noqa: E402
 from iris.ui.window import main_window as mw_module  # noqa: E402
 from iris.ui.window.main_window import MainWindow  # noqa: E402
+
+
+def _transcript_snapshot(panel) -> dict:
+    panel.resize(640, 480)
+    panel.show()
+    panel.transcript().view()
+    for _ in range(300):
+        if panel.transcript()._page_ready:
+            break
+        QTest.qWait(10)
+    QTest.qWait(80)
+    return panel.transcript()._run_js_sync(
+        "(()=>({text:document.body.innerText,html:document.body.innerHTML,"
+        "tts:document.querySelectorAll('a[href^=\"iris-tts://\"]').length}))()"
+    )
 
 
 class _Base(TestCase):
@@ -477,6 +497,28 @@ class MainWindowPastChatsTests(_Base):
         self.assertLess(past_at, len(payload) - 1)
         self.assertEqual(payload[0]["role"], "system")
 
+    def test_wiki_references_are_data_and_traits_are_not_injected_as_memory(self) -> None:
+        from iris.knowledge.iris_wiki import IrisWiki
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wiki = IrisWiki(docs_root=root / "docs", user_root=root / "wiki")
+            wiki.write_user_note("profile/traits.md", "LEGACY_TRAIT_FIXTURE")
+            win = SimpleNamespace(
+                _history=[{"role": "user", "content": "지금 질문"}],
+                _db=self.db,
+                _iris_wiki=wiki,
+                _pending_handoff="",
+                _pending_wiki_notes="Reference fixture",
+                _use_hermes_backend=lambda: True,
+            )
+            payload = MainWindow._chat_messages_with_project_context(win)
+        self.assertFalse(any("LEGACY_TRAIT_FIXTURE" in m["content"] for m in payload))
+        refs = [m for m in payload if "Reference fixture" in m["content"]]
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0]["role"], "user")
+        self.assertEqual(payload[-1]["content"], "지금 질문")
+
 
 class EmbedWarmupTests(_Base):
     """입력하는 동안 임베딩 모델을 미리 깨운다 — 콜드 로드(실측 9초)를 보낼 때 안 타게."""
@@ -569,8 +611,9 @@ class NoteLineTests(TestCase):
         panel.append_message_instant("Iris", "진짜 답변입니다")
         before = panel.message_body("last")
         panel.append_note("이전 대화 1건 참고 — 9/29 「robocopy 로 바꾸니까 설치 됐어요!」")
-        html_text = panel._log.toHtml()
-        plain = panel._log.toPlainText()
+        snap = _transcript_snapshot(panel)
+        html_text = snap["html"]
+        plain = snap["text"]
         self.assertIn("이전 대화 1건 참고", plain)
         self.assertEqual(html_text.count("iris-tts://"), before and 1)  # 답변 1개 몫뿐
         self.assertEqual(panel.message_body("last"), before)
@@ -581,7 +624,9 @@ class NoteLineTests(TestCase):
 
         panel = ChatPanel()
         panel.append_note("「<b>굵게</b>」")
-        self.assertIn("<b>굵게</b>", panel._log.toPlainText())
+        snap = _transcript_snapshot(panel)
+        self.assertIn("<b>굵게</b>", snap["text"])
+        self.assertIn("&lt;b&gt;", snap["html"])
 
     def test_sources_note_has_no_markdown_underscores(self) -> None:
         from iris.knowledge.history_index import SearchHit

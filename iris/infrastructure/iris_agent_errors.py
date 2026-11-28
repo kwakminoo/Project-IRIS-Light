@@ -206,7 +206,7 @@ def resolve_initial_model(preferred: str, available: list[str]) -> str:
     """부팅·목록 로드 시 쓸 모델.
 
     클라우드인데 미로그인이면 로컬 설치 채팅 모델로 바꾼다.
-    API runtime·로그인된 클라우드·로컬은 preferred 유지(목록에 있을 때).
+    API runtime·로그인된 클라우드·로컬은 저장된 선택을 유지한다.
     """
     from iris.storage.api_providers import is_api_runtime_model
     from iris.system.setup_protocol import prefer_chat_model
@@ -220,12 +220,9 @@ def resolve_initial_model(preferred: str, available: list[str]) -> str:
         return pref
 
     if pref and not cloud_model_blocked_without_login(pref):
-        if not names or pref in names:
-            return pref
+        return pref
 
-    # 미로그인 클라우드 / 목록에 없는 preferred → 로컬
-    local_hint = pref if pref and not is_cloud_runtime_name(pref) else ""
-    local = prefer_chat_model(names, preferred=local_hint)
+    local = prefer_chat_model(names, preferred="")
     if local:
         return local
     return pref
@@ -296,6 +293,7 @@ if __name__ == "__main__":
             == "exaone3.5:2.4b"
         )
         assert resolve_initial_model("", ["exaone3.5:2.4b"]) == "exaone3.5:2.4b"
+        assert resolve_initial_model("gemma4:e2b", ["gpt-oss:20b"]) == "gemma4:e2b"
     with patch(
         "iris.infrastructure.ollama_usage.ollama_cloud_signed_in", return_value=True
     ):

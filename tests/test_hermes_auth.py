@@ -105,18 +105,16 @@ class HermesEnvRotateTests(TestCase):
             p.stop()
         self._td.cleanup()
 
-    def test_weak_placeholder_is_rotated(self) -> None:
+    def test_legacy_gateway_placeholder_is_not_mutated(self) -> None:
         (self.home / ".env").write_text(
             "API_SERVER_KEY=change-me-please\n", encoding="utf-8"
         )
         proto = SetupProtocol(dry_run=False, simulate=False)
         result = proto._step_iris_agent_env()
         self.assertEqual(result.status, "done", result)
-        self.assertTrue(proto._hermes_key_rotated)
-        self.assertIn("재발급", result.message)
-        new_key = (self.home / ".env").read_text(encoding="utf-8")
-        self.assertNotIn("change-me-please", new_key)
-        self.assertFalse(is_weak_iris_agent_api_key(resolve_iris_agent_api_key()))
+        self.assertFalse(proto._hermes_key_rotated)
+        self.assertIn("내부 연결", result.message)
+        self.assertIn("change-me-please", (self.home / ".env").read_text(encoding="utf-8"))
 
     def test_strong_key_preserved(self) -> None:
         strong = "A" * 32
@@ -130,17 +128,16 @@ class HermesEnvRotateTests(TestCase):
         self.assertNotIn("재발급", result.message)
         self.assertIn(strong, (self.home / ".env").read_text(encoding="utf-8"))
 
-    def test_force_rotate_replaces_strong(self) -> None:
+    def test_env_step_has_no_legacy_force_rotate_api(self) -> None:
         strong = "B" * 32
         (self.home / ".env").write_text(
             f"API_SERVER_KEY={strong}\n", encoding="utf-8"
         )
         proto = SetupProtocol(dry_run=False, simulate=False)
-        result = proto._step_iris_agent_env(force_rotate=True)
-        self.assertEqual(result.status, "done", result)
-        self.assertTrue(proto._hermes_key_rotated)
+        with self.assertRaises(TypeError):
+            proto._step_iris_agent_env(force_rotate=True)
         body = (self.home / ".env").read_text(encoding="utf-8")
-        self.assertNotIn(strong, body)
+        self.assertIn(strong, body)
 
 
 class HermesGatewayForceRestartTests(TestCase):
@@ -181,13 +178,10 @@ class HermesGatewayForceRestartTests(TestCase):
         reset.assert_not_called()
         engine.ensure_ready.assert_called_once()
 
-    def test_core_smoke_401_force_rotates(self) -> None:
+    def test_core_smoke_legacy_401_fails_without_gateway_mutation(self) -> None:
         proto = SetupProtocol(dry_run=False, simulate=False)
         calls: dict[str, list] = {"env": [], "gw": []}
-        verifies = [
-            (False, "[API_KEY] Hermes 채팅 401 Unauthorized"),
-            (True, "Ollama·Hermes·MCP 정상"),
-        ]
+        verifies = [(False, "[API_KEY] Hermes 채팅 401 Unauthorized")]
 
         def _env(*, force_rotate: bool = False):
             calls["env"].append(force_rotate)
@@ -203,9 +197,9 @@ class HermesGatewayForceRestartTests(TestCase):
             patch.object(proto, "_step_iris_agent_engine", side_effect=_gw),
         ):
             result = proto._step_core_smoke()
-        self.assertEqual(result.status, "done", result)
-        self.assertEqual(calls["env"], [True])
-        self.assertEqual(calls["gw"], [True])
+        self.assertEqual(result.status, "failed", result)
+        self.assertEqual(calls["env"], [])
+        self.assertEqual(calls["gw"], [])
 
 
 class HermesApiKeyResolveTests(TestCase):
@@ -361,20 +355,17 @@ class HermesGatewayStepReadyTests(TestCase):
         self.assertEqual(result.status, "done", result.message)
         engine.ensure_ready.assert_called_once()
 
-    def test_core_smoke_ready_fail_restarts(self) -> None:
+    def test_core_smoke_legacy_gateway_ready_failure_is_diagnostic_only(self) -> None:
         from iris.system.setup_protocol import SetupProtocol
 
         proto = SetupProtocol(dry_run=False, simulate=False)
         calls: dict[str, list] = {"env": [], "gw": []}
-        verifies = [
-            (
-                False,
-                "[READY] /health OK 이지만 gateway_ready 실패 (models_http).\n"
-                "/v1/models HTTP 401\n"
-                "로컬 모델 있음 — 클라우드 불필요",
-            ),
-            (True, "Ollama·Hermes·MCP 정상"),
-        ]
+        verifies = [(
+            False,
+            "[READY] /health OK 이지만 gateway_ready 실패 (models_http).\n"
+            "/v1/models HTTP 401\n"
+            "로컬 모델 있음 — 클라우드 불필요",
+        )]
 
         def _env(*, force_rotate: bool = False):
             calls["env"].append(force_rotate)
@@ -405,23 +396,19 @@ class HermesGatewayStepReadyTests(TestCase):
             ),
         ):
             result = proto._step_core_smoke()
-        self.assertEqual(result.status, "done", result)
-        self.assertEqual(calls["gw"], [True])
-        # models_http + 401 → 키 rotate
-        self.assertEqual(calls["env"], [True])
+        self.assertEqual(result.status, "failed", result)
+        self.assertEqual(calls["gw"], [])
+        self.assertEqual(calls["env"], [])
         from iris.system.setup_protocol import SetupProtocol
 
         proto = SetupProtocol(dry_run=False, simulate=False)
         calls: dict[str, list] = {"env": [], "gw": []}
-        verifies = [
-            (
-                False,
-                "[READY] /health OK 이지만 /v1/models 404 (models_404, key_len=43).\n"
-                "/v1/models HTTP 404: 404: Not Found\n"
-                "로컬 모델 있음 — 클라우드 불필요",
-            ),
-            (True, "Ollama·Hermes·MCP 정상"),
-        ]
+        verifies = [(
+            False,
+            "[READY] /health OK 이지만 /v1/models 404 (models_404, key_len=43).\n"
+            "/v1/models HTTP 404: 404: Not Found\n"
+            "로컬 모델 있음 — 클라우드 불필요",
+        )]
 
         def _env(*, force_rotate: bool = False):
             calls["env"].append(force_rotate)
@@ -459,11 +446,9 @@ class HermesGatewayStepReadyTests(TestCase):
             ),
         ):
             result = proto._step_core_smoke()
-        self.assertEqual(result.status, "done", result)
-        self.assertEqual(calls["gw"], [True])
-        # 404 경로: env 보강은 하되 rotate=False
-        self.assertEqual(calls["env"], [False])
-        self.assertFalse(any(calls["env"]))
+        self.assertEqual(result.status, "failed", result)
+        self.assertEqual(calls["gw"], [])
+        self.assertEqual(calls["env"], [])
     def test_probe_unauthorized_without_key(self) -> None:
         with patch(
             "iris.infrastructure.iris_agent_credentials.load_iris_agent_dotenv",

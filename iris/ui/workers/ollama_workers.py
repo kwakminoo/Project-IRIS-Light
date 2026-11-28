@@ -321,6 +321,8 @@ class OllamaChatWorker(QThread):
             if self._cancel:
                 break
 
+            if last_error.startswith("Ollama HTTP 404:"):
+                break
             step = decide_fallback(last_error, index)
             if step is None:
                 # 원인을 모르는 실패로 모델을 바꾸면 사용자만 헷갈린다.

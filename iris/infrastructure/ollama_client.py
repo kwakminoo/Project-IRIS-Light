@@ -333,7 +333,9 @@ class OllamaClient:
                     classified.append(item)
         classified.sort(key=lambda x: x.catalog_name.lower())
         return classified if classified else catalog
-    def show_model(self, runtime_name: str, *, timeout_sec: float = 15.0) -> dict[str, Any]:
+    def show_model(
+        self, runtime_name: str, *, timeout_sec: float = 15.0, strict: bool = False,
+    ) -> dict[str, Any]:
         """POST /api/show — capabilities·model_info."""
         payload = {"model": runtime_name}
         req = Request(
@@ -346,7 +348,15 @@ class OllamaClient:
             with urlopen(req, timeout=timeout_sec) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 return data if isinstance(data, dict) else {}
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+        except HTTPError as exc:
+            if strict and exc.code == 404:
+                raise
+            return {}
+        except (URLError, TimeoutError, OSError):
+            if strict:
+                raise
+            return {}
+        except json.JSONDecodeError:
             return {}
 
     def model_context_length(self, runtime_name: str, *, default: int = 128_000) -> int:
@@ -366,18 +376,26 @@ class OllamaClient:
                     continue
         return None
 
-    def openai_context_budget(self, model: str) -> tuple[int | None, int | None, int, bool | None] | None:
+    def openai_context_budget(
+        self, model: str, *, requested: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[int | None, int | None, int, bool | None] | None:
         """Report advertised, observed, and conservatively budgeted windows for local /v1 chat."""
-        metadata = self.show_model(model, timeout_sec=self.timeout_sec)
+        if metadata is None:
+            metadata = self.show_model(model, timeout_sec=self.timeout_sec)
         if not metadata:
             return None
         maximum = self._advertised_context(metadata)
         override = re.search(r"^num_ctx\s+([1-9]\d*)\s*$", str(metadata.get("parameters", "")), re.M)
         # A runner from a previous native request may be replaced on the next /v1 call.
-        budget = int(override[1]) if override else 4096
+        budget = requested if requested and requested > 0 else (int(override[1]) if override else 4096)
         if maximum is not None:
             budget = min(budget, maximum)
-        loaded = None
+        capabilities = metadata.get("capabilities")
+        tools = supports_tools_capability(capabilities) if isinstance(capabilities, list) else None
+        return maximum, self.loaded_context_length(model), budget, tools
+
+    def loaded_context_length(self, model: str) -> int | None:
         try:
             rows = self._get_json("/api/ps", include_cloud_key=False).get("models") or []
             aliases = {model, f"{model}:latest"}
@@ -385,13 +403,10 @@ class OllamaClient:
                 if isinstance(row, dict) and row.get("name") in aliases:
                     value = row.get("context_length")
                     if type(value) is int and value > 0:
-                        loaded = value
-                        break
+                        return value
         except (RuntimeError, OSError, ValueError, AttributeError):
             pass
-        capabilities = metadata.get("capabilities")
-        tools = supports_tools_capability(capabilities) if isinstance(capabilities, list) else None
-        return maximum, loaded, budget, tools
+        return None
 
     def model_supports_tools(self, runtime_name: str, *, timeout_sec: float = 15.0) -> bool:
         """Ollama /api/show capabilities에 'tools'가 있으면 True.
@@ -581,6 +596,10 @@ class OllamaClient:
                         obj = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if not isinstance(obj, dict):
+                        continue
+                    if error := obj.get("error"):
+                        raise RuntimeError(f"Ollama stream: {str(error)[:400]}")
                     msg = obj.get("message") or {}
                     yield {
                         "thinking": msg.get("thinking") if isinstance(msg, dict) else None,

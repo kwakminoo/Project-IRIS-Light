@@ -1,6 +1,7 @@
 """Release contracts for the bundled, IRIS-owned engine."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -45,8 +46,14 @@ class OwnedCoreReleaseTests(unittest.TestCase):
         self.assertTrue({"iris-agent", "hermes-agent"}.isdisjoint(pkg["name"] for pkg in lock["package"]))
         self.assertEqual(project["scripts"]["iris-agent"], "iris_agent_cli.main:main")
         if (ROOT / ".git").exists():
-            ignored = subprocess.run(["git", "check-ignore", str(lock_path)], cwd=ROOT, capture_output=True)
-            self.assertEqual(ignored.returncode, 1, ignored.stdout.decode(errors="replace"))
+            # Pass the mapping explicitly so Windows preserves empty Git config values.
+            ignored = subprocess.run(
+                ["git", "check-ignore", str(lock_path)], cwd=ROOT,
+                env=os.environ.copy(), capture_output=True,
+            )
+            self.assertEqual(
+                ignored.returncode, 1, (ignored.stdout + ignored.stderr).decode(errors="replace")
+            )
 
     def test_windows_payload_includes_engine_and_provenance(self):
         build = (ROOT / "scripts" / "build_iris_setup.ps1").read_text(encoding="utf-8-sig")

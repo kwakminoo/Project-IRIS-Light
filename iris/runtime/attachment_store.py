@@ -8,6 +8,9 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 
+from iris.knowledge.extraction_cache import invalidate as invalidate_extraction_cache
+from iris.knowledge.extraction_cache import memo_for_store
+
 from .attachment_context import (
     Attachment, PreparedAttachments, EXCLUDED, TEXT_EXTENSIONS, TEXT_FILENAMES,
     MAX_FOLDER_ENTRIES, MAX_CONTEXT_CHARS, MAX_FILE_BYTES,
@@ -38,9 +41,30 @@ class AttachmentStore:
     def __init__(self, *, exclude_patterns=()):
         self.exclude_patterns = tuple(exclude_patterns)
         self.roots: dict[str, AttachedRoot] = {}
+        self.session_token = uuid.uuid4().hex
 
     def clear(self):
+        self._invalidate_extraction_cache(all=True)
         self.roots.clear()
+
+    def detach(self, attachment_id: str) -> bool:
+        """Remove one root and drop its extraction memo entries."""
+        aid = str(attachment_id or "").strip()
+        if aid not in self.roots:
+            return False
+        self._invalidate_extraction_cache(attachment_id=aid)
+        del self.roots[aid]
+        return True
+
+    def _invalidate_extraction_cache(
+        self, *, attachment_id: str | None = None, all: bool = False
+    ) -> None:
+        try:
+            invalidate_extraction_cache(
+                memo_for_store(self), attachment_id=attachment_id, all=all
+            )
+        except Exception:
+            return
 
     def _excluded(self, name):
         return (name.casefold() in EXCLUDED or name.casefold().startswith((".venv-", ".iris_light_test_tmp"))
@@ -150,12 +174,29 @@ class AttachmentStore:
             root.error = str(exc) if isinstance(exc, ValueError) else "파일이 삭제되었거나 경로/권한을 확인해야 합니다."
 
     def _index(self, root, relative, path):
-        stat = path.stat()
         import mimetypes
-        root.files[relative] = dict(file_name=path.name, full_path=str(path), relative_path=relative,
-            extension=path.suffix.lower().lstrip("."), mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
-            size=stat.st_size, modified_time=stat.st_mtime, attachment_id=root.id,
-            folder_root=str(root.path) if root.directory else "", extracted_text=False)
+
+        stat = path.stat()
+        size = stat.st_size
+        modified_time = stat.st_mtime
+        prior = root.files.get(relative)
+        if prior is not None and (
+            int(prior.get("size") or -1) != int(size)
+            or float(prior.get("modified_time") or -1.0) != float(modified_time)
+        ):
+            self._invalidate_extraction_cache(attachment_id=root.id)
+        root.files[relative] = dict(
+            file_name=path.name,
+            full_path=str(path),
+            relative_path=relative,
+            extension=path.suffix.lower().lstrip("."),
+            mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+            size=size,
+            modified_time=modified_time,
+            attachment_id=root.id,
+            folder_root=str(root.path) if root.directory else "",
+            extracted_text=False,
+        )
 
     def list_attached_files(self, attachment_id=None):
         roots = [self.roots[attachment_id]] if attachment_id else self.roots.values()
@@ -220,11 +261,25 @@ class AttachmentStore:
             raise ValueError("attachment is outside the active workspace")
         if not relative_path and root.directory:
             raise ValueError("relative_path required for folder attachments")
-        path = self._resolve(aid, relative_path or root.path.name)
-        if not path.is_file():
-            raise FileNotFoundError("attachment file not found")
-        if path.stat().st_size > MAX_FILE_BYTES:
-            raise ValueError("첨부 파일 크기 한도를 초과했습니다.")
+        try:
+            path = self._resolve(aid, relative_path or root.path.name)
+            if not path.is_file():
+                raise FileNotFoundError("attachment file not found")
+            st = path.stat()
+            if st.st_size > MAX_FILE_BYTES:
+                raise ValueError("첨부 파일 크기 한도를 초과했습니다.")
+        except (OSError, ValueError, FileNotFoundError):
+            self._invalidate_extraction_cache(attachment_id=aid)
+            raise
+        rel = (relative_path or root.path.name).replace("\\", "/")
+        meta = root.files.get(rel) or (next(iter(root.files.values()), None) if not root.directory else None)
+        if meta is not None and (
+            int(meta.get("size") or -1) != int(st.st_size)
+            or float(meta.get("modified_time") or -1.0) != float(st.st_mtime)
+        ):
+            self._invalidate_extraction_cache(attachment_id=aid)
+            meta["size"] = st.st_size
+            meta["modified_time"] = st.st_mtime
         return path
 
     def _transfer_source(self, attachment_id: str) -> tuple[AttachedRoot, Path, str]:

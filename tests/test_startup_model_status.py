@@ -1,5 +1,6 @@
 ﻿"""Startup model discovery must preserve selection and never raise in a Qt slot."""
 import os
+import sys
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import unittest
 from PyQt6.QtWidgets import QApplication
@@ -7,7 +8,7 @@ from iris.ui.chat.chat_panel import ChatPanel
 
 class StartupModelStatusTests(unittest.TestCase):
     def test_status_during_discovery_preserves_model_and_unblocks_signals(self):
-        app = QApplication.instance() or QApplication([])
+        app = QApplication.instance() or QApplication(sys.argv)
         panel = ChatPanel()
         panel.set_models(['claude'], selected='claude')
         signals = []

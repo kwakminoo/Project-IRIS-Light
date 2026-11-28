@@ -207,7 +207,7 @@ class SidecarExportTests(TestCase):
         exposed = {grant.action for grant in PHASE4_ALLOWLIST.grants}
         advertised = set(re.findall(r"\b[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\b", _BLOCK)) & catalog
         self.assertEqual(sorted(advertised - exposed), [])
-        self.assertEqual(sorted(exposed - catalog), ["process.manage", "project.apply_patch"])
+        self.assertEqual(sorted(exposed - catalog), [])
         self.assertNotIn("iris_shell", _BLOCK)
         self.assertIn(engine_tool_name("workspace.open_email"), _BLOCK)
 

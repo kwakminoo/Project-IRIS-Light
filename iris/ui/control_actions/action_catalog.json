@@ -228,6 +228,24 @@
     "confirm_required": false
   },
   {
+    "name": "clarify.manage",
+    "summary": "Clarify await/resume (open|resume|cancel|expire). open returns awaiting snapshot; resume returns ResumeTicket (question_id, answer, snapshot_hash). Question text alone is not success.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "computer.surfaces",
+    "summary": "List Iris-supported computer surfaces (browser/IDE/emulator/learning) and explicitly mark raw_desktop unsupported. Hermes computer_use absorb.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "connections.status",
+    "summary": "Non-secret MCP/Gateway status (name, connected, last_error). Never returns tokens or API keys. Hermes manage_connections absorb.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
     "name": "content.dump_lab_scripts",
     "summary": "Extract lab programs from a lecture PDF attachment and write the scripts under the project. Use attachment_id and, for a folder attachment, relative_path.",
     "risk": "medium",
@@ -235,8 +253,14 @@
   },
   {
     "name": "content.extract",
-    "summary": "Read an attached document by attachment_id, with relative_path for a folder attachment. Supports an authorized source path or URL, optional page_from/page_to and ocr_language.",
+    "summary": "Extract text from PDF/Office/text/image/URL. Args: source|path|url or attachment_id; optional page_from/page_to (1-based). Returns total_pages, page_status, incomplete when truncated or unread pages remain.",
     "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "delegate.manage",
+    "summary": "Delegate a child task via Engine.fork (spawn|cancel|aggregate|finish). Child grants must be a subset of the parent's current Speak grants. Does not use the Hermes registry.",
+    "risk": "medium",
     "confirm_required": false
   },
   {
@@ -247,9 +271,15 @@
   },
   {
     "name": "email.add_account",
-    "summary": "Add email account (address, password, label) — requires confirm=true",
+    "summary": "Add email account (address, password, label) — requires in-chat card confirm",
     "risk": "high",
     "confirm_required": true
+  },
+  {
+    "name": "email.compose_draft",
+    "summary": "Open compose with draft fields (to/cc/bcc/subject/body); does not send",
+    "risk": "low",
+    "confirm_required": false
   },
   {
     "name": "email.list_accounts",
@@ -265,7 +295,7 @@
   },
   {
     "name": "email.open_compose",
-    "summary": "Open email compose UI",
+    "summary": "Open email compose UI (optional to/cc/bcc/subject/body draft; does not send)",
     "risk": "low",
     "confirm_required": false
   },
@@ -289,7 +319,7 @@
   },
   {
     "name": "email.remove_account",
-    "summary": "Remove email account by id — requires confirm=true",
+    "summary": "Remove email account by id — requires in-chat card confirm",
     "risk": "high",
     "confirm_required": true
   },
@@ -301,7 +331,7 @@
   },
   {
     "name": "email.send",
-    "summary": "Send email (to, subject, body) — requires confirm=true",
+    "summary": "Send email (to, subject, body) — requires in-chat card confirm",
     "risk": "high",
     "confirm_required": true
   },
@@ -558,6 +588,12 @@
     "confirm_required": false
   },
   {
+    "name": "image.status",
+    "summary": "Probe image-generation provider availability. Returns not_installed when no provider is wired. Never returns image bytes. Hermes image_generate absorb (L2 status-only).",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
     "name": "learning.get",
     "summary": "Get learned workflow details",
     "risk": "low",
@@ -607,15 +643,39 @@
   },
   {
     "name": "local.read_file",
-    "summary": "Read one absolute local text path within the configured System or Workspace + Attachments scope.",
+    "summary": "Read one absolute local text path within the configured System or Workspace + Attachments scope (optional start_line/end_line; max_bytes).",
     "risk": "low",
     "confirm_required": false
   },
   {
     "name": "local.search_files",
-    "summary": "Search filenames under one explicit absolute root within the configured local read scope.",
+    "summary": "Search under one absolute root within the local read scope. mode=name (default) matches paths; mode=content matches file text.",
     "risk": "low",
     "confirm_required": false
+  },
+  {
+    "name": "memory.delete",
+    "summary": "Delete one Iris memory",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
+    "name": "memory.save",
+    "summary": "Save a new Iris memory",
+    "risk": "high",
+    "confirm_required": true
+  },
+  {
+    "name": "memory.search",
+    "summary": "Search personal Iris memory",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "memory.update",
+    "summary": "Update one Iris memory",
+    "risk": "high",
+    "confirm_required": true
   },
   {
     "name": "note.export_pdf",
@@ -646,6 +706,18 @@
     "summary": "Set user profile fields: name preferred_ide project_root project_parents ide paths",
     "risk": "medium",
     "confirm_required": false
+  },
+  {
+    "name": "process.manage",
+    "summary": "Manage Iris Execution Runtime Local Subprocess runs (start|list|status|read_output|wait|cancel). Not a sandbox. start requires exactly one of argv:list XOR shell:str (command alias ok) and returns run_id; write_stdin unsupported. start requires human confirm (shell.run risk class, no HUD); cwd under trusted workspace root or home. Required: action. run_id required except list|start. ACL from Control ExecutionContext.",
+    "risk": "high",
+    "confirm_required": false
+  },
+  {
+    "name": "project.apply_patch",
+    "summary": "Apply a Hermes-style or unified-diff patch under the bound IDE workspace. Required: patch_text (or patch). Conflicts when expected context or disk fingerprint is missing. Disk-updated only; IDE buffer refresh is follow-up.",
+    "risk": "medium",
+    "confirm_required": true
   },
   {
     "name": "project.create_scaffold",
@@ -691,7 +763,7 @@
   },
   {
     "name": "project.read_file",
-    "summary": "Read a UTF-8 file body from the bound IDE workspace disk (rel_path or path; optional max_bytes). Missing, escape, directory, binary/NUL, or too-large fail — never invent content. Disk bytes only; dirty Monaco buffers need ide.save / ide.edit first.",
+    "summary": "Read a UTF-8 file body from the bound IDE workspace disk (rel_path or path; optional start_line/end_line/max_bytes). Missing, escape, directory, binary/NUL, or too-large fail — never invent content. Disk bytes only; dirty Monaco buffers need ide.save / ide.edit first.",
     "risk": "low",
     "confirm_required": false
   },
@@ -703,7 +775,7 @@
   },
   {
     "name": "project.run",
-    "summary": "Run only in the bound IDE integrated terminal via Iris: Run task",
+    "summary": "Run a command via the shared Execution Runtime (run_id + status). When reveal_terminal, mirror Runtime stdout/stderr into the bound IDE terminal (same run_id; does not re-execute).",
     "risk": "medium",
     "confirm_required": true
   },
@@ -747,6 +819,12 @@
     "name": "routine.list",
     "summary": "List registered routines",
     "risk": "low",
+    "confirm_required": false
+  },
+  {
+    "name": "routine.manage",
+    "summary": "Hermes cronjob_manage absorb: operation=create|list|update|delete|run. Dispatcher only — same handlers as routine.create/list/update/delete/run.",
+    "risk": "medium",
     "confirm_required": false
   },
   {
@@ -822,6 +900,12 @@
     "confirm_required": false
   },
   {
+    "name": "todo.manage",
+    "summary": "Session todo list (list|upsert|cancel|fail|complete). complete requires host-minted evidence_token; model cannot forge completion.",
+    "risk": "low",
+    "confirm_required": false
+  },
+  {
     "name": "vision.analyze_attachment",
     "summary": "Analyze an authorized image or PDF page with the local vision model",
     "risk": "low",
@@ -849,6 +933,12 @@
     "name": "voice.toggle_mic",
     "summary": "Toggle mic listen (same as titlebar mic icon)",
     "risk": "medium",
+    "confirm_required": false
+  },
+  {
+    "name": "voice.tts_status",
+    "summary": "Probe Desktop Voice TTS availability (not_installed|needs_approval). Never returns audio bytes. Hermes text_to_speech absorb (L2 status-only).",
+    "risk": "low",
     "confirm_required": false
   },
   {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from threading import Event
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from PyQt6.QtWidgets import QApplication
 from iris.audio.mic_state import MicState
 from iris.ui.window.main_window import MainWindow
 
-_APP = QApplication.instance() or QApplication([])
+_APP = QApplication.instance() or QApplication(sys.argv)
 
 
 class _SlowRuntime:

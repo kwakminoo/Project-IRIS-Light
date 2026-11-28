@@ -128,63 +128,46 @@ class HermesSummaryTests(TestCase):
     def test_uses_the_resolved_upstream_model(self) -> None:
         seen = {}
 
-        class _Client:
-            def __init__(self, base_url, *, api_key="", command="hermes"):
-                seen["api_key"] = api_key
-
-            def set_inference_model(self, model, *, target=None):
-                seen["inference"] = model
-
-            def stream_chat(self, model, messages, **kwargs):
-                seen["model"] = model
-                seen["provider"] = kwargs.get("provider", "")
-                seen["stream_keys"] = set(kwargs)
-                yield from _chunks("허메스 요약")
+        def _stream(base_url, api_key, model, messages, *, auth_style="bearer", timeout=0):
+            seen.update(base_url=base_url, api_key=api_key, model=model,
+                        auth_style=auth_style, timeout=timeout)
+            yield from _chunks("허메스 요약")
 
         route = SummaryRoute(
-            backend="hermes",
+            backend="agent",
             model="api:ab12:friendly",
             base_url="http://127.0.0.1:8642/v1",
             api_key="key",
             target=SimpleNamespace(
-                model="vendor/internal-v3", provider="custom", label="friendly"
+                model="vendor/internal-v3", provider="custom", label="friendly",
+                base_url="https://provider.example/v1", api_key="upstream-key",
             ),
         )
         worker = HandoffSummaryWorker(route, MESSAGES, archive_id="a2")
         out = _Collector(worker)
-        with patch("iris.infrastructure.iris_agent_client.IrisAgentClient", _Client):
+        with patch("iris.infrastructure.openai_compat_client.stream_chat", _stream):
             worker.run()
 
         self.assertEqual(out.ok, [("허메스 요약", "a2")])
-        self.assertNotIn("inference", seen)
         self.assertEqual(seen["model"], "vendor/internal-v3")
-        self.assertEqual(seen["provider"], "custom")
-        self.assertNotIn("api_key", seen["stream_keys"])
-        self.assertEqual(seen["api_key"], "key")
+        self.assertEqual(seen["base_url"], "https://provider.example/v1")
+        self.assertEqual(seen["api_key"], "upstream-key")
 
     def test_without_a_target_it_uses_the_plain_model_name(self) -> None:
         seen = {}
 
-        class _Client:
-            def __init__(self, *a, **k):
-                pass
-
-            def set_inference_model(self, model, *, target=None):
-                seen["inference"] = model
-
-            def stream_chat(self, model, messages, **kwargs):
-                seen["model"] = model
-                seen["provider"] = kwargs.get("provider", "")
-                yield from _chunks("답")
+        def _stream(base_url, api_key, model, messages, *, auth_style="bearer", timeout=0):
+            seen.update(base_url=base_url, api_key=api_key, model=model)
+            yield from _chunks("답")
 
         worker = HandoffSummaryWorker(
-            SummaryRoute(backend="hermes", model="gemma4:cloud"), MESSAGES
+            SummaryRoute(backend="api", model="gemma4:cloud",
+                         base_url="https://provider.example/v1"), MESSAGES
         )
-        with patch("iris.infrastructure.iris_agent_client.IrisAgentClient", _Client):
+        with patch("iris.infrastructure.openai_compat_client.stream_chat", _stream):
             worker.run()
-        self.assertNotIn("inference", seen)
         self.assertEqual(seen["model"], "gemma4:cloud")
-        self.assertEqual(seen["provider"], "")
+        self.assertEqual(seen["base_url"], "https://provider.example/v1")
 
 
 class ApiSummaryTests(TestCase):

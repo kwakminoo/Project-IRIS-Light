@@ -100,6 +100,19 @@ body {{
   color: {t.chat_body};
   background: transparent;
 }}
+body::before {{
+  content: "";
+  position: fixed;
+  z-index: 10;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 24px;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(to bottom, rgba(6, 10, 18, 0.92), rgba(6, 10, 18, 0));
+}}
+body.is-scrolled::before {{ opacity: 1; }}
 ::-webkit-scrollbar {{
   width: 8px;
   height: 8px;
@@ -153,15 +166,17 @@ body {{
 }}
 .role .speaker-you {{ color: {t.chat_user_name}; }}
 .role .speaker-iris {{ color: {t.chat_iris_name}; }}
-.md h1 {{
-  font-size: 1.35rem;
+.md h1, .md h1 * {{
+  font-family: {ui_font} !important;
+  font-size: {prefs.chat_font_size + 4}px !important;
   font-weight: 700;
   line-height: 1.35;
   margin: 0 0 0.65rem;
   color: {t.chat_body};
 }}
-.md h2 {{
-  font-size: 1.15rem;
+.md h2, .md h2 * {{
+  font-family: {ui_font} !important;
+  font-size: {prefs.chat_font_size + 3}px !important;
   font-weight: 650;
   line-height: 1.4;
   margin: 0.85rem 0 0.5rem;
@@ -179,8 +194,8 @@ body {{
 .md li {{ margin: 0.2rem 0; }}
 .md strong {{ color: {t.chat_body}; font-weight: 650; }}
 .md code {{
-  font-family: {mono_font};
-  font-size: 0.9em;
+  font-family: {mono_font} !important;
+  font-size: {t.font_size_caption} !important;
   line-height: {t.chat_block_line_height};
   background: {t.chat_inline_code_bg};
   color: {t.chat_inline_code_color};
@@ -443,6 +458,30 @@ class H1TranscriptHost(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(self._slot, 1)
+        manager.changed.connect(self._update_typography)
+
+    def _update_typography(self, _old: object, _new: object) -> None:
+        view = self._view
+        if view is None or not self._page_ready:
+            return
+        css = _page_css()
+        view.page().runJavaScript(
+            "(function(){"
+            "var s=document.getElementById('iris-transcript-style');"
+            "var b=document.body;if(!s||!b)return false;"
+            "var y=Math.round(b.scrollTop||0);"
+            "var max=Math.max(0,(b.scrollHeight||0)-(b.clientHeight||0));"
+            "var follow=y>=Math.max(0,max-2);"
+            "b.__irisScrollMute=true;"
+            f"s.textContent={json.dumps(css)};"
+            "void b.offsetHeight;"
+            "var max2=Math.max(0,(b.scrollHeight||0)-(b.clientHeight||0));"
+            "b.scrollTop=follow?max2:Math.min(y,max2);"
+            "b.classList.toggle('is-scrolled',(b.scrollTop||0)>0);"
+            "requestAnimationFrame(function(){b.__irisScrollMute=false;});"
+            "return true;"
+            "})()"
+        )
 
     _PAGE_ZOOM = 1.0
 
@@ -1142,7 +1181,7 @@ class H1TranscriptHost(QWidget):
         body = self._transcript_inner_html()
         return (
             "<!DOCTYPE html><html lang=\"ko\"><head><meta charset=\"utf-8\">"
-            f"<style>{_page_css()}</style></head><body>"
+            f'<style id="iris-transcript-style">{_page_css()}</style></head><body>'
             f'<div id="transcript">{body}</div>'
             f"<script>{CODE_CARD_JS}</script>"
             f"<script>{WRITING_CARD_JS}</script>"

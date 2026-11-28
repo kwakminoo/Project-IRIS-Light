@@ -11,6 +11,7 @@ CHATS 목록의 `×` / Edit 아이콘 버튼이 같은 함정에 빠지지 않�
 from __future__ import annotations
 
 import os
+import sys
 import unittest
 from unittest import TestCase
 
@@ -27,7 +28,7 @@ _MAX_ICON_BUTTON_PX = 24
 
 
 def _app() -> "QApplication":
-    return QApplication.instance() or QApplication([])
+    return QApplication.instance() or QApplication(sys.argv)
 
 
 @unittest.skipUnless(_QT_AVAILABLE, "PyQt6 필요")

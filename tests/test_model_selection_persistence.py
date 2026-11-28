@@ -59,8 +59,8 @@ class ModelSelectionTests(unittest.TestCase):
             {"api:lm:foo", "llama3.2:latest"},
         )
         self.assertEqual([m.runtime for m in ollama], ["gemma4:31b-cloud"])
-        self.assertEqual([m.runtime for m in brands["nv"]], ["api:nv:meta/llama"])
-        self.assertEqual(singles, [])
+        self.assertEqual(brands, {})
+        self.assertEqual([m.runtime for m in singles], ["api:nv:meta/llama"])
         panel._select_model_runtime("llama3.2:latest")
         self.assertEqual(panel.current_model(), "llama3.2:latest")
         self.assertEqual(signals, ["llama3.2:latest"])

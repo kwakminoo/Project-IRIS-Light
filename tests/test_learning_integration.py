@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -27,7 +28,7 @@ from iris.ui.widgets.drag_tab import DragTab
 def _app() -> QApplication:
     app = QApplication.instance()
     if app is None:
-        app = QApplication([])
+        app = QApplication(sys.argv)
     return app
 
 

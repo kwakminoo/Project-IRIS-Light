@@ -6,8 +6,13 @@ import sys
 import time
 from unittest import TestCase
 
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
+
+ensure_qt_webengine_ready()
+
 from PyQt6.QtCore import QCoreApplication, Qt
 from PyQt6.QtGui import QPalette
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QDialogButtonBox, QLabel, QWidget
 
 from iris.audio.mic_state import MicState
@@ -18,6 +23,21 @@ QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, Tr
 _APP = QApplication.instance() or QApplication(sys.argv)
 
 from iris.ui.chat.chat_panel import ChatPanel
+
+
+def _transcript_snapshot(panel: ChatPanel) -> dict:
+    panel.resize(640, 480)
+    panel.show()
+    panel.transcript().view()
+    for _ in range(300):
+        if panel.transcript()._page_ready:
+            break
+        QTest.qWait(10)
+    QTest.qWait(80)
+    return panel.transcript()._run_js_sync(
+        "(()=>({text:document.body.innerText,"
+        "pending:!!document.querySelector('a[href=\"iris-stt://pending\"]')}))()"
+    )
 
 
 class SttUxTests(TestCase):
@@ -37,10 +57,10 @@ class SttUxTests(TestCase):
         panel = ChatPanel()
         panel.begin_stt_pending()
         self.assertTrue(panel.has_stt_pending())
-        self.assertIn("iris-stt://pending", panel._log.toHtml())
+        self.assertTrue(_transcript_snapshot(panel)["pending"])
         self.assertTrue(panel.complete_stt_pending("크롬 열어줘"))
         self.assertFalse(panel.has_stt_pending())
-        plain = panel._log.toPlainText()
+        plain = _transcript_snapshot(panel)["text"]
         self.assertIn("You", plain)
         self.assertIn("크롬 열어줘", plain)
         self.assertNotIn("···", plain)
@@ -50,7 +70,7 @@ class SttUxTests(TestCase):
         panel.begin_stt_pending()
         panel.cancel_stt_pending()
         self.assertFalse(panel.has_stt_pending())
-        self.assertNotIn("iris-stt://pending", panel._log.toHtml())
+        self.assertFalse(_transcript_snapshot(panel)["pending"])
 
     def test_stt_pending_cancel_preserves_prior_messages(self) -> None:
         """끼어들기 후 빈 STT cancel이 이전 채팅을 통째로 지우면 안 된다."""
@@ -59,10 +79,11 @@ class SttUxTests(TestCase):
         panel.append_message_instant("Iris", "안녕하세요")
         panel.begin_stt_pending()
         panel.cancel_stt_pending()
-        plain = panel._log.toPlainText()
+        snap = _transcript_snapshot(panel)
+        plain = snap["text"]
         self.assertIn("안녕 아이리스", plain)
         self.assertIn("안녕하세요", plain)
-        self.assertNotIn("iris-stt://pending", panel._log.toHtml())
+        self.assertFalse(snap["pending"])
 
     def test_model_status_keeps_runtime_id(self) -> None:
         from iris.infrastructure.ollama_client import OllamaModelInfo

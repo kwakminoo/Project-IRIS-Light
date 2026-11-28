@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+from threading import Lock
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -31,6 +32,8 @@ _SDK_ENV = frozenset({
     "SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "PATHEXT", "TEMP", "TMP", "TMPDIR",
     "USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
 })
+_SIDE_EFFECT_LOCKS: dict[str, Lock] = {}
+_SIDE_EFFECT_LOCKS_GUARD = Lock()
 
 
 def fingerprint(value: Any) -> str:
@@ -257,9 +260,38 @@ class NativeMCPManager:
         self, name: str, request: dict, timeout: float, cancelled: Callable[[], bool] | None,
         expected_config: str = "",
     ) -> dict[str, Any]:
-        from iris.system.iris_agent_control_sync import iris_agent_config_path, parse_mcp_servers_config
+        from iris.system.iris_agent_control_sync import iris_agent_config_path
 
         path = iris_agent_config_path(self._home).absolute()
+        if request["operation"] == "call_tool":
+            key = f"{path}\0{name}"
+            with _SIDE_EFFECT_LOCKS_GUARD:
+                lock = _SIDE_EFFECT_LOCKS.setdefault(key, Lock())
+            deadline = monotonic() + timeout
+            while not lock.acquire(timeout=min(0.05, max(0.001, deadline - monotonic()))):
+                if cancelled is not None and cancelled():
+                    return {"status": "cancelled", "execution_uncertain": False}
+                if monotonic() >= deadline:
+                    return {"status": "timeout", "execution_uncertain": False}
+            try:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    return {"status": "timeout", "execution_uncertain": False}
+                return self._request_registered(
+                    path, name, request, remaining, cancelled, expected_config
+                )
+            finally:
+                lock.release()
+        return self._request_registered(
+            path, name, request, timeout, cancelled, expected_config
+        )
+
+    def _request_registered(
+        self, path: Path, name: str, request: dict, timeout: float,
+        cancelled: Callable[[], bool] | None, expected_config: str,
+    ) -> dict[str, Any]:
+        from iris.system.iris_agent_control_sync import parse_mcp_servers_config
+
         try:
             config_bytes = path.read_bytes()
         except OSError:

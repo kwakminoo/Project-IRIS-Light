@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import wave
 from pathlib import Path
@@ -19,7 +20,7 @@ from iris.storage.voice_prefs import (
     save_voice_preferences,
 )
 
-_APP = QApplication.instance() or QApplication([])
+_APP = QApplication.instance() or QApplication(sys.argv)
 
 
 class VoicePrefsTests(TestCase):

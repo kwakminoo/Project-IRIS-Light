@@ -28,6 +28,7 @@ TRUST_FIELD_KEYS = frozenset(
         "approval_reference",
         "surface",
         "schema_fingerprint",
+        "inference_scope",
     }
 )
 
@@ -53,6 +54,7 @@ class ExecutionContext:
     source: str = ""
     run_id: str = ""
     schema_fingerprint: str = ""
+    inference_scope: str = ""
 
     def effective_session_id(self) -> str:
         return str(self.session_id or self.conversation_id or "").strip()

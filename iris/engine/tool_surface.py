@@ -51,7 +51,7 @@ IRIS_EAGER_MODEL_TOOLS = frozenset(
         "wiki_open_note",
         "calendar_list_events",
         "email_list_accounts",
-        "chat_search_past",
+        "session_search",
         "chat_new_session",
     }
 )
@@ -175,6 +175,7 @@ def assemble_iris_model_tools(
     *,
     context_length: int | None = None,
     user_message: str = "",
+    available_tokens: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
     """Project the immutable tool bindings into a provider-sized prompt."""
     tools = {}
@@ -184,29 +185,45 @@ def assemble_iris_model_tools(
             tools[name] = row
 
     compact = context_length is not None and context_length <= 16_384
-    names = [name for name in tools if name in IRIS_EAGER_MODEL_TOOLS]
-    if compact:
-        words = set(re.findall(r"[^\W_]+", user_message[:8000].casefold()))
-        relevant = []
-        for name, row in tools.items():
-            if row.get("source") != "mcp":
-                continue
+    words = set(re.findall(r"[^\W_]+", user_message[:8000].casefold()))
+    relevant = []
+    for name, row in tools.items():
+        if row.get("source") == "mcp":
             service_words = set(re.findall(r"[^\W_]+", str(row.get("source_name", "")).casefold()))
             if service_words & words:
                 relevant.append(name)
-        names = [*relevant[:2], *(name for name in _COMPACT_TOOLS if name in tools)]
+    preferred = _COMPACT_TOOLS if compact else tuple(name for name in tools if name in IRIS_EAGER_MODEL_TOOLS)
+    if words & {"shell", "command", "terminal", "stdout"} or "명령" in user_message:
+        preferred = ("terminal", "process_manage")
+    elif compact and (("local" in words and words & {"file", "files", "folder"}) or "로컬 파일" in user_message):
+        preferred = ("search_files", "local_read_file") if words & {"find", "search"} else ("local_read_file", "search_files")
+    memory = ()
+    if words & {"remember", "recall", "forget", "memory", "memories"} or "기억" in user_message:
+        memory = ("memory_search",)
+        if words & {"forget", "delete", "remove"} or "삭제" in user_message:
+            memory = (*memory, "memory_delete")
+        elif words & {"update", "change", "replace"} or "수정" in user_message:
+            memory = (*memory, "memory_update")
+        elif words & {"remember", "save", "store"} or "저장" in user_message:
+            memory = ("memory_save", *memory)
+    names = [*relevant[:2], *(name for name in (*memory, *preferred) if name in tools)]
 
     # ponytail: UTF-8 size is a conservative schema proxy until providers expose token counts.
-    budget = max(_schema_bytes(_bridge_tools(len(tools), "")), (context_length or 64_000) * 3 // 5)
+    bridge_bytes = _schema_bytes(_bridge_tools(len(tools), ""))
+    budget = max(bridge_bytes, (context_length or 64_000) * 3 // 5)
+    if available_tokens is not None:
+        budget = min(budget, max(0, available_tokens) * 2)
+    bridge_fits = bridge_bytes <= budget
     eager: list[dict[str, Any]] = []
     for name in names:
         candidate = [*eager, tools[name]]
-        if _schema_bytes(candidate + _bridge_tools(len(tools) - len(candidate), "")) <= budget:
+        bridge = _bridge_tools(len(tools) - len(candidate), "") if bridge_fits else []
+        if _schema_bytes(candidate + bridge) <= budget:
             eager = candidate
     eager_names = {_tool_name(row) for row in eager}
     deferred = [row for name, row in tools.items() if name not in eager_names]
-    if not deferred:
-        return eager, [], False
+    if not deferred or not bridge_fits:
+        return eager, deferred, False
     listing = "" if compact else _listing_lines(sorted(deferred, key=lambda row: row.get("source") != "mcp"))
     visible = eager + _bridge_tools(len(deferred), listing)
     if _schema_bytes(visible) > budget:

@@ -314,10 +314,19 @@ def _send_stop(proc: subprocess.Popen[str]) -> None:
     if proc.poll() is not None or proc.stdin is None:
         return
     try:
+        _watch_trace(f"send stop popen_pid={proc.pid}")
         proc.stdin.write(encode_host_command("stop"))
         proc.stdin.flush()
     except OSError:
         return
+
+
+def _wait_for_cooperative_stop(proc: subprocess.Popen[str]) -> None:
+    _send_stop(proc)
+    try:
+        proc.wait(timeout=_STOP_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        _watch_trace("sidecar did not stop cooperatively")
 
 
 def _terminate_child(proc: subprocess.Popen[str]) -> None:
@@ -345,54 +354,6 @@ def _terminate_child(proc: subprocess.Popen[str]) -> None:
             except subprocess.TimeoutExpired:
                 pass
     _close_pipes(proc)
-
-
-def _sidecar_keep_pids(keep_pid: int | None, hello_pid: int | None = None) -> set[int]:
-    """Popen.pid may be a venv stub; the real _sidecar_main is often its child."""
-    keep: set[int] = set()
-    if keep_pid is not None and keep_pid > 0:
-        keep.add(int(keep_pid))
-    if hello_pid is not None and hello_pid > 0:
-        keep.add(int(hello_pid))
-    if not keep:
-        return keep
-    try:
-        import psutil
-    except ImportError:
-        return keep
-    for root_pid in list(keep):
-        try:
-            root = psutil.Process(root_pid)
-            keep.update(int(c.pid) for c in root.children(recursive=True))
-        except (psutil.Error, TypeError, ValueError):
-            continue
-    return keep
-
-
-def _kill_stray_sidecars(
-    *, keep_pid: int | None, hello_pid: int | None = None
-) -> None:
-    """Reap orphaned _sidecar_main processes so done cannot land on a dead pipe."""
-    try:
-        import psutil
-    except ImportError:
-        return
-    keep = _sidecar_keep_pids(keep_pid, hello_pid)
-    marker = "_sidecar_main.py"
-    for proc in psutil.process_iter(["pid", "cmdline"]):
-        try:
-            pid = int(proc.info.get("pid") or 0)
-            if pid in keep:
-                continue
-            cmd = proc.info.get("cmdline") or []
-            if not any(marker in str(part) for part in cmd):
-                continue
-            _watch_trace(
-                f"kill stray sidecar pid={pid} keep={sorted(keep)}"
-            )
-            proc.kill()
-        except (psutil.Error, TypeError, ValueError):
-            continue
 
 
 def _failed(code: EngineErrorCode, detail: str) -> EngineFailed:
@@ -498,7 +459,7 @@ class Engine:
                         selection_changed = isinstance(argv, list) and bool(argv) and str(selected) != argv[0]
                         if not guard_changed and not selection_changed:
                             return EngineReady(self._source, "engine is ready")
-                        _send_stop(self._child)
+                        _wait_for_cooperative_stop(self._child)
                         self._forget_child()
                     else:
                         _close_pipes(self._child)
@@ -545,7 +506,7 @@ class Engine:
             child = self._child
             hello_pid = self._child_hello_pid
             if child is not None:
-                _send_stop(child)
+                _wait_for_cooperative_stop(child)
             self._forget_child()
         # Popen.pid may be a venv stub; also kill the hello pid that runs _sidecar_main.
         for pid in (hello_pid,):
@@ -594,6 +555,8 @@ class Engine:
         }
         if turn.model.base_url:
             fields["base_url"] = turn.model.base_url
+        if turn.model.ollama:
+            fields["ollama"] = True
         api_key = _turn_api_key(turn)
         if api_key:
             fields["api_key"] = api_key
@@ -706,6 +669,12 @@ class Engine:
             except Exception as exc:
                 result = {"ok": False, "error": str(exc) or type(exc).__name__}
         ok = bool(result.get("ok")) if isinstance(result, dict) else False
+        if ok and action == "content.extract" and isinstance(data := result.get("data"), dict):
+            if data.get("kind") == "pdf" and isinstance(pages := data.get("page_status"), list):
+                reported = [row for row in pages if not isinstance(row, dict)
+                            or row.get("kind") != "unread" or row.get("error_code")]
+                if unread := len(pages) - len(reported):
+                    result = {**result, "data": {**data, "page_status": reported, "unread_pages": unread}}
         error_code = ""
         if isinstance(result, dict):
             error_code = str(result.get("error_code") or "").strip()
@@ -785,7 +754,16 @@ class Engine:
                 bindings = {row.model_name: row for row in (*engine_tool_bindings(str(surface)), *mcp_bindings)}
             while not cancel.cancelled():
                 line = ""
-                if udp_sock is not None:
+                # Deliver queued stream events before the terminal fallback can end the turn.
+                try:
+                    queued = lines.get(timeout=_CANCEL_POLL_SEC if udp_sock is None else 0)
+                    if queued is None:
+                        stdout_closed = True
+                    else:
+                        line = queued
+                except queue.Empty:
+                    pass
+                if not line and udp_sock is not None:
                     try:
                         data, _addr = udp_sock.recvfrom(65535)
                         if data:
@@ -800,15 +778,6 @@ class Engine:
                         pass
                     except OSError as exc:
                         _watch_trace(f"udp recv err {exc!r}")
-                if not line:
-                    try:
-                        queued = lines.get(timeout=_CANCEL_POLL_SEC if udp_sock is None else 0)
-                        if queued is None:
-                            stdout_closed = True
-                        else:
-                            line = queued
-                    except queue.Empty:
-                        pass
                 if not line:
                     # UDP can miss on Windows localhost; sidecar also writes the
                     # terminal file. Poll it here so land does not depend on UI.
@@ -1001,7 +970,7 @@ class Engine:
                 self._child = None
                 self._child_hello_pid = None
                 if child is not None:
-                    _send_stop(child)
+                    _wait_for_cooperative_stop(child)
                     _terminate_child(child)
         except Exception:
             return

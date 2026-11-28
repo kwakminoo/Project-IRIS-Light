@@ -437,6 +437,9 @@ def stream_chat(
                 obj = json.loads(payload)
             except json.JSONDecodeError:
                 continue
+            if isinstance(obj, dict) and (error := obj.get("error")):
+                detail = error.get("message") if isinstance(error, dict) else error
+                raise RuntimeError(f"OpenAI-compatible stream: {str(detail or error)[:400]}")
             usage = parse_stream_usage(obj)
             if usage is not None:
                 yield {"content": None, "usage": usage, "done": False}

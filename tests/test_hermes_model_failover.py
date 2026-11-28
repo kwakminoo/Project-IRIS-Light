@@ -22,6 +22,7 @@ from iris.engine import (  # noqa: E402
     EngineErrorCode,
     EngineHome,
     InternalSidecar,
+    ToolProgress,
     TurnFailed,
     TurnFinished,
 )
@@ -66,6 +67,9 @@ class _ScriptEngine:
         if isinstance(outcome, list):
             parts: list[str] = []
             for piece in outcome:
+                if isinstance(piece, ToolProgress):
+                    yield piece
+                    continue
                 if isinstance(piece, Exception):
                     yield TurnFailed(EngineError(EngineErrorCode.UNKNOWN, str(piece)))
                     return
@@ -144,6 +148,19 @@ class HermesFailoverTests(TestCase):
         self.assertEqual([s[0] for s in out.switches], ["free:small"])
         self.assertEqual(out.switches[0][1], "할당량 소진")
         self.assertEqual(self.worker.final_model, "free:small")
+
+    def test_provider_failure_after_tool_start_does_not_replay_turn(self) -> None:
+        engine = _ScriptEngine({
+            "upstream-big": [ToolProgress("[IRIS tool use: email_send]"), RuntimeError("HTTP 503: down")],
+            "upstream-free": "unexpected replay",
+        })
+        out = self._run([
+            ChatAttempt("paid:big", self.msgs, target=_target("upstream-big")),
+            ChatAttempt("free:small", self.handoff, target=_target("upstream-free")),
+        ], engine)
+        self.assertEqual(len(engine.seen), 1)
+        self.assertEqual(out.switches, [])
+        self.assertTrue(out.failed)
 
     def test_each_candidate_gets_its_own_upstream_and_body(self) -> None:
         """후보마다 상류 모델도 요청 본문도 새로 잡아야 한다 (CCR #1615)."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from unittest import TestCase
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -252,12 +253,26 @@ class VoiceHintPanelTests(TestCase):
     def setUpClass(cls) -> None:
         from PyQt6.QtWidgets import QApplication
 
-        cls._app = QApplication.instance() or QApplication([])
+        cls._app = QApplication.instance() or QApplication(sys.argv)
+
+    def setUp(self) -> None:
+        self._panels = []
+
+    def tearDown(self) -> None:
+        from PyQt6.QtCore import QCoreApplication, QEvent
+
+        for panel in self._panels:
+            panel.close()
+            panel.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self._app.processEvents()
 
     def _panel(self):
         from iris.ui.sidebar.voice_hint_panel import VoiceHintPanel
 
-        return VoiceHintPanel()
+        panel = VoiceHintPanel()
+        self._panels.append(panel)
+        return panel
 
     def _prompt_texts(self, panel) -> list[str]:
         from PyQt6.QtWidgets import QPushButton

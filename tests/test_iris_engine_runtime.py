@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from queue import Queue
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import TestCase
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from iris.engine import (
     CancelToken,
     ChatTranscript,
+    ContentDelta,
     Engine,
     EngineError,
     EngineErrorCode,
@@ -19,6 +21,7 @@ from iris.engine import (
     StatelessTurn,
     TurnCancelled,
     TurnFailed,
+    TurnFinished,
     parse_engine_source,
     shared_engine,
 )
@@ -88,7 +91,7 @@ class EngineReadyStubTests(TestCase):
 
     def test_new_selection_takes_effect_after_active_turn(self) -> None:
         engine = Engine(self._internal())
-        old = SimpleNamespace(args=["old-python"], poll=lambda: None)
+        old = SimpleNamespace(args=["old-python"], poll=lambda: None, wait=lambda **_: 0)
         new = SimpleNamespace(args=["new-python"], poll=lambda: None)
         engine._child = old
         engine._turn_active = True
@@ -145,6 +148,18 @@ class EngineReadyStubTests(TestCase):
         engine = Engine(self._internal())
         events = list(engine.run_turn(_turn(cancelled=True)))
         self.assertEqual(events, [TurnCancelled()])
+
+    def test_terminal_datagram_does_not_discard_queued_delta(self) -> None:
+        engine = Engine(self._internal())
+        lines = Queue()
+        lines.put('{"t":"delta","text":"hello"}\n')
+        udp = SimpleNamespace(
+            recvfrom=lambda _size: (b'{"t":"done","text":"hello"}', None),
+            close=lambda: None,
+        )
+        with patch.object(engine, "_stdout_lines", return_value=lines):
+            events = list(engine._read_turn_events(object(), CancelToken(), udp_sock=udp))
+        self.assertEqual(events, [ContentDelta("hello"), TurnFinished("hello")])
 
     def test_mid_turn_cancel_kills_child_and_yields_cancelled(self) -> None:
         from unittest.mock import MagicMock

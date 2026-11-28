@@ -256,11 +256,12 @@ def main() -> None:
     assert win._conversation_id != a
 
     win.close()
+    win.deleteLater()
+    from PyQt6.QtCore import QCoreApplication, QEvent
+
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()
     print("conversation switch keeps background run ok")
-    # WebEngine/MainWindow native teardown can ACCESS_VIOLATE after asserts pass.
-    # Exit before interpreter shutdown destructors so the harness records green.
-    os._exit(0)
 
 
 if __name__ == "__main__":

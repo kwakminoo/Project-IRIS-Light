@@ -118,21 +118,27 @@ def system_python_on_path(*, exclude: Path | None = None) -> Path | None:
             exclude_r = Path(exclude).resolve()
         except OSError:
             exclude_r = None
+    directories = []
+    for entry in os.get_exec_path():
+        if not entry:
+            continue
+        directory = Path(os.path.abspath(entry.strip('"')))
+        if sys.platform == "win32" and tuple(part.lower() for part in directory.parts[-2:]) == (
+            "microsoft", "windowsapps"
+        ):
+            continue
+        directories.append(directory)
     for name in ("python", "python3", "py"):
-        found = shutil.which(name)
-        if not found:
-            continue
-        p = Path(found)
-        try:
-            resolved = p.resolve()
-        except OSError:
-            continue
-        if exclude_r is not None and resolved == exclude_r:
-            continue
-        if _usable_project_python(resolved) is None:
-            continue
-        if resolved.is_file():
-            return resolved
+        for directory in directories:
+            found = shutil.which(str(directory / name))
+            if not found:
+                continue
+            try:
+                resolved = Path(found).resolve()
+            except OSError:
+                continue
+            if resolved != exclude_r and _usable_project_python(resolved) is not None and resolved.is_file():
+                return resolved
     return None
 
 

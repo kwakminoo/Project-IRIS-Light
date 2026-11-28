@@ -30,7 +30,7 @@ class Win32IdeHookTests(unittest.TestCase):
         from PyQt6.QtWidgets import QApplication, QWidget
         from iris.ui.window.ide_snap_redirect import IdeSnapRedirect
 
-        app = QApplication.instance() or QApplication([])
+        app = QApplication.instance() or QApplication(sys.argv)
         owner = QWidget()
         redirect = IdeSnapRedirect(owner, ide_hwnd=lambda: 0)
         try:
@@ -48,7 +48,7 @@ class Win32IdeHookTests(unittest.TestCase):
         from PyQt6.QtWidgets import QApplication, QWidget
         from iris.ui.window.ide_snap_redirect import IdeSnapRedirect
 
-        app = QApplication.instance() or QApplication([])
+        app = QApplication.instance() or QApplication(sys.argv)
         owner = QWidget()
         redirect = IdeSnapRedirect(owner, ide_hwnd=lambda: 0)
         with patch.dict(sys.modules, {"iris.learning.win32_hooks": None}):

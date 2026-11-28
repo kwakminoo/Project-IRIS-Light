@@ -212,6 +212,7 @@ class SettingsDialog(QDialog):
         *,
         microphone: MicrophoneController | None = None,
         routine_runner=None,
+        memory_context=None,
     ) -> None:
         super().__init__(parent)
         # 루틴 '지금 실행' 콜백 — 이 창은 부모 없이 떠서 창을 직접 못 찾는다.
@@ -226,6 +227,7 @@ class SettingsDialog(QDialog):
         )
         self._settings = settings
         self._db = db
+        self._memory_context = memory_context
         self._wiki = IrisWiki()
         self._result: LightSettingsSelection | None = None
         self._email_box: EmailAccountBox | None = None
@@ -317,6 +319,8 @@ class SettingsDialog(QDialog):
         q.append(self._section_voice)
         q.append(self._section_permission)
         q.append(self._section_local_access)
+        if self._memory_context is not None:
+            q.append(self._section_memory)
         q.append(self._section_learning)
         q.append(self._section_email)
         q.append(self._section_ide)
@@ -418,6 +422,11 @@ class SettingsDialog(QDialog):
             )
         )
         self._content_lay.addWidget(make_collapsible(box))
+
+    def _section_memory(self) -> None:
+        from iris.ui.settings.memory_box import build_memory_box
+
+        self._content_lay.addWidget(make_collapsible(build_memory_box(self._db, self._memory_context)))
 
     def _section_learning(self) -> None:
         self._content_lay.addWidget(make_collapsible(self._build_learning_runtime_box()))

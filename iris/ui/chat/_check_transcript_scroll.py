@@ -111,12 +111,14 @@ def _check_failed_load_keeps_ready(app: QApplication) -> None:
     panel.close()
 
 
-def _check_scroll_hold_follow(app: QApplication) -> None:
+def _check_scroll_hold_follow(app: QApplication, panel: ChatPanel | None = None) -> None:
     """follow-tail must move H1 body.scrollTop; hold must keep it (not `_log` bar)."""
     del app
-    panel = ChatPanel()
-    panel.resize(640, 420)
-    panel.show()
+    owns_panel = panel is None
+    if panel is None:
+        panel = ChatPanel()
+        panel.resize(640, 420)
+        panel.show()
     _settle(50)
 
     assert not panel._log.isVisible(), "legacy `_log` must stay hidden"
@@ -160,6 +162,10 @@ def _check_scroll_hold_follow(app: QApplication) -> None:
         if max_y > 40:
             break
     assert max_y > 40, f"content not tall enough to hold scroll: max_y={max_y}"
+    fade = "getComputedStyle(document.body, '::before').opacity"
+    assert host._run_js_sync(fade) == "1"
+    host.set_scroll_y(0)
+    assert host._run_js_sync(fade) == "0"
 
     hold = max(0, max_y // 3)
     host.set_scroll_y(hold)
@@ -197,7 +203,8 @@ def _check_scroll_hold_follow(app: QApplication) -> None:
     )
 
     print("transcript_scroll hold/follow ok", {"hold": hold, "max_y": max_y})
-    panel.close()
+    if owns_panel:
+        panel.close()
 
 
 def _check_dom_patch_preserves_hold(app: QApplication) -> None:

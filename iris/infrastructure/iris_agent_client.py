@@ -132,10 +132,26 @@ class IrisAgentInferenceTarget:
     base_url: str = ""
     api_key: str = ""
     display: str = ""
+    ollama: bool = False
 
     @property
     def label(self) -> str:
         return (self.display or self.model or "").strip()
+
+    @property
+    def is_local_ollama(self) -> bool:
+        from urllib.parse import urlsplit
+
+        from iris.infrastructure.iris_agent_errors import is_cloud_runtime_name
+
+        if not self.ollama or is_cloud_runtime_name(self.model):
+            return False
+        try:
+            parsed = urlsplit(self.base_url)
+            return (parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+                    and not parsed.username and not parsed.password)
+        except ValueError:
+            return False
 
 
 def resolve_iris_agent_inference(
@@ -181,6 +197,7 @@ def resolve_iris_agent_inference(
         base_url=ollama,
         api_key="",
         display=raw,
+        ollama=True,
     )
 
 

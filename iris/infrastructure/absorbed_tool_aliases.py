@@ -10,28 +10,27 @@ from dataclasses import dataclass
 from typing import Mapping
 
 # Hermes tool names with no Iris Control replacement (strip from schemas only).
-# skills_list / skill_view / vision_analyze absorbed below (FRC-02).
+# skills_list / skill_view / vision_analyze absorbed (FRC-02);
+# session_search / skill_manage absorbed (FFC-03 Unit 4a);
+# todo_list absorbed (FFC-03 Unit 4b → todo.manage);
+# clarify absorbed (FFC-03 Unit 4c → clarify.manage);
+# delegate_task absorbed (FFC-03 Unit 4d → delegate.manage);
+# execute_code / cronjob_manage / manage_connections / computer_use /
+# image_generate / text_to_speech absorbed (FFC-03 Unit 5).
+# memory umbrella stays strip on purpose: FFC-02 already exposes
+# memory.search/save/update/delete as Speak; do not re-emit Hermes `memory`.
 STRIP_ONLY_NAMES: frozenset[str] = frozenset(
     {
-        "image_generate",
-        "skill_manage",
-        "text_to_speech",
-        "todo_list",
         "memory",
-        "session_search",
-        "clarify",
-        "execute_code",
-        "delegate_task",
-        "cronjob_manage",
-        "computer_use",
-        "manage_connections",
     }
 )
 
 # Hermes names that resolve to an absorbed model name but are NOT schema-emitted.
 # ``patch`` → ``apply_patch`` (one schema; no dual write_file/apply_patch style exposure).
+# ``execute_code`` → ``terminal`` (shell/IDE path; no inline code executor, no dual schema).
 INTERNAL_ALIASES: Mapping[str, str] = {
     "patch": "apply_patch",
+    "execute_code": "terminal",
 }
 
 
@@ -58,6 +57,21 @@ ABSORBED_TOOLS: tuple[AbsorbedTool, ...] = (
     AbsorbedTool("skills_list", action="skill.list"),
     AbsorbedTool("skill_view", action="skill.view"),
     AbsorbedTool("vision_analyze", action="vision.analyze_attachment"),
+    # FFC-03 Unit 4a: absorb names that already have Speak/Control.
+    AbsorbedTool("session_search", action="chat.search_past"),
+    AbsorbedTool("skill_manage", action="skill.manage"),
+    # FFC-03 Unit 4b: Hermes todo_list → host-attested todo.manage.
+    AbsorbedTool("todo_list", action="todo.manage"),
+    # FFC-03 Unit 4c: Hermes clarify → host ClarifyWait (resume yields ResumeTicket).
+    AbsorbedTool("clarify", action="clarify.manage"),
+    # FFC-03 Unit 4d: Hermes delegate_task → host DelegateSession (Engine.fork).
+    AbsorbedTool("delegate_task", action="delegate.manage"),
+    # FFC-03 Unit 5: residual honest absorbs (status / dispatcher / no fake payloads).
+    AbsorbedTool("cronjob_manage", action="routine.manage"),
+    AbsorbedTool("manage_connections", action="connections.status"),
+    AbsorbedTool("computer_use", action="computer.surfaces"),
+    AbsorbedTool("image_generate", action="image.status"),
+    AbsorbedTool("text_to_speech", action="voice.tts_status"),
 )
 
 

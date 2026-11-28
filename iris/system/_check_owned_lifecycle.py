@@ -28,6 +28,7 @@ def main() -> None:
     from iris.engine._home import checkout_python, probe_engine_python
     from iris.infrastructure.agent_runtime import iris_agent_home, read_engine_selection, selected_owned_engine
     from iris.infrastructure.iris_agent_client import resolve_iris_agent_inference
+    from iris.system import _check_foundation_data as compatibility
     from iris.system import iris_agent_install as install
 
     agent = iris_agent_home()
@@ -83,8 +84,9 @@ def main() -> None:
     record("install", slot=initial.name, version=manifest["version"], sha=manifest["upstream_revision"])
     model_turn("first")
 
-    data = agent / "lifecycle-user-data.txt"
-    data.write_text("preserve", encoding="utf-8")
+    data = agent / "lifecycle-user-data"
+    previous_data = compatibility.prepare(data)
+    compatibility.verify(data, previous_data)
     updated = install.install_iris_agent_with_system_python(
         home=agent, update=True, model_check=lambda slot: model_turn("candidate", staged=slot),
         on_stream=lambda s: print(s, flush=True),
@@ -93,14 +95,15 @@ def main() -> None:
     active, previous = read_engine_selection(agent)
     assert active is not None and active != initial and previous == initial
     assert selected_owned_engine(agent) == active
-    record("update", slot=active.name, previous=initial.name)
+    compatibility.verify(data, previous_data)
+    record("update", slot=active.name, previous=initial.name, preserved_user_data=True)
     model_turn("updated")
 
     (active / "run_agent.py").write_text("# simulated damage in the isolated slot", encoding="utf-8")
     assert selected_owned_engine(agent) == initial
     assert install.rollback_iris_agent(agent) == initial.name
     assert selected_owned_engine(agent) == initial
-    assert data.read_text(encoding="utf-8") == "preserve"
+    compatibility.verify(data, previous_data)
     assert not (agent / "hermes-agent").exists()
     model_turn("rollback")
     record("recovery", slot=initial.name, preserved_user_data=True, reference_present=False)

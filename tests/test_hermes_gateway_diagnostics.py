@@ -43,10 +43,10 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         """G2: Iris VIRTUAL_ENV/PYTHONPATH 가 Hermes 자식 env 로 새지 않음."""
         iris_venv = self.root / ".venv-iris"
         iris_venv.mkdir()
-        os.environ["VIRTUAL_ENV"] = str(iris_venv)
-        os.environ["PYTHONPATH"] = str(self.root / "src")
-        os.environ["PYTHONHOME"] = str(self.root / "pyhome")
         with (
+            patch.object(os, "environ", dict(os.environ, VIRTUAL_ENV=str(iris_venv),
+                                             PYTHONPATH=str(self.root / "src"),
+                                             PYTHONHOME=str(self.root / "pyhome"))),
             patch.object(gw, "_iris_agent_venv_python", return_value=None),
             patch.object(gw, "_iris_agent_venv_dir", return_value=self.root / "missing-venv"),
         ):
@@ -62,9 +62,11 @@ class GatewayDiagnosticsTests(unittest.TestCase):
         scripts = hermes_venv / "Scripts"
         scripts.mkdir(parents=True)
         (scripts / "python.exe").write_text("", encoding="utf-8")
-        os.environ["VIRTUAL_ENV"] = str(self.root / ".venv-iris")
-        os.environ["PYTHONPATH"] = "polluted"
-        with patch.object(gw, "_iris_agent_dir", return_value=self.root / "hermes-agent"):
+        with (
+            patch.object(os, "environ", dict(os.environ, VIRTUAL_ENV=str(self.root / ".venv-iris"),
+                                             PYTHONPATH="polluted")),
+            patch.object(gw, "_iris_agent_dir", return_value=self.root / "hermes-agent"),
+        ):
             env = gw._gateway_child_env()
         self.assertEqual(env["VIRTUAL_ENV"], str(hermes_venv))
         self.assertNotIn("PYTHONPATH", env)

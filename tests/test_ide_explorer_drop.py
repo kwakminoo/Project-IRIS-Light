@@ -14,7 +14,7 @@ class IdeExplorerDropTests(unittest.TestCase):
         from PyQt6.QtWidgets import QApplication, QWidget
         from iris.ui.window import win_ole_drop as dnd
 
-        app = QApplication.instance() or QApplication([])
+        app = QApplication.instance() or QApplication(sys.argv)
         host = QWidget()
         child = QWidget(host)
         child.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)

@@ -1,17 +1,24 @@
 """Regression coverage through actual Qt stream completion and Markdown rendering."""
 import os
 import re
+import sys
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
+
+ensure_qt_webengine_ready()
+
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QEvent
 from PyQt6.QtGui import QTextDocument
 from iris.ui.chat.chat_panel import ChatPanel
 from iris.ui.chat.chat_display import assistant_visible_text
 from iris.ui.chat.chat_blocks import parse_copy_anchor
-from iris.ui.qt_bootstrap import ensure_qt_webengine_ready
 from iris.ui.workspaces.workspace_iris_chat import WorkspaceIrisPanel
+
+# ponytail: retain these few closed panels until Qt shuts down. Destroying them
+# mid-session can abort the next WebEngine test on Windows.
+_KEEPALIVE = []
 
 
 def _transcript_text(panel: ChatPanel) -> str:
@@ -23,8 +30,7 @@ def _transcript_text(panel: ChatPanel) -> str:
 class ResponseEndTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        ensure_qt_webengine_ready()
-        cls.app = QApplication.instance() or QApplication(["iris-response-end-tests"])
+        cls.app = QApplication.instance() or QApplication(sys.argv)
 
     def test_response_types_across_chunk_boundaries_and_completion_modes(self):
         cases = [
@@ -35,42 +41,46 @@ class ResponseEndTests(unittest.TestCase):
             ('설명\n```python\nprint("hello")\n```\n완료했습니다.', '완료했습니다.'),
             ('코드\n```python\nprint("hello")', 'print("hello")'),
         ]
-        for source, ending in cases:
-            for size in (1, 7, len(source)):
-                for final in (None, source):
-                    for speech in (False, True):
-                        with self.subTest(source=source[:40], size=size, final=final is not None, speech=speech):
-                            panel = ChatPanel()
-                            workspace = WorkspaceIrisPanel(name_prefix="ResponseEnd", placeholder="test")
-                            panel.append_message_instant("You", "이전 메시지")
-                            workspace.append_user("이전 메시지")
-                            panel.begin_stream_message("Iris", speech_sync=speech)
-                            for start in range(0, len(source), size):
-                                chunk = source[start:start + size]
-                                panel.append_stream_chunk(chunk)
-                                workspace.append_iris_chunk(chunk)
-                            self.assertEqual(panel._typing_text, source)
-                            panel.end_stream_message(final)
-                            panel.finish_typing()
-                            workspace.end_iris(final)
-                            workspace.chat.finish_typing()
-                            main = _transcript_text(panel)
-                            other = _transcript_text(workspace.chat)
-                            self.assertIn("이전 메시지", main)
-                            self.assertNotIn("**Iris", main)
-                            self.assertEqual(main.count("Iris:"), 1)
-                            self.assertNotIn("```", main)
-                            self.assertNotIn("\\\n", main)
-                            self.assertIn(ending, main)
-                            self.assertRegex(main, re.escape(ending) + r"\s*\n\[재생\]\s*$")
-                            self.assertEqual(main.split("Iris:", 1)[1].replace("[재생]", "").strip(),
-                                             other.split("Iris:", 1)[1].replace("[재생]", "").strip())
-                            self.assertNotIn("[재생]", panel.get_tts_text("last"))
-                            panel.close()
-                            workspace.close()
-                            panel.deleteLater()
-                            workspace.deleteLater()
-                            self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        panel = ChatPanel()
+        workspace = WorkspaceIrisPanel(name_prefix="ResponseEnd", placeholder="test")
+        try:
+            for source, ending in cases:
+                for size in (1, 7, len(source)):
+                    for final in (None, source):
+                        for speech in (False, True):
+                            with self.subTest(source=source[:40], size=size, final=final is not None, speech=speech):
+                                panel.clear_transcript()
+                                workspace.chat.clear_transcript()
+                                panel.append_message_instant("You", "이전 메시지")
+                                workspace.append_user("이전 메시지")
+                                panel.begin_stream_message("Iris", speech_sync=speech)
+                                for start in range(0, len(source), size):
+                                    chunk = source[start:start + size]
+                                    panel.append_stream_chunk(chunk)
+                                    workspace.append_iris_chunk(chunk)
+                                self.assertEqual(panel._typing_text, source)
+                                panel.end_stream_message(final)
+                                panel.finish_typing()
+                                workspace.end_iris(final)
+                                workspace.chat.finish_typing()
+                                main = _transcript_text(panel)
+                                other = _transcript_text(workspace.chat)
+                                self.assertIn("이전 메시지", main)
+                                self.assertNotIn("**Iris", main)
+                                self.assertEqual(main.count("Iris:"), 1)
+                                self.assertNotIn("```", main)
+                                self.assertNotIn("\\\n", main)
+                                self.assertIn(ending, main)
+                                self.assertRegex(main, re.escape(ending) + r"\s*\n\[재생\]\s*$")
+                                self.assertEqual(
+                                    main.split("Iris:", 1)[1].replace("[재생]", "").strip(),
+                                    other.split("Iris:", 1)[1].replace("[재생]", "").strip(),
+                                )
+                                self.assertNotIn("[재생]", panel.get_tts_text("last"))
+        finally:
+            panel.close()
+            workspace.close()
+            _KEEPALIVE.extend((panel, workspace))
 
     def test_paths_keep_inline_code_delimiters(self):
         source = r'IDE에 `C:\Users\serin\Project-IRIS-Light`. 다음은 `value`입니다.'
@@ -87,6 +97,7 @@ class ResponseEndTests(unittest.TestCase):
         href = re.search(r'href="(iris-copy://[^"]+)"', panel.transcript()._transcript_inner_html())[1]
         self.assertEqual(parse_copy_anchor(href), 'literal `\n')
         panel.close()
+        _KEEPALIVE.append(panel)
 
     def test_stream_types_one_character_at_a_time(self):
         panel = ChatPanel()
@@ -109,6 +120,7 @@ class ResponseEndTests(unittest.TestCase):
             panel._type_next_chunk()
         self.assertIn(source, _transcript_text(panel))
         panel.close()
+        _KEEPALIVE.append(panel)
 
 
 if __name__ == "__main__":

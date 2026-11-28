@@ -46,10 +46,19 @@ def arm(block_id: str) -> None:
 def decide(block_id: str, decision: str) -> None:
     with _lock:
         slot = _waits.get(block_id)
-        if slot is None:
+        if slot is None or slot.event.is_set():
             return
         slot.decision = decision
         slot.event.set()
+
+
+def cancel_pending_approvals() -> None:
+    """Wake undecided approval waiters when the product window closes."""
+    with _lock:
+        for slot in _waits.values():
+            if not slot.event.is_set():
+                slot.decision = "skip"
+                slot.event.set()
 
 
 def take(block_id: str, timeout: float | None = DEFAULT_APPROVAL_WAIT_S) -> str:

@@ -101,6 +101,10 @@ EMPTY_SCHEMA_ACTIONS: frozenset[str] = frozenset(
         "project.list_files",
         "project.list_parents",
         "wiki.reload",
+        "connections.status",
+        "computer.surfaces",
+        "image.status",
+        "voice.tts_status",
     }
 )
 
@@ -530,6 +534,33 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
         SpeakGrant("get_catalog", ExecKind.PURE, "List speak/control catalog projection"),
         SpeakGrant("get_state", ExecKind.SURFACE, "Current Iris UI/session state"),
         SpeakGrant("settings.get", ExecKind.SURFACE, "Get Ollama and Iris Agent version"),
+        SpeakGrant(
+            "memory.search", ExecKind.SURFACE, "Find active Iris memories by keyword in the user's current scope",
+            _params({"query": {"type": "string", "maxLength": 400}}, required=["query"]),
+        ),
+        SpeakGrant(
+            "memory.save", ExecKind.SURFACE, "Save a new Iris memory with user approval. Use scope user for recall across chats.",
+            _params({
+                "scope": {"type": "string", "enum": ["user", "project", "session"]},
+                "type": {"type": "string", "enum": ["fact", "preference", "procedure"], "default": "fact"},
+                "content": {"type": "string", "maxLength": 600},
+            }, required=["scope", "content"]),
+        ),
+        SpeakGrant(
+            "memory.update", ExecKind.SURFACE, "Update one Iris memory with user approval. Look up its id and revision with memory_search first.",
+            _params({
+                "id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+                "revision": {"type": "integer", "minimum": 1},
+                "content": {"type": "string", "maxLength": 600},
+            }, required=["id", "revision", "content"]),
+        ),
+        SpeakGrant(
+            "memory.delete", ExecKind.SURFACE, "Forget one Iris memory with user approval. Look up its id and revision with memory_search first.",
+            _params({
+                "id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+                "revision": {"type": "integer", "minimum": 1},
+            }, required=["id", "revision"]),
+        ),
         SpeakGrant("wiki.list_notes", ExecKind.PURE, "List Iris Wiki note paths"),
         SpeakGrant(
             "wiki.search",
@@ -1109,6 +1140,52 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
                 any_of=[{"required": ["id"]}, {"required": ["name"]}],
             ),
         ),
+        SpeakGrant(
+            "routine.manage",
+            ExecKind.SURFACE,
+            "Manage routines via operation=create|list|update|delete|run "
+            "(Hermes cronjob_manage). Dispatcher to routine.create/list/update/delete/run.",
+            _params(
+                {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["create", "list", "update", "delete", "run"],
+                    },
+                    "task": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "schedule": {"type": "string"},
+                    "name": {"type": "string"},
+                    "id": {"type": "string"},
+                    "enabled": {"type": "boolean"},
+                },
+                required=["operation"],
+            ),
+        ),
+        SpeakGrant(
+            "connections.status",
+            ExecKind.SURFACE,
+            "Non-secret MCP/Gateway connection status (name, connected, last_error). "
+            "Never returns tokens. Hermes manage_connections absorb.",
+        ),
+        SpeakGrant(
+            "computer.surfaces",
+            ExecKind.SURFACE,
+            "List Iris-supported computer surfaces (browser/IDE/emulator/learning) "
+            "and mark raw_desktop unsupported. No desktop click API. "
+            "Hermes computer_use absorb.",
+        ),
+        SpeakGrant(
+            "image.status",
+            ExecKind.SURFACE,
+            "Probe image-generation provider availability. Returns not_installed "
+            "when unsupported. Never returns image bytes. Hermes image_generate absorb.",
+        ),
+        SpeakGrant(
+            "voice.tts_status",
+            ExecKind.SURFACE,
+            "Probe Desktop Voice TTS availability (not_installed|needs_approval). "
+            "Never returns audio bytes. Hermes text_to_speech absorb.",
+        ),
         SpeakGrant("voice.mic_off", ExecKind.SURFACE, "Turn microphone listening off"),
         SpeakGrant("voice.mic_on", ExecKind.SURFACE, "Turn microphone listening on"),
         SpeakGrant("voice.toggle_mic", ExecKind.SURFACE, "Toggle microphone listening"),
@@ -1351,6 +1428,121 @@ PHASE4_ALLOWLIST = SpeakAllowlist(
             "skill.manage", ExecKind.SURFACE, "Create, update, enable, disable, or archive a skill with user approval",
             _params({"operation": {"type": "string", "enum": ["create", "update", "enable", "disable", "remove"]},
                      "name": {"type": "string"}, "text": {"type": "string"}}, required=["operation", "name"]),
+        ),
+        SpeakGrant(
+            "todo.manage",
+            ExecKind.SURFACE,
+            "Session todo list. Operations: list, upsert, cancel, fail, complete. "
+            "complete requires item_id plus host-minted evidence_token (model cannot forge completion).",
+            _params(
+                {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["list", "upsert", "cancel", "fail", "complete"],
+                    },
+                    "id": {"type": "string", "description": "Todo id for upsert"},
+                    "item_id": {
+                        "type": "string",
+                        "description": "Todo id for cancel|fail|complete",
+                    },
+                    "content": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "in_progress", "blocked", "failed", "cancelled"],
+                    },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "detail": {"type": "string"},
+                    "evidence_token": {
+                        "type": "string",
+                        "description": "Host-minted token required for complete",
+                    },
+                },
+                required=["operation"],
+            ),
+        ),
+        SpeakGrant(
+            "clarify.manage",
+            ExecKind.SURFACE,
+            "Ask a clarifying question and resume only with a ResumeTicket. "
+            "Operations: open, resume, cancel, expire. "
+            "open returns an awaiting snapshot (not done). "
+            "resume returns question_id, answer, snapshot_hash.",
+            _params(
+                {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["open", "resume", "cancel", "expire"],
+                    },
+                    "question_id": {"type": "string"},
+                    "question_text": {
+                        "type": "string",
+                        "description": "Question text for open (not a continue token)",
+                    },
+                    "original_goal": {"type": "string"},
+                    "progress_note": {"type": "string"},
+                    "permission_fingerprint": {"type": "string"},
+                    "ttl_seconds": {
+                        "type": "number",
+                        "minimum": 1,
+                        "description": "Seconds until awaiting clarify expires",
+                    },
+                    "user_answer": {
+                        "type": "string",
+                        "description": "Answer for resume",
+                    },
+                    "answer": {
+                        "type": "string",
+                        "description": "Alias of user_answer for resume",
+                    },
+                },
+                required=["operation"],
+            ),
+        ),
+        SpeakGrant(
+            "delegate.manage",
+            ExecKind.SURFACE,
+            "Delegate a child task via Engine.fork (Hermes name: delegate_task). "
+            "Operations: spawn, cancel, aggregate, finish. "
+            "Child grants must be a subset of the parent's current Speak grants. "
+            "Does not use the Hermes tool registry.",
+            _params(
+                {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["spawn", "cancel", "aggregate", "finish"],
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Task text for spawn",
+                    },
+                    "grants": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Subset of parent Speak action ids for the child",
+                    },
+                    "max_tokens": {"type": "integer", "minimum": 0},
+                    "max_seconds": {"type": "number", "minimum": 0},
+                    "max_children": {"type": "integer", "minimum": 1},
+                    "max_depth": {"type": "integer", "minimum": 1},
+                    "depth": {"type": "integer", "minimum": 0},
+                    "child_id": {
+                        "type": "string",
+                        "description": "Child id for cancel|finish",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["done", "failed"],
+                        "description": "Finish status",
+                    },
+                    "result": {
+                        "description": "Optional finish result payload",
+                    },
+                },
+                required=["operation"],
+            ),
         ),
         SpeakGrant(
             "content.extract",

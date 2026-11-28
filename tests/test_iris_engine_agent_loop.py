@@ -71,11 +71,14 @@ def _read_terminal(root: Path, pid: int):
     path = root / f"{pid}.ndjson"
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        if path.is_file():
+        try:
             line = path.read_text(encoding="utf-8")
             path.unlink()
+        except (FileNotFoundError, PermissionError):
+            # Windows can momentarily lock the file during atomic publication.
+            time.sleep(0.02)
+        else:
             return parse_turn_event(json.loads(line))
-        time.sleep(0.02)
     raise AssertionError("sidecar terminal event was not written")
 
 
@@ -132,16 +135,28 @@ class SidecarAgentLoopTests(TestCase):
             except OSError:
                 continue
 
-    def _start_fake(self, record: Path) -> subprocess.Popen[str]:
+    def _start_fake(self, record: Path, **overrides: str) -> subprocess.Popen[str]:
         self._proc = _spawn(
             _child_env(
                 IRIS_ENGINE_AGENT_MODULE=_FAKE_MODULE,
                 IRIS_ENGINE_AGENT_RECORD=str(record),
                 IRIS_TERMINAL_DIR=str(record.parent),
+                **overrides,
             )
         )
         self._hello_pid = _read_hello(self._proc)
         return self._proc
+
+    def test_stop_interrupts_an_active_turn_and_exits_normally(self) -> None:
+        with TemporaryDirectory() as tmp:
+            proc = self._start_fake(Path(tmp) / "agent.json", IRIS_TEST_WAIT_FOR_STOP="1")
+            assert proc.stdin is not None
+            proc.stdin.write(_system_user_turn())
+            proc.stdin.flush()
+            self.assertEqual(_read_event(proc), ContentDelta("Hel"))
+            proc.stdin.write(encode_host_command("stop"))
+            proc.stdin.flush()
+            self.assertEqual(proc.wait(timeout=3), 0)
 
     def test_system_user_turn_streams_then_stays_alive_for_a_second_turn(self) -> None:
         with TemporaryDirectory() as tmp:

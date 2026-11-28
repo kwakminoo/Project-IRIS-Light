@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from typing import Any
@@ -16,6 +17,7 @@ from iris.engine import (
     ChatTranscript,
     ContentDelta,
     EngineError,
+    EngineErrorCode,
     EngineFailed,
     EngineReady,
     EngineSource,
@@ -214,6 +216,8 @@ class IrisAgentChatWorker(QThread):
         session_id: str = "",
         workspace_id: str = "",
         execution_context: ExecutionContext | None = None,
+        memory_db=None,
+        memory_query: str = "",
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -223,6 +227,8 @@ class IrisAgentChatWorker(QThread):
         self._session_id = str(session_id or "").strip()
         self._workspace_id = str(workspace_id or "").strip()
         self._execution_context = execution_context
+        self._memory_db = memory_db
+        self._memory_query = memory_query
         self._speak_surface = current_speak_surface()
         self._cancel = False
         self._cancel_token = CancelToken()
@@ -342,19 +348,30 @@ class IrisAgentChatWorker(QThread):
                 self.connecting.emit(target.label or attempt.label, "engine")
                 content_parts: list[str] = []
                 try:
+                    ctx = self._execution_context
+                    messages = attempt.messages
+                    if ctx is not None and target.is_local_ollama:
+                        ctx = replace(ctx, inference_scope="local_ollama")
+                        if self._memory_db is not None and ctx.principal == "iris.desktop" and self._memory_query:
+                            from iris.storage.memory import MemoryStore
+
+                            memory = MemoryStore(self._memory_db).recall_context(ctx, self._memory_query)
+                            if memory and messages:
+                                messages = [*messages[:-1], {"role": "user", "content": memory}, messages[-1]]
                     turn = StatelessTurn(
-                        transcript=ChatTranscript.parse(attempt.messages),
+                        transcript=ChatTranscript.parse(messages),
                         model=target,
                         cancel=self._cancel_token,
                         speak_surface=self._speak_surface,
                         session_id=self._session_id,
                         workspace_id=self._workspace_id,
-                        execution_context=self._execution_context,
+                        execution_context=ctx,
                     )
                 except EngineError as exc:
                     last_error = exc.user_message or exc.detail
                     break
                 finished = False
+                tool_started = False
                 fallback_error = last_error
                 for event in engine.run_turn(turn):
                     if isinstance(event, ContentDelta):
@@ -363,6 +380,7 @@ class IrisAgentChatWorker(QThread):
                             self.content_chunk.emit(event.text)
                     elif isinstance(event, ToolProgress):
                         if event.label:
+                            tool_started = True
                             self.tool_progress.emit(event.label)
                     elif isinstance(event, AppUiOfferEvent):
                         html = event.html_path or ""
@@ -386,12 +404,15 @@ class IrisAgentChatWorker(QThread):
                         return
                     elif isinstance(event, TurnFailed):
                         last_error = event.error.user_message or event.error.detail
+                        if event.error.code in (EngineErrorCode.MODEL_NOT_FOUND, EngineErrorCode.MODEL_CONNECTION):
+                            self.failed.emit(last_error)
+                            return
                         fallback_error = event.error.detail or last_error
                         _watch_trace(f"turn_failed detail={fallback_error[:160]!r}")
                         break
                 if finished:
                     return
-                if self._cancel_token.cancelled():
+                if self._cancel_token.cancelled() or tool_started:
                     break
                 step = decide_fallback(fallback_error, index)
                 if step is None:

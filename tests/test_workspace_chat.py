@@ -1,5 +1,6 @@
 """메일/캘린더 오른쪽 칸은 IDE와 같은 채팅 호스트를 쓴다."""
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,7 +20,7 @@ from iris.ui.workspaces.ide_companion_page import IdeCompanionPage
 class WorkspaceChatTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QApplication.instance() or QApplication([])
+        cls.app = QApplication.instance() or QApplication(sys.argv)
 
     def test_shared_host_keyboard_attachment_and_stop(self):
         for page_type in (EmailWorkspacePage, CalendarWorkspacePage):

@@ -38,6 +38,7 @@ from iris.system.workspace_env import (
     agent_core_home,
     bind_execution_argv,
     iris_product_python,
+    is_python_launcher_token,
     lockfile_names,
     system_python_on_path,
 )
@@ -69,7 +70,7 @@ def _check_bind_does_not_create() -> None:
         root = Path(tmp)
         out = bind_python_argv(["python", "app.py"], root, allow_create=False)
         assert not (root / ".venv").exists(), "bind_python_argv must not create .venv"
-        assert out[0].lower().endswith("python") or out[0].lower().endswith("python.exe")
+        assert is_python_launcher_token(out[0])
         assert out[1:] == ["app.py"]
 
 
@@ -219,7 +220,7 @@ def _check_product_python_excluded_from_system() -> None:
     # system picker must skip product even if which() returns it first.
     with mock.patch(
         "iris.system.workspace_env.shutil.which",
-        side_effect=lambda name: str(product) if name in ("python", "python3", "py") else None,
+        return_value=str(product),
     ):
         picked = system_python_on_path(exclude=product)
     assert picked is None or picked.resolve() != product.resolve()
@@ -228,7 +229,7 @@ def _check_product_python_excluded_from_system() -> None:
         root = Path(tmp)
         with mock.patch(
             "iris.system.workspace_env.shutil.which",
-            side_effect=lambda name: str(product) if name in ("python", "python3", "py") else None,
+            return_value=str(product),
         ):
             with mock.patch.dict(
                 os.environ,
@@ -247,6 +248,21 @@ def _check_product_python_excluded_from_system() -> None:
         with mock.patch("iris.system.workspace_env.walk_up_venv_python", return_value=(product, root.parent)):
             hit = WorkspaceEnvironmentResolver().resolve(project_root=root, allow_create=False)
         assert hit.python != product, "walking up from another workspace must skip the IRIS product venv"
+
+
+def _check_system_search_continues_past_excluded_python() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        product = _fake_prefix_python(root / "product")
+        system = _fake_prefix_python(root / "system")
+        alias = root / "Microsoft" / "WindowsApps" / product.name
+        alias.parent.mkdir(parents=True)
+        alias.touch()
+        system.chmod(0o700)
+        candidates = (alias, product, system) if sys.platform == "win32" else (product, system)
+        paths = os.pathsep.join(str(p.parent) for p in candidates)
+        with mock.patch.object(os, "environ", dict(os.environ, PATH=paths)):
+            assert system_python_on_path(exclude=product) == system.resolve()
 
 
 def _agent_core_venv_python() -> Path | None:
@@ -446,6 +462,7 @@ def main() -> None:
     _check_lockfile_not_support()
     _check_allow_create_false_never_creates()
     _check_product_python_excluded_from_system()
+    _check_system_search_continues_past_excluded_python()
     _check_agent_core_venv_not_silent()
     _check_agent_probe_vs_workspace_run_distinct()
     _check_home_without_workspace_defaults()

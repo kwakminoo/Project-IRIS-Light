@@ -14,6 +14,9 @@ from iris.engine.tool_surface import (
 def main() -> None:
     assert "terminal" in IRIS_EAGER_MODEL_TOOLS
     assert "search_files" not in IRIS_EAGER_MODEL_TOOLS
+    # FFC-03 Unit 4a: absorbed name replaces underscore eager pin
+    assert "session_search" in IRIS_EAGER_MODEL_TOOLS
+    assert "chat_search_past" not in IRIS_EAGER_MODEL_TOOLS
 
     def schema(name: str, summary: str = "", required: tuple[str, ...] = ()) -> dict:
         return {

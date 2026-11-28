@@ -1,6 +1,6 @@
 """연번 12 — 액션 이름·계약은 같고 등록만 기능별로 나뉘었는지.
 
-카탈로그 스냅샷은 register() 와 같다. 164건.
+카탈로그 스냅샷은 register() 와 같다.
 """
 
 from __future__ import annotations
@@ -125,9 +125,9 @@ def main() -> None:
     window, reg = _surface()
     got = reg.catalog()
     before = json.loads(_CATALOG.read_text(encoding="utf-8"))
-    assert got == before, "action catalog drifted"
+    assert got == sorted(before, key=lambda row: row["name"]), "action catalog drifted"
     names = [a["name"] for a in got]
-    assert len(names) == len(set(names)) == 164
+    assert len(names) == len(set(names)) == 183
     assert "project.delete" in names
     assert reg.spec("attachment.copy_to").confirm_required is True
     assert reg.spec("attachment.move_to").confirm_required is True

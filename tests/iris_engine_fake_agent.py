@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import types
 
 _tools = types.ModuleType("tools")
@@ -35,6 +36,7 @@ class AIAgent:
         self.kwargs = kwargs
         self.stream_delta_callback = kwargs.get("stream_delta_callback")
         self._persist_disabled = False
+        self._interrupted = threading.Event()
         skip = {
             "stream_delta_callback",
             "tool_progress_callback",
@@ -60,5 +62,13 @@ class AIAgent:
         callback = self.stream_delta_callback
         if callback is not None:
             callback("Hel")
+            if os.environ.get("IRIS_TEST_WAIT_FOR_STOP"):
+                if not self._interrupted.wait(10):
+                    raise TimeoutError("fixture never received stop")
+                return {"final_response": ""}
             callback("lo")
         return {"final_response": "Hello"}
+
+    def interrupt(self, *, hard_cancel=False):
+        assert hard_cancel
+        self._interrupted.set()

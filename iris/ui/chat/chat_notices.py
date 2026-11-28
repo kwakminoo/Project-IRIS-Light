@@ -5,6 +5,7 @@ Domain shape for present_notice — not chat answers, so no TTS registration.
 
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -36,7 +37,7 @@ def _action_md(action: ChatNoticeAction) -> str:
 
 def notice_markdown(notice: ChatNotice) -> str:
     """Visible prose + markdown action links for Unit A iris-* dispatch."""
-    body = (notice.body or "").strip()
+    body = html.escape((notice.body or "").strip())
     if notice.kind in ("note", "app_note") and body and not body.startswith("_"):
         body = f"_{body}_"
     if not notice.actions:

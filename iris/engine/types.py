@@ -43,6 +43,8 @@ class EngineErrorCode(Enum):
     TOOL_TRANSPORT = "tool_transport"
     TOOL_ERROR_BUDGET = "tool_error_budget"
     MODEL_OUTPUT_LIMIT = "truncated"
+    MODEL_NOT_FOUND = "model_not_found"
+    MODEL_CONNECTION = "model_connection"
     MODEL_CONTEXT_OVERFLOW = "context_overflow"
     BILLING = "billing"
     UNKNOWN = "unknown"
@@ -63,6 +65,8 @@ _USER_MESSAGES = {
     EngineErrorCode.MODEL_OUTPUT_LIMIT: (
         "모델의 최대 응답 길이에 도달했습니다. 요청을 나누거나 모델을 변경하세요."
     ),
+    EngineErrorCode.MODEL_NOT_FOUND: "선택한 모델을 서버에서 찾지 못했습니다. 모델 피커에서 사용 가능한 모델을 선택하세요.",
+    EngineErrorCode.MODEL_CONNECTION: "Ollama에 연결할 수 없습니다. Ollama를 실행한 뒤 같은 모델로 다시 요청하세요.",
     EngineErrorCode.MODEL_CONTEXT_OVERFLOW: (
         "모델이 이 대화의 길이를 처리할 수 없습니다. 새 대화에서 다시 시도하세요."
     ),

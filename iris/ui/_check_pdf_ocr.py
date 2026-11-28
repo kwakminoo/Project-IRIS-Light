@@ -9,10 +9,7 @@ import io
 import tempfile
 from pathlib import Path
 
-from iris.knowledge.content_extract import (
-    _extract_pdf_text_pypdf,
-    extract_pdf_text,
-)
+from iris.knowledge.content_extract import DocumentExtractionError, _ensure_tesseract, extract_pdf_text
 
 
 def _make_scanned_pdf(path: Path, label: str) -> None:
@@ -34,20 +31,21 @@ def _make_scanned_pdf(path: Path, label: str) -> None:
 
 
 def main() -> int:
+    import pymupdf
+
     with tempfile.TemporaryDirectory() as tmp:
         pdf = Path(tmp) / "scan.pdf"
         label = "IRIS_OCR_TEST"
         _make_scanned_pdf(pdf, label)
 
-        assert not _extract_pdf_text_pypdf(pdf).strip(), "scanned fixture should have no text layer"
+        with pymupdf.open(pdf) as document:
+            assert not document[0].get_text().strip(), "scanned fixture should have no text layer"
 
         try:
-            from iris.knowledge.content_extract import _ensure_tesseract
-
             _ensure_tesseract()
-        except Exception as exc:
-            print(f"pdf_ocr self-check: skip OCR integration ({exc})")
-            return 0
+        except DocumentExtractionError as exc:
+            print(f"pdf_ocr self-check unavailable ({exc.code})")
+            return 1
 
         text = extract_pdf_text(pdf)
         norm = text.upper().replace("_", " ")

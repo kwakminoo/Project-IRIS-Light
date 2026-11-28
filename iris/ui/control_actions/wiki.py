@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 from urllib.request import Request, urlopen
 
+from iris.knowledge.extraction_cache import memo_for_store
 from iris.system.control_surface import (
     ActionRegistry,
 )
@@ -410,6 +411,12 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
 
         _sum, vision = _summary_and_vision(args, local_document=True)
         _ = _sum
+        memo = None
+        if attachment_id:
+            session = getattr(window, "_chat_session", None)
+            store = getattr(session, "attachments", None)
+            if store is not None:
+                memo = memo_for_store(store)
         try:
             data = extract_from_source(
                 source,
@@ -418,6 +425,8 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
                 vision_reader=vision,
                 cancelled=host_tool_cancelled,
                 ocr_language=ocr_language,
+                memo=memo,
+                attachment_id=attachment_id,
             )
         except UnsupportedAttachmentTypeError as exc:
             return err_result(
@@ -452,7 +461,13 @@ def register_wiki_actions(window: WikiHost, reg: ActionRegistry) -> None:
             "chars": len(str(data["text"])),
         }
         if attachment_id:
-            payload["attachment_id"] = attachment_id
+            # Echo the store-canonical id (basename refs resolve earlier; model may have passed a filename).
+            session = getattr(window, "_chat_session", None)
+            store = getattr(session, "attachments", None)
+            if store is not None:
+                payload["attachment_id"] = store.canonicalize_attachment_ref(attachment_id)
+            else:
+                payload["attachment_id"] = attachment_id
         if data.get("kind") == "pdf" or data.get("total_pages") is not None:
             payload["total_pages"] = int(data.get("total_pages") or 0)
             if attachment_id:
